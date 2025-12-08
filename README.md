@@ -1,10 +1,18 @@
+<div align="center">
+
+<img src="assets/images/fs-logo.png" alt="Finite State Logo" width="300">
+
 # Finite State Customer Resources
 
-Welcome to the **Finite State Customer Resources** repository! This repository provides resources, examples, and tools organized by workflow stages to help you get the most out of the Finite State platform.
+Resources, examples, and tools organized by workflow stages to help you get the most out of the Finite State platform.
+
+<hr style="border: 2px solid #FA6400; margin: 2rem 0;">
+
+</div>
 
 ## Overview
 
-This repository is organized by **workflow stages**, not by internal product names. This makes it easy to find examples and tools based on what you're trying to accomplish.
+This repository is organized by **workflow stages**. This makes it easy to find examples and tools based on what you're trying to accomplish.
 
 ## Required Environment Variables
 
@@ -38,22 +46,6 @@ Our content is organized into six main workflow stages:
 ### Shared Resources
 
 - **[shared/](./shared/)** - Shared API clients, common helpers, and utilities used across examples
-
-## Quick Start
-
-1. **Need to scan something?** Start with [01-onboarding-and-scanning](./01-onboarding-and-scanning/)
-2. **Ready to automate?** Check out [02-ci-cd-automation](./02-ci-cd-automation/)
-3. **Looking for specific tools?** Browse the workflow stages above or use the search functionality
-
-## Field-Built Tools
-
-This repository serves as a home for field-built tools, including:
-
-- **Reporting System** - Located in [05-reporting-and-compliance](./05-reporting-and-compliance/)
-- **Autotriage Script** - Located in [03-findings-triage-workflows](./03-findings-triage-workflows/)
-- **Bulk Uploading Script** - Located in [01-onboarding-and-scanning](./01-onboarding-and-scanning/)
-- **Vulnerability Report** - Located in [05-reporting-and-compliance](./05-reporting-and-compliance/)
-- **Shai-Hulud Detection Scripts** - Located in [06-advanced-integrations-and-demos](./06-advanced-integrations-and-demos/)
 
 ## Contributing
 
