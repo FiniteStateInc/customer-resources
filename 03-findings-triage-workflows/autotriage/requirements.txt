@@ -1,0 +1,6 @@
+# Minimal requirements for autotriage.py (production use)
+# Install with: pip install -r requirements.txt
+
+# HTTP requests library - the only external dependency needed
+requests>=2.25.0
+

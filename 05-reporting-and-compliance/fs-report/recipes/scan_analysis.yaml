@@ -1,0 +1,43 @@
+name: "Scan Analysis"
+description: "Analyze scan throughput, durations, failures, and queue status"
+template: "scan_analysis.html"
+
+query:
+  endpoint: "/public/v0/scans"
+  params:
+    filter: "created>=${start};created<=${end}"
+    sort: "created:asc"
+    limit: 100
+
+transform_function: scan_analysis_transform
+
+output:
+  formats: ["csv", "xlsx", "html"]
+  charts:
+    - name: "scan_throughput"
+      chart: line
+      title: "Scan Throughput Over Time"
+      description: "Number of scans started and completed per day"
+    
+    - name: "scan_durations"
+      chart: bar
+      title: "Average Scan Duration by Day" 
+      description: "Average scan duration in minutes for completed scans"
+    
+    - name: "failure_rate"
+      chart: bar
+      title: "Scan Success vs Failure Rate"
+      description: "Success rate percentage and failure counts by day"
+      
+    - name: "scan_types"
+      chart: pie
+      title: "Scan Type Distribution"
+      description: "Distribution of scan types (SCA, SAST, CONFIG)"
+    
+    - name: "queue_vs_processing"
+      chart: bar
+      title: "Active Scan Status Analysis"
+      description: "Average time scans spend in INITIAL vs STARTED status by day"
+  
+  table: true
+  slide_title: "Scan Operations Analysis" 

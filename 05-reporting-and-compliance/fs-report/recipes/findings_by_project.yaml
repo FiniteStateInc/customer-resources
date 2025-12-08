@@ -1,0 +1,21 @@
+name: "Findings by Project"
+template: "findings_by_project.html"
+description: "Comprehensive inventory of findings across projects with optional filtering"
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+    filter: "detected>=${start};detected<=${end}"
+
+# Project list query for discovery
+project_list_query:
+  endpoint: "/public/v0/projects"
+  params:
+    limit: 1000
+    archived: false
+
+transform_function: findings_by_project_pandas_transform
+output:
+  table: true
+  charts: [] 

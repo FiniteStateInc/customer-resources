@@ -1,0 +1,264 @@
+{
+  "attack_name": "S1ngularity/nx Attack - Shai Hulud Worm",
+  "attack_date": "2025-09-16",
+  "description": "Large-scale npm supply chain attack using self-propagating worm that steals secrets and spreads through maintainer publishing rights",
+  "packages": [
+    {
+      "name": "@ahmedhfarag/ngx-perfect-scrollbar",
+      "affected_versions": ["20.0.20"]
+    },
+    {
+      "name": "@ahmedhfarag/ngx-virtual-scroller",
+      "affected_versions": ["4.0.4"]
+    },
+    {
+      "name": "@art-ws/common",
+      "affected_versions": ["2.0.28"]
+    },
+    {
+      "name": "@art-ws/config-eslint",
+      "affected_versions": ["2.0.4", "2.0.5"]
+    },
+    {
+      "name": "@art-ws/config-ts",
+      "affected_versions": ["2.0.7", "2.0.8"]
+    },
+    {
+      "name": "@art-ws/db-context",
+      "affected_versions": ["2.0.24"]
+    },
+    {
+      "name": "@art-ws/di",
+      "affected_versions": ["2.0.28", "2.0.32"]
+    },
+    {
+      "name": "@art-ws/di-node",
+      "affected_versions": ["2.0.13"]
+    },
+    {
+      "name": "@art-ws/eslint",
+      "affected_versions": ["1.0.5", "1.0.6"]
+    },
+    {
+      "name": "@art-ws/fastify-http-server",
+      "affected_versions": ["2.0.24", "2.0.27"]
+    },
+    {
+      "name": "@art-ws/http-server",
+      "affected_versions": ["2.0.21", "2.0.25"]
+    },
+    {
+      "name": "@art-ws/openapi",
+      "affected_versions": ["0.1.9", "0.1.12"]
+    },
+    {
+      "name": "@art-ws/package-base",
+      "affected_versions": ["1.0.5", "1.0.6"]
+    },
+    {
+      "name": "@art-ws/prettier",
+      "affected_versions": ["1.0.5", "1.0.6"]
+    },
+    {
+      "name": "@art-ws/slf",
+      "affected_versions": ["2.0.15", "2.0.22"]
+    },
+    {
+      "name": "@art-ws/ssl-info",
+      "affected_versions": ["1.0.9", "1.0.10"]
+    },
+    {
+      "name": "@art-ws/web-app",
+      "affected_versions": ["1.0.3", "1.0.4"]
+    },
+    {
+      "name": "@crowdstrike/commitlint",
+      "affected_versions": ["8.1.1", "8.1.2"]
+    },
+    {
+      "name": "@crowdstrike/falcon-shoelace",
+      "affected_versions": ["0.4.1", "0.4.2"]
+    },
+    {
+      "name": "@crowdstrike/foundry-js",
+      "affected_versions": ["0.19.1", "0.19.2"]
+    },
+    {
+      "name": "@crowdstrike/glide-core",
+      "affected_versions": ["0.34.2", "0.34.3"]
+    },
+    {
+      "name": "@crowdstrike/logscale-dashboard",
+      "affected_versions": ["1.205.1", "1.205.2"]
+    },
+    {
+      "name": "@crowdstrike/logscale-file-editor",
+      "affected_versions": ["1.205.1", "1.205.2"]
+    },
+    {
+      "name": "mcp-knowledge-graph",
+      "affected_versions": ["1.2.1"]
+    },
+    {
+      "name": "mobioffice-cli",
+      "affected_versions": ["1.0.3"]
+    },
+    {
+      "name": "monorepo-next",
+      "affected_versions": ["13.0.1", "13.0.2"]
+    },
+    {
+      "name": "mstate-angular",
+      "affected_versions": ["0.4.4"]
+    },
+    {
+      "name": "mstate-cli",
+      "affected_versions": ["0.4.7"]
+    },
+    {
+      "name": "mstate-dev-react",
+      "affected_versions": ["1.1.1"]
+    },
+    {
+      "name": "mstate-react",
+      "affected_versions": ["1.6.5"]
+    },
+    {
+      "name": "ng2-file-upload",
+      "affected_versions": ["7.0.2", "7.0.3", "8.0.1", "8.0.2", "8.0.3", "9.0.1"]
+    },
+    {
+      "name": "ngx-bootstrap",
+      "affected_versions": ["18.1.4", "19.0.3", "19.0.4", "20.0.3", "20.0.4", "20.0.5"]
+    },
+    {
+      "name": "ngx-color",
+      "affected_versions": ["10.0.1", "10.0.2"]
+    },
+    {
+      "name": "ngx-toastr",
+      "affected_versions": ["19.0.1", "19.0.2"]
+    },
+    {
+      "name": "ngx-trend",
+      "affected_versions": ["8.0.1"]
+    },
+    {
+      "name": "ngx-ws",
+      "affected_versions": ["1.1.5", "1.1.6"]
+    },
+    {
+      "name": "oradm-to-gql",
+      "affected_versions": ["35.0.14", "35.0.15"]
+    },
+    {
+      "name": "oradm-to-sqlz",
+      "affected_versions": ["1.1.2"]
+    },
+    {
+      "name": "ove-auto-annotate",
+      "affected_versions": ["0.0.9"]
+    },
+    {
+      "name": "pm2-gelf-json",
+      "affected_versions": ["1.0.4", "1.0.5"]
+    },
+    {
+      "name": "printjs-rpk",
+      "affected_versions": ["1.6.1"]
+    },
+    {
+      "name": "react-complaint-image",
+      "affected_versions": ["0.0.32"]
+    },
+    {
+      "name": "react-jsonschema-form-conditionals",
+      "affected_versions": ["0.3.18"]
+    },
+    {
+      "name": "remark-preset-lint-crowdstrike",
+      "affected_versions": ["4.0.1", "4.0.2"]
+    },
+    {
+      "name": "rxnt-authentication",
+      "affected_versions": ["0.0.3", "0.0.4", "0.0.5", "0.0.6"]
+    },
+    {
+      "name": "rxnt-healthchecks-nestjs",
+      "affected_versions": ["1.0.2", "1.0.3", "1.0.4", "1.0.5"]
+    },
+    {
+      "name": "rxnt-kue",
+      "affected_versions": ["1.0.4", "1.0.5", "1.0.6", "1.0.7"]
+    },
+    {
+      "name": "swc-plugin-component-annotate",
+      "affected_versions": ["1.9.1", "1.9.2"]
+    },
+    {
+      "name": "tbssnch",
+      "affected_versions": ["1.0.2"]
+    },
+    {
+      "name": "teselagen-interval-tree",
+      "affected_versions": ["1.1.2"]
+    },
+    {
+      "name": "tg-client-query-builder",
+      "affected_versions": ["2.14.4", "2.14.5"]
+    },
+    {
+      "name": "tg-redbird",
+      "affected_versions": ["1.3.1"]
+    },
+    {
+      "name": "tg-seq-gen",
+      "affected_versions": ["1.0.9", "1.0.10"]
+    },
+    {
+      "name": "thangved-react-grid",
+      "affected_versions": ["1.0.3"]
+    },
+    {
+      "name": "ts-gaussian",
+      "affected_versions": ["3.0.5", "3.0.6"]
+    },
+    {
+      "name": "ts-imports",
+      "affected_versions": ["1.0.1", "1.0.2"]
+    },
+    {
+      "name": "tvi-cli",
+      "affected_versions": ["0.1.5"]
+    },
+    {
+      "name": "ve-bamreader",
+      "affected_versions": ["0.2.6"]
+    },
+    {
+      "name": "ve-editor",
+      "affected_versions": ["1.0.1"]
+    },
+    {
+      "name": "verror-extra",
+      "affected_versions": ["6.0.1"]
+    },
+    {
+      "name": "voip-callkit",
+      "affected_versions": ["1.0.2", "1.0.3"]
+    },
+    {
+      "name": "wdio-web-reporter",
+      "affected_versions": ["0.1.3"]
+    },
+    {
+      "name": "yargs-help-output",
+      "affected_versions": ["5.0.3"]
+    },
+    {
+      "name": "yoo-styles",
+      "affected_versions": ["6.0.326"]
+    }
+  ]
+}
+

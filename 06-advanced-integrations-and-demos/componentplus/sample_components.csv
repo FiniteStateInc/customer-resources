@@ -1,0 +1,16 @@
+component_name,component_version,supplier_name,swid_tag_id
+openssl,3.0.13,OpenSSL Software Foundation,swid:openssl:3.0.13
+zlib,1.3.1,zlib Project,swid:zlib:1.3.1
+libcurl,8.8.0,Curl Project,swid:curl:8.8.0
+libxml2,2.12.0,XMLSoft,swid:libxml2:2.12.0
+expat,2.6.0,James Clark,swid:expat:2.6.0
+libpng,1.6.43,libpng Development Team,swid:libpng:1.6.43
+libjpeg-turbo,3.0.2,libjpeg-turbo Project,swid:libjpeg-turbo:3.0.2
+sqlite,3.45.0,SQLite Development Team,swid:sqlite:3.45.0
+libffi,3.4.6,libffi Development Team,swid:libffi:3.4.6
+ncurses,6.4,Free Software Foundation,swid:ncurses:6.4
+libyaml,0.2.5,libyaml Project,swid:libyaml:0.2.5
+libuuid,2.39.2,util-linux Project,swid:libuuid:2.39.2
+libpcre,8.45,PCRE Project,swid:libpcre:8.45
+libssl,3.0.13,OpenSSL Software Foundation,swid:libssl:3.0.13
+libcrypto,3.0.13,OpenSSL Software Foundation,swid:libcrypto:3.0.13

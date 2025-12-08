@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="chart-container">
+    <h2>Distribution Analysis</h2>
+    <div class="chart-wrapper">
+        <canvas id="barChart"></canvas>
+    </div>
+</div>
+
+<div class="table-container">
+    <h2>Data Table</h2>
+    <table>
+        <thead>
+            <tr>
+                {% for header in table_data.headers %}
+                <th>{{ header }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in table_data.rows %}
+            <tr>
+                {% for cell in row %}
+                <td>{{ cell }}</td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const ctx = document.getElementById('barChart').getContext('2d');
+    const chartData = {{ chart_data.main | safe }};
+    
+    new Chart(ctx, {
+        type: 'bar',
+        data: chartData,
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                title: {
+                    display: true,
+                    text: '{{ slide_title }}',
+                    font: {
+                        size: 16
+                    }
+                },
+                legend: {
+                    display: true,
+                    position: 'top'
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    {% if y_axis_max %}
+                    max: {{ y_axis_max }},
+                    {% endif %}
+                    title: {
+                        display: true,
+                        text: {% if is_mttr_chart %}'Days'{% elif y_axis_max and y_axis_max > 100 %}'Risk Score'{% else %}'Count'{% endif %}
+                    },
+                    stacked: {{ 'true' if stacked else 'false' }}
+                },
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Category'
+                    },
+                    stacked: {{ 'true' if stacked else 'false' }}
+                }
+            }
+        }
+    });
+});
+</script>
+{% endblock %} 

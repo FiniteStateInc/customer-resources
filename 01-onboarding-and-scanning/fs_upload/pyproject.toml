@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "fs-upload"
+version = "0.1.0"
+description = "Finite State artifact upload script"
+authors = ["Finite State"]
+readme = "README.md"
+packages = [{include = "fs_upload"}]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+requests = "^2.31.0"
+
+[tool.poetry.scripts]
+fs-upload = "fs_upload:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
