@@ -1,0 +1,57 @@
+[tool.poetry]
+name = "finite-state-reporter"
+version = "1.0.0"
+description = "Generate professional PDF reports from Finite State API data"
+authors = ["Finite State <support@finitestate.io>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/finitestate/finite-state-reporter"
+repository = "https://github.com/finitestate/finite-state-reporter"
+documentation = "https://github.com/finitestate/finite-state-reporter/blob/main/README.md"
+keywords = ["finite-state", "security", "vulnerability", "pdf", "report", "api"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Office/Business :: Office Suites",
+]
+packages = [{include = "finite_state_reporter", from = "src"}]
+include = [
+    "src/finite_state_reporter/static/**/*",
+    "schemas/*.yaml",
+    "examples/*.py",
+    "examples/sample_reports/*.pdf",
+]
+
+[tool.poetry.dependencies]
+python = "^3.8.1"
+requests = "^2.31.0"
+reportlab = "^4.0.4"
+matplotlib = "^3.7.0"
+pandas = "^2.0.0"
+Pillow = "^10.0.0"
+python-dateutil = "^2.8.0"
+click = "^8.1.0"
+seaborn = "^0.13.2"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+black = "^23.0.0"
+flake8 = "^6.0.0"
+mypy = "^1.5.0"
+
+[tool.poetry.scripts]
+finite-state-reporter = "finite_state_reporter.cli:cli"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

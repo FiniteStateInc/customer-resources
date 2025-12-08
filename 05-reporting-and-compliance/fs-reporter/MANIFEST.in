@@ -1,0 +1,15 @@
+include README.md
+include requirements.txt
+include pyproject.toml
+include main.py
+include LICENSE
+recursive-include src/finite_state_reporter/static *
+recursive-include schemas *.yaml
+recursive-include examples *.py *.pdf
+recursive-exclude venv *
+recursive-exclude __pycache__ *
+recursive-exclude *.egg-info *
+recursive-exclude .pytest_cache *
+exclude .DS_Store
+exclude .gitignore
+exclude poetry.lock
