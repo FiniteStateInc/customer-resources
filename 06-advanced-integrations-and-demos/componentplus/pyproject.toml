@@ -2,8 +2,9 @@
 name = "componentplus"
 version = "0.1.0"
 description = "SBOM-based component injection script for Finite State"
-authors = ["Your Name <you@example.com>"]
+authors = ["Finite State"]
 readme = "README.md"
+license = "MIT"
 
 [tool.poetry.dependencies]
 python = "^3.10"
