@@ -62,8 +62,8 @@ finite-state-reporter/
 
 3. **Clone the repository**:
    ```bash
-   git clone git@github.com:FiniteStateInc/finite-state-reporter.git
-   cd finite-state-reporter
+   git clone git@github.com:FiniteStateInc/customer-resources.git
+   cd 05-reporting-and-compliance/fs-reporter
    ```
 
 4. **Install dependencies**:
