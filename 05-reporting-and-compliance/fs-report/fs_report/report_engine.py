@@ -187,6 +187,7 @@ class ReportEngine:
                                 filter=combined_filter
                             )
                         )
+                        self.logger.info(f"Fetching findings for {recipe.name} with filter: {combined_filter}")
                         raw_data = self.api_client.fetch_all_with_resume(unified_query)
                 else:
                     raw_data = self.api_client.fetch_data(recipe.query)

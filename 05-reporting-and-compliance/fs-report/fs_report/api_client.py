@@ -84,7 +84,9 @@ class APIClient:
         # Prepare query parameters
         params: dict[str, str] = {}
         if query.params.filter:
-            params["filter"] = self._substitute_variables(query.params.filter)
+            endpoint_str = getattr(query, 'endpoint', '') or ''
+            self.logger.debug(f"Substituting variables for endpoint: {endpoint_str}, filter: {query.params.filter}")
+            params["filter"] = self._substitute_variables(query.params.filter, endpoint_str)
         if query.params.sort:
             params["sort"] = query.params.sort
         if query.params.limit:
@@ -214,7 +216,7 @@ class APIClient:
                     consecutive_empty_pages += 1
                     self.logger.debug(f"Empty page at offset {offset} (consecutive empty: {consecutive_empty_pages})")
                     if consecutive_empty_pages >= max_consecutive_empty:
-                        self.logger.info(f"Stopping pagination after {consecutive_empty_pages} consecutive empty pages.")
+                        self.logger.debug(f"Stopping pagination after {consecutive_empty_pages} consecutive empty pages.")
                         break
                     offset += limit
                     continue
@@ -227,7 +229,12 @@ class APIClient:
                     existing_ids = {rec.get('id') for rec in all_results if rec.get('id')}
                     duplicates = page_ids & existing_ids
                     if duplicates:
-                        self.logger.warning(f"Found {len(duplicates)} duplicate record IDs at offset {offset}. Stopping pagination.")
+                        self.logger.debug(f"Found {len(duplicates)} duplicate record IDs at offset {offset}. Stopping pagination.")
+                        break
+                    
+                    # Safety check: if all records in this page are duplicates, stop
+                    if len(page_ids) > 0 and len(duplicates) == len(page_ids):
+                        self.logger.debug(f"All {len(page_ids)} records in page at offset {offset} are duplicates. Stopping pagination.")
                         break
                 
                 all_results.extend(page)
@@ -245,11 +252,6 @@ class APIClient:
                 # Don't stop just because a page has fewer than limit records - the API may return
                 # fewer records on the last page, but we should continue to check for more
                 # The loop will continue and check the next page, which will be empty if we've reached the end
-                
-                # Additional safety check: if we've fetched a very large number of records,
-                # warn that we might be hitting API limits
-                if len(all_results) >= 10000:
-                    self.logger.warning(f"⚠️  Fetched {len(all_results)} records. API may have limits. Consider using date filters if available.")
         finally:
             pbar.close()
         self.logger.debug(f"Total records fetched: {len(all_results)}")
@@ -262,7 +264,7 @@ class APIClient:
                 self.logger.warning(f"Could not remove progress file {progress_file}: {e}")
         return all_results
 
-    def _substitute_variables(self, filter_expr: str) -> str:
+    def _substitute_variables(self, filter_expr: str, endpoint: str = "") -> str:
         """Substitute date variables in filter expressions."""
         from datetime import datetime
 
@@ -274,13 +276,28 @@ class APIClient:
             hour=23, minute=59, second=59, microsecond=999999
         )
 
-        # Format as UTC datetime strings with Z suffix (required by API)
-        start_str = start_dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
-        end_str = end_dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+        # Format as UTC datetime strings
+        # Findings endpoint expects format without Z suffix (e.g., "2025-02-25T14:23:00")
+        # Other endpoints may require Z suffix
+        # Check for findings endpoint (case-insensitive, handles /public/v0/findings or /findings)
+        is_findings_endpoint = "/findings" in endpoint.lower() if endpoint else False
+        if is_findings_endpoint:
+            start_str = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
+            end_str = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
+            self.logger.debug(f"Formatting dates for findings endpoint (no Z): {start_str} to {end_str}")
+        else:
+            # For other endpoints, use Z suffix
+            start_str = start_dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+            end_str = end_dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+            self.logger.debug(f"Formatting dates for other endpoint (with Z): {start_str} to {end_str}, endpoint={endpoint}")
 
         # Replace ${start} and ${end} with actual datetime strings
         result = filter_expr.replace("${start}", start_str)
         result = result.replace("${end}", end_str)
+        
+        # Log the substitution for debugging
+        if "${start}" in filter_expr or "${end}" in filter_expr:
+            self.logger.debug(f"Date filter substitution: {filter_expr} -> {result}")
 
         return result
 

@@ -1,0 +1,16 @@
+01-onboarding-and-scanning/fs_upload/.DS_Store
+03-findings-triage-workflows/.DS_Store
+04-remediation-and-fixes/.DS_Store
+05-reporting-and-compliance/.DS_Store
+.gitignore
+05-reporting-and-compliance/fs-report/recipes/.DS_Store
+.DS_Store
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Output directories
+**/output/
+**/output/**
