@@ -63,10 +63,23 @@ class PeriodParser:
         # Months
         if re.match(r'^\d+m$', period):
             months = int(period[:-1])
-            end_date = datetime.now().date()
-            # Approximate months (30 days each)
-            start_date = end_date - timedelta(days=months * 30)
-            return start_date.isoformat(), end_date.isoformat()
+            today = datetime.now().date()
+            
+            # For "1m", calculate the previous calendar month
+            if months == 1:
+                # Get the first day of the current month
+                first_of_current = today.replace(day=1)
+                # Get the last day of the previous month (first of current minus 1 day)
+                # This handles year boundaries correctly (e.g., Jan 1 - 1 day = Dec 31 of previous year)
+                end_date = first_of_current - timedelta(days=1)
+                # Get first day of previous month
+                start_date = end_date.replace(day=1)
+                return start_date.isoformat(), end_date.isoformat()
+            else:
+                # For multiple months (2m, 3m, etc.), use rolling window
+                end_date = today
+                start_date = end_date - timedelta(days=months * 30)
+                return start_date.isoformat(), end_date.isoformat()
         
         # Quarters
         if re.match(r'^\d+q$', period):
