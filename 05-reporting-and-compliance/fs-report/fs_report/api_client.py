@@ -104,12 +104,27 @@ class APIClient:
             response.raise_for_status()
             data = response.json()
 
-            # Only handle a single page of results
+            # Handle different API response formats
+            # Some endpoints return a list directly, others return {"items": [...]} or {"scans": [...]}
             if isinstance(data, list):
-                self.logger.debug(f"Retrieved {len(data)} records (single page)")
+                self.logger.debug(f"Retrieved {len(data)} records (single page, list format)")
                 # Cache the data for this page
                 self.cache.put(query, data)
                 return data
+            elif isinstance(data, dict):
+                # Check for common pagination response formats
+                items = data.get("items") or data.get("scans") or data.get("data")
+                if items and isinstance(items, list):
+                    self.logger.debug(f"Retrieved {len(items)} records (single page, object format with items/scans/data key)")
+                    # Cache the data for this page
+                    self.cache.put(query, items)
+                    return items
+                else:
+                    # Single record as dict
+                    self.logger.debug("Retrieved single record (dict format)")
+                    result = [data] if data else []
+                    self.cache.put(query, result)
+                    return result
             else:
                 self.logger.debug("Retrieved single record")
                 result = [data] if data else []
@@ -134,6 +149,8 @@ class APIClient:
         offset = 0
         all_results = []
         limit = getattr(query.params, 'limit', 10000) or 10000
+        consecutive_empty_pages = 0
+        max_consecutive_empty = 3  # Stop after 3 consecutive empty pages
         self.logger.debug(f"fetch_all_with_resume called for endpoint: {getattr(query, 'endpoint', None)}, progress_file: {progress_file}")
         if not progress_file:
             # Default: output/findings_progress.json or output/{endpoint}_progress.json
@@ -194,8 +211,25 @@ class APIClient:
                     continue
                 retry_count = 0  # Reset on success
                 if not page:
-                    self.logger.debug("No more results.")
-                    break
+                    consecutive_empty_pages += 1
+                    self.logger.debug(f"Empty page at offset {offset} (consecutive empty: {consecutive_empty_pages})")
+                    if consecutive_empty_pages >= max_consecutive_empty:
+                        self.logger.info(f"Stopping pagination after {consecutive_empty_pages} consecutive empty pages.")
+                        break
+                    offset += limit
+                    continue
+                
+                consecutive_empty_pages = 0  # Reset on successful page
+                
+                # Check for duplicate records (indicates we've reached the end)
+                if all_results and len(page) > 0:
+                    page_ids = {rec.get('id') for rec in page if rec.get('id')}
+                    existing_ids = {rec.get('id') for rec in all_results if rec.get('id')}
+                    duplicates = page_ids & existing_ids
+                    if duplicates:
+                        self.logger.warning(f"Found {len(duplicates)} duplicate record IDs at offset {offset}. Stopping pagination.")
+                        break
+                
                 all_results.extend(page)
                 offset += limit
                 # Progress logging (atomic write)
@@ -205,10 +239,17 @@ class APIClient:
                     tempname = tf.name
                 shutil.move(tempname, progress_file)
                 pbar.update(len(page))
-                self.logger.debug(f"Fetched {len(all_results)} records so far. Progress saved to {progress_file}.")
-                if len(page) < limit:
-                    self.logger.debug("Last page reached.")
-                    break
+                self.logger.debug(f"Fetched {len(all_results)} records so far (page had {len(page)} records). Progress saved to {progress_file}.")
+                
+                # Continue pagination until we get an empty page or duplicates
+                # Don't stop just because a page has fewer than limit records - the API may return
+                # fewer records on the last page, but we should continue to check for more
+                # The loop will continue and check the next page, which will be empty if we've reached the end
+                
+                # Additional safety check: if we've fetched a very large number of records,
+                # warn that we might be hitting API limits
+                if len(all_results) >= 10000:
+                    self.logger.warning(f"⚠️  Fetched {len(all_results)} records. API may have limits. Consider using date filters if available.")
         finally:
             pbar.close()
         self.logger.debug(f"Total records fetched: {len(all_results)}")
@@ -233,9 +274,9 @@ class APIClient:
             hour=23, minute=59, second=59, microsecond=999999
         )
 
-        # Format as UTC datetime strings
-        start_str = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
-        end_str = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
+        # Format as UTC datetime strings with Z suffix (required by API)
+        start_str = start_dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+        end_str = end_dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
 
         # Replace ${start} and ${end} with actual datetime strings
         result = filter_expr.replace("${start}", start_str)

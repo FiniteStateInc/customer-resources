@@ -5,7 +5,6 @@ template: "scan_analysis.html"
 query:
   endpoint: "/public/v0/scans"
   params:
-    filter: "created>=${start};created<=${end}"
     sort: "created:asc"
     limit: 100
 

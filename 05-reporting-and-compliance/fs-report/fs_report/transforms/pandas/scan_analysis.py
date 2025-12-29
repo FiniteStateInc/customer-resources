@@ -9,13 +9,13 @@ from typing import Any, Dict, List, Optional
 from fs_report.models import Config
 
 
-def scan_analysis_transform(data: List[Dict[str, Any]], config: Config) -> Dict[str, pd.DataFrame]:
+def scan_analysis_transform(data: List[Dict[str, Any]], config: Optional[Config] = None) -> Dict[str, pd.DataFrame]:
     """
     Transform scan data for the Scan Analysis report.
     
     Args:
         data: Raw scan data from API
-        config: Configuration object
+        config: Configuration object with start_date and end_date for filtering
     
     Returns:
         Dictionary with two DataFrames:
@@ -27,6 +27,50 @@ def scan_analysis_transform(data: List[Dict[str, Any]], config: Config) -> Dict[
     
     # Convert to DataFrame
     df = pd.DataFrame(data)
+    
+    # Filter by date range client-side (since 'created' is not filterable on scans endpoint)
+    if config is not None and hasattr(config, 'start_date') and hasattr(config, 'end_date') and config.start_date and config.end_date:
+        # Parse dates from config (format: "YYYY-MM-DD")
+        start_date_str = config.start_date  # e.g., "2025-11-01"
+        end_date_str = config.end_date     # e.g., "2025-11-30"
+        
+        # Parse created timestamps and filter
+        if 'created' in df.columns and len(df) > 0:
+            # Parse created timestamps (may include timezone like "2025-11-15T10:30:00Z")
+            df['created_parsed'] = pd.to_datetime(df['created'], errors='coerce', utc=True)
+            
+            # Convert to date strings for comparison (YYYY-MM-DD format)
+            df['created_date'] = df['created_parsed'].dt.date.astype(str)
+            
+            # Filter to date range (inclusive of both start and end dates)
+            mask = (df['created_date'] >= start_date_str) & (df['created_date'] <= end_date_str)
+            initial_count = len(df)
+            
+            # Log date range of ALL data before filtering (for debugging)
+            import logging
+            logger = logging.getLogger(__name__)
+            if initial_count > 0:
+                all_min_date = df['created_parsed'].min()
+                all_max_date = df['created_parsed'].max()
+                logger.info(f"All scans date range (before filtering): {all_min_date} to {all_max_date} ({initial_count} total scans)")
+            
+            df = df[mask].copy()
+            filtered_count = len(df)
+            
+            # Log date range of filtered data for verification
+            if filtered_count > 0:
+                min_date = df['created_parsed'].min()
+                max_date = df['created_parsed'].max()
+                logger.info(f"Date filtering: {initial_count} scans -> {filtered_count} scans (range: {start_date_str} to {end_date_str})")
+                logger.info(f"Filtered scan date range: {min_date} to {max_date}")
+            else:
+                logger.warning(f"Date filtering: {initial_count} scans -> 0 scans (range: {start_date_str} to {end_date_str})")
+            
+            # Drop temporary columns
+            df = df.drop(columns=['created_parsed', 'created_date'], errors='ignore')
+    
+    if df.empty:
+        return pd.DataFrame()
     
     # Flatten nested data structures
     df = flatten_scan_data(df)
