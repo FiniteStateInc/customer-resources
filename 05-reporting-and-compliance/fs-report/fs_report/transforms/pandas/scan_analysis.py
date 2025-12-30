@@ -240,8 +240,9 @@ def generate_scan_metrics(df: pd.DataFrame) -> pd.DataFrame:
         if len(day_data_created) > 0 or len(day_data_completed) > 0:
             # Use created scans for the base data (for started counts, active scans, etc.)
             # But pass completed scans separately for completion counts
+            # Also pass all_scans so we can find failed scans that may have been created on different dates
             day_data = day_data_created.copy() if len(day_data_created) > 0 else day_data_completed.head(0).copy()
-            metrics = calculate_daily_metrics(day_data, current_date, day_data_completed)
+            metrics = calculate_daily_metrics(day_data, current_date, day_data_completed, all_scans=df)
             daily_metrics.append(metrics)
         
         current_date += timedelta(days=1)
@@ -313,19 +314,24 @@ def generate_scan_metrics(df: pd.DataFrame) -> pd.DataFrame:
     }
 
 
-def calculate_daily_metrics(day_data: pd.DataFrame, date, day_data_completed: pd.DataFrame = None) -> Dict[str, Any]:
+def calculate_daily_metrics(day_data: pd.DataFrame, date, day_data_completed: pd.DataFrame = None, all_scans: pd.DataFrame = None) -> Dict[str, Any]:
     """Calculate metrics for a single day.
     
     Args:
         day_data: Scans that were created on this date (for started counts, active scans, etc.)
         date: The date being analyzed
         day_data_completed: Scans that were completed on this date (for completion counts)
+        all_scans: All scans in the dataset (for finding failed scans that may have been created on different dates)
     """
     # For historical analysis, distinguish between scans that are truly stuck vs recently created
     # SOURCE_SCA scans are completed locally and uploaded - treat as instantly completed
     from datetime import datetime, timedelta
     today = datetime.now().date()
     days_ago = (today - date).days
+    
+    # Use all_scans if provided, otherwise use day_data as fallback
+    if all_scans is None:
+        all_scans = day_data
     
     # Use completed scans for completion metrics if provided, otherwise use created scans
     if day_data_completed is not None and len(day_data_completed) > 0:
@@ -363,6 +369,38 @@ def calculate_daily_metrics(day_data: pd.DataFrame, date, day_data_completed: pd
         (other_scans['completed'] != '-')
     ]
     
+    # Count failed scans: ERROR status scans that were created on this date
+    # Check both day_data and all_scans to ensure we catch all ERROR scans
+    # Use case-insensitive comparison in case status values vary
+    if 'status' in day_data.columns:
+        error_scans_from_day_data = day_data[day_data['status'].str.upper() == 'ERROR']
+    else:
+        error_scans_from_day_data = pd.DataFrame()
+    
+    # Also check all_scans for ERROR scans created on this date (in case day_data is filtered)
+    error_scans_from_all = pd.DataFrame()
+    if all_scans is not None and len(all_scans) > 0 and 'scan_date' in all_scans.columns and 'status' in all_scans.columns:
+        error_scans_from_all = all_scans[
+            (all_scans['scan_date'] == date) & 
+            (all_scans['status'].str.upper() == 'ERROR')
+        ]
+    
+    # Combine both sources and remove duplicates
+    if len(error_scans_from_day_data) > 0 and len(error_scans_from_all) > 0:
+        # Both have data, combine and deduplicate
+        if 'id' in error_scans_from_day_data.columns and 'id' in error_scans_from_all.columns:
+            error_scans_created_today = pd.concat([error_scans_from_day_data, error_scans_from_all]).drop_duplicates(subset=['id'])
+        else:
+            error_scans_created_today = pd.concat([error_scans_from_day_data, error_scans_from_all]).drop_duplicates()
+    elif len(error_scans_from_day_data) > 0:
+        error_scans_created_today = error_scans_from_day_data
+    elif len(error_scans_from_all) > 0:
+        error_scans_created_today = error_scans_from_all
+    else:
+        error_scans_created_today = pd.DataFrame()
+    
+    failed_scans = len(error_scans_created_today) + len(other_initial)
+    
     metrics = {
         'period': str(date),
         'date': str(date),
@@ -370,7 +408,7 @@ def calculate_daily_metrics(day_data: pd.DataFrame, date, day_data_completed: pd
         'server_completed_scans': len(other_completed),
         'external_completed_scans': len(external_scans),
         'total_completed_scans': len(external_scans) + len(other_completed),
-        'failed_scans': len(day_data[day_data['status'] == 'ERROR']) + len(other_initial),
+        'failed_scans': failed_scans,
         'stuck_scans': stuck_scans,
         'recently_queued': recently_queued,
         'still_active_scans': len(other_started),
