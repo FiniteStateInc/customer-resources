@@ -152,13 +152,57 @@ class ReportEngine:
                     "Component Vulnerability Analysis",
                     "Executive Summary",
                     "Scan Analysis",
-                    "Findings by Project"
+                    "Findings by Project",
+                    "Component List",
+                    "User Activity"
                 ]:
                     from fs_report.models import QueryConfig, QueryParams
-                    if recipe.name == "Scan Analysis":
+                    if recipe.name == "User Activity":
+                        # Build filter for audit endpoint using its specific date format
+                        # Format: date=START,date=END (two separate date params)
+                        audit_filter = f"date={self.config.start_date}T00:00:00,date={self.config.end_date}T23:59:59"
+                        
+                        unified_query = QueryConfig(
+                            endpoint=recipe.query.endpoint,
+                            params=QueryParams(
+                                limit=recipe.query.params.limit,
+                                filter=audit_filter
+                            )
+                        )
+                        self.logger.info(f"Fetching audit events for {recipe.name} with filter: {audit_filter}")
+                        raw_data = self.api_client.fetch_all_with_resume(unified_query)
+                    elif recipe.name == "Scan Analysis":
                         # Apply project and version filtering to scans
                         scan_query = self._apply_scan_filters(recipe.query)
                         raw_data = self.api_client.fetch_all_with_resume(scan_query)
+                    elif recipe.name == "Component List":
+                        # Build filter for components endpoint (no date filter)
+                        filters = []
+                        if self.config.project_filter:
+                            try:
+                                project_id = int(self.config.project_filter)
+                                filters.append(f"project=={project_id}")
+                            except ValueError:
+                                filters.append(f"project=={self.config.project_filter}")
+                        
+                        if self.config.version_filter:
+                            try:
+                                version_id = int(self.config.version_filter)
+                                filters.append(f"projectVersion=={version_id}")
+                            except ValueError:
+                                filters.append(f"projectVersion=={self.config.version_filter}")
+                        
+                        combined_filter = ";".join(filters) if filters else None
+                        
+                        unified_query = QueryConfig(
+                            endpoint=recipe.query.endpoint,
+                            params=QueryParams(
+                                limit=recipe.query.params.limit,
+                                filter=combined_filter
+                            )
+                        )
+                        self.logger.info(f"Fetching components for {recipe.name} with filter: {combined_filter}")
+                        raw_data = self.api_client.fetch_all_with_resume(unified_query)
                     elif recipe.name in ["Component Vulnerability Analysis (Pandas)", "Component Vulnerability Analysis", "Executive Summary", "Findings by Project"]:
                         # Build consistent base filter for cache key matching
                         base_filter = "detected>=${start};detected<=${end}"
