@@ -98,6 +98,12 @@ poetry run fs-report list-projects
 # List available versions for a project
 poetry run fs-report list-versions "MyProject"
 
+# List all versions across the portfolio
+poetry run fs-report list-versions
+
+# List top 10 projects by version count
+poetry run fs-report list-versions -n 10
+
 # Specify custom recipes and output directories
 poetry run fs-report --recipes ./my-recipes --output ./my-reports
 
@@ -203,6 +209,11 @@ docker run --rm -e FINITE_STATE_AUTH_TOKEN \
 docker run --rm -e FINITE_STATE_AUTH_TOKEN \
            -e FINITE_STATE_DOMAIN \
            fs-report list-versions "MyProject"
+
+# List all versions across the portfolio
+docker run --rm -e FINITE_STATE_AUTH_TOKEN \
+           -e FINITE_STATE_DOMAIN \
+           fs-report list-versions
 ```
 
 ## Data Comparison Tools

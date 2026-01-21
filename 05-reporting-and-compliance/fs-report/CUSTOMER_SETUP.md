@@ -66,6 +66,12 @@ poetry run fs-report list-projects
 # List available versions for a project
 poetry run fs-report list-versions "MyProject"
 
+# List all versions across the portfolio
+poetry run fs-report list-versions
+
+# List top 10 projects by version count
+poetry run fs-report list-versions -n 10
+
 # Specify custom recipes and output directories
 poetry run fs-report --recipes ./my-recipes --output ./my-reports
 
@@ -83,18 +89,30 @@ Reports are generated in multiple formats:
 Example output structure:
 ```
 fs-reports/
-├── Executive_Summary.html
-├── Executive_Summary.csv
-├── Executive_Summary.xlsx
-├── Component_Vulnerability_Analysis.html
-├── Component_Vulnerability_Analysis.csv
-├── Component_Vulnerability_Analysis.xlsx
-├── Findings_by_Project.html
-├── Findings_by_Project.csv
-├── Findings_by_Project.xlsx
-├── Scan_Analysis.html
-├── Scan_Analysis.csv
-└── Scan_Analysis.xlsx
+├── Executive_Summary/
+│   ├── Executive_Summary.html
+│   ├── Executive_Summary.csv
+│   └── Executive_Summary.xlsx
+├── Component_Vulnerability_Analysis/
+│   ├── Component_Vulnerability_Analysis.html
+│   ├── Component_Vulnerability_Analysis.csv
+│   └── Component_Vulnerability_Analysis.xlsx
+├── Findings_by_Project/
+│   ├── Findings_by_Project.html
+│   ├── Findings_by_Project.csv
+│   └── Findings_by_Project.xlsx
+├── Scan_Analysis/
+│   ├── Scan_Analysis.html
+│   ├── Scan_Analysis.csv
+│   └── Scan_Analysis.xlsx
+├── Component_List/
+│   ├── Component_List.html
+│   ├── Component_List.csv
+│   └── Component_List.xlsx
+└── User_Activity/
+    ├── User_Activity.html
+    ├── User_Activity.csv
+    └── User_Activity.xlsx
 ```
 
 ## Performance Features

@@ -281,17 +281,16 @@ def list_projects(
 
 @app.command()
 def list_versions(
-    project: str = typer.Argument(
-        ...,
-        help="Project name or ID to list versions for",
+    project: Union[str, None] = typer.Argument(
+        None,
+        help="Project name or ID to list versions for (omit to list all versions across portfolio)",
     ),
-    limit: int = typer.Option(
-        50,
-        "--limit",
-        "-l",
-        help="Maximum number of versions to fetch (default: 50)",
-        min=1,
-        max=1000,
+    show_top: int = typer.Option(
+        0,
+        "--top",
+        "-n",
+        help="Only show top N projects by version count (0 = show all)",
+        min=0,
     ),
     recipes: Union[Path, None] = typer.Option(
         None,
@@ -321,7 +320,7 @@ def list_versions(
         help="Enable verbose logging",
     ),
 ) -> None:
-    """List all versions for a specific project."""
+    """List all versions for a specific project, or all versions across the portfolio."""
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
 
@@ -350,122 +349,243 @@ def list_versions(
             verbose=verbose,
         )
         
-        console.print(f"[bold cyan]Fetching versions for project: {project}[/bold cyan]")
-        
         from fs_report.api_client import APIClient
         from fs_report.models import QueryConfig, QueryParams
+        import httpx
         
         api_client = APIClient(config)
         
-        # First, get the project to verify it exists and get its ID
+        # Fetch all projects using pagination to get beyond 1000 limit
         projects_query = QueryConfig(
             endpoint="/public/v0/projects",
             params=QueryParams(limit=1000, archived=False)  # Exclude archived projects
         )
-        projects = api_client.fetch_data(projects_query)
+        projects = api_client.fetch_all_with_resume(projects_query)
         
-        # Find the project by name or ID
-        target_project = None
-        try:
-            # Try to parse as project ID first
-            project_id = int(project)
-            target_project = next((p for p in projects if p.get("id") == project_id), None)
-        except ValueError:
-            # Not an integer, search by name (case-insensitive)
-            target_project = next((p for p in projects if p.get("name", "").lower() == project.lower()), None)
-        
-        if not target_project:
-            console.print(f"[red]Error: Project '{project}' not found.[/red]")
-            console.print("[yellow]Use 'fs-report list-projects' to see available projects.[/yellow]")
-            raise typer.Exit(1)
-        
-        project_id = target_project["id"]
-        project_name = target_project["name"]
-        
-        console.print(f"[green]Found project: {project_name} (ID: {project_id})[/green]")
-        
-        # Get the default branch from the project data
-        default_branch = target_project.get("defaultBranch")
-        if not default_branch:
-            console.print(f"[yellow]No default branch found for project '{project_name}'.[/yellow]")
-            return
-        
-        branch_id = default_branch.get("id")
-        branch_name = default_branch.get("name", "Unknown")
-        
-        if not branch_id:
-            console.print(f"[yellow]No valid default branch found for project '{project_name}'.[/yellow]")
-            return
-        
-        console.print(f"[green]Using default branch: {branch_name} (ID: {branch_id})[/green]")
-        
-        # Now fetch versions for this project (using the new endpoint)
-        console.print(f"[dim]Fetching versions for project: {project_name}[/dim]")
-        try:
-            # Use the new project versions endpoint instead of the deprecated branch endpoint
-            url = f"https://{config.domain}/api/public/v0/projects/{project_id}/versions"
-            params = {"limit": str(limit)}
+        if project:
+            # Single project mode - existing behavior
+            console.print(f"[bold cyan]Fetching versions for project: {project}[/bold cyan]")
             
-            import httpx
+            # Find the project by name or ID
+            target_project = None
+            try:
+                # Try to parse as project ID first
+                project_id = int(project)
+                target_project = next((p for p in projects if p.get("id") == project_id), None)
+            except ValueError:
+                # Not an integer, search by name (case-insensitive)
+                target_project = next((p for p in projects if p.get("name", "").lower() == project.lower()), None)
+            
+            if not target_project:
+                console.print(f"[red]Error: Project '{project}' not found.[/red]")
+                console.print("[yellow]Use 'fs-report list-projects' to see available projects.[/yellow]")
+                raise typer.Exit(1)
+            
+            project_id = target_project["id"]
+            project_name = target_project["name"]
+            
+            console.print(f"[green]Found project: {project_name} (ID: {project_id})[/green]")
+            
+            # Get the default branch from the project data
+            default_branch = target_project.get("defaultBranch")
+            if not default_branch:
+                console.print(f"[yellow]No default branch found for project '{project_name}'.[/yellow]")
+                return
+            
+            branch_id = default_branch.get("id")
+            branch_name = default_branch.get("name", "Unknown")
+            
+            if not branch_id:
+                console.print(f"[yellow]No valid default branch found for project '{project_name}'.[/yellow]")
+                return
+            
+            console.print(f"[green]Using default branch: {branch_name} (ID: {branch_id})[/green]")
+            
+            # Now fetch versions for this project (using the new endpoint)
+            console.print(f"[dim]Fetching versions for project: {project_name}[/dim]")
+            try:
+                # Use the new project versions endpoint (returns all versions, no pagination)
+                url = f"https://{config.domain}/api/public/v0/projects/{project_id}/versions"
+                
+                headers = {"X-Authorization": config.auth_token}
+                
+                with httpx.Client(timeout=30.0) as client:
+                    response = client.get(url, headers=headers)
+                    response.raise_for_status()
+                    versions = response.json()
+                    
+                    if not isinstance(versions, list):
+                        versions = []
+                        
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    console.print(f"[red]Error: Rate limit exceeded while fetching versions for '{project_name}'.[/red]")
+                    console.print("[yellow]Please wait a moment and try again.[/yellow]")
+                elif e.response.status_code in (502, 503, 504):
+                    console.print(f"[red]Error: Server timeout (HTTP {e.response.status_code}) for '{project_name}'.[/red]")
+                else:
+                    console.print(f"[red]Error fetching versions: HTTP {e.response.status_code}[/red]")
+                raise typer.Exit(1) from e
+            except httpx.TimeoutException:
+                console.print(f"[red]Error: Request timeout for '{project_name}'.[/red]")
+                raise typer.Exit(1)
+            except Exception as e:
+                console.print(f"[red]Error fetching versions: {e}[/red]")
+                raise typer.Exit(1) from e
+            
+            if not versions:
+                console.print(f"[yellow]No versions found for project '{project_name}' in branch '{branch_name}'.[/yellow]")
+                return
+            
+            # Debug: Show the first version's structure
+            if versions and config.verbose:
+                console.print(f"[dim]Debug: First version structure: {versions[0]}[/dim]")
+            
+            # Create a rich table to display versions
+            table = Table(title=f"Versions for '{project_name}' - Branch: '{branch_name}' ({len(versions)} found)")
+            table.add_column("ID", style="cyan", no_wrap=True)
+            table.add_column("Name", style="green")
+            table.add_column("Created", style="dim")
+            
+            for version in versions:
+                version_id = version.get("id", "N/A")
+                version_name = version.get("version", "N/A")  # Use "version" field, not "name"
+                created = version.get("created", "N/A")
+                
+                # Format the created date if it exists
+                if created and created != "N/A":
+                    try:
+                        # Parse ISO date and format it nicely
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                        created = dt.strftime("%Y-%m-%d %H:%M")
+                    except:
+                        pass
+                
+                table.add_row(str(version_id), version_name, created)
+            
+            console.print(table)
+            
+            console.print(f"\n[dim]Use --version <ID> to filter reports to a specific version.[/dim]")
+        
+        else:
+            # Portfolio mode - list all versions across all projects
+            console.print("[bold cyan]Fetching versions across all projects...[/bold cyan]")
+            
+            if not projects:
+                console.print("[yellow]No projects found.[/yellow]")
+                return
+            
+            console.print(f"[dim]Found {len(projects)} projects. Fetching versions for each (this may take a while)...[/dim]")
+            
+            # Collect all versions with project info
+            import time
+            from tqdm import tqdm
+            
+            all_versions = []
+            project_version_counts = []
+            skipped_projects = []
             headers = {"X-Authorization": config.auth_token}
             
-            with httpx.Client() as client:
-                response = client.get(url, params=params, headers=headers)
-                response.raise_for_status()
-                versions = response.json()
-                
-                if not isinstance(versions, list):
-                    versions = []
+            # Rate limiting settings
+            request_delay = 0.1  # 100ms between requests to avoid rate limiting
+            rate_limit_backoff = 5.0  # seconds to wait after rate limit
+            max_retries = 3
+            
+            with httpx.Client(timeout=30.0) as client:
+                for proj in tqdm(projects, desc="Fetching versions", unit="project"):
+                    proj_id = proj.get("id")
+                    proj_name = proj.get("name", "Unknown")
                     
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                console.print(f"[red]Error: Rate limit exceeded while fetching versions for '{project_name}'.[/red]")
-                console.print("[yellow]Please wait a moment and try again, or use a smaller --limit value.[/yellow]")
-            else:
-                console.print(f"[red]Error fetching versions: HTTP {e.response.status_code}[/red]")
-            raise typer.Exit(1) from e
-        except Exception as e:
-            console.print(f"[red]Error fetching versions: {e}[/red]")
-            raise typer.Exit(1) from e
-        
-        if not versions:
-            console.print(f"[yellow]No versions found for project '{project_name}' in branch '{branch_name}'.[/yellow]")
-            return
-        
-        # Debug: Show the first version's structure
-        if versions and config.verbose:
-            console.print(f"[dim]Debug: First version structure: {versions[0]}[/dim]")
-        
-        # Create a rich table to display versions
-        table = Table(title=f"Versions for '{project_name}' - Branch: '{branch_name}' ({len(versions)} found)")
-        table.add_column("ID", style="cyan", no_wrap=True)
-        table.add_column("Name", style="green")
-        table.add_column("Created", style="dim")
-        
-        for version in versions:
-            version_id = version.get("id", "N/A")
-            version_name = version.get("version", "N/A")  # Use "version" field, not "name"
-            created = version.get("created", "N/A")
+                    # Retry logic for rate limiting
+                    for attempt in range(max_retries):
+                        try:
+                            url = f"https://{config.domain}/api/public/v0/projects/{proj_id}/versions"
+                            
+                            response = client.get(url, headers=headers)
+                            response.raise_for_status()
+                            versions = response.json()
+                            
+                            if not isinstance(versions, list):
+                                versions = []
+                            
+                            version_count = len(versions)
+                            project_version_counts.append({
+                                "project_name": proj_name,
+                                "project_id": proj_id,
+                                "version_count": version_count,
+                            })
+                            
+                            # Add project info to each version
+                            for v in versions:
+                                v["_project_name"] = proj_name
+                                v["_project_id"] = proj_id
+                                all_versions.append(v)
+                            
+                            # Small delay to avoid rate limiting
+                            time.sleep(request_delay)
+                            break  # Success, exit retry loop
+                                
+                        except httpx.HTTPStatusError as e:
+                            if e.response.status_code == 429:
+                                if attempt < max_retries - 1:
+                                    # Rate limited - wait and retry
+                                    time.sleep(rate_limit_backoff * (attempt + 1))
+                                    continue
+                                else:
+                                    skipped_projects.append(proj_name)
+                            elif e.response.status_code in (502, 503, 504):
+                                if attempt < max_retries - 1:
+                                    time.sleep(2.0)  # Brief wait for server errors
+                                    continue
+                                else:
+                                    skipped_projects.append(proj_name)
+                            else:
+                                skipped_projects.append(proj_name)
+                                break  # Don't retry other errors
+                        except httpx.TimeoutException:
+                            if attempt < max_retries - 1:
+                                continue
+                            else:
+                                skipped_projects.append(proj_name)
+                        except Exception as e:
+                            skipped_projects.append(proj_name)
+                            break
             
-            # Format the created date if it exists
-            if created and created != "N/A":
-                try:
-                    # Parse ISO date and format it nicely
-                    from datetime import datetime
-                    dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
-                    created = dt.strftime("%Y-%m-%d %H:%M")
-                except:
-                    pass
+            # Display summary table
+            total_versions = sum(p["version_count"] for p in project_version_counts)
+            projects_with_versions = sum(1 for p in project_version_counts if p["version_count"] > 0)
             
-            table.add_row(str(version_id), version_name, created)
-        
-        console.print(table)
-        
-        if len(versions) >= limit:
-            console.print(f"\n[yellow]Note: Showing first {limit} versions. This branch may have more versions.[/yellow]")
-            console.print("[yellow]Use --limit to fetch more versions (e.g., --limit 100).[/yellow]")
-        
-        console.print(f"\n[dim]Use --project '{project_name}' and version ID to filter reports.[/dim]")
+            console.print(f"\n[bold green]Portfolio Summary: {total_versions} versions across {projects_with_versions} projects[/bold green]")
+            if skipped_projects:
+                console.print(f"[yellow]({len(skipped_projects)} project(s) skipped due to errors)[/yellow]")
+            
+            # Sort by version count descending
+            project_version_counts.sort(key=lambda x: x["version_count"], reverse=True)
+            
+            # Apply --top filter if specified
+            display_counts = project_version_counts
+            if show_top > 0:
+                display_counts = project_version_counts[:show_top]
+            
+            # Create summary table
+            title = f"Versions by Project ({len(project_version_counts)} projects)"
+            if show_top > 0 and len(project_version_counts) > show_top:
+                title = f"Top {show_top} Projects by Version Count (of {len(project_version_counts)} total)"
+            table = Table(title=title)
+            table.add_column("Project", style="cyan")
+            table.add_column("Versions", style="green", justify="right")
+            table.add_column("Project ID", style="dim")
+            
+            for pvc in display_counts:
+                table.add_row(pvc["project_name"], str(pvc["version_count"]), str(pvc["project_id"]))
+            
+            console.print(table)
+            
+            if show_top > 0 and len(project_version_counts) > show_top:
+                console.print(f"\n[dim]Showing top {show_top} of {len(project_version_counts)} projects. Remove --top to see all.[/dim]")
+            
+            console.print(f"\n[dim]Use 'fs-report list-versions <project>' to see detailed versions for a specific project.[/dim]")
 
     except Exception as e:
         logger.exception("Error fetching versions")

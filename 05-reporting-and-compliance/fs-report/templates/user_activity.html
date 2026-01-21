@@ -1,0 +1,349 @@
+{% extends "base.html" %}
+
+{% block content %}
+<!-- Summary Statistics -->
+<div class="chart-container">
+    <h2>User Activity Summary</h2>
+    <p>Activity overview for the reporting period</p>
+    
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 20px 0;">
+        <!-- Total Events Card -->
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 12px; text-align: center;">
+            <div style="font-size: 2.5em; font-weight: bold;">{{ summary.total_events|default(0) }}</div>
+            <div style="font-size: 0.9em; opacity: 0.9;">Total Events</div>
+        </div>
+        
+        <!-- Unique Users Card -->
+        <div style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); color: white; padding: 20px; border-radius: 12px; text-align: center;">
+            <div style="font-size: 2.5em; font-weight: bold;">{{ summary.unique_users|default(0) }}</div>
+            <div style="font-size: 0.9em; opacity: 0.9;">Unique Users</div>
+        </div>
+        
+        <!-- Days with Activity Card -->
+        <div style="background: linear-gradient(135deg, #fc4a1a 0%, #f7b733 100%); color: white; padding: 20px; border-radius: 12px; text-align: center;">
+            <div style="font-size: 2.5em; font-weight: bold;">{{ summary.active_days|default(0) }}</div>
+            <div style="font-size: 0.9em; opacity: 0.9;">Days with Activity</div>
+        </div>
+        
+        <!-- Avg Daily Users Card -->
+        <div style="background: linear-gradient(135deg, #5c258d 0%, #4389a2 100%); color: white; padding: 20px; border-radius: 12px; text-align: center;">
+            <div style="font-size: 2.5em; font-weight: bold;">{{ "%.1f"|format(summary.avg_daily_users|default(0)) }}</div>
+            <div style="font-size: 0.9em; opacity: 0.9;">Avg Daily Users</div>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Section -->
+{% if daily_logins and daily_logins|length > 0 %}
+<div class="chart-container">
+    <h3>Active Users Over Time</h3>
+    <p>Daily unique active users and total events</p>
+    <canvas id="loginsChart" style="max-height: 300px;"></canvas>
+</div>
+{% endif %}
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px;">
+    {% if activity_by_type and activity_by_type|length > 0 %}
+    <div class="chart-container">
+        <h3>Activity Breakdown by Type</h3>
+        <p>Distribution of event types</p>
+        <canvas id="activityPieChart" style="max-height: 300px;"></canvas>
+    </div>
+    {% endif %}
+    
+    {% if top_users and top_users|length > 0 %}
+    <div class="chart-container">
+        <h3>Most Active Users</h3>
+        <p>Top users by total activity count</p>
+        <canvas id="topUsersChart" style="max-height: 300px;"></canvas>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Top Users Table -->
+{% if top_users and top_users|length > 0 %}
+<div class="table-container">
+    <h2>Top Active Users</h2>
+    <p>Users ranked by total activity</p>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Rank</th>
+                <th>User</th>
+                <th>Total Actions</th>
+                <th>Days Active</th>
+                <th>Event Types</th>
+                <th>Last Active</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in top_users %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ row['User'] }}</td>
+                <td>
+                    <span style="
+                        font-weight: bold;
+                        padding: 2px 8px;
+                        border-radius: 4px;
+                        {% if row.get('Total Actions', 0) >= 100 %}
+                            background-color: #e8f5e9; color: #2e7d32;
+                        {% elif row.get('Total Actions', 0) >= 50 %}
+                            background-color: #e3f2fd; color: #1565c0;
+                        {% elif row.get('Total Actions', 0) >= 10 %}
+                            background-color: #fff3e0; color: #ef6c00;
+                        {% else %}
+                            background-color: #f5f5f5; color: #616161;
+                        {% endif %}
+                    ">
+                        {{ row['Total Actions'] }}
+                    </span>
+                </td>
+                <td>{{ row['Logins'] }}</td>
+                <td>{{ row['Event Types'] }}</td>
+                <td>{{ row['Last Active'] }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Activity by Type Table -->
+{% if activity_by_type and activity_by_type|length > 0 %}
+<div class="table-container">
+    <h2>Activity by Event Type</h2>
+    <p>Breakdown of events by type</p>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Event Type</th>
+                <th>Count</th>
+                <th>Percentage</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in activity_by_type %}
+            <tr>
+                <td>
+                    <span style="
+                        padding: 2px 8px;
+                        border-radius: 4px;
+                        font-size: 0.9em;
+                        {% if 'Login' in row.get('Event Type', '') %}
+                            background-color: #e3f2fd; color: #1565c0;
+                        {% elif 'Create' in row.get('Event Type', '') %}
+                            background-color: #e8f5e9; color: #2e7d32;
+                        {% elif 'Delete' in row.get('Event Type', '') or 'Remove' in row.get('Event Type', '') %}
+                            background-color: #ffebee; color: #c62828;
+                        {% elif 'Update' in row.get('Event Type', '') or 'Edit' in row.get('Event Type', '') %}
+                            background-color: #fff3e0; color: #ef6c00;
+                        {% else %}
+                            background-color: #f5f5f5; color: #616161;
+                        {% endif %}
+                    ">
+                        {{ row['Event Type'] }}
+                    </span>
+                </td>
+                <td>{{ row['Count'] }}</td>
+                <td>{{ "%.1f"|format(row['Percentage']) }}%</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Recent Activity Table -->
+<div class="table-container">
+    <h2>Recent Activity</h2>
+    <p>Latest user actions (most recent first)</p>
+    
+    {% if data %}
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>User</th>
+                <th>Event Type</th>
+                <th>Project</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in data[:100] %}
+            <tr>
+                <td style="white-space: nowrap;">{{ row['Time'] }}</td>
+                <td>{{ row['User'] }}</td>
+                <td>
+                    <span style="
+                        padding: 2px 8px;
+                        border-radius: 4px;
+                        font-size: 0.85em;
+                        {% if 'Login' in row.get('Event Type', '') %}
+                            background-color: #e3f2fd; color: #1565c0;
+                        {% elif 'Create' in row.get('Event Type', '') %}
+                            background-color: #e8f5e9; color: #2e7d32;
+                        {% elif 'Delete' in row.get('Event Type', '') or 'Remove' in row.get('Event Type', '') %}
+                            background-color: #ffebee; color: #c62828;
+                        {% elif 'Update' in row.get('Event Type', '') or 'Edit' in row.get('Event Type', '') %}
+                            background-color: #fff3e0; color: #ef6c00;
+                        {% else %}
+                            background-color: #f5f5f5; color: #616161;
+                        {% endif %}
+                    ">
+                        {{ row['Event Type'] }}
+                    </span>
+                </td>
+                <td>{{ row['Project'] if row['Project'] else '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% if data|length > 100 %}
+    <p style="text-align: center; color: #666; margin-top: 10px;">
+        Showing first 100 of {{ data|length }} events. Export to CSV/XLSX for full data.
+    </p>
+    {% endif %}
+    {% else %}
+    <div style="text-align: center; padding: 40px; color: #666; font-style: italic;">
+        <h3>No activity found</h3>
+        <p>No user activity matches the current criteria.</p>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Chart.js Scripts -->
+<script>
+{% if daily_logins and daily_logins|length > 0 %}
+// Active Users Over Time Chart (dual Y-axis)
+const loginsCtx = document.getElementById('loginsChart').getContext('2d');
+new Chart(loginsCtx, {
+    type: 'line',
+    data: {
+        labels: [{% for row in daily_logins %}'{{ row["Date"] }}'{% if not loop.last %}, {% endif %}{% endfor %}],
+        datasets: [{
+            label: 'Active Users',
+            data: [{% for row in daily_logins %}{{ row["Unique Users"] }}{% if not loop.last %}, {% endif %}{% endfor %}],
+            borderColor: '#667eea',
+            backgroundColor: 'rgba(102, 126, 234, 0.2)',
+            fill: true,
+            tension: 0.3,
+            yAxisID: 'y',
+            borderWidth: 3
+        }, {
+            label: 'Total Events',
+            data: [{% for row in daily_logins %}{{ row["Total Logins"] }}{% if not loop.last %}, {% endif %}{% endfor %}],
+            borderColor: '#38ef7d',
+            backgroundColor: 'rgba(56, 239, 125, 0.1)',
+            fill: false,
+            tension: 0.3,
+            yAxisID: 'y1',
+            borderWidth: 2,
+            borderDash: [5, 5]
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        interaction: {
+            mode: 'index',
+            intersect: false
+        },
+        plugins: {
+            legend: { position: 'top' }
+        },
+        scales: {
+            y: {
+                type: 'linear',
+                display: true,
+                position: 'left',
+                beginAtZero: true,
+                title: {
+                    display: true,
+                    text: 'Active Users',
+                    color: '#667eea'
+                },
+                ticks: {
+                    color: '#667eea'
+                },
+                grid: {
+                    drawOnChartArea: true
+                }
+            },
+            y1: {
+                type: 'linear',
+                display: true,
+                position: 'right',
+                beginAtZero: true,
+                title: {
+                    display: true,
+                    text: 'Total Events',
+                    color: '#38ef7d'
+                },
+                ticks: {
+                    color: '#38ef7d'
+                },
+                grid: {
+                    drawOnChartArea: false
+                }
+            }
+        }
+    }
+});
+{% endif %}
+
+{% if activity_by_type and activity_by_type|length > 0 %}
+// Activity Pie Chart
+const pieCtx = document.getElementById('activityPieChart').getContext('2d');
+new Chart(pieCtx, {
+    type: 'pie',
+    data: {
+        labels: [{% for row in activity_by_type[:10] %}'{{ row["Event Type"] }}'{% if not loop.last %}, {% endif %}{% endfor %}],
+        datasets: [{
+            data: [{% for row in activity_by_type[:10] %}{{ row["Count"] }}{% if not loop.last %}, {% endif %}{% endfor %}],
+            backgroundColor: [
+                '#667eea', '#38ef7d', '#fc4a1a', '#f7b733', '#5c258d',
+                '#4389a2', '#11998e', '#764ba2', '#e74c3c', '#3498db'
+            ]
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+            legend: { position: 'right' }
+        }
+    }
+});
+{% endif %}
+
+{% if top_users and top_users|length > 0 %}
+// Top Users Bar Chart
+const barCtx = document.getElementById('topUsersChart').getContext('2d');
+new Chart(barCtx, {
+    type: 'bar',
+    data: {
+        labels: [{% for row in top_users[:10] %}'{{ row["User"][:20] }}{% if row["User"]|length > 20 %}...{% endif %}'{% if not loop.last %}, {% endif %}{% endfor %}],
+        datasets: [{
+            label: 'Total Actions',
+            data: [{% for row in top_users[:10] %}{{ row["Total Actions"] }}{% if not loop.last %}, {% endif %}{% endfor %}],
+            backgroundColor: '#667eea'
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        indexAxis: 'y',
+        plugins: {
+            legend: { display: false }
+        },
+        scales: {
+            x: { beginAtZero: true }
+        }
+    }
+});
+{% endif %}
+</script>
+{% endblock %}
