@@ -9,21 +9,28 @@ from typing import Any, Dict, List, Optional
 from fs_report.models import Config
 
 
-def scan_analysis_transform(data: List[Dict[str, Any]], config: Optional[Config] = None) -> Dict[str, pd.DataFrame]:
+def scan_analysis_transform(data: List[Dict[str, Any]], config: Optional[Config] = None, additional_data: Optional[Dict[str, Any]] = None) -> Dict[str, pd.DataFrame]:
     """
     Transform scan data for the Scan Analysis report.
     
     Args:
         data: Raw scan data from API
         config: Configuration object with start_date and end_date for filtering
+        additional_data: Optional dict containing 'projects' list for new vs existing analysis
     
     Returns:
-        Dictionary with two DataFrames:
+        Dictionary with DataFrames:
         - 'daily_metrics': Daily aggregated scan metrics
         - 'raw_data': All individual scans with metadata
+        - 'failure_types': Failure distribution by scan type
     """
     if not data:
         return pd.DataFrame()
+    
+    # Extract project data if available (for new vs existing analysis)
+    projects_data = None
+    if additional_data and 'projects' in additional_data:
+        projects_data = additional_data['projects']
     
     # Convert to DataFrame
     df = pd.DataFrame(data)
@@ -95,20 +102,34 @@ def scan_analysis_transform(data: List[Dict[str, Any]], config: Optional[Config]
     if df.empty:
         return pd.DataFrame()
     
+    # Build project creation date lookup if we have project data
+    project_created_map = {}
+    if projects_data:
+        for p in projects_data:
+            pid = str(p.get('id', ''))
+            created = p.get('created')
+            if pid and created:
+                project_created_map[pid] = created
+    
     # Flatten nested data structures
-    df = flatten_scan_data(df)
+    df = flatten_scan_data(df, project_created_map)
     
     # Parse timestamps and calculate durations
     df = calculate_scan_durations(df)
     
-    # Generate analysis metrics
-    result_df = generate_scan_metrics(df)
+    # Generate analysis metrics (pass config for date range context)
+    result_df = generate_scan_metrics(df, config)
     
     return result_df
 
 
-def flatten_scan_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Flatten nested project and projectVersion data."""
+def flatten_scan_data(df: pd.DataFrame, project_created_map: Optional[Dict[str, str]] = None) -> pd.DataFrame:
+    """Flatten nested project and projectVersion data.
+    
+    Args:
+        df: DataFrame with scan data
+        project_created_map: Optional dict mapping project_id -> created timestamp
+    """
     df_flattened = df.copy()
     
     # Flatten project data
@@ -125,12 +146,25 @@ def flatten_scan_data(df: pd.DataFrame) -> pd.DataFrame:
         
         df_flattened['project_name'] = df['project'].apply(extract_project_name)
         df_flattened['project_id'] = df['project'].apply(extract_project_id)
+        
+        # Add project creation date if we have the mapping
+        if project_created_map:
+            def get_project_created(project):
+                if isinstance(project, dict):
+                    pid = str(project.get('id', ''))
+                else:
+                    pid = str(project) if project else ''
+                return project_created_map.get(pid)
+            
+            df_flattened['project_created'] = df['project'].apply(get_project_created)
     
     # Flatten projectVersion data
+    # Note: The API returns 'version' field (not 'name') for the version label
     if 'projectVersion' in df.columns:
         def extract_version_name(version):
             if isinstance(version, dict):
-                return version.get('name', 'Unknown')
+                # API uses 'version' field for the version name/label
+                return version.get('version', 'Unknown')
             return str(version) if version else 'Unknown'
         
         df_flattened['version_name'] = df['projectVersion'].apply(extract_version_name)
@@ -197,8 +231,13 @@ def calculate_scan_durations(df: pd.DataFrame) -> pd.DataFrame:
     return df_with_durations
 
 
-def generate_scan_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """Generate comprehensive scan analysis metrics."""
+def generate_scan_metrics(df: pd.DataFrame, config: Optional[Config] = None) -> pd.DataFrame:
+    """Generate comprehensive scan analysis metrics.
+    
+    Args:
+        df: DataFrame with scan data (already flattened with project_created column if available)
+        config: Configuration object with start_date for new vs existing project analysis
+    """
     
     # Group by date for time series analysis
     daily_metrics = []
@@ -221,6 +260,11 @@ def generate_scan_metrics(df: pd.DataFrame) -> pd.DataFrame:
         min_date = min_created
         max_date = max_created
     
+    # Determine report start date for new vs existing analysis
+    report_start_date = None
+    if config and hasattr(config, 'start_date') and config.start_date:
+        report_start_date = pd.to_datetime(config.start_date).date()
+    
     # Generate daily metrics
     current_date = min_date
     while current_date <= max_date:
@@ -242,7 +286,7 @@ def generate_scan_metrics(df: pd.DataFrame) -> pd.DataFrame:
             # But pass completed scans separately for completion counts
             # Also pass all_scans so we can find failed scans that may have been created on different dates
             day_data = day_data_created.copy() if len(day_data_created) > 0 else day_data_completed.head(0).copy()
-            metrics = calculate_daily_metrics(day_data, current_date, day_data_completed, all_scans=df)
+            metrics = calculate_daily_metrics(day_data, current_date, day_data_completed, all_scans=df, report_start_date=report_start_date)
             daily_metrics.append(metrics)
         
         current_date += timedelta(days=1)
@@ -257,7 +301,7 @@ def generate_scan_metrics(df: pd.DataFrame) -> pd.DataFrame:
     queue_data = analyze_current_queue(df)
     
     # Add overall summary row
-    summary_row = calculate_summary_metrics(df)
+    summary_row = calculate_summary_metrics(df, report_start_date)
     summary_row['period'] = 'Overall Summary'
     summary_row['date'] = 'Total'
     
@@ -266,6 +310,17 @@ def generate_scan_metrics(df: pd.DataFrame) -> pd.DataFrame:
     
     # Convert date column to strings for JSON serialization
     result_df['date'] = result_df['date'].astype(str)
+    
+    # Calculate failure type distribution (ERROR scans by type)
+    error_scans = df[df['status'] == 'ERROR']
+    initial_scans = df[(df['status'] == 'INITIAL') & (~df['type'].isin(['SOURCE_SCA', 'JAR', 'SBOM_IMPORT']))]
+    failed_scans = pd.concat([error_scans, initial_scans])
+    
+    failure_type_counts = failed_scans['type'].value_counts().to_dict() if len(failed_scans) > 0 else {}
+    failure_types_df = pd.DataFrame([
+        {'type': scan_type, 'count': count}
+        for scan_type, count in failure_type_counts.items()
+    ]) if failure_type_counts else pd.DataFrame(columns=['type', 'count'])
     
     # Prepare raw scan data for the detailed table
     raw_data_df = df.copy()
@@ -301,20 +356,24 @@ def generate_scan_metrics(df: pd.DataFrame) -> pd.DataFrame:
     # Select and order columns for the raw data export
     raw_data_columns = [
         'id', 'scan_date', 'completion_date', 'status', 'type', 
-        'project_name', 'duration_minutes', 'current_status_time_minutes', 'errorMessage'
+        'project_name', 'version_name', 'duration_minutes', 'current_status_time_minutes', 'errorMessage'
     ]
     
     # Only include columns that exist
     available_columns = [col for col in raw_data_columns if col in raw_data_df.columns]
     raw_data_df = raw_data_df[available_columns]
     
+    # Convert failure_types to list of dicts for template rendering
+    failure_types_list = failure_types_df.to_dict(orient='records') if len(failure_types_df) > 0 else []
+    
     return {
         'daily_metrics': result_df,
-        'raw_data': raw_data_df
+        'raw_data': raw_data_df,
+        'failure_types': failure_types_list
     }
 
 
-def calculate_daily_metrics(day_data: pd.DataFrame, date, day_data_completed: pd.DataFrame = None, all_scans: pd.DataFrame = None) -> Dict[str, Any]:
+def calculate_daily_metrics(day_data: pd.DataFrame, date, day_data_completed: pd.DataFrame = None, all_scans: pd.DataFrame = None, report_start_date = None) -> Dict[str, Any]:
     """Calculate metrics for a single day.
     
     Args:
@@ -322,6 +381,7 @@ def calculate_daily_metrics(day_data: pd.DataFrame, date, day_data_completed: pd
         date: The date being analyzed
         day_data_completed: Scans that were completed on this date (for completion counts)
         all_scans: All scans in the dataset (for finding failed scans that may have been created on different dates)
+        report_start_date: Report start date for determining new vs existing projects
     """
     # For historical analysis, distinguish between scans that are truly stuck vs recently created
     # SOURCE_SCA scans are completed locally and uploaded - treat as instantly completed
@@ -401,10 +461,44 @@ def calculate_daily_metrics(day_data: pd.DataFrame, date, day_data_completed: pd
     
     failed_scans = len(error_scans_created_today) + len(other_initial)
     
+    # Count unique artifacts for this day
+    unique_projects = day_data['project_id'].nunique() if 'project_id' in day_data.columns else 0
+    if 'projectVersion' in day_data.columns:
+        version_ids = day_data['projectVersion'].dropna().apply(
+            lambda x: x.get('id') if isinstance(x, dict) else x
+        )
+        unique_versions = version_ids.nunique()
+    else:
+        unique_versions = 0
+    
+    # Calculate new vs existing projects based on project_created date
+    new_projects = 0
+    existing_projects = 0
+    if 'project_id' in day_data.columns and 'project_created' in day_data.columns and report_start_date:
+        # Get unique projects for this day with their creation dates
+        project_info = day_data[['project_id', 'project_created']].drop_duplicates(subset=['project_id'])
+        for _, row in project_info.iterrows():
+            project_created = row.get('project_created')
+            if pd.notna(project_created):
+                try:
+                    created_date = pd.to_datetime(project_created).date()
+                    if created_date >= report_start_date:
+                        new_projects += 1
+                    else:
+                        existing_projects += 1
+                except:
+                    existing_projects += 1  # Assume existing if we can't parse date
+            else:
+                existing_projects += 1  # No date means we don't know, assume existing
+    
     metrics = {
         'period': str(date),
         'date': str(date),
         'total_scans_started': len(day_data),
+        'unique_projects': unique_projects,
+        'new_projects': new_projects,
+        'existing_projects': existing_projects,
+        'unique_versions': unique_versions,
         'server_completed_scans': len(other_completed),
         'external_completed_scans': len(external_scans),
         'total_completed_scans': len(external_scans) + len(other_completed),
@@ -504,8 +598,13 @@ def calculate_daily_metrics(day_data: pd.DataFrame, date, day_data_completed: pd
     return metrics
 
 
-def calculate_summary_metrics(df: pd.DataFrame) -> Dict[str, Any]:
-    """Calculate overall summary metrics."""
+def calculate_summary_metrics(df: pd.DataFrame, report_start_date = None) -> Dict[str, Any]:
+    """Calculate overall summary metrics.
+    
+    Args:
+        df: DataFrame with scan data
+        report_start_date: Report start date for determining new vs existing projects
+    """
     # For historical analysis, distinguish between scans that are truly stuck vs recently created
     # SOURCE_SCA scans are completed locally and uploaded - treat as instantly completed
     from datetime import datetime, timedelta
@@ -536,8 +635,41 @@ def calculate_summary_metrics(df: pd.DataFrame) -> Dict[str, Any]:
         (other_scans['completed'] != '-')
     ]
     
+    # Count unique artifacts overall
+    unique_projects = df['project_id'].nunique() if 'project_id' in df.columns else 0
+    if 'projectVersion' in df.columns:
+        version_ids = df['projectVersion'].dropna().apply(
+            lambda x: x.get('id') if isinstance(x, dict) else x
+        )
+        unique_versions = version_ids.nunique()
+    else:
+        unique_versions = 0
+    
+    # Calculate new vs existing projects overall
+    new_projects = 0
+    existing_projects = 0
+    if 'project_id' in df.columns and 'project_created' in df.columns and report_start_date:
+        project_info = df[['project_id', 'project_created']].drop_duplicates(subset=['project_id'])
+        for _, row in project_info.iterrows():
+            project_created = row.get('project_created')
+            if pd.notna(project_created):
+                try:
+                    created_date = pd.to_datetime(project_created).date()
+                    if created_date >= report_start_date:
+                        new_projects += 1
+                    else:
+                        existing_projects += 1
+                except:
+                    existing_projects += 1
+            else:
+                existing_projects += 1
+    
     summary = {
         'total_scans_started': len(df),
+        'unique_projects': unique_projects,
+        'new_projects': new_projects,
+        'existing_projects': existing_projects,
+        'unique_versions': unique_versions,
         'server_completed_scans': len(other_completed),
         'external_completed_scans': len(external_scans),
         'total_completed_scans': len(external_scans) + len(other_completed),

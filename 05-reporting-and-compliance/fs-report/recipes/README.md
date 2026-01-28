@@ -9,7 +9,7 @@ This directory contains YAML recipe files that define the available reports in t
 | `executive_summary.yaml` | Executive Summary | High-level security dashboard with KPIs and trends |
 | `component_vulnerability_analysis.yaml` | Component Vulnerability Analysis | Portfolio-wide component risk analysis with Pareto charts |
 | `findings_by_project.yaml` | Findings by Project | Comprehensive inventory of security findings by project |
-| `scan_analysis.yaml` | Scan Analysis | Scanning infrastructure performance and throughput metrics |
+| `scan_analysis.yaml` | Scan Analysis | Scanning infrastructure performance with throughput, failure analysis, and new vs existing project tracking |
 | `component_list.yaml` | Component List | Complete inventory of software components across projects |
 | `user_activity.yaml` | User Activity | Platform usage tracking with user engagement metrics |
 

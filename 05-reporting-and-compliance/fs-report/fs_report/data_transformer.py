@@ -954,11 +954,15 @@ class DataTransformer:
             
             # Try different calling patterns based on function signature
             try:
-                # First try with config parameter only (newer style)
-                result = transform_func(data_list, config=additional_data.get('config'))
+                # First try with config and additional_data (newest style for transforms needing extra data)
+                result = transform_func(data_list, config=additional_data.get('config'), additional_data=additional_data)
             except TypeError:
-                # Fallback to older style without config
-                result = transform_func(data_list)
+                try:
+                    # Try with config parameter only (standard style)
+                    result = transform_func(data_list, config=additional_data.get('config'))
+                except TypeError:
+                    # Fallback to older style without config
+                    result = transform_func(data_list)
             
             # Handle both DataFrame and dictionary returns
             if isinstance(result, dict):

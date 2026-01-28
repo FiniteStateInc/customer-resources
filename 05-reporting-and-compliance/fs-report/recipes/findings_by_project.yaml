@@ -12,7 +12,7 @@ query:
 project_list_query:
   endpoint: "/public/v0/projects"
   params:
-    limit: 1000
+    limit: 10000
     archived: false
 
 transform_function: findings_by_project_pandas_transform
