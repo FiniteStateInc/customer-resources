@@ -175,6 +175,21 @@ class ReportEngine:
                         # Apply project and version filtering to scans
                         scan_query = self._apply_scan_filters(recipe.query)
                         raw_data = self.api_client.fetch_all_with_resume(scan_query)
+                        
+                        # Fetch project data for new vs existing analysis
+                        # Store in a variable that will be added to additional_data later
+                        self._scan_analysis_project_data = None
+                        if hasattr(recipe, 'project_list_query') and recipe.project_list_query:
+                            self.logger.info("Fetching project data for Scan Analysis")
+                            project_query = QueryConfig(
+                                endpoint=recipe.project_list_query.endpoint,
+                                params=QueryParams(
+                                    limit=recipe.project_list_query.params.limit,
+                                    offset=0
+                                )
+                            )
+                            self._scan_analysis_project_data = self.api_client.fetch_all_with_resume(project_query)
+                            self.logger.info(f"Fetched {len(self._scan_analysis_project_data)} projects for new/existing analysis")
                     elif recipe.name == "Component List":
                         # Build filter for components endpoint (no date filter)
                         filters = []
@@ -298,6 +313,10 @@ class ReportEngine:
             additional_data: dict[str, Any] = {}
             # Add config for pandas transform functions
             additional_data['config'] = self.config
+            
+            # Add project data for Scan Analysis (for new vs existing analysis)
+            if recipe.name == "Scan Analysis" and hasattr(self, '_scan_analysis_project_data') and self._scan_analysis_project_data:
+                additional_data['projects'] = self._scan_analysis_project_data
             if recipe.additional_queries:
                 for query_name, query_config in recipe.additional_queries.items():
                     self.logger.debug(f"Fetching additional data for {query_name}")

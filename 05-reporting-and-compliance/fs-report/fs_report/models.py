@@ -237,6 +237,9 @@ class Recipe(BaseModel):
     description: str | None = Field(None, description="Recipe description")
     parameters: dict[str, Any] | None = Field(None, description="Recipe parameters for customization")
     query: QueryConfig = Field(..., description="API query configuration")
+    project_list_query: QueryConfig | None = Field(
+        None, description="Query for fetching project data (for new vs existing analysis)"
+    )
     additional_queries: dict[str, QueryConfig] | None = Field(
         None, description="Additional queries for multiple charts"
     )

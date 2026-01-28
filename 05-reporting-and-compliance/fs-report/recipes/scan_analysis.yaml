@@ -8,6 +8,12 @@ query:
     sort: "created:asc"
     limit: 100
 
+project_list_query:
+  endpoint: "/public/v0/projects"
+  params:
+    limit: 10000
+    archived: false
+
 transform_function: scan_analysis_transform
 
 output:
@@ -32,6 +38,11 @@ output:
       chart: pie
       title: "Scan Type Distribution"
       description: "Distribution of scan types (SCA, SAST, CONFIG)"
+    
+    - name: "failure_types"
+      chart: pie
+      title: "Failure Type Distribution"
+      description: "Distribution of failed scans by scan type"
     
     - name: "queue_vs_processing"
       chart: bar
