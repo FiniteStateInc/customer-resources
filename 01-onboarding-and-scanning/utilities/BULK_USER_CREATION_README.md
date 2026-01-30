@@ -22,7 +22,7 @@ The CSV file should have the following columns:
 |------------|----------|-----------------------------------------------------------|
 | email      | Yes      | User's email address (used for both email and userId)    |
 | role       | No       | Organization role (see valid roles below)                 |
-| groups     | No       | Pipe-separated (`|`) or semicolon-separated (`;`) groups (case-sensitive) |
+| groups     | No       | Pipe-separated ('|') or semicolon-separated (';') groups (case-sensitive) |
 | first_name | No       | User's first name                                         |
 | last_name  | No       | User's last name                                          |
 
