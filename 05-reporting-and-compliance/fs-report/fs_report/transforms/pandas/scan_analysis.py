@@ -260,10 +260,13 @@ def generate_scan_metrics(df: pd.DataFrame, config: Optional[Config] = None) -> 
         min_date = min_created
         max_date = max_created
     
-    # Determine report start date for new vs existing analysis
+    # Determine report date range for filtering and new vs existing analysis
     report_start_date = None
+    report_end_date = None
     if config and hasattr(config, 'start_date') and config.start_date:
         report_start_date = pd.to_datetime(config.start_date).date()
+    if config and hasattr(config, 'end_date') and config.end_date:
+        report_end_date = pd.to_datetime(config.end_date).date()
     
     # Generate daily metrics
     current_date = min_date
@@ -301,7 +304,7 @@ def generate_scan_metrics(df: pd.DataFrame, config: Optional[Config] = None) -> 
     queue_data = analyze_current_queue(df)
     
     # Add overall summary row
-    summary_row = calculate_summary_metrics(df, report_start_date)
+    summary_row = calculate_summary_metrics(df, report_start_date, report_end_date)
     summary_row['period'] = 'Overall Summary'
     summary_row['date'] = 'Total'
     
@@ -311,9 +314,25 @@ def generate_scan_metrics(df: pd.DataFrame, config: Optional[Config] = None) -> 
     # Convert date column to strings for JSON serialization
     result_df['date'] = result_df['date'].astype(str)
     
-    # Calculate failure type distribution (ERROR scans by type)
-    error_scans = df[df['status'] == 'ERROR']
-    initial_scans = df[(df['status'] == 'INITIAL') & (~df['type'].isin(['SOURCE_SCA', 'JAR', 'SBOM_IMPORT']))]
+    # Calculate failure type distribution (ERROR scans by type) - filter to period
+    # Use scans that STARTED in the period for failure counts
+    report_start = None
+    report_end = None
+    if config and hasattr(config, 'start_date') and config.start_date:
+        report_start = pd.to_datetime(config.start_date).date()
+    if config and hasattr(config, 'end_date') and config.end_date:
+        report_end = pd.to_datetime(config.end_date).date()
+    
+    if report_start and report_end and 'scan_date' in df.columns:
+        scans_in_period = df[
+            (df['scan_date'] >= report_start) & 
+            (df['scan_date'] <= report_end)
+        ]
+    else:
+        scans_in_period = df
+    
+    error_scans = scans_in_period[scans_in_period['status'] == 'ERROR']
+    initial_scans = scans_in_period[(scans_in_period['status'] == 'INITIAL') & (~scans_in_period['type'].isin(['SOURCE_SCA', 'JAR', 'SBOM_IMPORT']))]
     failed_scans = pd.concat([error_scans, initial_scans])
     
     failure_type_counts = failed_scans['type'].value_counts().to_dict() if len(failed_scans) > 0 else {}
@@ -595,32 +614,72 @@ def calculate_daily_metrics(day_data: pd.DataFrame, date, day_data_completed: pd
     metrics['vulnerability_analysis_scans'] = type_counts.get('VULNERABILITY_ANALYSIS', 0)
     metrics['sbom_import_scans'] = type_counts.get('SBOM_IMPORT', 0)
     
+    # Failure counts by scan type for this day (for time series chart)
+    failed_day_data = day_data[day_data['status'].isin(['ERROR', 'INITIAL'])]
+    # Exclude instant-complete types from INITIAL (not real failures)
+    failed_day_data = failed_day_data[
+        ~((failed_day_data['status'] == 'INITIAL') & 
+          (failed_day_data['type'].isin(['SOURCE_SCA', 'JAR', 'SBOM_IMPORT'])))
+    ]
+    failure_type_counts = failed_day_data['type'].value_counts().to_dict()
+    metrics['sca_failures'] = failure_type_counts.get('SCA', 0)
+    metrics['sast_failures'] = failure_type_counts.get('SAST', 0)
+    metrics['config_failures'] = failure_type_counts.get('CONFIG', 0)
+    metrics['vulnerability_analysis_failures'] = failure_type_counts.get('VULNERABILITY_ANALYSIS', 0)
+    
+    # Overall failure rate for context
+    total_started = metrics['total_scans_started']
+    total_failed = metrics['failed_scans']
+    metrics['failure_rate'] = (total_failed / total_started * 100) if total_started > 0 else 0
+    
     return metrics
 
 
-def calculate_summary_metrics(df: pd.DataFrame, report_start_date = None) -> Dict[str, Any]:
+def calculate_summary_metrics(df: pd.DataFrame, report_start_date = None, report_end_date = None) -> Dict[str, Any]:
     """Calculate overall summary metrics.
     
     Args:
         df: DataFrame with scan data
-        report_start_date: Report start date for determining new vs existing projects
+        report_start_date: Report start date for filtering and new vs existing projects
+        report_end_date: Report end date for filtering
     """
     # For historical analysis, distinguish between scans that are truly stuck vs recently created
     # SOURCE_SCA scans are completed locally and uploaded - treat as instantly completed
     from datetime import datetime, timedelta
     today = datetime.now().date()
     
+    # Filter to scans that STARTED in the period (for started count)
+    # and scans that COMPLETED in the period (for completed count)
+    if report_start_date and report_end_date and 'scan_date' in df.columns:
+        scans_started_in_period = df[
+            (df['scan_date'] >= report_start_date) & 
+            (df['scan_date'] <= report_end_date)
+        ]
+    else:
+        scans_started_in_period = df
+    
+    if report_start_date and report_end_date and 'completion_date' in df.columns:
+        scans_completed_in_period = df[
+            (df['completion_date'].notna()) &
+            (df['completion_date'] >= report_start_date) & 
+            (df['completion_date'] <= report_end_date)
+        ]
+    else:
+        scans_completed_in_period = df[df['completion_date'].notna()]
+    
     initial_scans = df[df['status'] == 'INITIAL']
     started_scans = df[df['status'] == 'STARTED']
     
     # Separate external/third-party scans - they're completed externally and uploaded
     external_scan_types = ['SOURCE_SCA', 'JAR', 'SBOM_IMPORT']
-    external_scans = df[df['type'].isin(external_scan_types)]
-    other_scans = df[~df['type'].isin(external_scan_types)]
+    external_scans_in_period = scans_completed_in_period[scans_completed_in_period['type'].isin(external_scan_types)]
+    other_scans_started_in_period = scans_started_in_period[~scans_started_in_period['type'].isin(external_scan_types)]
+    other_scans_completed_in_period = scans_completed_in_period[~scans_completed_in_period['type'].isin(external_scan_types)]
     
     # For non-external scans, INITIAL scans are failed attempts, only STARTED scans are actually waiting
-    other_initial = other_scans[other_scans['status'] == 'INITIAL']
-    other_started = other_scans[other_scans['status'] == 'STARTED']
+    # Use scans started in period for these counts
+    other_initial = other_scans_started_in_period[other_scans_started_in_period['status'] == 'INITIAL']
+    other_started = other_scans_started_in_period[other_scans_started_in_period['status'] == 'STARTED']
     
     # All INITIAL scans are considered failed attempts (regardless of age)
     stuck_scans = len(other_initial)
@@ -628,28 +687,28 @@ def calculate_summary_metrics(df: pd.DataFrame, report_start_date = None) -> Dic
     # Only STARTED scans are actually waiting/processing
     recently_queued = len(other_started)
     
-    # Count completed scans: external scans (all) + other scans with completion dates
-    other_completed = other_scans[
-        (other_scans['status'] == 'COMPLETED') & 
-        (other_scans['completed'].notna()) & 
-        (other_scans['completed'] != '-')
+    # Count completed scans IN THE PERIOD: external scans + other scans with completion dates
+    other_completed = other_scans_completed_in_period[
+        (other_scans_completed_in_period['status'] == 'COMPLETED') & 
+        (other_scans_completed_in_period['completed'].notna()) & 
+        (other_scans_completed_in_period['completed'] != '-')
     ]
     
-    # Count unique artifacts overall
-    unique_projects = df['project_id'].nunique() if 'project_id' in df.columns else 0
-    if 'projectVersion' in df.columns:
-        version_ids = df['projectVersion'].dropna().apply(
+    # Count unique artifacts from scans STARTED in the period
+    unique_projects = scans_started_in_period['project_id'].nunique() if 'project_id' in scans_started_in_period.columns else 0
+    if 'projectVersion' in scans_started_in_period.columns:
+        version_ids = scans_started_in_period['projectVersion'].dropna().apply(
             lambda x: x.get('id') if isinstance(x, dict) else x
         )
         unique_versions = version_ids.nunique()
     else:
         unique_versions = 0
     
-    # Calculate new vs existing projects overall
+    # Calculate new vs existing projects from scans STARTED in the period
     new_projects = 0
     existing_projects = 0
-    if 'project_id' in df.columns and 'project_created' in df.columns and report_start_date:
-        project_info = df[['project_id', 'project_created']].drop_duplicates(subset=['project_id'])
+    if 'project_id' in scans_started_in_period.columns and 'project_created' in scans_started_in_period.columns and report_start_date:
+        project_info = scans_started_in_period[['project_id', 'project_created']].drop_duplicates(subset=['project_id'])
         for _, row in project_info.iterrows():
             project_created = row.get('project_created')
             if pd.notna(project_created):
@@ -665,15 +724,15 @@ def calculate_summary_metrics(df: pd.DataFrame, report_start_date = None) -> Dic
                 existing_projects += 1
     
     summary = {
-        'total_scans_started': len(df),
+        'total_scans_started': len(scans_started_in_period),  # Scans STARTED in period
         'unique_projects': unique_projects,
         'new_projects': new_projects,
         'existing_projects': existing_projects,
         'unique_versions': unique_versions,
         'server_completed_scans': len(other_completed),
-        'external_completed_scans': len(external_scans),
-        'total_completed_scans': len(external_scans) + len(other_completed),
-        'failed_scans': len(df[df['status'] == 'ERROR']) + len(other_initial),
+        'external_completed_scans': len(external_scans_in_period),
+        'total_completed_scans': len(external_scans_in_period) + len(other_completed),  # Scans COMPLETED in period
+        'failed_scans': len(scans_started_in_period[scans_started_in_period['status'] == 'ERROR']) + len(other_initial),  # Both filtered to period
         'stuck_scans': stuck_scans,
         'recently_queued': recently_queued,
         'still_active_scans': len(other_started),
@@ -692,12 +751,12 @@ def calculate_summary_metrics(df: pd.DataFrame, report_start_date = None) -> Dic
     else:
         summary['completion_rate'] = 0
     
-    # Overall duration analysis (exclude external scans)
+    # Overall duration analysis (exclude external scans) - use scans COMPLETED in period
     external_scan_types = ['SOURCE_SCA', 'JAR', 'SBOM_IMPORT']
-    completed_scans = df[
-        (df['status'] == 'COMPLETED') & 
-        (df['duration_minutes'].notna()) &
-        (~df['type'].isin(external_scan_types))
+    completed_scans = scans_completed_in_period[
+        (scans_completed_in_period['status'] == 'COMPLETED') & 
+        (scans_completed_in_period['duration_minutes'].notna()) &
+        (~scans_completed_in_period['type'].isin(external_scan_types))
     ]
     
     if len(completed_scans) > 0:
@@ -756,8 +815,8 @@ def calculate_summary_metrics(df: pd.DataFrame, report_start_date = None) -> Dic
         summary['avg_started_time_minutes'] = 0
         summary['max_started_time_minutes'] = 0
     
-    # Overall scan type breakdown
-    type_counts = df['type'].value_counts().to_dict()
+    # Overall scan type breakdown - use scans STARTED in period
+    type_counts = scans_started_in_period['type'].value_counts().to_dict()
     summary['sca_scans'] = type_counts.get('SCA', 0)
     summary['sast_scans'] = type_counts.get('SAST', 0)
     summary['config_scans'] = type_counts.get('CONFIG', 0)

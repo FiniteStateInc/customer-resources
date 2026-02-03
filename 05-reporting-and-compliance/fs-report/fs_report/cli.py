@@ -36,6 +36,7 @@ from fs_report.models import Config
 from fs_report.period_parser import PeriodParser
 from fs_report.recipe_loader import RecipeLoader
 from fs_report.report_engine import ReportEngine
+from fs_report.sqlite_cache import SQLiteCache, parse_ttl
 
 console = Console()
 app = typer.Typer(
@@ -80,6 +81,10 @@ def create_config(
     data_file: Union[str, None] = None,
     project_filter: Union[str, None] = None,
     version_filter: Union[str, None] = None,
+    finding_types: str = "cve",
+    current_version_only: bool = True,
+    cache_ttl: int = 0,
+    cache_dir: Union[str, None] = None,
 ) -> Config:
     # Handle period parameter
     if period:
@@ -113,6 +118,16 @@ def create_config(
                 "[red]Error: Domain required. Set FINITE_STATE_DOMAIN environment variable or use --domain.[/red]"
             )
             raise typer.Exit(2)
+    # Validate finding_types
+    valid_finding_types = {"cve", "sast", "thirdparty", "credentials", "config_issues", "crypto_material", "all"}
+    if finding_types:
+        types_list = [t.strip().lower() for t in finding_types.split(",")]
+        invalid_types = set(types_list) - valid_finding_types
+        if invalid_types:
+            console.print(f"[red]Error: Invalid finding type(s): {', '.join(invalid_types)}[/red]")
+            console.print(f"[yellow]Valid types: {', '.join(sorted(valid_finding_types))}[/yellow]")
+            raise typer.Exit(1)
+    
     return Config(
         auth_token=auth_token,
         domain=domain_value,
@@ -124,6 +139,10 @@ def create_config(
         recipe_filter=recipe,
         project_filter=project_filter,
         version_filter=version_filter,
+        finding_types=finding_types,
+        current_version_only=current_version_only,
+        cache_ttl=cache_ttl,
+        cache_dir=cache_dir,
     )
 
 
@@ -606,6 +625,10 @@ def run_reports(
     data_file: Union[str, None],
     project_filter: Union[str, None],
     version_filter: Union[str, None],
+    finding_types: str = "cve",
+    current_version_only: bool = True,
+    cache_ttl: int = 0,
+    cache_dir: Union[str, None] = None,
 ) -> None:
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
@@ -627,6 +650,10 @@ def run_reports(
             data_file=data_file,
             project_filter=project_filter,
             version_filter=version_filter,
+            finding_types=finding_types,
+            current_version_only=current_version_only,
+            cache_ttl=cache_ttl,
+            cache_dir=cache_dir,
         )
         logger.info("Configuration:")
         logger.info(f"  Domain: {config.domain}")
@@ -634,6 +661,11 @@ def run_reports(
         logger.info(f"  Recipes directory: {config.recipes_dir}")
         logger.info(f"  Output directory: {config.output_dir}")
         logger.info(f"  Date range: {config.start_date} to {config.end_date}")
+        logger.info(f"  Finding types: {config.finding_types}")
+        if config.current_version_only:
+            logger.info(f"  Current version only: Yes (filtering to latest versions)")
+        if config.cache_ttl > 0:
+            logger.info(f"  [BETA] SQLite cache: Enabled (TTL: {config.cache_ttl}s)")
         output_path = Path(config.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         engine = ReportEngine(config, data_override=data_override)
@@ -761,9 +793,59 @@ def main(
         "-v",
         help="Filter by project version (version ID or name). Use 'fs-report list-versions <project>' to see available versions.",
     ),
+    finding_types: str = typer.Option(
+        "cve",
+        "--finding-types",
+        "-ft",
+        help="Finding types to include: cve (default), sast, thirdparty, credentials, config_issues, crypto_material, or 'all'. Comma-separated for multiple.",
+    ),
+    current_version_only: bool = typer.Option(
+        True,
+        "--current-version-only/--all-versions",
+        "-cvo/-av",
+        help="Latest version only (default, fast) or all versions (slow, includes historical data)",
+    ),
+    cache_ttl: Union[str, None] = typer.Option(
+        None,
+        "--cache-ttl",
+        help="[BETA] Enable persistent SQLite cache with TTL (e.g., '1h', '30m', '1d'). "
+             "Default: disabled (fresh data each run).",
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Force fresh data fetch, ignore any cached data.",
+    ),
+    clear_cache: bool = typer.Option(
+        False,
+        "--clear-cache",
+        help="Delete all cached data and exit.",
+    ),
 ) -> None:
     if ctx.invoked_subcommand is not None:
         return
+    
+    # Handle --clear-cache
+    if clear_cache:
+        cache = SQLiteCache()
+        cache.clear()
+        console.print("[green]Cache cleared successfully.[/green]")
+        console.print(f"[dim]Cache location: {cache.db_path}[/dim]")
+        raise typer.Exit(0)
+    
+    # Parse cache TTL
+    cache_ttl_seconds = 0
+    if no_cache:
+        cache_ttl_seconds = 0
+    elif cache_ttl:
+        try:
+            cache_ttl_seconds = parse_ttl(cache_ttl)
+            if cache_ttl_seconds > 0:
+                console.print(f"[cyan][BETA] SQLite cache enabled with TTL: {cache_ttl} ({cache_ttl_seconds} seconds)[/cyan]")
+        except ValueError as e:
+            console.print(f"[red]Error: Invalid cache TTL format: {e}[/red]")
+            raise typer.Exit(1)
+    
     run_reports(
         recipes=recipes,
         recipe=recipe,
@@ -777,6 +859,10 @@ def main(
         data_file=data_file,
         project_filter=project_filter,
         version_filter=version_filter,
+        finding_types=finding_types,
+        current_version_only=current_version_only,
+        cache_ttl=cache_ttl_seconds,
+        cache_dir=None,
     )
 
 

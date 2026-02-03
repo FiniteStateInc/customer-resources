@@ -1,6 +1,7 @@
 name: "Findings by Project"
 template: "findings_by_project.html"
 description: "Comprehensive inventory of findings across projects with optional filtering"
+execution_order: 20  # Reuses cached scans from Scan Analysis
 
 query:
   endpoint: "/public/v0/findings"

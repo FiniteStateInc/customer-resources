@@ -1,6 +1,7 @@
 name: "Executive Summary"
 template: "executive_summary.html"
 description: "High-level security posture overview with key performance indicators and project-level breakdowns"
+execution_order: 20  # Reuses cached scans from Scan Analysis
 
 query:
   endpoint: "/public/v0/findings"
@@ -30,8 +31,9 @@ open_issues_transform:
   - rename:
       columns:
         project.name: project_name
-  # Filter for open issues only (status missing, IN_TRIAGE, or EXPLOITABLE)
-  - filter: "status.isnull() or status in ('IN_TRIAGE', 'EXPLOITABLE')"
+  # Filter OUT resolved statuses (null/missing status = open by default)
+  # This correctly counts all un-triaged findings as open
+  - filter: "status=notin=(RESOLVED,RESOLVED_WITH_PEDIGREE,NOT_AFFECTED,FALSE_POSITIVE)"
   # Group by severity for pie chart
   - group_by: [severity]
   # Sort by severity (descending for better visualization)

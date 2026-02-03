@@ -1,6 +1,7 @@
 name: "Component List"
 template: "component_list.html"
 description: "Comprehensive inventory of software components across projects with optional filtering"
+execution_order: 30  # Independent - fetches components
 
 query:
   endpoint: "/public/v0/components"

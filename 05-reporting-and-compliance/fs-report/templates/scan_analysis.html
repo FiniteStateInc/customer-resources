@@ -229,37 +229,38 @@
             <div class="summary-cards">
                 <div class="summary-card">
                     <h3>Total Scans</h3>
-                    <div class="value">{{ summary_row[2] }}</div>
+                    <div class="value">{{ summary_row.total_scans_started }}</div>
                     <div class="unit">scans started</div>
                 </div>
                 <div class="summary-card">
                     <h3>Projects</h3>
-                    <div class="value">{{ summary_row[3] }}</div>
-                    <div class="unit">{{ summary_row[4] }} new / {{ summary_row[5] }} existing</div>
+                    <div class="value">{{ summary_row.unique_projects }}</div>
+                    <div class="unit">{{ summary_row.new_projects }} new / {{ summary_row.existing_projects }} existing</div>
                 </div>
                 <div class="summary-card">
                     <h3>Versions</h3>
-                    <div class="value">{{ summary_row[6] }}</div>
+                    <div class="value">{{ summary_row.unique_versions }}</div>
                     <div class="unit">artifacts processed</div>
                 </div>
                 <div class="summary-card">
                     <h3>Success Rate</h3>
-                    <div class="value">{{ "%.1f"|format(summary_row[15]) }}%</div>
-                    <div class="unit">completion rate</div>
+                    {% set success_rate = ((summary_row.total_scans_started - summary_row.failed_scans) / summary_row.total_scans_started * 100) if summary_row.total_scans_started > 0 else 0 %}
+                    <div class="value">{{ "%.1f"|format(success_rate) }}%</div>
+                    <div class="unit">{{ summary_row.total_scans_started - summary_row.failed_scans }} succeeded</div>
                 </div>
                 <div class="summary-card">
                     <h3>Average Duration</h3>
-                    <div class="value">{{ "%.0f"|format(summary_row[17]) }}</div>
+                    <div class="value">{{ "%.0f"|format(summary_row.median_duration_minutes) }}</div>
                     <div class="unit">minutes</div>
                 </div>
                 <div class="summary-card">
                     <h3>Queue Size</h3>
-                    <div class="value">{{ summary_row[12] }}</div>
+                    <div class="value">{{ summary_row.recently_queued }}</div>
                     <div class="unit">scans waiting</div>
                 </div>
                 <div class="summary-card">
                     <h3>Failed Scans</h3>
-                    <div class="value">{{ summary_row[10] }}</div>
+                    <div class="value">{{ summary_row.failed_scans }}</div>
                     <div class="unit">scans failed</div>
                 </div>
             </div>
@@ -303,16 +304,14 @@
                 </div>
             </div>
             
-            <!-- Failure Type Distribution -->
-            {% if metadata.additional_data and metadata.additional_data.failure_types and metadata.additional_data.failure_types|length > 0 %}
+            <!-- Scan Failures Over Time -->
             <div class="chart-container">
-                <h2 class="chart-title">❌ Failure Type Distribution</h2>
-                <p class="chart-description">Breakdown of failed scans by scan type</p>
+                <h2 class="chart-title">❌ Scan Failures Over Time</h2>
+                <p class="chart-description">Failure volume by scan type (bars) with overall failure rate (line) - highlights problematic periods</p>
                 <div class="chart-wrapper">
                     <canvas id="failureTypeChart"></canvas>
                 </div>
             </div>
-            {% endif %}
         {% else %}
             <div class="no-data">
                 <p>No scan data available for the selected time period.</p>
@@ -351,25 +350,25 @@
                 <tbody>
                     {% for row in table_data.rows %}
                     <tr>
-                        <td>{{ row[1] }}</td>
-                        <td>{{ row[2] }}</td>
-                        <td>{{ row[3] }}</td>
-                        <td>{{ row[4] }}</td>
-                        <td>{{ row[5] }}</td>
-                        <td>{{ row[6] }}</td>
-                        <td>{{ row[9] }}</td>
-                        <td>{{ row[10] }}</td>
-                        <td>{{ row[13] }}</td>
-                        <td class="success-rate {% if row[14] >= 90 %}high{% elif row[14] >= 70 %}medium{% else %}low{% endif %}">
-                            {{ "%.1f"|format(row[14]) }}%
+                        <td>{{ row.date }}</td>
+                        <td>{{ row.total_scans_started }}</td>
+                        <td>{{ row.unique_projects }}</td>
+                        <td>{{ row.new_projects }}</td>
+                        <td>{{ row.existing_projects }}</td>
+                        <td>{{ row.unique_versions }}</td>
+                        <td>{{ row.total_completed_scans }}</td>
+                        <td>{{ row.failed_scans }}</td>
+                        <td>{{ row.still_active_scans }}</td>
+                        <td class="success-rate {% if row.success_rate >= 90 %}high{% elif row.success_rate >= 70 %}medium{% else %}low{% endif %}">
+                            {{ "%.1f"|format(row.success_rate) }}%
                         </td>
-                        <td>{{ "%.0f"|format(row[16]) if row[16] > 0 else "-" }}</td>
-                        <td>{{ row[26] }}</td>
-                        <td>{{ row[27] }}</td>
-                        <td>{{ row[28] }}</td>
-                        <td>{{ row[29] }}</td>
-                        <td>{{ row[30] }}</td>
-                        <td>{{ row[31] }}</td>
+                        <td>{{ "%.0f"|format(row.avg_duration_minutes) if row.avg_duration_minutes > 0 else "-" }}</td>
+                        <td>{{ row.sca_scans }}</td>
+                        <td>{{ row.sast_scans }}</td>
+                        <td>{{ row.config_scans }}</td>
+                        <td>{{ row.source_sca_scans }}</td>
+                        <td>{{ row.vulnerability_analysis_scans }}</td>
+                        <td>{{ row.sbom_import_scans }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -463,9 +462,9 @@
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             {% if table_data and table_data.rows %}
-                // Prepare data (exclude summary row)
+                // Prepare data (exclude summary row) - now using named access
                 const data = {{ table_data.rows[:-1] | tojson }};
-                const labels = data.map(row => row[0]);
+                const labels = data.map(row => row.period);
                 
                 // Moving average helper function
                 function movingAverage(arr, window) {
@@ -481,8 +480,8 @@
                 
                 // Throughput Chart with Moving Averages
                 const throughputCtx = document.getElementById('throughputChart').getContext('2d');
-                const scansStartedData = data.map(row => row[2]);
-                const scansCompletedData = data.map(row => row[9]);
+                const scansStartedData = data.map(row => row.total_scans_started);
+                const scansCompletedData = data.map(row => row.total_completed_scans);
                 
                 new Chart(throughputCtx, {
                     type: 'line',
@@ -539,7 +538,7 @@
                         labels: labels,
                         datasets: [{
                             label: 'Average Duration (minutes)',
-                            data: data.map(row => row[16]),
+                            data: data.map(row => row.avg_duration_minutes),
                             backgroundColor: 'rgba(255, 159, 64, 0.8)',
                             borderColor: 'rgb(255, 159, 64)',
                             borderWidth: 1
@@ -568,10 +567,10 @@
                         labels: labels,
                         datasets: [{
                             label: 'Success Rate (%)',
-                            data: data.map(row => row[14]),
+                            data: data.map(row => row.success_rate),
                             backgroundColor: data.map(row => {
-                                if (row[14] >= 90) return 'rgba(40, 167, 69, 0.8)';
-                                if (row[14] >= 70) return 'rgba(255, 193, 7, 0.8)';
+                                if (row.success_rate >= 90) return 'rgba(40, 167, 69, 0.8)';
+                                if (row.success_rate >= 70) return 'rgba(255, 193, 7, 0.8)';
                                 return 'rgba(220, 53, 69, 0.8)';
                             }),
                             borderWidth: 1
@@ -599,12 +598,12 @@
                 
                 // Filter out scan types with 0 scans to make chart cleaner
                 const allScanTypes = [
-                    { label: 'SCA', count: summaryRow[26], color: 'rgba(255, 99, 132, 0.8)' },
-                    { label: 'SAST', count: summaryRow[27], color: 'rgba(54, 162, 235, 0.8)' },
-                    { label: 'CONFIG', count: summaryRow[28], color: 'rgba(255, 205, 86, 0.8)' },
-                    { label: 'SOURCE_SCA', count: summaryRow[29], color: 'rgba(75, 192, 192, 0.8)' },
-                    { label: 'VULNERABILITY_ANALYSIS', count: summaryRow[30], color: 'rgba(153, 102, 255, 0.8)' },
-                    { label: 'SBOM_IMPORT', count: summaryRow[31], color: 'rgba(255, 159, 64, 0.8)' }
+                    { label: 'SCA', count: summaryRow.sca_scans, color: 'rgba(255, 99, 132, 0.8)' },
+                    { label: 'SAST', count: summaryRow.sast_scans, color: 'rgba(54, 162, 235, 0.8)' },
+                    { label: 'CONFIG', count: summaryRow.config_scans, color: 'rgba(255, 205, 86, 0.8)' },
+                    { label: 'SOURCE_SCA', count: summaryRow.source_sca_scans, color: 'rgba(75, 192, 192, 0.8)' },
+                    { label: 'VULNERABILITY_ANALYSIS', count: summaryRow.vulnerability_analysis_scans, color: 'rgba(153, 102, 255, 0.8)' },
+                    { label: 'SBOM_IMPORT', count: summaryRow.sbom_import_scans, color: 'rgba(255, 159, 64, 0.8)' }
                 ];
                 
                 // Only include types with at least 1 scan
@@ -631,33 +630,76 @@
                     }
                 });
                 
-                // Failure Type Distribution Chart
-                {% if metadata.additional_data and metadata.additional_data.failure_types and metadata.additional_data.failure_types|length > 0 %}
-                const failureTypeCtx = document.getElementById('failureTypeChart').getContext('2d');
-                const failureTypes = {{ metadata.additional_data.failure_types | tojson }};
+                // Scan Failures Over Time - Dual Axis Chart
+                const failureCtx = document.getElementById('failureTypeChart').getContext('2d');
                 
-                const failureColors = {
-                    'SCA': 'rgba(255, 99, 132, 0.8)',
-                    'SAST': 'rgba(54, 162, 235, 0.8)',
-                    'CONFIG': 'rgba(255, 205, 86, 0.8)',
-                    'SOURCE_SCA': 'rgba(75, 192, 192, 0.8)',
-                    'VULNERABILITY_ANALYSIS': 'rgba(153, 102, 255, 0.8)',
-                    'SBOM_IMPORT': 'rgba(255, 159, 64, 0.8)'
-                };
-                
-                new Chart(failureTypeCtx, {
-                    type: 'pie',
-                    data: {
-                        labels: failureTypes.map(f => f.type),
-                        datasets: [{
-                            data: failureTypes.map(f => f.count),
-                            backgroundColor: failureTypes.map(f => failureColors[f.type] || 'rgba(128, 128, 128, 0.8)'),
-                            borderWidth: 1
-                        }]
+                // Stacked bar datasets for failure counts by type + line for failure rate
+                const failureDatasets = [
+                    {
+                        label: 'SCA Failures',
+                        data: data.map(row => row.sca_failures || 0),
+                        backgroundColor: 'rgba(255, 99, 132, 0.8)',
+                        stack: 'failures',
+                        yAxisID: 'y'
                     },
+                    {
+                        label: 'SAST Failures',
+                        data: data.map(row => row.sast_failures || 0),
+                        backgroundColor: 'rgba(54, 162, 235, 0.8)',
+                        stack: 'failures',
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'CONFIG Failures',
+                        data: data.map(row => row.config_failures || 0),
+                        backgroundColor: 'rgba(255, 205, 86, 0.8)',
+                        stack: 'failures',
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'Reachability Failures',
+                        data: data.map(row => row.vulnerability_analysis_failures || 0),
+                        backgroundColor: 'rgba(153, 102, 255, 0.8)',
+                        stack: 'failures',
+                        yAxisID: 'y'
+                    },
+                    // Failure rate line (right axis)
+                    {
+                        label: 'Failure Rate %',
+                        data: data.map(row => row.failure_rate || 0),
+                        type: 'line',
+                        borderColor: 'rgb(220, 53, 69)',
+                        backgroundColor: 'transparent',
+                        borderWidth: 2,
+                        yAxisID: 'y1',
+                        pointRadius: 3
+                    }
+                ];
+
+                new Chart(failureCtx, {
+                    type: 'bar',
+                    data: { labels: labels, datasets: failureDatasets },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
+                        scales: {
+                            y: {
+                                type: 'linear',
+                                position: 'left',
+                                beginAtZero: true,
+                                stacked: true,
+                                title: { display: true, text: 'Failed Scans' }
+                            },
+                            y1: {
+                                type: 'linear',
+                                position: 'right',
+                                beginAtZero: true,
+                                max: 100,
+                                grid: { drawOnChartArea: false },
+                                title: { display: true, text: 'Failure Rate (%)' }
+                            },
+                            x: { stacked: true }
+                        },
                         plugins: {
                             legend: {
                                 position: 'bottom'
@@ -665,7 +707,6 @@
                         }
                     }
                 });
-                {% endif %}
             {% endif %}
         });
     </script>

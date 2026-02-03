@@ -55,6 +55,11 @@ class RecipeLoader:
             return recipes
 
         for yaml_file in yaml_files:
+            # Skip files starting with underscore (templates, examples)
+            if yaml_file.name.startswith("_"):
+                self.logger.debug(f"Skipping template/example file: {yaml_file}")
+                continue
+            
             try:
                 recipe = self._load_recipe_file(yaml_file)
                 if recipe:

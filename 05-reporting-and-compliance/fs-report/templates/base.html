@@ -206,8 +206,10 @@
         
         <div class="metadata">
             <strong>Report:</strong> {{ recipe_name }} | 
+            <strong>Period:</strong> {{ start_date }} to {{ end_date }} | 
             <strong>Generated:</strong> {{ generated_at }} | 
             <strong>Records:</strong> {{ metadata.transformed_count }}
+            {% if project_filter %} | <strong>Project:</strong> {{ project_filter }}{% endif %}
         </div>
         
         {% block content %}{% endblock %}

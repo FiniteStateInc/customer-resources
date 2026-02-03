@@ -1,6 +1,7 @@
 name: "Scan Analysis"
 description: "Analyze scan throughput, durations, failures, and queue status"
 template: "scan_analysis.html"
+execution_order: 10  # Runs first - fetches scans that other reports reuse
 
 query:
   endpoint: "/public/v0/scans"

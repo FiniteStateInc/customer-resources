@@ -46,7 +46,7 @@
         <tbody>
             {% for row in table_data.rows %}
             <tr>
-                {% for cell in row %}
+                {% for cell in row.values() %}
                 <td>{{ cell }}</td>
                 {% endfor %}
             </tr>
@@ -72,7 +72,9 @@ const severityColors = {
     const tableRows = {{ table_data.rows | tojson }};
     const projectSeverity = {};
     tableRows.forEach(row => {
-        const [project, severity, count] = row;
+        const project = row['project.name'];
+        const severity = row['severity'];
+        const count = row['finding_count'];
         if (severity === 'none') return; // skip 'none'
         if (!projectSeverity[project]) projectSeverity[project] = {};
         projectSeverity[project][severity] = count;

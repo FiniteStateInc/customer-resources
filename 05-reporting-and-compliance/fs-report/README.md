@@ -87,7 +87,22 @@ poetry run fs-report --project "MyProject"
 
 # Filter by project version (version ID or name)
 poetry run fs-report --version "1234567890"  # Version ID (no project needed)
+
+# Control which finding types are included (default: cve)
+poetry run fs-report --finding-types cve              # CVE only (default)
+poetry run fs-report --finding-types cve,credentials  # CVE + credentials
+poetry run fs-report --finding-types all              # All findings
 poetry run fs-report --project "MyProject" --version "v1.2.3"  # Version name (project required)
+
+# Version filtering (default: latest version only for performance)
+poetry run fs-report --period 1w                      # Default: latest version per project (fast)
+poetry run fs-report --period 1w --all-versions       # Include all historical versions (slower)
+
+# [BETA] Persistent cache with TTL for crash recovery and faster reruns
+poetry run fs-report --cache-ttl 1h                   # Cache data for 1 hour
+poetry run fs-report --cache-ttl 30m                  # Cache data for 30 minutes
+poetry run fs-report --no-cache                       # Force fresh data fetch
+poetry run fs-report --clear-cache                    # Delete all cached data and exit
 
 # List available recipes
 poetry run fs-report list-recipes
@@ -115,9 +130,10 @@ poetry run fs-report --verbose
 
 The reporting kit includes intelligent caching to improve performance and reduce API calls:
 
+- **Latest Version Only (Default)**: By default, reports only include findings from the latest version of each project, reducing data volume by 60-70%. Use `--all-versions` if you need historical data.
 - **Automatic Cache Sharing**: When running multiple reports, data is automatically cached and shared between reports
 - **Progress Indicators**: The CLI shows "Fetching" for API calls and "Using cache" for cached data
-- **Resume Support**: Large reports can be resumed from interruption points using progress files
+- **Crash Recovery**: Progress is tracked in SQLite, so interrupted fetches resume automatically
 - **Efficient Filtering**: Project and version filtering is applied at the API level for optimal performance
 
 Example output showing cache usage:
@@ -126,15 +142,27 @@ Fetching /public/v0/findings | 38879 records
 Using cache for /public/v0/findings | 38879 records
 ```
 
-For detailed performance information, see [Performance Guide](docs/PERFORMANCE_GUIDE.md).
+### [BETA] Persistent SQLite Cache
 
-## Progress Files and Recovery
+For long-running reports or iterative development, enable the persistent cache:
 
-When generating large reports, the tool automatically saves progress files in the output directory. If a report is interrupted (e.g., due to network issues or API rate limiting), you can simply rerun the same command. The tool will resume from the last saved progress, minimizing redundant API calls and saving time.
+```bash
+# Cache data for 1 hour - enables crash recovery and faster reruns
+poetry run fs-report --cache-ttl 1h
 
-- **Progress files** are named according to the report and query being executed.
-- If you encounter issues or interruptions, rerun the same command to continue from where it left off.
-- If you want to start over, delete the relevant progress files from the output directory.
+# Force fresh data (ignore cache)
+poetry run fs-report --no-cache
+
+# Clear all cached data
+poetry run fs-report --clear-cache
+```
+
+Benefits:
+- **80% smaller storage** than JSON progress files
+- **Crash recovery** - resume interrupted fetches automatically
+- **Faster reruns** - skip API calls for cached data within TTL
+
+Cache location: `~/.fs-report/cache.db`
 
 ## Docker Usage
 
@@ -246,6 +274,16 @@ The comparison tool generates:
 - `1`: Usage/validation error
 - `2`: API authentication failure
 - `3`: API rate-limit/connectivity failure
+
+## Security
+
+**Recipes are code.** Custom recipes can execute arbitrary pandas expressions, so treat them with the same security practices as executable scripts:
+
+- Review custom recipes before running them
+- In CI/CD pipelines, only use recipes from version-controlled sources
+- Never download and execute recipes from untrusted sources
+
+For detailed security guidance, see [Security Considerations](docs/recipes/CUSTOM_REPORT_GUIDE.md#security-considerations) in the Custom Report Guide.
 
 ## Contributing
 

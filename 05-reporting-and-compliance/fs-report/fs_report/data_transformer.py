@@ -144,6 +144,8 @@ class DataTransformer:
                 return self._apply_flatten(df, transform.flatten)
             elif transform.rename is not None:
                 return self._apply_rename(df, transform.rename)
+            elif transform.fillna is not None:
+                return self._apply_fillna(df, transform.fillna)
             else:
                 self.logger.warning("No valid transform found")
                 return df
@@ -569,6 +571,7 @@ class DataTransformer:
             "!=" in filter_expr and "'" in filter_expr,  # severity != 'none'
             "==" in filter_expr and "'" in filter_expr,  # severity == 'high'
             "=in=" in filter_expr and "(" in filter_expr,  # status=in=(open,closed)
+            "=notin=" in filter_expr and "(" in filter_expr,  # status=notin=(resolved,closed)
         ]
         return any(simple_patterns)
 
@@ -605,6 +608,20 @@ class DataTransformer:
                     values = [v.strip().strip("'\"") for v in values_part[1:-1].split(",")]
                     if col_part in df.columns:
                         return df[df[col_part].isin(values)]
+            
+            # Handle status=notin=(resolved,closed) - excludes values but INCLUDES null/missing
+            elif "=notin=" in filter_expr and "(" in filter_expr:
+                # Extract column name and values
+                col_part = filter_expr.split("=notin=")[0].strip()
+                values_part = filter_expr.split("=notin=")[1].strip()
+                if values_part.startswith("(") and values_part.endswith(")"):
+                    values = [v.strip().strip("'\"") for v in values_part[1:-1].split(",")]
+                    if col_part in df.columns:
+                        # Include rows where value is NOT in list OR value is null
+                        return df[~df[col_part].isin(values) | df[col_part].isna()]
+                    else:
+                        # Column doesn't exist = all null = all included
+                        return df
             
             # If we can't handle it, try pandas query as last resort
             pandas_expr = filter_expr.replace("'", "'").replace('"', '"')
@@ -894,6 +911,32 @@ class DataTransformer:
         else:
             self.logger.warning("No valid columns found for renaming")
             return df
+
+    def _apply_fillna(self, df: pd.DataFrame, fillna_config: Any) -> pd.DataFrame:
+        """Apply fillna transform to fill null values in a column."""
+        self.logger.debug(f"Applying fillna transform: {fillna_config}")
+        
+        # Handle FillnaTransform object or dict
+        if hasattr(fillna_config, 'column'):
+            column = fillna_config.column
+            value = fillna_config.value
+        elif isinstance(fillna_config, dict):
+            column = fillna_config.get('column')
+            value = fillna_config.get('value')
+        else:
+            self.logger.error(f"Invalid fillna config: {fillna_config}")
+            return df
+        
+        if column not in df.columns:
+            self.logger.warning(f"Column '{column}' not found for fillna")
+            return df
+        
+        df_copy = df.copy()
+        null_count = df_copy[column].isna().sum()
+        df_copy[column] = df_copy[column].fillna(value)
+        self.logger.debug(f"Filled {null_count} null values in '{column}' with '{value}'")
+        
+        return df_copy
 
     def _apply_pandas_transform_function(
         self, 

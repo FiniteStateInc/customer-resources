@@ -200,11 +200,14 @@ poetry run fs-report --recipe "Scan Analysis" --period 14d
 **Who should use it:** Compliance teams, legal, engineering leadership
 
 **What it shows:**
-- All software components in use
+- Software components discovered during the specified time period
 - Component versions, types, and suppliers
 - License information
 - Associated projects, versions, and branches
 - Risk metrics per component (findings, warnings, violations)
+
+**Date Filtering:**
+When you specify `--start`/`--end` or `--period`, the report shows components **created** (first discovered) during that period. This answers: "What new components were found during this reporting period?"
 
 **Key data columns:**
 | Column | Description |
@@ -222,17 +225,21 @@ poetry run fs-report --recipe "Scan Analysis" --period 14d
 - **License Reviews** — Filter by license type for legal review
 - **Standardization** — Identify version fragmentation
 - **Risk Assessment** — Focus on high-finding components
+- **New Components Report** — Track what new software entered the portfolio this period
 
 **Example commands:**
 ```bash
-# Portfolio-wide inventory
-poetry run fs-report --recipe "Component List"
+# Components discovered in the last 30 days
+poetry run fs-report --recipe "Component List" --period 30d
 
-# Specific project
-poetry run fs-report --recipe "Component List" --project "MyProject"
+# Components discovered in a specific quarter
+poetry run fs-report --recipe "Component List" --start 2026-01-01 --end 2026-03-31
+
+# Specific project (still uses date filtering)
+poetry run fs-report --recipe "Component List" --project "MyProject" --period 30d
 
 # Specific version
-poetry run fs-report --recipe "Component List" --version "1234567890"
+poetry run fs-report --recipe "Component List" --version "1234567890" --period 30d
 ```
 
 ---
@@ -298,6 +305,7 @@ All reports generate three output formats:
 | `--project` | Filter by project name or ID | `--project "MyProject"` |
 | `--version` | Filter by version ID | `--version "1234567890"` |
 | `--recipe` | Run specific report only | `--recipe "Scan Analysis"` |
+| `--finding-types` | Finding types to include | `--finding-types cve,credentials` |
 
 **Period shortcuts:**
 - `7d` — last 7 days
@@ -305,6 +313,38 @@ All reports generate three output formats:
 - `1m` — last month
 - `90d` — last 90 days
 - `1q` — last quarter
+
+**Finding types (default: `cve`):**
+
+| Value | Description |
+|-------|-------------|
+| `cve` | CVE/vulnerability findings (default) |
+| `sast` | SAST/binary analysis findings |
+| `thirdparty` | Third-party findings |
+| `credentials` | Exposed credentials |
+| `config_issues` | Configuration issues |
+| `crypto_material` | Cryptographic material |
+| `all` | All finding types |
+
+**Examples:**
+```bash
+# Default: CVE findings only (recommended for most reports)
+poetry run fs-report --period 30d
+
+# Include credentials along with CVEs
+poetry run fs-report --period 30d --finding-types cve,credentials
+
+# Only credentials findings
+poetry run fs-report --period 30d --finding-types credentials
+
+# All findings (includes SAST/FILE components)
+poetry run fs-report --period 30d --finding-types all
+```
+
+**Why default to CVE only?**
+- SAST findings are associated with FILE-type components (placeholders for static analysis results)
+- FILE components have no license or supplier information
+- CVE findings are the most actionable for remediation priorities
 
 ---
 

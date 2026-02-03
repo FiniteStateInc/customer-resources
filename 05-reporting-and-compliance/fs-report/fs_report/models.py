@@ -67,6 +67,7 @@ class QueryParams(BaseModel):
     limit: int | None = Field(None, ge=1, le=10000)
     offset: int | None = Field(None, ge=0)
     archived: bool | None = None
+    finding_type: str | None = Field(None, description="Finding type filter: cve, sast, thirdparty, or all")
 
     @field_validator("filter")
     @classmethod
@@ -166,6 +167,12 @@ class RenameTransform(BaseModel):
     )
 
 
+class FillnaTransform(BaseModel):
+    """Configuration for fillna transform."""
+    column: str = Field(..., description="Column to fill null values in")
+    value: str | int | float = Field(..., description="Value to fill nulls with")
+
+
 class Transform(BaseModel):
     """Transform configuration."""
 
@@ -179,6 +186,7 @@ class Transform(BaseModel):
     select: SelectTransform | None = None
     flatten: list[str] | dict[str, Any] | None = None
     rename: RenameTransform | None = None
+    fillna: FillnaTransform | None = None
     transform_function: str | None = None
 
     @field_validator("*", mode="before")
@@ -233,6 +241,13 @@ class Recipe(BaseModel):
     """Recipe configuration for generating reports."""
 
     name: str = Field(..., description="Recipe name")
+    execution_order: int = Field(
+        50, 
+        description="Order in which to run this recipe (lower = earlier). "
+                    "Reports that fetch base data (scans, projects) should run first "
+                    "so dependent reports can use cached data. "
+                    "Default: 50. Recommended: 10=scans, 20=findings, 30=components, 40=audit"
+    )
     template: str | None = Field(None, description="HTML template to use for rendering")
     description: str | None = Field(None, description="Recipe description")
     parameters: dict[str, Any] | None = Field(None, description="Recipe parameters for customization")
@@ -289,6 +304,24 @@ class Config(BaseModel):
     )
     version_filter: str | None = Field(
         None, description="Filter by project version (version ID or name). Use 'list-versions' to see available versions."
+    )
+    finding_types: str = Field(
+        "cve",
+        description="Comma-separated finding types: cve, sast, thirdparty, credentials, config_issues, crypto_material, or 'all'"
+    )
+    current_version_only: bool = Field(
+        True,
+        description="Only include latest version per project (default for performance). Use --all-versions for full history."
+    )
+    # [BETA] SQLite cache options
+    cache_ttl: int = Field(
+        0,
+        description="[BETA] Cache TTL in seconds. 0 disables cross-run caching (default). "
+                    "Use --cache-ttl flag to enable persistent cache."
+    )
+    cache_dir: str | None = Field(
+        None,
+        description="[BETA] Directory for SQLite cache. Defaults to ~/.fs-report/"
     )
 
     @field_validator("domain")

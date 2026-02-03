@@ -1,0 +1,162 @@
+# ==============================================================================
+# RECIPE TEMPLATE - Copy this file as a starting point for custom reports
+# ==============================================================================
+# 
+# Usage:
+#   1. Copy this file: cp recipes/_TEMPLATE.yaml recipes/my_report.yaml
+#   2. Edit the sections below
+#   3. Test: poetry run fs-report --recipe "My Report" --verbose
+#
+# For more details, see: recipes/CUSTOM_REPORT_GUIDE.md
+# ==============================================================================
+
+# Required: Display name for the report
+name: "My Custom Report"
+
+# Required: Brief description of what this report shows
+description: "Description of what this report analyzes"
+
+# Optional: Execution order for cache optimization (default: 50)
+# Lower numbers run first. Use this to maximize cache reuse:
+#   10 = Fetches base data (scans, projects) that others reuse
+#   20 = Reuses cached scans/projects
+#   30 = Independent data fetching
+#   40 = Audit/activity data
+#   50 = Default for new recipes
+execution_order: 50
+
+# Optional: Custom HTML template (defaults to base template)
+# Only specify if you need custom layout/charts
+# template: "my_custom_template.html"
+
+# ==============================================================================
+# DATA SOURCE CONFIGURATION
+# ==============================================================================
+
+# Primary data query - fetches main data from API
+query:
+  # API endpoint - choose from:
+  #   /public/v0/findings    - Security findings
+  #   /public/v0/components  - Software components  
+  #   /public/v0/projects    - Project list
+  #   /public/v0/scans       - Scan history
+  #   /public/v0/audit       - Audit trail
+  endpoint: "/public/v0/findings"
+  
+  params:
+    # RSQL filter - use semicolons for multiple conditions
+    # Variables: ${start}, ${end} for date range from CLI
+    filter: "detected>=${start};detected<=${end}"
+    
+    # Sort order - field:asc or field:desc
+    sort: "detected:desc"
+    
+    # Max records per API request (max 10000)
+    limit: 1000
+
+# Optional: Additional data source (for joins or reference data)
+# project_list_query:
+#   endpoint: "/public/v0/projects"
+#   params:
+#     limit: 10000
+#     archived: false
+
+# ==============================================================================
+# DATA TRANSFORMATION
+# ==============================================================================
+
+# Option A: Use built-in transforms (simple recipes)
+# Each transform step should be a single operation
+transform:
+  # Group data by one or more fields
+  - group_by: [severity]
+  
+  # Calculate aggregate metrics
+  - calc:
+      name: finding_count
+      expr: "count(*)"
+  
+  # Sort results
+  - sort:
+      sort: [finding_count]
+      ascending: false
+
+# Option B: Use custom Python transform function (complex recipes)
+# Comment out 'transform' above and uncomment this:
+# transform_function: my_custom_transform
+#
+# Available built-in transforms:
+#   - scan_analysis_transform
+#   - component_vulnerability_analysis_pandas_transform
+#   - findings_by_project_pandas_transform
+#   - component_list_pandas_transform
+#   - user_activity_pandas_transform
+
+# ==============================================================================
+# OUTPUT CONFIGURATION
+# ==============================================================================
+
+output:
+  # Output formats to generate (default: all three)
+  formats: ["csv", "xlsx", "html"]
+  
+  # Single chart configuration
+  # Chart types: bar, line, pie, scatter
+  chart: bar
+  
+  # Optional: Enable stacked bars
+  # stacked: true
+  
+  # Include data table in HTML output
+  table: true
+  
+  # Title displayed in report header
+  slide_title: "My Custom Report"
+
+# Alternative: Multiple charts configuration
+# output:
+#   formats: ["csv", "xlsx", "html"]
+#   charts:
+#     - name: "main_chart"
+#       chart: bar
+#       title: "Primary Chart Title"
+#       description: "What this chart shows"
+#     - name: "secondary_chart"
+#       chart: line
+#       title: "Secondary Chart Title"
+#   table: true
+#   slide_title: "Multi-Chart Report"
+
+# ==============================================================================
+# RECIPE PARAMETERS (Optional)
+# ==============================================================================
+
+# Custom parameters accessible in transforms
+# parameters:
+#   pareto_chart_limit: 20
+#   show_percentage: true
+
+# ==============================================================================
+# NOTES
+# ==============================================================================
+#
+# Column names in templates (use named access):
+#   {{ row.column_name }}       - Direct access
+#   {{ row['Column Name'] }}    - For names with spaces
+#   {{ row.get('col', '-') }}   - With default value
+#
+# Common filter patterns:
+#   "severity==HIGH"                    - Exact match
+#   "severity=in=(HIGH,CRITICAL)"       - Multiple values
+#   "risk>50"                           - Numeric comparison
+#   "detected>=${start}"                - Date variable
+#   "component=like=spring*"            - Pattern match
+#
+# Transform expressions:
+#   count(*)                - Count all records
+#   count(field='value')    - Count specific values
+#   avg(field)              - Average
+#   sum(field)              - Sum
+#   min(field) / max(field) - Min/Max
+#
+# ==============================================================================

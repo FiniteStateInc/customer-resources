@@ -393,17 +393,6 @@ class HTMLRenderer:
             elif isinstance(portfolio_table_data, pd.Series):
                 portfolio_table_data = portfolio_table_data.tolist()
 
-        # Ensure table_data['rows'] and portfolio_table_data['rows'] are lists of lists
-        if isinstance(table_data, dict) and 'rows' in table_data:
-            if not isinstance(table_data['rows'], list):
-                table_data['rows'] = list(table_data['rows'])
-            # Ensure each row is a list
-            table_data['rows'] = [list(row) if not isinstance(row, list) else row for row in table_data['rows']]
-        if portfolio_table_data is not None and isinstance(portfolio_table_data, dict) and 'rows' in portfolio_table_data:
-            if not isinstance(portfolio_table_data['rows'], list):
-                portfolio_table_data['rows'] = list(portfolio_table_data['rows'])
-            portfolio_table_data['rows'] = [list(row) if not isinstance(row, list) else row for row in portfolio_table_data['rows']]
-
         template_data = {
             "recipe_name": recipe.name,
             "slide_title": recipe.output.slide_title or recipe.name,
@@ -670,7 +659,11 @@ class HTMLRenderer:
             # For pie charts, we need labels and values
             if len(df.columns) >= 2:
                 labels = df.iloc[:, 0].tolist()
-                values = df.iloc[:, 1].tolist()
+                # Prefer 'finding_count' column if present (group_by adds extra columns like avg_risk_score)
+                if 'finding_count' in df.columns:
+                    values = df['finding_count'].tolist()
+                else:
+                    values = df.iloc[:, 1].tolist()
                 return {
                     "labels": labels,
                     "datasets": [
@@ -696,7 +689,11 @@ class HTMLRenderer:
                 keys = list(first_item.keys())
                 if len(keys) >= 2:
                     labels = [item[keys[0]] for item in df]
-                    values = [item[keys[1]] for item in df]
+                    # Prefer 'finding_count' if present
+                    if 'finding_count' in first_item:
+                        values = [item['finding_count'] for item in df]
+                    else:
+                        values = [item[keys[1]] for item in df]
                     return {
                         "labels": labels,
                         "datasets": [
@@ -763,23 +760,29 @@ class HTMLRenderer:
         return {"datasets": []}
 
     def _prepare_table_data(self, df: pd.DataFrame) -> dict[str, Any]:
-        """Prepare data for table rendering. Ensures numeric columns are cast to float for template safety."""
+        """Prepare data for table rendering.
+        
+        Returns rows as list of dicts for named access in templates.
+        Templates should use row.column_name or row['column_name'] syntax.
+        """
         # Convert DataFrame to native types to avoid ambiguous truth value errors
         if not isinstance(df, pd.DataFrame):
             # If it's already converted to native types, return as is
             if df and len(df) > 0:
-                # Convert list of dictionaries to table format
+                # Already a list of dictionaries - perfect!
                 first_item = df[0]
-                headers = list(first_item.keys())
-                rows = [[item.get(col, '') for col in headers] for item in df]
+                headers = [col.replace('_', ' ').title() for col in first_item.keys()]
+                columns = list(first_item.keys())
                 return {
                     "headers": headers,
-                    "rows": rows,
+                    "columns": columns,
+                    "rows": df,  # Already list of dicts
                     "row_count": len(df),
                 }
             else:
                 return {
                     "headers": [],
+                    "columns": [],
                     "rows": [],
                     "row_count": 0,
                 }
@@ -788,6 +791,7 @@ class HTMLRenderer:
         if len(df) == 0:
             return {
                 "headers": [],
+                "columns": [],
                 "rows": [],
                 "row_count": 0,
             }
@@ -811,7 +815,8 @@ class HTMLRenderer:
         for col in df.columns:
             if df[col].dtype == 'bool' or str(df[col].dtype).startswith('bool'):
                 df[col] = df[col].apply(bool)
-        # Create user-friendly column names for CVA
+        
+        # Create user-friendly column names mapping
         friendly_names = {
             'name': 'Component Name',
             'version': 'Version',
@@ -819,43 +824,30 @@ class HTMLRenderer:
             'project.name': 'Project',
             'composite_risk_score': 'Composite Risk Score',
             'portfolio_risk_score': 'Portfolio Risk Score',
+            'portfolio_composite_risk': 'Portfolio Composite Risk',
+            'normalized_risk_score': 'Normalized Risk Score',
             'finding_count': 'Finding Count',
+            'findings_count': 'Findings Count',
             'project_count': 'Project Count',
             'has_kev': 'Has KEV',
+            'has_exploits': 'Has Exploits',
         }
-        # Customer-friendly column names for project-level table
-        column_name_map = {
-            'name': 'Component',
-            'version': 'Version',
-            'project.name': 'Project',
-            'composite_risk_score': 'Risk Score',
-            'finding_count': 'Findings',
-            'has_kev': 'KEV',
-        }
-        # Customer-friendly column names for portfolio-level table
-        portfolio_column_map = {
-            'name': 'Component',
-            'portfolio_risk_score': 'Portfolio Risk',
-            'finding_count': 'Total Findings',
-            'project_count': 'Projects Affected',
-            'has_kev': 'KEV',
-        }
-        friendly_headers = []
-        # Determine if this is portfolio data by checking for portfolio-specific columns
-        is_portfolio_data = 'portfolio_risk_score' in df.columns
         
-        for col in df.columns:
-            if is_portfolio_data and col in portfolio_column_map:
-                friendly_headers.append(portfolio_column_map[col])
-            elif col in friendly_names:
+        # Build friendly headers while preserving original column names
+        friendly_headers = []
+        columns = list(df.columns)
+        
+        for col in columns:
+            if col in friendly_names:
                 friendly_headers.append(friendly_names[col])
             else:
                 friendly_headers.append(col.replace('_', ' ').title())
-        # Clean and format the data
+        
+        # Clean and format the data as list of dicts
         cleaned_rows = []
         for _, row in df.iterrows():
-            cleaned_row = []
-            for col in df.columns:
+            cleaned_row = {}
+            for col in columns:
                 value = row[col]
                 
                 # Handle case where value might be a pandas Series or numpy array
@@ -867,34 +859,39 @@ class HTMLRenderer:
                         # If it's a list/array with multiple values, join them
                         value = str(value.tolist() if hasattr(value, 'tolist') else list(value))
                 
-                if col in ['has_kev']:
-                    # Handle both boolean and string values
+                # Clean the value
+                if col in ['has_kev', 'has_exploits']:
+                    # Keep as boolean for template logic
                     if pd.isna(value):
-                        cleaned_row.append('')
-                    elif isinstance(value, bool) and value:
-                        cleaned_row.append('🔒')
-                    elif isinstance(value, str) and value.lower() == "true":
-                        cleaned_row.append('🔒')
+                        cleaned_value = False
+                    elif isinstance(value, bool):
+                        cleaned_value = value
+                    elif isinstance(value, str):
+                        cleaned_value = value.lower() == "true"
                     else:
-                        cleaned_row.append('')
-                elif col == 'finding_count':
-                    cleaned_row.append(int(value) if pd.notna(value) else '')
+                        cleaned_value = bool(value)
+                elif col in ['finding_count', 'findings_count', 'project_count']:
+                    cleaned_value = int(value) if pd.notna(value) else 0
                 elif col in ['portfolio_composite_risk', 'normalized_risk_score', 'composite_risk_score']:
                     # Always convert risk scores to integers
-                    cleaned_row.append(int(value) if pd.notna(value) else '')
+                    cleaned_value = int(value) if pd.notna(value) else 0
                 elif pd.isna(value):
-                    cleaned_row.append('')
+                    cleaned_value = ''
                 elif isinstance(value, (int, float)):
                     if value == int(value):
-                        cleaned_row.append(int(value))
+                        cleaned_value = int(value)
                     else:
-                        cleaned_row.append(round(value, 1))
+                        cleaned_value = round(value, 1)
                 else:
-                    cleaned_row.append(value)
+                    cleaned_value = value
+                
+                cleaned_row[col] = cleaned_value
             cleaned_rows.append(cleaned_row)
+        
         return {
             "headers": friendly_headers,
-            "rows": cleaned_rows,
+            "columns": columns,  # Original column names for reference
+            "rows": cleaned_rows,  # List of dicts with original column names as keys
             "row_count": len(df),
         }
 

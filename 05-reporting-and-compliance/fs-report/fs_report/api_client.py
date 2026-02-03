@@ -25,7 +25,7 @@ import os
 import json
 import time
 import random
-from typing import Any, List
+from typing import Any, List, Optional
 
 import httpx
 from httpx import HTTPStatusError
@@ -38,17 +38,45 @@ from json.decoder import JSONDecodeError
 
 from fs_report.data_cache import DataCache
 from fs_report.models import Config, QueryConfig, QueryParams
+from fs_report.sqlite_cache import SQLiteCache
 from tqdm import tqdm
 
 
 class APIClient:
     """Client for interacting with the Finite State REST API."""
 
-    def __init__(self, config: Config, cache: DataCache | None = None) -> None:
-        """Initialize the API client."""
+    def __init__(
+        self, 
+        config: Config, 
+        cache: DataCache | None = None,
+        sqlite_cache: Optional[SQLiteCache] = None,
+        cache_ttl: int = 0,
+    ) -> None:
+        """
+        Initialize the API client.
+        
+        Args:
+            config: Application configuration
+            cache: Legacy in-memory cache (for backwards compatibility)
+            sqlite_cache: SQLite-based cache with TTL support [BETA]
+            cache_ttl: Cache TTL in seconds. 0 = no cross-run caching (default)
+        """
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.cache = cache or DataCache()
+        self.cache_ttl = cache_ttl
+        
+        # Initialize SQLite cache if TTL is set or explicitly provided
+        if sqlite_cache:
+            self.sqlite_cache = sqlite_cache
+        elif cache_ttl > 0:
+            self.sqlite_cache = SQLiteCache(
+                cache_dir=getattr(config, 'cache_dir', None),
+                default_ttl=cache_ttl
+            )
+        else:
+            # No SQLite cache by default (for backwards compatibility)
+            self.sqlite_cache = None
 
         # Suppress httpx HTTP request logging unless verbose
         if not config.verbose:
@@ -95,6 +123,8 @@ class APIClient:
             params["offset"] = str(query.params.offset)
         if query.params.archived is not None:
             params["archived"] = str(query.params.archived).lower()
+        if query.params.finding_type:
+            params["type"] = query.params.finding_type
 
         # Log the actual API request parameters
         self.logger.debug(f"Actual API request params: {params}")
@@ -132,15 +162,216 @@ class APIClient:
                 result = [data] if data else []
                 self.cache.put(query, result)
                 return result
+        except HTTPStatusError as e:
+            status_code = e.response.status_code
+            if status_code == 401:
+                raise ValueError(f"Authentication failed: Check your API token. Response: {e.response.text}") from e
+            elif status_code == 403:
+                raise ValueError(f"Access denied: You may not have permission to access this resource. Response: {e.response.text}") from e
+            elif status_code == 429:
+                raise ValueError(f"Rate limit exceeded: Please wait and try again. Response: {e.response.text}") from e
+            else:
+                raise ValueError(f"API request failed: {status_code} - {e.response.text}") from e
+        except httpx.RequestError as e:
+            raise ValueError(f"Network error: {e}") from e
         except Exception as e:
             self.logger.error(f"Error fetching data from {url}: {e}")
             raise
 
-    def fetch_all_with_resume(self, query: Any, progress_file: str = None, max_retries: int = 8) -> List[dict]:
+    def fetch_all_with_resume(self, query: Any, progress_file: str = None, max_retries: int = 8, show_progress: bool = True) -> List[dict]:
         """
         Fetch all paginated results with robust retry, progress logging, and resume support.
-        Stores progress/results in a JSON file (progress_file). Resumes from last offset if interrupted.
+        
+        If SQLite cache is enabled (cache_ttl > 0), uses SQLite for efficient storage
+        and crash recovery. Otherwise, falls back to JSON progress files.
+        
+        Args:
+            query: Query configuration
+            progress_file: Path to progress file for resume support (legacy, ignored with SQLite)
+            max_retries: Maximum retry attempts
+            show_progress: Whether to show tqdm progress bar (disable when nested in another progress bar)
         """
+        # Use SQLite cache if available
+        if self.sqlite_cache is not None:
+            return self._fetch_all_with_sqlite(query, max_retries, show_progress)
+        
+        # Fall back to legacy JSON-based progress
+        return self._fetch_all_with_json_progress(query, progress_file, max_retries, show_progress)
+    
+    def _fetch_all_with_sqlite(self, query: Any, max_retries: int = 8, show_progress: bool = True) -> List[dict]:
+        """
+        Fetch all paginated results using SQLite cache for storage and crash recovery.
+        
+        [BETA] This method uses the new SQLite-based caching system.
+        
+        Args:
+            query: Query configuration
+            max_retries: Maximum retry attempts
+            show_progress: Whether to show tqdm progress bar
+        """
+        endpoint = query.endpoint
+        params = {
+            'filter': query.params.filter,
+            'sort': query.params.sort,
+            'limit': query.params.limit,
+            'archived': query.params.archived,
+            'finding_type': query.params.finding_type,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        
+        # Check if we have valid cached data
+        if self.sqlite_cache.is_cache_valid(endpoint, params, self.cache_ttl):
+            cached_data = self.sqlite_cache.get_cached_data(endpoint, params)
+            if cached_data:
+                self.logger.info(f"[BETA] Using SQLite cached data for {endpoint} ({len(cached_data)} records)")
+                return cached_data
+        
+        # Check for incomplete fetch (crash recovery)
+        existing_count = self.sqlite_cache.get_progress(endpoint, params)
+        offset = existing_count
+        
+        if existing_count > 0:
+            self.logger.info(f"[BETA] Resuming from SQLite cache: {existing_count} records already fetched")
+            query_hash = self.sqlite_cache.start_fetch(endpoint, params, self.cache_ttl)
+            # Don't clear existing data - we're resuming
+        else:
+            # Start a new fetch
+            query_hash = self.sqlite_cache.start_fetch(endpoint, params, self.cache_ttl)
+        
+        # Fetch remaining data
+        limit = getattr(query.params, 'limit', 10000) or 10000
+        consecutive_empty_pages = 0
+        max_consecutive_empty = 3
+        retry_count = 0
+        total_stored = existing_count
+        seen_ids = set()  # Track IDs to detect duplicates
+        
+        bar_desc = f"           Fetching {endpoint}"
+        pbar = tqdm(total=None, desc=bar_desc, ncols=100, 
+                   bar_format="{desc} |{bar}| {n_fmt} records", 
+                   disable=not show_progress,
+                   initial=existing_count)
+        
+        try:
+            while True:
+                page_query = query.copy(deep=True)
+                page_query.params.offset = offset
+                
+                self.logger.debug(f"Fetching: {endpoint} offset={offset} limit={limit}")
+                
+                try:
+                    page = self._fetch_page_direct(page_query)
+                    self.logger.debug(f"Fetched page with {len(page) if page else 0} records at offset {offset}")
+                except Exception as e:
+                    wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
+                    self.logger.debug(f"Transient error at offset {offset}: {e}. Retrying in {wait:.1f}s...")
+                    time.sleep(wait)
+                    retry_count += 1
+                    if retry_count > max_retries:
+                        self.logger.error(f"Max retries exceeded at offset {offset}. Aborting.")
+                        break
+                    continue
+                
+                retry_count = 0
+                
+                if not page:
+                    consecutive_empty_pages += 1
+                    self.logger.debug(f"Empty page at offset {offset} (consecutive empty: {consecutive_empty_pages})")
+                    if consecutive_empty_pages >= max_consecutive_empty:
+                        self.logger.debug(f"Stopping pagination after {consecutive_empty_pages} consecutive empty pages.")
+                        break
+                    offset += limit
+                    continue
+                
+                consecutive_empty_pages = 0
+                
+                # Check for duplicate records
+                page_ids = {rec.get('id') for rec in page if rec.get('id')}
+                duplicates = page_ids & seen_ids
+                if duplicates:
+                    self.logger.debug(f"Found {len(duplicates)} duplicate record IDs at offset {offset}. Stopping pagination.")
+                    break
+                
+                seen_ids.update(page_ids)
+                
+                # Store records in SQLite cache (atomic, crash-safe)
+                stored = self.sqlite_cache.store_records(query_hash, endpoint, page)
+                total_stored += stored
+                offset += limit
+                
+                pbar.update(stored)
+                self.logger.debug(f"Stored {stored} records in SQLite cache (total: {total_stored})")
+                
+        finally:
+            pbar.close()
+        
+        # Mark fetch as complete
+        self.sqlite_cache.complete_fetch(query_hash)
+        self.logger.debug(f"[BETA] Fetch complete: {total_stored} records stored in SQLite cache")
+        
+        # Return all records from cache
+        return self.sqlite_cache.get_cached_data(endpoint, params) or []
+    
+    def _fetch_page_direct(self, query: QueryConfig) -> list[dict[str, Any]]:
+        """
+        Fetch a single page of data directly from API (bypassing in-memory cache).
+        
+        Used by SQLite cache fetcher to avoid double-caching.
+        """
+        url = f"{self.base_url}{query.endpoint}"
+        
+        params: dict[str, str] = {}
+        if query.params.filter:
+            params["filter"] = self._substitute_variables(query.params.filter, query.endpoint)
+        if query.params.sort:
+            params["sort"] = query.params.sort
+        if query.params.limit:
+            params["limit"] = str(query.params.limit)
+        if query.params.offset:
+            params["offset"] = str(query.params.offset)
+        if query.params.archived is not None:
+            params["archived"] = str(query.params.archived).lower()
+        if query.params.finding_type:
+            params["type"] = query.params.finding_type
+        
+        response = self.client.get(url, params=params, timeout=60)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Handle different API response formats
+        if isinstance(data, list):
+            return data
+        elif isinstance(data, dict):
+            items = data.get("items") or data.get("scans") or data.get("data")
+            if items and isinstance(items, list):
+                return items
+            return [data] if data else []
+        return [data] if data else []
+    
+    def _fetch_all_with_json_progress(self, query: Any, progress_file: str = None, max_retries: int = 8, show_progress: bool = True) -> List[dict]:
+        """
+        Legacy fetch method using JSON progress files.
+        
+        DEPRECATED: This method will be removed in a future release.
+        Use --cache-ttl to enable the new SQLite-based caching which provides:
+        - ~80% smaller storage through field trimming
+        - Better crash recovery
+        - Optional cross-run caching with TTL
+        
+        Stores progress/results in a JSON file (progress_file). Resumes from last offset if interrupted.
+        
+        Args:
+            query: Query configuration
+            progress_file: Path to progress file for resume support
+            max_retries: Maximum retry attempts
+            show_progress: Whether to show tqdm progress bar
+        """
+        import warnings
+        warnings.warn(
+            "JSON progress files are deprecated. Use --cache-ttl to enable SQLite caching.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         # Check cache first
         cached_data = self.cache.get(query)
         if cached_data is not None:
@@ -174,9 +405,9 @@ class APIClient:
         retry_count = 0
         using_cache = False
         try:
-            # TQDM progress bar setup
+            # TQDM progress bar setup (disabled when nested in another progress context)
             bar_desc = f"           Fetching {getattr(query, 'endpoint', '')}"
-            pbar = tqdm(total=None, desc=bar_desc, ncols=100, bar_format="{desc} |{bar}| {n_fmt} records")
+            pbar = tqdm(total=None, desc=bar_desc, ncols=100, bar_format="{desc} |{bar}| {n_fmt} records", disable=not show_progress)
             
             while True:
                 page_query = query.copy(deep=True)
@@ -202,9 +433,9 @@ class APIClient:
                         ids = [rec.get('id', '<no id>') for rec in page[:5]]
                         self.logger.debug(f"First 5 record IDs at offset {offset}: {ids}")
                 except Exception as e:
-                    # Handle rate limit (429) or network error
+                    # Handle rate limit (429) or network error - retry silently
                     wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
-                    self.logger.warning(f"Error fetching page at offset {offset}: {e}. Retrying in {wait:.1f}s...")
+                    self.logger.debug(f"Transient error at offset {offset}: {e}. Retrying in {wait:.1f}s...")
                     time.sleep(wait)
                     retry_count += 1
                     if retry_count > max_retries:
@@ -317,11 +548,16 @@ class APIClient:
 
     def get_cache_stats(self) -> dict[str, Any]:
         """Get cache statistics."""
-        return self.cache.get_stats()
+        stats = self.cache.get_stats()
+        if self.sqlite_cache:
+            stats['sqlite_cache'] = self.sqlite_cache.get_stats()
+        return stats
 
     def clear_cache(self) -> None:
         """Clear the data cache."""
         self.cache.clear()
+        if self.sqlite_cache:
+            self.sqlite_cache.clear()
 
     def __enter__(self) -> "APIClient":
         """Context manager entry."""
