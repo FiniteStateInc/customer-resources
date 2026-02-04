@@ -23,7 +23,8 @@
                 <th>Version</th>
                 <th>Type</th>
                 <th>Supplier</th>
-                <th>Licenses</th>
+                <th>Declared License</th>
+                <th>Concluded License</th>
                 <th>Project</th>
                 <th>Project Version</th>
                 <th>Findings</th>
@@ -38,7 +39,7 @@
                 {% if row['Project Name'] != current_project.value %}
                     {% set current_project.value = row['Project Name'] %}
                     <tr style="background-color: #f8f9fa; font-weight: bold;">
-                        <td colspan="11">{{ row['Project Name'] }}</td>
+                        <td colspan="12">{{ row['Project Name'] }}</td>
                     </tr>
                 {% endif %}
                 <tr>
@@ -67,8 +68,15 @@
                         </span>
                     </td>
                     <td>{{ row['Supplier'] }}</td>
-                    <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;" title="{{ row['Licenses'] }}">
-                        {{ row['Licenses'] }}
+                    <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;" title="{{ row.get('Declared License', '') }}">
+                        {{ row.get('Declared License', '') }}
+                    </td>
+                    <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;" title="{{ row.get('Concluded License', '') }}">
+                        {% if row.get('Concluded License') %}
+                            <span style="background-color: #e8f5e9; padding: 2px 6px; border-radius: 4px;">
+                                {{ row['Concluded License'] }}
+                            </span>
+                        {% endif %}
                     </td>
                     <td>{{ row['Project Name'] }}</td>
                     <td>{{ row['Project Version'] }}</td>

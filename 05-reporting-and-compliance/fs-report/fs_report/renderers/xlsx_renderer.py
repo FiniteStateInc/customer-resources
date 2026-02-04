@@ -26,6 +26,9 @@ from typing import Any
 
 import pandas as pd
 
+# Excel's maximum row limit (excluding header)
+EXCEL_MAX_ROWS = 1_048_575  # 1,048,576 total including header
+
 
 class XLSXRenderer:
     """Renderer for XLSX output format."""
@@ -47,6 +50,15 @@ class XLSXRenderer:
                 df = data
             else:
                 df = pd.DataFrame(data)
+            
+            # Check for Excel row limit and truncate if necessary
+            original_rows = len(df)
+            if original_rows > EXCEL_MAX_ROWS:
+                self.logger.warning(
+                    f"Data has {original_rows:,} rows, exceeding Excel's limit of {EXCEL_MAX_ROWS:,}. "
+                    f"Truncating to {EXCEL_MAX_ROWS:,} rows. Use CSV for full data."
+                )
+                df = df.head(EXCEL_MAX_ROWS)
 
             # Truncate sheet name if necessary
             safe_name = self.safe_sheet_name(sheet_name)

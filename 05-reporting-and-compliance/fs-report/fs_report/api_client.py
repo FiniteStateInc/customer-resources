@@ -72,7 +72,8 @@ class APIClient:
         elif cache_ttl > 0:
             self.sqlite_cache = SQLiteCache(
                 cache_dir=getattr(config, 'cache_dir', None),
-                default_ttl=cache_ttl
+                default_ttl=cache_ttl,
+                domain=config.domain,  # Domain-specific cache file
             )
         else:
             # No SQLite cache by default (for backwards compatibility)

@@ -25,7 +25,7 @@ def component_list_pandas_transform(data: List[Dict[str, Any]], config: Config) 
     # Convert to DataFrame
     df = pd.DataFrame(data)
     
-    # Flatten nested data structures first
+    # Flatten nested data structures first (also handles license field normalization)
     df = flatten_component_data(df)
     
     # Select and rename required columns
@@ -34,7 +34,8 @@ def component_list_pandas_transform(data: List[Dict[str, Any]], config: Config) 
         'version': 'Version',
         'type': 'Type',
         'supplier': 'Supplier',
-        'licenses': 'Licenses',
+        'declaredLicenses': 'Declared License',
+        'concludedLicenses': 'Concluded License',
         'project.name': 'Project Name',
         'projectVersion.version': 'Project Version',
         'branch.name': 'Branch',
@@ -64,7 +65,8 @@ def component_list_pandas_transform(data: List[Dict[str, Any]], config: Config) 
         'Version': 'Unknown',
         'Type': 'Unknown',
         'Supplier': 'Unknown',
-        'Licenses': 'Unknown',
+        'Declared License': '',
+        'Concluded License': '',
         'Project Name': 'Unknown',
         'Project Version': 'Unknown',
         'Branch': 'main',
@@ -139,11 +141,10 @@ def flatten_component_data(df: pd.DataFrame) -> pd.DataFrame:
         
         df['branch.name'] = df['branch'].apply(extract_branch_name)
     
-    # Handle license details - extract summary if licenses is missing
-    if 'licenseDetails' in df.columns and 'licenses' not in df.columns:
+    # Handle license details - extract to declaredLicenses if not present
+    if 'declaredLicenses' not in df.columns and 'licenseDetails' in df.columns:
         def extract_licenses_summary(license_details):
             if isinstance(license_details, list) and license_details:
-                # Extract SPDX identifiers or license names
                 licenses = []
                 for ld in license_details:
                     if isinstance(ld, dict):
@@ -152,10 +153,9 @@ def flatten_component_data(df: pd.DataFrame) -> pd.DataFrame:
                             licenses.append(spdx)
                         elif ld.get('license'):
                             licenses.append(ld.get('license'))
-                return ', '.join(licenses) if licenses else 'Unknown'
-            return 'Unknown'
-        
-        df['licenses'] = df['licenseDetails'].apply(extract_licenses_summary)
+                return ', '.join(licenses) if licenses else None
+            return None
+        df['declaredLicenses'] = df['licenseDetails'].apply(extract_licenses_summary)
     
     # Ensure all required columns exist with defaults
     default_columns = {
@@ -163,7 +163,8 @@ def flatten_component_data(df: pd.DataFrame) -> pd.DataFrame:
         'version': 'Unknown',
         'type': 'Unknown',
         'supplier': 'Unknown',
-        'licenses': 'Unknown',
+        'declaredLicenses': None,  # Auto-detected licenses
+        'concludedLicenses': None,  # User-specified licenses
         'findings': 0,
         'warnings': 0,
         'violations': 0,

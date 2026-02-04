@@ -323,9 +323,10 @@ class ReportEngine:
                 ]:
                     from fs_report.models import QueryConfig, QueryParams
                     if recipe.name == "User Activity":
-                        # Build filter for audit endpoint using its specific date format
-                        # Format: date=START,date=END (two separate date params)
-                        audit_filter = f"date={self.config.start_date}T00:00:00,date={self.config.end_date}T23:59:59"
+                        # Build filter for audit endpoint using RSQL format
+                        # The audit API supports: time=ge=START;time=le=END
+                        # (The date=START,date=END format has parsing issues with commas in filter param)
+                        audit_filter = f"time=ge={self.config.start_date}T00:00:00Z;time=le={self.config.end_date}T23:59:59Z"
                         
                         unified_query = QueryConfig(
                             endpoint=recipe.query.endpoint,

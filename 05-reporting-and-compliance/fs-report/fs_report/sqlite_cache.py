@@ -93,7 +93,8 @@ COMPONENT_FIELDS = {
     'version': 'version',
     'type': 'type',
     'supplier': 'supplier',
-    'licenses': 'licenses',
+    'declaredLicenses': 'declared_licenses',  # Auto-detected licenses
+    'concludedLicenses': 'concluded_licenses',  # User-specified licenses (takes precedence)
     'releaseDate': 'release_date',
     'findings': 'findings',
     'warnings': 'warnings',
@@ -102,6 +103,11 @@ COMPONENT_FIELDS = {
     'source': 'source',  # Stored as JSON array
     'status': 'status',
     'edited': 'edited',
+    # Project context (needed for Component List report)
+    'project.id': 'project_id',
+    'project.name': 'project_name',
+    'projectVersion.id': 'project_version_id',
+    'projectVersion.version': 'project_version',
 }
 
 PROJECT_FIELDS = {
@@ -201,7 +207,8 @@ CREATE TABLE IF NOT EXISTS components (
     version TEXT,
     type TEXT,
     supplier TEXT,
-    licenses TEXT,
+    declared_licenses TEXT,
+    concluded_licenses TEXT,
     release_date TEXT,
     findings INTEGER,
     warnings INTEGER,
@@ -210,6 +217,10 @@ CREATE TABLE IF NOT EXISTS components (
     source TEXT,
     status TEXT,
     edited INTEGER,
+    project_id TEXT,
+    project_name TEXT,
+    project_version_id TEXT,
+    project_version TEXT,
     PRIMARY KEY (query_hash, id)
 );
 
@@ -258,7 +269,8 @@ def parse_ttl(ttl_string: str) -> int:
     """
     Parse a TTL string into seconds.
     
-    Supports formats: '1h', '30m', '1d', '3600', '1h30m'
+    Supports formats: '1h', '30m', '1d', '3600s', '1h30m'
+    Bare numbers are treated as hours (e.g., '4' = 4 hours).
     
     Args:
         ttl_string: TTL specification string
@@ -272,9 +284,10 @@ def parse_ttl(ttl_string: str) -> int:
     if not ttl_string:
         return 0
     
-    # If it's just a number, treat as seconds
+    # If it's just a number, treat as hours (more intuitive default)
     try:
-        return int(ttl_string)
+        hours = int(ttl_string)
+        return hours * 3600
     except ValueError:
         pass
     
@@ -411,6 +424,7 @@ class SQLiteCache:
         self, 
         cache_dir: Optional[str] = None,
         default_ttl: int = 0,  # 0 = no caching across runs
+        domain: Optional[str] = None,  # Domain for instance-specific cache
     ):
         """
         Initialize the SQLite cache.
@@ -419,10 +433,16 @@ class SQLiteCache:
             cache_dir: Directory to store cache database. 
                        Defaults to ~/.fs-report/
             default_ttl: Default TTL in seconds. 0 disables cross-run caching.
+            domain: Finite State domain (e.g., "customer.finitestate.io").
+                   Creates domain-specific cache file to avoid mixing data.
         """
         self.default_ttl = default_ttl
         self.cache_hits = 0
         self.cache_misses = 0
+        
+        # Session start time - cache validity is checked against this, not current time
+        # This ensures cache doesn't expire mid-report for long-running reports
+        self.session_start_time = time.time()
         
         # Determine cache directory
         if cache_dir:
@@ -431,7 +451,15 @@ class SQLiteCache:
             self.cache_dir = Path.home() / '.fs-report'
         
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path = self.cache_dir / 'cache.db'
+        
+        # Use domain-specific cache file to avoid mixing data between instances
+        if domain:
+            # Sanitize domain for filename (replace dots, remove protocol)
+            safe_domain = domain.replace('https://', '').replace('http://', '')
+            safe_domain = safe_domain.replace('/', '_').replace(':', '_')
+            self.db_path = self.cache_dir / f'{safe_domain}.db'
+        else:
+            self.db_path = self.cache_dir / 'cache.db'
         
         # Initialize database
         self._init_db()
@@ -445,9 +473,12 @@ class SQLiteCache:
             conn.commit()
     
     def _get_connection(self) -> sqlite3.Connection:
-        """Get a database connection."""
-        conn = sqlite3.connect(self.db_path)
+        """Get a database connection with concurrency settings."""
+        conn = sqlite3.connect(self.db_path, timeout=30.0)  # Wait up to 30s for locks
         conn.row_factory = sqlite3.Row
+        # Enable WAL mode for better concurrency (readers don't block writers)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")  # 30 second timeout
         return conn
     
     def is_cache_valid(
@@ -494,13 +525,14 @@ class SQLiteCache:
                 logger.debug(f"Cache entry for {endpoint} exists but fetch was incomplete")
                 return False
             
-            # Check TTL
-            age_seconds = time.time() - row['created_at']
-            if age_seconds > ttl:
-                logger.debug(f"Cache entry for {endpoint} expired (age: {age_seconds:.0f}s, ttl: {ttl}s)")
+            # Check TTL against session start time (not current time)
+            # This ensures cache doesn't expire mid-report for long-running reports
+            age_at_session_start = self.session_start_time - row['created_at']
+            if age_at_session_start > ttl:
+                logger.debug(f"Cache entry for {endpoint} expired at session start (age: {age_at_session_start:.0f}s, ttl: {ttl}s)")
                 return False
             
-            logger.debug(f"Cache hit for {endpoint} (age: {age_seconds:.0f}s, records: {row['record_count']})")
+            logger.debug(f"Cache hit for {endpoint} (age at session start: {age_at_session_start:.0f}s, records: {row['record_count']})")
             return True
     
     def get_cached_data(self, endpoint: str, params: dict) -> Optional[List[dict]]:
@@ -803,11 +835,11 @@ class SQLiteCache:
     
     def clear(self, endpoint: Optional[str] = None) -> None:
         """
-        Clear cached data.
+        Clear cached data and reset schema.
         
         Args:
             endpoint: If specified, only clear data for this endpoint.
-                     If None, clear all cached data.
+                     If None, clear all cached data and recreate tables with current schema.
                      
         Raises:
             ValueError: If endpoint is specified but not recognized
@@ -815,15 +847,19 @@ class SQLiteCache:
         with self._get_connection() as conn:
             if endpoint:
                 table_name = get_table_for_endpoint(endpoint)  # May raise ValueError
-                conn.execute(f"DELETE FROM {table_name}")
+                # Drop and recreate to get updated schema
+                conn.execute(f"DROP TABLE IF EXISTS {table_name}")
                 conn.execute("DELETE FROM cache_meta WHERE endpoint LIKE ?", (f'%{endpoint}%',))
             else:
-                # Clear all tables
+                # Drop all tables to reset schema
                 for table in ['findings', 'scans', 'components', 'projects', 'audit_events', 'cache_meta']:
-                    conn.execute(f"DELETE FROM {table}")
+                    conn.execute(f"DROP TABLE IF EXISTS {table}")
             conn.commit()
         
-        logger.info(f"Cache cleared{f' for {endpoint}' if endpoint else ''}")
+        # Recreate tables with current schema
+        self._init_db()
+        
+        logger.info(f"Cache cleared and schema reset{f' for {endpoint}' if endpoint else ''}")
     
     def get_stats(self) -> dict:
         """

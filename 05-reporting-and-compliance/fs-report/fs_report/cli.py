@@ -808,8 +808,8 @@ def main(
     cache_ttl: Union[str, None] = typer.Option(
         None,
         "--cache-ttl",
-        help="[BETA] Enable persistent SQLite cache with TTL (e.g., '1h', '30m', '1d'). "
-             "Default: disabled (fresh data each run).",
+        help="[BETA] Enable persistent SQLite cache with TTL (e.g., '4' for 4 hours, '30m', '1d'). "
+             "Bare numbers are hours. Default: disabled (fresh data each run).",
     ),
     no_cache: bool = typer.Option(
         False,
@@ -827,10 +827,14 @@ def main(
     
     # Handle --clear-cache
     if clear_cache:
-        cache = SQLiteCache()
+        # Get domain for domain-specific cache
+        cache_domain = domain or os.getenv("FINITE_STATE_DOMAIN")
+        cache = SQLiteCache(domain=cache_domain)
         cache.clear()
         console.print("[green]Cache cleared successfully.[/green]")
         console.print(f"[dim]Cache location: {cache.db_path}[/dim]")
+        if cache_domain:
+            console.print(f"[dim]Domain: {cache_domain}[/dim]")
         raise typer.Exit(0)
     
     # Parse cache TTL
