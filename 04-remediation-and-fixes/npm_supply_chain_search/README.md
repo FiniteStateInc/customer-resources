@@ -29,35 +29,24 @@ The S1ngularity/nx attack is a large-scale supply chain attack that occurred on 
 
 ## 🛠️ Requirements
 
-- Python 3.7+
-- `requests` library
+- Python 3.8+
 - Finite State API access
 - Valid API key
 
 ## 📦 Installation
 
-1. Clone or download this repository
-2. Create a virtual environment (recommended):
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-3. Install required dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+Install [uv](https://docs.astral.sh/uv/):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+No further installation required - uv handles dependencies automatically.
 
 ## 🚀 Usage
 
-### Basic Usage
-
-Run the scanner with:
 ```bash
-# Make sure virtual environment is activated
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Run the scanner
-python search_affected_packages.py
+uv run search_affected_packages.py
 ```
 
 The script will:

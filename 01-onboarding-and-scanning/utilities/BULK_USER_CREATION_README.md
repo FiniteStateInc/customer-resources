@@ -55,8 +55,11 @@ alice.williams@example.com,Projects Admin,,Alice,Williams
 
 ## Prerequisites
 
-1. Python 3.6+
-2. `requests` library: `pip install requests`
+1. Python 3.8+
+2. [uv](https://docs.astral.sh/uv/) - install with:
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
 3. Environment variables set:
    - `FINITE_STATE_DOMAIN`: Your Finite State domain (e.g., `jermaine.finitestate.io`)
    - `FINITE_STATE_AUTH_TOKEN`: Your API token
@@ -68,7 +71,7 @@ alice.williams@example.com,Projects Admin,,Alice,Williams
 Test the script without making any changes:
 
 ```bash
-python3 bulk_create_users.py sample_users.csv --dry-run
+uv run bulk_create_users.py sample_users.csv --dry-run
 ```
 
 ### Create Users
@@ -76,7 +79,7 @@ python3 bulk_create_users.py sample_users.csv --dry-run
 Run the script to create users:
 
 ```bash
-python3 bulk_create_users.py sample_users.csv
+uv run bulk_create_users.py sample_users.csv
 ```
 
 ### Verbose Logging
@@ -84,7 +87,7 @@ python3 bulk_create_users.py sample_users.csv
 Enable detailed debug logging:
 
 ```bash
-python3 bulk_create_users.py sample_users.csv --verbose
+uv run bulk_create_users.py sample_users.csv --verbose
 ```
 
 ## How It Works

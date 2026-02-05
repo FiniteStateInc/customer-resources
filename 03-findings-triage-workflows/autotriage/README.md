@@ -4,10 +4,10 @@ A comprehensive Python script for managing vulnerability triage decisions using 
 
 ## 🚀 Quick Start
 
-### 1. Install Dependencies
+### 1. Install uv (if not already installed)
 
 ```bash
-pip install -r requirements.txt
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 ### 2. Set Environment Variables
@@ -21,18 +21,20 @@ export FINITE_STATE_DOMAIN="your-org.finitestate.io"
 
 ### 3. Run the Script
 
+Using [uv](https://docs.astral.sh/uv/):
+
 ```bash
 # Show VEX information
-python3 autotriage.py vex-info
+uv run autotriage.py vex-info
 
 # View findings for a project/version
-python3 autotriage.py view <version_id>
+uv run autotriage.py view <version_id>
 
 # Replicate triage from one artifact to another
-python3 autotriage.py replicate <source_id> <target_id> --dry-run
+uv run autotriage.py replicate <source_id> <target_id> --dry-run
 
 # Apply triage from CSV file
-python3 autotriage.py apply -c cves.csv -v <version_id> --dry-run
+uv run autotriage.py apply -c cves.csv -v <version_id> --dry-run
 ```
 
 ## 📋 Commands
@@ -44,7 +46,7 @@ The script uses a subcommand-based interface for better organization:
 Display VEX information and requirements.
 
 ```bash
-python3 autotriage.py vex-info
+uv run autotriage.py vex-info
 ```
 
 ### `view`
@@ -53,19 +55,19 @@ View findings for a project version. Accepts version ID, project ID, or project 
 
 ```bash
 # View by version ID
-python3 autotriage.py view <version_id>
+uv run autotriage.py view <version_id>
 
 # View by project ID (shows latest version)
-python3 autotriage.py view <project_id>
+uv run autotriage.py view <project_id>
 
 # View by project name (shows latest version)
-python3 autotriage.py view "Project Name"
+uv run autotriage.py view "Project Name"
 
 # With filters
-python3 autotriage.py view <version_id> --severity HIGH --component spring-core
+uv run autotriage.py view <version_id> --severity HIGH --component spring-core
 
 # With debug output
-python3 autotriage.py view <version_id> --debug
+uv run autotriage.py view <version_id> --debug
 ```
 
 **Options:**
@@ -84,16 +86,16 @@ Replicate VEX triage decisions from a source artifact to a target artifact.
 
 ```bash
 # Basic replication
-python3 autotriage.py replicate <source_id> <target_id>
+uv run autotriage.py replicate <source_id> <target_id>
 
 # Dry run (see what would change)
-python3 autotriage.py replicate <source_id> <target_id> --dry-run
+uv run autotriage.py replicate <source_id> <target_id> --dry-run
 
 # With filtering
-python3 autotriage.py replicate <source_id> <target_id> --severity HIGH --component spring-core
+uv run autotriage.py replicate <source_id> <target_id> --severity HIGH --component spring-core
 
 # Overwrite existing decisions
-python3 autotriage.py replicate <source_id> <target_id> --overwrite
+uv run autotriage.py replicate <source_id> <target_id> --overwrite
 ```
 
 **Options:**
@@ -115,16 +117,16 @@ Apply triage decisions from a CSV file or CVE list to one or more artifacts.
 
 ```bash
 # Apply CSV to a specific version
-python3 autotriage.py apply -c cves.csv -v <version_id> --dry-run
+uv run autotriage.py apply -c cves.csv -v <version_id> --dry-run
 
 # Apply CSV to all versions in a project
-python3 autotriage.py apply -c cves.csv -p <project_id> --dry-run
+uv run autotriage.py apply -c cves.csv -p <project_id> --dry-run
 
 # Apply CSV organization-wide (requires confirmation)
-python3 autotriage.py apply -c cves.csv --all-projects --dry-run
+uv run autotriage.py apply -c cves.csv --all-projects --dry-run
 
 # Apply same status to multiple CVEs
-python3 autotriage.py apply --cve "CVE-2023-12345,CVE-2023-12346" -v <version_id> -s NOT_AFFECTED --dry-run
+uv run autotriage.py apply --cve "CVE-2023-12345,CVE-2023-12346" -v <version_id> -s NOT_AFFECTED --dry-run
 ```
 
 **CSV Format:**
@@ -156,7 +158,7 @@ CVE-2023-12346,FALSE_POSITIVE,CODE_NOT_PRESENT,WILL_NOT_FIX,False positive
 Restore findings from a backup file.
 
 ```bash
-python3 autotriage.py rollback backups/backup_<id>_<timestamp>.json
+uv run autotriage.py rollback backups/backup_<id>_<timestamp>.json
 ```
 
 Backups are automatically created before making changes (when not in dry-run mode).
@@ -196,49 +198,49 @@ Backups are automatically created before making changes (when not in dry-run mod
 
 ```bash
 # View findings for a version
-python3 autotriage.py view 1234567890123456789
+uv run autotriage.py view 1234567890123456789
 
 # View latest version of a project
-python3 autotriage.py view -9193618121057357350
+uv run autotriage.py view -9193618121057357350
 
 # View by project name
-python3 autotriage.py view "My Project"
+uv run autotriage.py view "My Project"
 
 # View with filters
-python3 autotriage.py view 1234567890123456789 --severity HIGH --component spring-core --debug
+uv run autotriage.py view 1234567890123456789 --severity HIGH --component spring-core --debug
 ```
 
 ### Replicate Triage
 
 ```bash
 # Basic replication (dry-run first!)
-python3 autotriage.py replicate 1234567890123456789 9876543210987654321 --dry-run
+uv run autotriage.py replicate 1234567890123456789 9876543210987654321 --dry-run
 
 # Replication with filtering
-python3 autotriage.py replicate 1234567890123456789 9876543210987654321 --severity HIGH --component spring-core --dry-run
+uv run autotriage.py replicate 1234567890123456789 9876543210987654321 --severity HIGH --component spring-core --dry-run
 
 # Overwrite mode
-python3 autotriage.py replicate 1234567890123456789 9876543210987654321 --overwrite --dry-run
+uv run autotriage.py replicate 1234567890123456789 9876543210987654321 --overwrite --dry-run
 ```
 
 ### Apply CSV Triage
 
 ```bash
 # Apply to a version
-python3 autotriage.py apply -c test_cves.csv -v 1234567890123456789 --dry-run
+uv run autotriage.py apply -c test_cves.csv -v 1234567890123456789 --dry-run
 
 # Apply to all versions in a project
-python3 autotriage.py apply -c test_cves.csv -p -9193618121057357350 --dry-run
+uv run autotriage.py apply -c test_cves.csv -p -9193618121057357350 --dry-run
 
 # Apply to multiple versions from file
-python3 autotriage.py apply -c test_cves.csv --target-list versions.txt --dry-run
+uv run autotriage.py apply -c test_cves.csv --target-list versions.txt --dry-run
 ```
 
 ### Rollback
 
 ```bash
 # Restore from backup
-python3 autotriage.py rollback backups/backup_1234567890123456789_20251126_142150.json
+uv run autotriage.py rollback backups/backup_1234567890123456789_20251126_142150.json
 ```
 
 ## 🔒 Backup and Restore
@@ -270,8 +272,8 @@ When justification/response are missing, defaults are applied:
 
 ### Environment Setup
 
-- Requires Python 3.6+ (recommended: 3.8+)
-- Only external dependency: `requests` library
+- Requires Python 3.8+
+- Only external dependency: `requests` library (auto-installed when using `uv run`)
 - API token must have appropriate permissions
 - Project versions must exist and be accessible
 
@@ -280,8 +282,8 @@ When justification/response are missing, defaults are applied:
 **Always use `--dry-run` first** to see what would change:
 
 ```bash
-python3 autotriage.py replicate <source> <target> --dry-run
-python3 autotriage.py apply -c cves.csv -v <version_id> --dry-run
+uv run autotriage.py replicate <source> <target> --dry-run
+uv run autotriage.py apply -c cves.csv -v <version_id> --dry-run
 ```
 
 ## 🛠️ Troubleshooting
@@ -309,24 +311,14 @@ python3 autotriage.py apply -c cves.csv -v <version_id> --dry-run
 Always use `--debug` when troubleshooting:
 
 ```bash
-python3 autotriage.py view <version_id> --debug
-python3 autotriage.py replicate <source> <target> --debug --dry-run
+uv run autotriage.py view <version_id> --debug
+uv run autotriage.py replicate <source> <target> --debug --dry-run
 ```
 
 ## 📦 Requirements
 
-### Minimal (Production)
-
-```txt
-requests>=2.25.0
-```
-
-### Install with:
-
-```bash
-pip install -r requirements.txt
-```
-
+- Python 3.8+
+- [uv](https://docs.astral.sh/uv/) - dependencies are installed automatically when you run `uv run autotriage.py`
 
 ## 🔄 Project/Version Resolution
 

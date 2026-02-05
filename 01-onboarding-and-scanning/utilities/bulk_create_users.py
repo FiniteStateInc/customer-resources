@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.8"
+# dependencies = ["requests>=2.25.0"]
+# ///
 """
 Bulk User Creation Script for Finite State
 

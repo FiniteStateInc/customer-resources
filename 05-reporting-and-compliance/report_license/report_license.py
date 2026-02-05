@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.8"
+# dependencies = [
+#     "requests>=2.31.0",
+#     "pandas>=2.0.0",
+#     "rich>=13.0.0",
+# ]
+# ///
 """
 Finite State License Report Generator
 
 A CLI tool that pulls license data from the Finite State REST API and emits
-CSV, JSON, and searchable HTML reports.
+CSV reports.
 """
 
 import argparse
