@@ -1,0 +1,24 @@
+name: search-affected-packages
+display_name: "Supply Chain Scanner"
+description: "Scan portfolio for packages affected by supply chain attacks (e.g., Shai Hulud worm)."
+category: "Remediation"
+source_path: "/app/tools/remediation/npm_supply_chain_search"
+
+parameters:
+  - name: package_list
+    type: text
+    label: "Package List File"
+    required: false
+    placeholder: "Custom JSON file (default: affected_packages.json)"
+    default: "affected_packages.json"
+
+command_template: |
+  cd {{ source_path }} && python search_affected_packages.py {% if package_list != 'affected_packages.json' %}--packages "{{ package_list }}"{% endif %} --output {{ output_dir }}
+
+outputs:
+  - type: file
+    pattern: "scan_results_*.json"
+    label: "Scan Results"
+  - type: file
+    pattern: "package_scan.log"
+    label: "Scan Log"

@@ -1,0 +1,31 @@
+name: componentplus
+display_name: "Component Plus"
+description: "SBOM-based component injection via CycloneDX 1.6 SBOMs for bulk component management."
+category: "Advanced"
+source_path: "/app/tools/integrations/componentplus"
+
+parameters:
+  - name: components_csv
+    type: file
+    label: "Components CSV"
+    required: true
+    placeholder: "CSV with: component_name, component_version, supplier_name, swid_tag_id"
+
+  - name: targets_csv
+    type: file
+    label: "Targets CSV"
+    required: true
+    placeholder: "CSV with project/version IDs or names"
+
+  - name: dry_run
+    type: checkbox
+    label: "Dry run (preview only)"
+    required: false
+    default: true
+
+command_template: |
+  cd {{ source_path }} && python componentplus.py --components "{{ components_csv }}" --targets "{{ targets_csv }}" {% if dry_run %}--dry-run{% endif %}
+
+outputs:
+  - type: console
+    label: "Injection Results"

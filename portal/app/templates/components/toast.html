@@ -1,0 +1,6 @@
+<div class="toast-enter px-4 py-3 rounded-lg shadow-lg text-white {{ 'bg-green-500' if type == 'success' else 'bg-red-500' if type == 'error' else 'bg-yellow-500' if type == 'warning' else 'bg-blue-500' }}"
+     x-data="{ show: true }"
+     x-show="show"
+     x-init="setTimeout(() => show = false, 5000)">
+    {{ message }}
+</div>

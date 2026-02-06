@@ -1,0 +1,52 @@
+name: fs-upload
+display_name: "Artifact Uploader"
+description: "Bulk upload artifacts (binaries, SBOMs, third-party scans) to Finite State for scanning."
+category: "Onboarding"
+source_path: "/app/tools/onboarding/fs_upload"
+
+parameters:
+  - name: input_path
+    type: text
+    label: "Input Path"
+    required: true
+    placeholder: "File or directory path to upload"
+
+  - name: project
+    type: text
+    label: "Project Name"
+    required: true
+    placeholder: "Target project name"
+
+  - name: version
+    type: text
+    label: "Version Name"
+    required: false
+    placeholder: "Version name (auto-generated if empty)"
+
+  - name: scan_type
+    type: select
+    label: "Scan Type"
+    required: true
+    options:
+      - { value: "binary", label: "Binary analysis" }
+      - { value: "sbom", label: "SBOM import" }
+      - { value: "third_party", label: "Third-party scan" }
+
+  - name: recursive
+    type: checkbox
+    label: "Process directories recursively"
+    required: false
+    default: false
+
+  - name: dry_run
+    type: checkbox
+    label: "Dry run (preview only)"
+    required: false
+    default: true
+
+command_template: |
+  cd {{ source_path }} && poetry install --no-interaction --quiet && poetry run python fs-upload.py "{{ input_path }}" --project "{{ project }}" {% if version %}--version "{{ version }}"{% endif %} --type {{ scan_type }} {% if recursive %}--recursive{% endif %} {% if dry_run %}--dry-run{% endif %}
+
+outputs:
+  - type: console
+    label: "Upload Results"

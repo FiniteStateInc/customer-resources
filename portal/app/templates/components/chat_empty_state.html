@@ -1,0 +1,24 @@
+<!-- Empty State -->
+<div class="flex flex-col items-center justify-center h-full text-center">
+    <svg class="h-16 w-16 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/>
+    </svg>
+    <h3 class="mt-4 text-lg font-medium text-gray-900 dark:text-white">Start a conversation</h3>
+    <p class="mt-2 text-gray-500 dark:text-gray-400 max-w-md">
+        I can help you run reports, find projects, generate YAML recipes, and more. Just ask!
+    </p>
+    <div class="mt-4 flex flex-wrap gap-2 justify-center">
+        <button onclick="document.getElementById('message-input').value = 'What tools are available?'; document.getElementById('chat-form').requestSubmit();"
+                class="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600">
+            What tools are available?
+        </button>
+        <button onclick="document.getElementById('message-input').value = 'Generate a PDF report for the JTest project'; document.getElementById('chat-form').requestSubmit();"
+                class="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600">
+            Run a report
+        </button>
+        <button onclick="document.getElementById('message-input').value = 'Generate a recipe for critical vulnerabilities by project'; document.getElementById('chat-form').requestSubmit();"
+                class="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600">
+            Generate a recipe
+        </button>
+    </div>
+</div>

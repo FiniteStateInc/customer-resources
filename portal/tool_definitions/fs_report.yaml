@@ -1,0 +1,71 @@
+name: fs-report
+display_name: "Report Generator"
+description: "Generate HTML, CSV, and XLSX reports using YAML recipes. Supports filtering by project, time period, and finding types (cve/sast). Note: Severity filtering (critical/high/etc) requires a custom YAML recipe."
+category: "Reporting"
+source_path: "/app/tools/reporting/fs-report"
+
+parameters:
+  - name: recipe
+    type: select
+    label: "Report Recipe"
+    required: true
+    options:
+      - { value: "Executive Summary", label: "Executive Summary - Overall security posture summary" }
+      - { value: "Component Vulnerability Analysis", label: "Component Vulnerability Analysis - Risk scores by component" }
+      - { value: "Findings by Project", label: "Findings by Project - All findings grouped by project" }
+      - { value: "Scan Analysis", label: "Scan Analysis - Scan history and trends" }
+      - { value: "Component List", label: "Component List - Software inventory" }
+      - { value: "User Activity", label: "User Activity - Audit trail" }
+
+  - name: project_id
+    type: project_select
+    label: "Project (optional)"
+    required: false
+    placeholder: "Leave empty for all projects"
+
+  - name: period
+    type: select
+    label: "Time Period"
+    required: false
+    default: "30d"
+    options:
+      - { value: "7d", label: "Last 7 days" }
+      - { value: "14d", label: "Last 14 days" }
+      - { value: "30d", label: "Last 30 days" }
+      - { value: "90d", label: "Last 90 days" }
+      - { value: "1m", label: "Last month" }
+      - { value: "3m", label: "Last 3 months" }
+
+  - name: finding_types
+    type: select
+    label: "Finding Types"
+    required: false
+    default: "cve"
+    options:
+      - { value: "cve", label: "CVE vulnerabilities only (default)" }
+      - { value: "cve,credentials", label: "CVE + Credentials" }
+      - { value: "cve,sast", label: "CVE + SAST findings" }
+      - { value: "all", label: "All finding types" }
+
+  - name: all_versions
+    type: checkbox
+    label: "Include all versions (slower)"
+    required: false
+    default: false
+
+command_template: |
+  cd {{ source_path }} && poetry install --no-interaction --quiet && poetry run fs-report --recipe "{{ recipe }}" {% if project_id %}--project "{{ project_id }}"{% endif %} --period {{ period | default('30d') }} --finding-types {{ finding_types | default('cve') }} {% if all_versions %}--all-versions{% endif %} --output {{ output_dir }}
+
+outputs:
+  - type: file
+    pattern: "*.html"
+    label: "HTML Report"
+  - type: file
+    pattern: "*.xlsx"
+    label: "Excel Report"
+  - type: file
+    pattern: "*.csv"
+    label: "CSV Report"
+
+supports_ai_recipes: true
+recipe_template_path: "../05-reporting-and-compliance/fs-report/recipes/_TEMPLATE.yaml"

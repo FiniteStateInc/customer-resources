@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Customer Resources Portal{% endblock %}</title>
+
+    <!-- TailwindCSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        'fs-orange': '#FA6400',
+                        'fs-orange-dark': '#E05A00',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/sse.js"></script>
+
+    <!-- Custom styles -->
+    <style>
+        .htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
+        .htmx-request .htmx-indicator { opacity: 1; }
+        .htmx-request.htmx-indicator { opacity: 1; }
+
+        /* Toast animations */
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        .toast-enter { animation: slideIn 0.3s ease-out; }
+
+        /* Loading spinner */
+        .spinner {
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #FA6400;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+
+    {% block head %}{% endblock %}
+</head>
+<body class="h-full bg-gray-50 dark:bg-gray-900" hx-boost="true">
+    <div class="min-h-full">
+        <!-- Navigation -->
+        <nav class="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
+            <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+                <div class="flex h-16 justify-between">
+                    <div class="flex">
+                        <!-- Logo -->
+                        <div class="flex flex-shrink-0 items-center">
+                            <a href="/" class="flex items-center gap-2">
+                                <svg class="h-8 w-8 text-fs-orange" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                                </svg>
+                                <span class="text-xl font-bold text-gray-900 dark:text-white">FS Portal</span>
+                            </a>
+                        </div>
+
+                        <!-- Navigation Links -->
+                        <div class="hidden sm:ml-8 sm:flex sm:items-center sm:space-x-4">
+                            <a href="/" class="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors {% if active_page == 'home' %}text-fs-orange bg-orange-50 dark:bg-orange-900/20{% else %}text-gray-600 hover:text-gray-900 dark:text-white dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">
+                                Dashboard
+                            </a>
+                            <a href="/tools" class="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors {% if active_page == 'tools' %}text-fs-orange bg-orange-50 dark:bg-orange-900/20{% else %}text-gray-600 hover:text-gray-900 dark:text-white dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">
+                                Tools
+                            </a>
+                            <a href="/jobs" class="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors {% if active_page == 'jobs' %}text-fs-orange bg-orange-50 dark:bg-orange-900/20{% else %}text-gray-600 hover:text-gray-900 dark:text-white dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">
+                                Jobs
+                            </a>
+                            {% if ai_enabled %}
+                            <a href="/chat" class="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors {% if active_page == 'chat' %}text-fs-orange bg-orange-50 dark:bg-orange-900/20{% else %}text-gray-600 hover:text-gray-900 dark:text-white dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">
+                                AI Assistant
+                            </a>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Right side -->
+                    <div class="flex items-center gap-4">
+                        <!-- Connection Status -->
+                        <div class="flex items-center gap-2 text-sm">
+                            {% if fs_connected %}
+                            <span class="flex items-center gap-1 text-green-600 dark:text-green-400">
+                                <span class="h-2 w-2 rounded-full bg-green-500"></span>
+                                Connected
+                            </span>
+                            {% else %}
+                            <span class="flex items-center gap-1 text-red-600 dark:text-red-400">
+                                <span class="h-2 w-2 rounded-full bg-red-500"></span>
+                                Not Connected
+                            </span>
+                            {% endif %}
+                        </div>
+
+                        <!-- Dark Mode Toggle -->
+                        <button onclick="toggleDarkMode()" class="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-200" title="Toggle dark mode">
+                            <!-- Sun icon (shown in dark mode) -->
+                            <svg id="icon-sun" class="h-5 w-5 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+                            </svg>
+                            <!-- Moon icon (shown in light mode) -->
+                            <svg id="icon-moon" class="h-5 w-5 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+                            </svg>
+                        </button>
+
+                        <!-- Settings -->
+                        <a href="/settings" class="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-200" title="Settings">
+                            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                            </svg>
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Mobile Navigation -->
+            <div class="sm:hidden border-t border-gray-200 dark:border-gray-700">
+                <div class="flex space-x-2 px-4 py-2">
+                    <a href="/" class="flex-1 text-center px-2 py-2 text-sm font-medium rounded-md {% if active_page == 'home' %}text-fs-orange bg-orange-50 dark:bg-orange-900/20{% else %}text-gray-600 hover:text-gray-900 dark:text-white dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">Dashboard</a>
+                    <a href="/tools" class="flex-1 text-center px-2 py-2 text-sm font-medium rounded-md {% if active_page == 'tools' %}text-fs-orange bg-orange-50 dark:bg-orange-900/20{% else %}text-gray-600 hover:text-gray-900 dark:text-white dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">Tools</a>
+                    <a href="/jobs" class="flex-1 text-center px-2 py-2 text-sm font-medium rounded-md {% if active_page == 'jobs' %}text-fs-orange bg-orange-50 dark:bg-orange-900/20{% else %}text-gray-600 hover:text-gray-900 dark:text-white dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">Jobs</a>
+                    {% if ai_enabled %}
+                    <a href="/chat" class="flex-1 text-center px-2 py-2 text-sm font-medium rounded-md {% if active_page == 'chat' %}text-fs-orange bg-orange-50 dark:bg-orange-900/20{% else %}text-gray-600 hover:text-gray-900 dark:text-white dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700{% endif %}">AI</a>
+                    {% endif %}
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="py-8">
+            <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+                {% block content %}{% endblock %}
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 mt-auto">
+            <div class="mx-auto max-w-7xl px-4 py-4 sm:px-6 lg:px-8">
+                <p class="text-center text-sm text-gray-500 dark:text-gray-400">
+                    Finite State Customer Resources Portal v0.1.0
+                </p>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="fixed top-4 right-4 z-50 space-y-2"></div>
+
+    <style>
+        .nav-link {
+            @apply inline-flex items-center px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 dark:text-white dark:hover:text-white rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors;
+        }
+        .nav-link-active {
+            @apply text-fs-orange bg-orange-50 dark:bg-orange-900/20 dark:text-fs-orange;
+        }
+        .mobile-nav-link {
+            @apply flex-1 text-center px-2 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 dark:text-white dark:hover:text-white rounded-md hover:bg-gray-100 dark:hover:bg-gray-700;
+        }
+        .mobile-nav-link-active {
+            @apply text-fs-orange bg-orange-50 dark:bg-orange-900/20 dark:text-fs-orange;
+        }
+    </style>
+
+    <script>
+        // Theme handling
+        function applyTheme() {
+            if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+        }
+        applyTheme();
+
+        function toggleDarkMode() {
+            if (document.documentElement.classList.contains('dark')) {
+                localStorage.theme = 'light';
+            } else {
+                localStorage.theme = 'dark';
+            }
+            applyTheme();
+        }
+
+        // Toast helper
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const colors = {
+                'success': 'bg-green-500',
+                'error': 'bg-red-500',
+                'info': 'bg-blue-500',
+                'warning': 'bg-yellow-500'
+            };
+            toast.className = `toast-enter px-4 py-3 rounded-lg shadow-lg text-white ${colors[type] || colors.info}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            setTimeout(() => toast.remove(), 5000);
+        }
+
+        // Listen for HTMX events
+        document.addEventListener('htmx:afterSwap', function(event) {
+            // Handle toast triggers
+            const trigger = event.detail.xhr?.getResponseHeader('HX-Trigger');
+            if (trigger) {
+                try {
+                    const data = JSON.parse(trigger);
+                    if (data.showToast) {
+                        showToast(data.showToast.message, data.showToast.type);
+                    }
+                } catch (e) {}
+            }
+        });
+    </script>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

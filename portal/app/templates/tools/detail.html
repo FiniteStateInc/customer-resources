@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+
+{% block title %}{{ tool.display_name }} - Customer Resources Portal{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto space-y-6">
+    <!-- Breadcrumb -->
+    <nav class="flex" aria-label="Breadcrumb">
+        <ol class="inline-flex items-center space-x-1 md:space-x-3">
+            <li><a href="/tools" class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">Tools</a></li>
+            <li class="flex items-center">
+                <svg class="w-4 h-4 text-gray-400 mx-2" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/>
+                </svg>
+                <span class="text-gray-900 dark:text-white font-medium">{{ tool.display_name }}</span>
+            </li>
+        </ol>
+    </nav>
+
+    <!-- Tool Header -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+        <div class="flex items-start justify-between">
+            <div>
+                <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{{ tool.display_name }}</h1>
+                <p class="mt-2 text-gray-600 dark:text-gray-400">{{ tool.description }}</p>
+            </div>
+            <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300">
+                {{ tool.category }}
+            </span>
+        </div>
+
+        {% if tool.supports_ai_recipes %}
+        <div class="mt-4 flex items-center gap-2 text-purple-600 dark:text-purple-400">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+            </svg>
+            <span class="text-sm font-medium">Supports AI-generated recipes</span>
+            {% if ai_enabled %}
+            <a href="/chat" class="ml-auto text-sm underline hover:no-underline">Generate with AI</a>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Configuration Form -->
+    <form hx-post="/tools/{{ tool.name }}/execute"
+          hx-target="#execution-result"
+          hx-swap="innerHTML"
+          hx-indicator="#submit-spinner"
+          class="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6 space-y-6">
+
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Configuration</h2>
+
+        {% for param in tool.parameters %}
+        <div class="space-y-2" {% if param.show_if %}x-show="{{ param.show_if.keys()|first }} === '{{ param.show_if.values()|first }}'"{% endif %}>
+            <label for="{{ param.name }}" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ param.label }}
+                {% if param.required %}<span class="text-red-500">*</span>{% endif %}
+            </label>
+
+            {% if param.type == 'project_select' %}
+            <!-- Dynamic Project Selector -->
+            {% set linked_version = param.linked_version or param.name.replace('project_id', 'version_id').replace('source_project_id', 'source_version_id') %}
+            <select name="{{ param.name }}" id="{{ param.name }}"
+                    class="block w-full rounded-lg border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-fs-orange focus:ring-fs-orange"
+                    {% if param.required %}required{% endif %}>
+                <option value="">Loading projects...</option>
+            </select>
+            <script>
+            (function() {
+                var selectEl = document.getElementById('{{ param.name }}');
+                var linkedVersionId = '{{ linked_version }}';
+
+                // Fetch projects on load
+                fetch('/api/projects/options')
+                    .then(response => response.text())
+                    .then(html => {
+                        selectEl.innerHTML = html;
+                    })
+                    .catch(err => {
+                        selectEl.innerHTML = '<option value="">Error loading projects</option>';
+                    });
+
+                // When project changes, load versions
+                selectEl.addEventListener('change', function() {
+                    var versionSelect = document.getElementById(linkedVersionId);
+                    if (versionSelect && this.value) {
+                        versionSelect.innerHTML = '<option value="">Loading versions...</option>';
+                        fetch('/api/projects/' + this.value + '/versions/options')
+                            .then(response => response.text())
+                            .then(html => {
+                                versionSelect.innerHTML = html;
+                            })
+                            .catch(err => {
+                                versionSelect.innerHTML = '<option value="">Error loading versions</option>';
+                            });
+                    } else if (versionSelect) {
+                        versionSelect.innerHTML = '<option value="">Select a project first...</option>';
+                    }
+                });
+            })();
+            </script>
+
+            {% elif param.type == 'version_select' %}
+            <!-- Dynamic Version Selector (depends on project) -->
+            {% set linked_project = param.depends_on or 'project_id' %}
+            <select name="{{ param.name }}" id="{{ param.name }}"
+                    class="block w-full rounded-lg border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-fs-orange focus:ring-fs-orange"
+                    {% if param.required %}required{% endif %}>
+                <option value="">Select a project first...</option>
+            </select>
+
+            {% elif param.type == 'select' %}
+            <select name="{{ param.name }}" id="{{ param.name }}"
+                    class="block w-full rounded-lg border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-fs-orange focus:ring-fs-orange"
+                    {% if param.required %}required{% endif %}>
+                <option value="">Select...</option>
+                {% for option in param.options %}
+                <option value="{{ option.value }}" {% if param.default == option.value %}selected{% endif %}>
+                    {{ option.label }}
+                </option>
+                {% endfor %}
+            </select>
+
+            {% elif param.type == 'checkbox' %}
+            <div class="flex items-center">
+                <input type="checkbox" name="{{ param.name }}" id="{{ param.name }}"
+                       class="h-4 w-4 rounded border-gray-300 text-fs-orange focus:ring-fs-orange"
+                       {% if param.default %}checked{% endif %}>
+                <span class="ml-2 text-sm text-gray-600 dark:text-gray-400">{{ param.placeholder or 'Enable' }}</span>
+            </div>
+
+            {% elif param.type == 'date' %}
+            <input type="date" name="{{ param.name }}" id="{{ param.name }}"
+                   class="block w-full rounded-lg border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-fs-orange focus:ring-fs-orange"
+                   {% if param.required %}required{% endif %}>
+
+            {% elif param.type == 'file' %}
+            <input type="file" name="{{ param.name }}" id="{{ param.name }}"
+                   class="block w-full text-sm text-gray-500 dark:text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-fs-orange file:text-white hover:file:bg-fs-orange-dark"
+                   {% if param.required %}required{% endif %}>
+
+            {% elif param.type == 'number' %}
+            <input type="number" name="{{ param.name }}" id="{{ param.name }}"
+                   class="block w-full rounded-lg border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-fs-orange focus:ring-fs-orange"
+                   placeholder="{{ param.placeholder or '' }}"
+                   value="{{ param.default or '' }}"
+                   {% if param.required %}required{% endif %}>
+
+            {% else %}
+            <input type="text" name="{{ param.name }}" id="{{ param.name }}"
+                   class="block w-full rounded-lg border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white shadow-sm focus:border-fs-orange focus:ring-fs-orange"
+                   placeholder="{{ param.placeholder or '' }}"
+                   value="{{ param.default or '' }}"
+                   {% if param.required %}required{% endif %}>
+            {% endif %}
+        </div>
+        {% endfor %}
+
+        <!-- Submit Button -->
+        <div class="flex items-center justify-between pt-4 border-t border-gray-200 dark:border-gray-700">
+            <a href="/tools" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white">
+                &larr; Back to Tools
+            </a>
+            <button type="submit"
+                    class="inline-flex items-center px-6 py-3 border border-transparent rounded-lg shadow-sm text-base font-medium text-white bg-fs-orange hover:bg-fs-orange-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-fs-orange disabled:opacity-50"
+                    {% if not fs_connected %}disabled title="Connect to Finite State API first"{% endif %}>
+                <span id="submit-spinner" class="htmx-indicator mr-2">
+                    <div class="spinner"></div>
+                </span>
+                Execute Tool
+            </button>
+        </div>
+    </form>
+
+    <!-- Execution Result -->
+    <div id="execution-result"></div>
+</div>
+{% endblock %}

@@ -1,0 +1,78 @@
+name: autotriage
+display_name: "Auto Triage"
+description: "Automate VEX-compliant vulnerability triage with support for CSV import, replication, and rollback."
+category: "Triage"
+source_path: "/app/tools/triage/autotriage"
+
+parameters:
+  - name: action
+    type: select
+    label: "Action"
+    required: true
+    options:
+      - { value: "view", label: "View findings" }
+      - { value: "apply", label: "Apply triage from CSV" }
+      - { value: "replicate", label: "Replicate triage to another version" }
+      - { value: "rollback", label: "Rollback to backup" }
+
+  - name: project_id
+    type: project_select
+    label: "Target Project"
+    required: true
+    placeholder: "Choose project..."
+    linked_version: version_id
+
+  - name: version_id
+    type: version_select
+    label: "Target Version"
+    required: true
+    placeholder: "Choose version..."
+    depends_on: project_id
+
+  - name: csv_file
+    type: file
+    label: "Triage CSV File"
+    required: false
+    show_if:
+      action: "apply"
+
+  - name: source_project_id
+    type: project_select
+    label: "Source Project"
+    required: false
+    placeholder: "Choose source project..."
+    linked_version: source_version_id
+    show_if:
+      action: "replicate"
+
+  - name: source_version_id
+    type: version_select
+    label: "Source Version"
+    required: false
+    placeholder: "Choose source version..."
+    depends_on: source_project_id
+    show_if:
+      action: "replicate"
+
+  - name: severity_filter
+    type: select
+    label: "Severity Filter"
+    required: false
+    options:
+      - { value: "", label: "All severities" }
+      - { value: "CRITICAL", label: "Critical only" }
+      - { value: "HIGH", label: "High and above" }
+      - { value: "MEDIUM", label: "Medium and above" }
+
+  - name: dry_run
+    type: checkbox
+    label: "Dry run (preview only)"
+    required: false
+    default: true
+
+command_template: |
+  cd {{ source_path }} && python autotriage.py {{ action }} --version-id "{{ version_id }}" {% if csv_file %}--csv "{{ csv_file }}"{% endif %} {% if source_version_id %}--source "{{ source_version_id }}"{% endif %} {% if severity_filter %}--severity "{{ severity_filter }}"{% endif %} {% if dry_run %}--dry-run{% endif %}
+
+outputs:
+  - type: console
+    label: "Triage Results"

@@ -1,0 +1,39 @@
+name: fs-reporter
+display_name: "PDF Risk Reporter"
+description: "Generate comprehensive PDF risk summary reports with CVE intelligence, reachability analysis, and visual charts. Supports custom organization name for branding, and optional detailed findings section."
+category: "Reporting"
+source_path: "/app/tools/reporting/fs-reporter"
+
+parameters:
+  - name: project_id
+    type: project_select
+    label: "Select Project"
+    required: true
+    placeholder: "Choose a project..."
+
+  - name: version_id
+    type: version_select
+    label: "Select Version"
+    required: true
+    placeholder: "Choose a version..."
+    depends_on: project_id
+
+  - name: organization_name
+    type: text
+    label: "Organization Name"
+    required: false
+    placeholder: "Custom name for report header (defaults to subdomain)"
+
+  - name: include_details
+    type: checkbox
+    label: "Include detailed findings section"
+    required: false
+    default: false
+
+command_template: |
+  cd {{ source_path }} && poetry install --no-interaction && poetry run finite-state-reporter --project-version-id "{{ version_id }}" {% if organization_name %}--name "{{ organization_name }}"{% endif %} {% if include_details %}--detailed{% endif %} --output {{ output_dir }}/risk_summary_report.pdf
+
+outputs:
+  - type: file
+    pattern: "*.pdf"
+    label: "PDF Report"

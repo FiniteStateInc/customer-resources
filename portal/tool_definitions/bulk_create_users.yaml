@@ -1,0 +1,25 @@
+name: bulk-create-users
+display_name: "Bulk User Creator"
+description: "Create multiple users from a CSV file with role and group assignments."
+category: "Onboarding"
+source_path: "/app/tools/onboarding/utilities"
+
+parameters:
+  - name: csv_file
+    type: file
+    label: "Users CSV File"
+    required: true
+    placeholder: "CSV with columns: email, role, groups, first_name, last_name"
+
+  - name: dry_run
+    type: checkbox
+    label: "Dry run (preview only)"
+    required: false
+    default: true
+
+command_template: |
+  cd {{ source_path }} && python bulk_create_users.py "{{ csv_file }}" {% if dry_run %}--dry-run{% endif %}
+
+outputs:
+  - type: console
+    label: "User Creation Results"

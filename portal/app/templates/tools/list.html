@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}Tools - Customer Resources Portal{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div>
+        <h1 class="text-3xl font-bold text-gray-900 dark:text-white">Tools</h1>
+        <p class="mt-2 text-gray-600 dark:text-gray-400">
+            Browse and execute available tools for managing your Finite State data.
+        </p>
+    </div>
+
+    <!-- Tools Grid -->
+    {% for category, category_tools in tools_by_category.items() %}
+    <div>
+        <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4 flex items-center">
+            <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-fs-orange text-white text-sm font-bold mr-3">
+                {{ category_tools|length }}
+            </span>
+            {{ category }}
+        </h2>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {% for tool in category_tools %}
+            <a href="/tools/{{ tool.name }}"
+               class="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6 hover:shadow-md hover:border-fs-orange transition-all">
+                <div class="flex items-start justify-between">
+                    <div class="flex-1">
+                        <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
+                            {{ tool.display_name }}
+                        </h3>
+                        <p class="mt-2 text-sm text-gray-600 dark:text-gray-400 line-clamp-3">
+                            {{ tool.description }}
+                        </p>
+                    </div>
+                </div>
+
+                <div class="mt-4 flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        {% if tool.supports_ai_recipes %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">
+                            AI Recipes
+                        </span>
+                        {% endif %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300">
+                            {{ tool.parameters|length }} params
+                        </span>
+                    </div>
+                    <svg class="h-5 w-5 text-fs-orange" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+                    </svg>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

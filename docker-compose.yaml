@@ -1,0 +1,47 @@
+# Customer Resources Portal
+# Run with: docker-compose up -d
+# Access at: http://localhost:8080 (or custom PORT)
+
+services:
+  portal:
+    build: ./portal
+    container_name: customer-resources-portal
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      # Required: Finite State API credentials
+      - FINITE_STATE_AUTH_TOKEN=${FINITE_STATE_AUTH_TOKEN}
+      - FINITE_STATE_DOMAIN=${FINITE_STATE_DOMAIN}
+
+      # Optional: AI provider API keys (enables AI assistant)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+      # Optional: Debug mode
+      - DEBUG=${DEBUG:-false}
+    volumes:
+      # Persistent data storage (SQLite database, outputs)
+      - portal_data:/app/data
+
+      # Poetry cache (so dependencies only install once)
+      - poetry_cache:/home/appuser/.cache/pypoetry
+
+      # Mount tool directories (read-only)
+      - ./05-reporting-and-compliance:/app/tools/reporting:ro
+      - ./01-onboarding-and-scanning:/app/tools/onboarding:ro
+      - ./03-findings-triage-workflows:/app/tools/triage:ro
+      - ./04-remediation-and-fixes:/app/tools/remediation:ro
+      - ./06-advanced-integrations-and-demos:/app/tools/integrations:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8080/health', timeout=5).raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  portal_data:
+    name: customer-resources-portal-data
+  poetry_cache:
+    name: customer-resources-poetry-cache

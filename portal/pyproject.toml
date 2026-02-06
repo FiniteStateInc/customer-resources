@@ -1,0 +1,33 @@
+[tool.poetry]
+name = "customer-resources-portal"
+version = "0.1.0"
+description = "Web portal for Finite State Customer Resources with AI assistant"
+authors = ["Finite State"]
+readme = "README.md"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.115.0"
+uvicorn = {extras = ["standard"], version = "^0.32.0"}
+jinja2 = "^3.1.0"
+python-multipart = "^0.0.12"
+sqlmodel = "^0.0.22"
+pydantic-settings = "^2.0.0"
+pyyaml = "^6.0"
+cryptography = "^43.0"
+httpx = "^0.27.0"
+litellm = "^1.50.0"
+sse-starlette = "^2.1.0"
+aiosqlite = "^0.20.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+pytest-asyncio = "^0.24"
+
+[tool.poetry.scripts]
+portal = "app.main:run"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

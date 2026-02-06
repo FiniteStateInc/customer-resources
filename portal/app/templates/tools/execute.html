@@ -1,0 +1,76 @@
+<!-- Execution status partial - replaces form after submission -->
+<div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6"
+     hx-get="/jobs/{{ job.id }}/status"
+     hx-trigger="every 2s [data-status='running'], every 2s [data-status='pending']"
+     hx-swap="outerHTML"
+     data-status="{{ job.status }}">
+
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Execution Status</h2>
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium
+            {% if job.status == 'completed' %}bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400
+            {% elif job.status == 'running' %}bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400
+            {% elif job.status == 'failed' %}bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400
+            {% else %}bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400{% endif %}">
+            {% if job.status == 'running' %}
+            <div class="spinner mr-2"></div>
+            {% endif %}
+            {{ job.status|title }}
+        </span>
+    </div>
+
+    <div class="space-y-4">
+        <!-- Job Info -->
+        <div class="grid grid-cols-2 gap-4 text-sm">
+            <div>
+                <span class="text-gray-500 dark:text-gray-400">Job ID:</span>
+                <span class="ml-2 font-mono text-gray-900 dark:text-white">{{ job.id[:8] }}...</span>
+            </div>
+            <div>
+                <span class="text-gray-500 dark:text-gray-400">Tool:</span>
+                <span class="ml-2 text-gray-900 dark:text-white">{{ tool.display_name }}</span>
+            </div>
+            <div>
+                <span class="text-gray-500 dark:text-gray-400">Started:</span>
+                <span class="ml-2 text-gray-900 dark:text-white">
+                    {{ job.started_at.strftime('%Y-%m-%d %H:%M:%S') if job.started_at else 'Pending' }}
+                </span>
+            </div>
+            <div>
+                <span class="text-gray-500 dark:text-gray-400">Duration:</span>
+                <span class="ml-2 text-gray-900 dark:text-white">
+                    {% if job.completed_at and job.started_at %}
+                    {{ (job.completed_at - job.started_at).total_seconds()|int }}s
+                    {% else %}
+                    --
+                    {% endif %}
+                </span>
+            </div>
+        </div>
+
+        {% if job.status == 'failed' and job.error_message %}
+        <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+            <p class="text-sm text-red-800 dark:text-red-200">{{ job.error_message }}</p>
+        </div>
+        {% endif %}
+
+        <!-- Progress indicator for running jobs -->
+        {% if job.status == 'running' or job.status == 'pending' %}
+        <div class="flex items-center gap-3 text-blue-600 dark:text-blue-400">
+            <div class="spinner"></div>
+            <span>Processing... This page will update automatically.</span>
+        </div>
+        {% endif %}
+
+        <!-- Actions -->
+        <div class="flex items-center justify-between pt-4 border-t border-gray-200 dark:border-gray-700">
+            <a href="/tools/{{ tool.name }}" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white">
+                &larr; Run Again
+            </a>
+            <a href="/jobs/{{ job.id }}"
+               class="inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
+                View Full Details
+            </a>
+        </div>
+    </div>
+</div>

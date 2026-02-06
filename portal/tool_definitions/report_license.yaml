@@ -1,0 +1,33 @@
+name: report-license
+display_name: "License Report"
+description: "Generate CSV reports of component licenses with copyleft family detection."
+category: "Reporting"
+source_path: "/app/tools/reporting/report_license"
+
+parameters:
+  - name: project_id
+    type: project_select
+    label: "Select Project"
+    required: true
+    placeholder: "Choose a project..."
+
+  - name: version_id
+    type: version_select
+    label: "Select Version"
+    required: true
+    placeholder: "Choose a version..."
+    depends_on: project_id
+
+  - name: include_summary
+    type: checkbox
+    label: "Include summary statistics"
+    required: false
+    default: true
+
+command_template: |
+  cd {{ source_path }} && python report_license.py --version-id "{{ version_id }}" {% if include_summary %}--summary{% endif %} --out {{ output_dir }}
+
+outputs:
+  - type: file
+    pattern: "*.csv"
+    label: "License CSV"
