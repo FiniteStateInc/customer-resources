@@ -86,6 +86,7 @@ def create_config(
     current_version_only: bool = True,
     cache_ttl: int = 0,
     cache_dir: Union[str, None] = None,
+    detected_after: Union[str, None] = None,
     ai: bool = False,
     ai_depth: str = "summary",
 ) -> Config:
@@ -161,6 +162,7 @@ def create_config(
         current_version_only=current_version_only,
         cache_ttl=cache_ttl,
         cache_dir=cache_dir,
+        detected_after=detected_after,
         ai=ai,
         ai_depth=ai_depth,
     )
@@ -765,6 +767,7 @@ def run_reports(
     current_version_only: bool = True,
     cache_ttl: int = 0,
     cache_dir: Union[str, None] = None,
+    detected_after: Union[str, None] = None,
     ai: bool = False,
     ai_depth: str = "summary",
 ) -> None:
@@ -793,6 +796,7 @@ def run_reports(
             current_version_only=current_version_only,
             cache_ttl=cache_ttl,
             cache_dir=cache_dir,
+            detected_after=detected_after,
             ai=ai,
             ai_depth=ai_depth,
         )
@@ -979,6 +983,12 @@ def main(
         "--clear-ai-cache",
         help="Delete cached AI remediation guidance and exit.",
     ),
+    detected_after: Union[str, None] = typer.Option(
+        None,
+        "--detected-after",
+        help="Only include findings detected on or after this date (YYYY-MM-DD). "
+             "Applies to Assessment reports (CVA, Findings by Project, Triage, Component List).",
+    ),
     ai: bool = typer.Option(
         False,
         "--ai",
@@ -1047,6 +1057,7 @@ def main(
         current_version_only=current_version_only,
         cache_ttl=cache_ttl_seconds,
         cache_dir=None,
+        detected_after=detected_after,
         ai=ai,
         ai_depth=ai_depth,
     )

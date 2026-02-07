@@ -12,6 +12,27 @@ A powerful, stand-alone reporting utility for Finite State customers that genera
 - **CLI Interface**: Command-line tool for easy automation and integration
 - **Data Comparison Tools**: Utilities for comparing XLSX files and analyzing differences
 
+## Available Reports
+
+Reports fall into two categories. See `REPORT_GUIDE.md` for full details.
+
+**Operational** — period-bound, showing trends and activity within a time window:
+
+| Report | Description |
+|--------|-------------|
+| Executive Summary | High-level security dashboard for leadership |
+| Scan Analysis | Scan throughput, success rates, and infrastructure health |
+| User Activity | Platform adoption and engagement metrics |
+
+**Assessment** — current state, showing the latest security posture regardless of time period:
+
+| Report | Description |
+|--------|-------------|
+| Component Vulnerability Analysis | Riskiest components across the portfolio |
+| Findings by Project | Complete findings inventory per project |
+| Component List | Software inventory (SBOM) for compliance |
+| Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
+
 ## Quick Start
 
 ### Prerequisites

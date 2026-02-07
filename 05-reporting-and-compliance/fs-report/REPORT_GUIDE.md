@@ -7,18 +7,19 @@ This guide explains each report available in the Finite State Reporting Kit, wha
 ## Table of Contents
 
 1. [Quick Start](#quick-start)
-2. [Available Reports](#available-reports)
-   - [Executive Summary](#executive-summary)
-   - [Component Vulnerability Analysis](#component-vulnerability-analysis)
-   - [Findings by Project](#findings-by-project)
-   - [Scan Analysis](#scan-analysis)
-   - [Component List](#component-list)
-   - [User Activity](#user-activity)
-   - [Triage Prioritization](#triage-prioritization)
-3. [Output Formats](#output-formats)
-4. [Filtering Options](#filtering-options)
-5. [Using Reports Together](#using-reports-together)
-6. [Recommended Cadence](#recommended-cadence)
+2. [Report Categories](#report-categories)
+3. [Available Reports](#available-reports)
+   - [Executive Summary](#executive-summary) *(Operational)*
+   - [Scan Analysis](#scan-analysis) *(Operational)*
+   - [User Activity](#user-activity) *(Operational)*
+   - [Component Vulnerability Analysis](#component-vulnerability-analysis) *(Assessment)*
+   - [Findings by Project](#findings-by-project) *(Assessment)*
+   - [Component List](#component-list) *(Assessment)*
+   - [Triage Prioritization](#triage-prioritization) *(Assessment)*
+4. [Output Formats](#output-formats)
+5. [Filtering Options](#filtering-options)
+6. [Using Reports Together](#using-reports-together)
+7. [Recommended Cadence](#recommended-cadence)
 
 ---
 
@@ -42,9 +43,44 @@ Reports are saved to the `output/` directory in HTML, CSV, and XLSX formats.
 
 ---
 
+## Report Categories
+
+Reports are classified into two categories that determine how the `--period` (or `--start`/`--end`) time window is applied:
+
+### Operational Reports
+
+**"What happened during this period?"**
+
+Operational reports show activity and trends within the specified time window. The `--period` flag filters the data to only include events that occurred during that window.
+
+| Report | What it measures over the period |
+|--------|----------------------------------|
+| **Executive Summary** | Findings detected during the window |
+| **Scan Analysis** | Scans run during the window |
+| **User Activity** | User actions during the window |
+
+### Assessment Reports
+
+**"What does the target look like today?"**
+
+Assessment reports show the current security state of the target — the latest version of each project, as it exists right now. The `--period` flag is used only to identify which projects were active (scanned) during the window; the actual findings and components shown are from the current (latest) version, not filtered by date.
+
+| Report | What it shows |
+|--------|---------------|
+| **Component Vulnerability Analysis** | Current vulnerability posture by component |
+| **Findings by Project** | Current findings inventory per project |
+| **Component List** | Current software component inventory |
+| **Triage Prioritization** | Current triage priorities based on today's data |
+
+> **Tip:** If you need to date-filter an Assessment report (e.g., "only show findings detected after January 1"), use the `--detected-after YYYY-MM-DD` flag. This injects a date floor without changing the report's current-state nature.
+
+---
+
 ## Available Reports
 
 ### Executive Summary
+
+**Category:** Operational — data is filtered to the specified time period.
 
 **Purpose:** High-level security dashboard for leadership and stakeholders.
 
@@ -78,6 +114,8 @@ poetry run fs-report --recipe "Executive Summary" --period 90d
 
 ### Component Vulnerability Analysis
 
+**Category:** Assessment — shows current vulnerability posture regardless of time period.
+
 **Purpose:** Identify which software components create the most risk across your portfolio.
 
 **Who should use it:** Security teams, architects, remediation planners
@@ -109,6 +147,8 @@ poetry run fs-report --recipe "Component Vulnerability Analysis" --period 30d
 ---
 
 ### Findings by Project
+
+**Category:** Assessment — shows current findings inventory regardless of time period.
 
 **Purpose:** Detailed security findings inventory organized by project.
 
@@ -145,6 +185,8 @@ poetry run fs-report --recipe "Findings by Project" --project "MyProject"
 ---
 
 ### Scan Analysis
+
+**Category:** Operational — data is filtered to the specified time period.
 
 **Purpose:** Monitor scanning infrastructure performance and understand team scanning patterns.
 
@@ -196,19 +238,21 @@ poetry run fs-report --recipe "Scan Analysis" --period 14d
 
 ### Component List
 
+**Category:** Assessment — shows the current component inventory regardless of time period.
+
 **Purpose:** Complete software inventory (SBOM) across your portfolio.
 
 **Who should use it:** Compliance teams, legal, engineering leadership
 
 **What it shows:**
-- Software components discovered during the specified time period
+- All software components in the current (latest) version of each project
 - Component versions, types, and suppliers
 - License information
 - Associated projects, versions, and branches
 - Risk metrics per component (findings, warnings, violations)
 
 **Date Filtering:**
-When you specify `--start`/`--end` or `--period`, the report shows components **created** (first discovered) during that period. This answers: "What new components were found during this reporting period?"
+By default, no date filtering is applied — the report shows the full current inventory. To restrict to components discovered after a specific date, use `--detected-after YYYY-MM-DD`.
 
 **Key data columns:**
 | Column | Description |
@@ -230,22 +274,24 @@ When you specify `--start`/`--end` or `--period`, the report shows components **
 
 **Example commands:**
 ```bash
-# Components discovered in the last 30 days
-poetry run fs-report --recipe "Component List" --period 30d
+# Full current component inventory
+poetry run fs-report --recipe "Component List"
 
-# Components discovered in a specific quarter
-poetry run fs-report --recipe "Component List" --start 2026-01-01 --end 2026-03-31
+# Specific project
+poetry run fs-report --recipe "Component List" --project "MyProject"
 
-# Specific project (still uses date filtering)
-poetry run fs-report --recipe "Component List" --project "MyProject" --period 30d
+# Only components discovered since a date
+poetry run fs-report --recipe "Component List" --detected-after 2026-01-01
 
 # Specific version
-poetry run fs-report --recipe "Component List" --version "1234567890" --period 30d
+poetry run fs-report --recipe "Component List" --version "1234567890"
 ```
 
 ---
 
 ### User Activity
+
+**Category:** Operational — data is filtered to the specified time period.
 
 **Purpose:** Track platform adoption and user engagement.
 
@@ -286,6 +332,8 @@ poetry run fs-report --recipe "User Activity" --period 30d
 ---
 
 ### Triage Prioritization
+
+**Category:** Assessment — shows current triage priorities regardless of time period.
 
 **Purpose:** Risk-based vulnerability triage that goes beyond CVSS to prioritize findings using reachability, exploit intelligence, attack vectors, and EPSS.
 
@@ -374,14 +422,28 @@ All reports generate three output formats:
 
 ## Filtering Options
 
-| Option | Description | Example |
-|--------|-------------|---------|
-| `--period` | Relative time period | `--period 30d`, `--period 1w`, `--period 3m` |
-| `--start` / `--end` | Specific date range | `--start 2026-01-01 --end 2026-01-31` |
-| `--project` | Filter by project name or ID | `--project "MyProject"` |
-| `--version` | Filter by version ID | `--version "1234567890"` |
-| `--recipe` | Run specific report only | `--recipe "Scan Analysis"` |
-| `--finding-types` | Finding types to include | `--finding-types cve,credentials` |
+| Option | Description | Applies to | Example |
+|--------|-------------|------------|---------|
+| `--period` | Relative time period | Operational reports (used to scope Assessment reports to active projects) | `--period 30d` |
+| `--start` / `--end` | Specific date range | Same as `--period` | `--start 2026-01-01 --end 2026-01-31` |
+| `--detected-after` | Date floor for findings/components | Assessment reports only | `--detected-after 2026-01-01` |
+| `--project` | Filter by project name or ID | All reports | `--project "MyProject"` |
+| `--version` | Filter by version ID | All reports | `--version "1234567890"` |
+| `--recipe` | Run specific report only | N/A | `--recipe "Scan Analysis"` |
+| `--finding-types` | Finding types to include | Findings reports | `--finding-types cve,credentials` |
+
+**How `--period` interacts with report categories:**
+
+- **Operational reports** (Executive Summary, Scan Analysis, User Activity): `--period` directly filters the data to events within the time window.
+- **Assessment reports** (CVA, Findings by Project, Component List, Triage): `--period` identifies which projects were active (scanned) during the window, then fetches the **current (latest) version** of those projects. The findings/components shown are not date-filtered.
+
+**`--detected-after` (Assessment reports only):**
+
+Use `--detected-after YYYY-MM-DD` to add a date floor to Assessment reports. For example, to see only findings detected since Q1:
+
+```bash
+poetry run fs-report --recipe "Findings by Project" --detected-after 2026-01-01
+```
 
 **Period shortcuts:**
 - `7d` — last 7 days
@@ -452,14 +514,22 @@ poetry run fs-report --period 30d --finding-types all
 
 ## Recommended Cadence
 
+### Operational Reports (period-bound)
+
 | Report | Frequency | Purpose |
 |--------|-----------|---------|
-| **Executive Summary** | Monthly (leadership), Weekly (security) | Track overall progress |
-| **Component Vulnerability Analysis** | Quarterly (strategic), Monthly (active remediation) | Prioritize components |
-| **Findings by Project** | Weekly (dev teams), Daily (during sprints) | Track remediation |
-| **Scan Analysis** | Daily (operations), Weekly (reviews) | Monitor infrastructure |
-| **Component List** | Monthly (audits), On-demand (SBOM requests) | Compliance tracking |
+| **Executive Summary** | Monthly (leadership), Weekly (security) | Track trends and overall progress |
+| **Scan Analysis** | Daily (operations), Weekly (reviews) | Monitor scanning infrastructure |
 | **User Activity** | Weekly (adoption), Monthly (stakeholder reviews) | Engagement tracking |
+
+### Assessment Reports (current state)
+
+| Report | Frequency | Purpose |
+|--------|-----------|---------|
+| **Triage Prioritization** | Weekly (active remediation), On-demand | Prioritize what to fix next |
+| **Component Vulnerability Analysis** | Quarterly (strategic), Monthly (active remediation) | Prioritize risky components |
+| **Findings by Project** | Weekly (dev teams), Daily (during sprints) | Plan project-level remediation |
+| **Component List** | Monthly (audits), On-demand (SBOM requests) | Compliance and inventory tracking |
 
 ---
 

@@ -82,6 +82,8 @@ poetry run fs-report --recipes ./my-recipes --output ./my-reports
 poetry run fs-report --verbose
 ```
 
+**Report categories:** Reports are classified as either **Operational** (period-bound: Executive Summary, Scan Analysis, User Activity) or **Assessment** (current state: CVA, Findings by Project, Component List, Triage Prioritization). The `--period` flag filters data directly for Operational reports. For Assessment reports, it identifies active projects but always shows the latest version. Use `--detected-after YYYY-MM-DD` to add a date floor to Assessment reports. See `REPORT_GUIDE.md` for details.
+
 ### 5. Run Triage Prioritization (On-Demand)
 
 The Triage Prioritization report does **not** run with the default reports. You must explicitly request it:

@@ -21,6 +21,13 @@
 
 - **AI Cache Management** - New `--clear-ai-cache` flag to clear AI-generated content (LLM summaries, remediation guidance) independently of API data cache
 
+- **Assessment / Operational Report Classification** - Reports are now formally classified:
+  - **Operational** reports (Executive Summary, Scan Analysis, User Activity) are period-bound — `--period` filters data to events within the time window
+  - **Assessment** reports (CVA, Findings by Project, Component List, Triage) show current state — `--period` identifies active projects but always shows the latest version
+  - New `--detected-after YYYY-MM-DD` flag lets users opt Assessment reports into date filtering
+  - Component List no longer applies date filters by default (shows full current inventory)
+  - Recipe YAML files include a `category: assessment|operational` field
+
 ### Improvements
 
 - **Folder-Scoped Version Filtering** - `--current-version-only` (default) now works correctly with `--folder` scoping, fetching only findings for the latest version of each project

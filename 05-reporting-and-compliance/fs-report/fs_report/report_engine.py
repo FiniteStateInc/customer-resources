@@ -631,15 +631,16 @@ class ReportEngine:
                             self._scan_analysis_project_data = self.api_client.fetch_all_with_resume(project_query)
                             self.logger.info(f"Fetched {len(self._scan_analysis_project_data)} projects for new/existing analysis")
                     elif recipe.name == "Component List":
-                        # Build filter for components endpoint with date filtering
+                        # Assessment report: shows current component inventory
+                        # No date filtering by default (current state, not period-bound)
                         filters = []
                         
                         # Exclude file type components (SAST placeholders without meaningful data)
                         filters.append("type!=file")
                         
-                        # Add date range filter using 'created' field
-                        filters.append(f"created>={self.config.start_date}T00:00:00")
-                        filters.append(f"created<={self.config.end_date}T23:59:59")
+                        # Apply --detected-after if specified (opt-in period filtering)
+                        if getattr(self.config, 'detected_after', None):
+                            filters.append(f"created>={self.config.detected_after}T00:00:00")
                         
                         if self.config.project_filter:
                             try:
@@ -680,8 +681,10 @@ class ReportEngine:
                             self.logger.info(f"Fetching components for {recipe.name} with filter: {combined_filter}")
                             raw_data = self.api_client.fetch_all_with_resume(unified_query)
                     elif recipe.name in ["Component Vulnerability Analysis (Pandas)", "Component Vulnerability Analysis", "Executive Summary", "Findings by Project", "Triage Prioritization"]:
-                        # For findings reports: get findings for projects SCANNED in the period
-                        # (not findings DETECTED in the period - that misses existing vulnerabilities)
+                        # Report category determines period behaviour:
+                        #   Operational (Executive Summary): period filters findings by detected date
+                        #   Assessment  (CVA, Findings by Project, Triage): shows current state, period ignored
+                        is_operational = recipe.name == "Executive Summary"
                         
                         # Build finding type parameters based on --finding-types flag
                         type_params = build_findings_type_params(self.config.finding_types)
@@ -692,6 +695,15 @@ class ReportEngine:
                         filters = []
                         if category_filter:
                             filters.append(category_filter)
+                        
+                        # Operational reports: add detected date range filter
+                        if is_operational:
+                            filters.append(f"detected>={self.config.start_date}T00:00:00")
+                            filters.append(f"detected<={self.config.end_date}T23:59:59")
+                        
+                        # Assessment reports: apply --detected-after if specified
+                        if not is_operational and getattr(self.config, 'detected_after', None):
+                            filters.append(f"detected>={self.config.detected_after}T00:00:00")
                         
                         if self.config.project_filter:
                             # Single project filter - get all findings for this project

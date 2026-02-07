@@ -16,6 +16,12 @@ name: "My Custom Report"
 # Required: Brief description of what this report shows
 description: "Description of what this report analyzes"
 
+# Optional: Report category — determines how --period is applied
+#   assessment  = Current state report. Period is ignored; shows the latest data.
+#                 Use --detected-after to opt into date filtering.
+#   operational = Period-bound report. Data is filtered to the specified time window.
+# category: assessment
+
 # Optional: Execution order for cache optimization (default: 50)
 # Lower numbers run first. Use this to maximize cache reuse:
 #   10 = Fetches base data (scans, projects) that others reuse

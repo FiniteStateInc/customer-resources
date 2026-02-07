@@ -1,4 +1,5 @@
 name: "Executive Summary"
+category: operational  # Period-bound: shows trends and activity within the specified time window
 template: "executive_summary.html"
 description: "High-level security posture overview with key performance indicators and project-level breakdowns"
 execution_order: 20  # Reuses cached scans from Scan Analysis

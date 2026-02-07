@@ -1,4 +1,5 @@
 name: "User Activity"
+category: operational  # Period-bound: shows user activity within the specified time window
 template: "user_activity.html"
 description: "User login and activity analysis from the audit trail"
 execution_order: 40  # Independent - fetches audit data

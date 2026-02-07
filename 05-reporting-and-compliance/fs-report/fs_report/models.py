@@ -243,6 +243,11 @@ class Recipe(BaseModel):
     """Recipe configuration for generating reports."""
 
     name: str = Field(..., description="Recipe name")
+    category: str | None = Field(
+        None,
+        description="Report category: 'assessment' (current state, period ignored) "
+                    "or 'operational' (period-bound, shows trends over time)."
+    )
     execution_order: int = Field(
         50, 
         description="Order in which to run this recipe (lower = earlier). "
@@ -332,6 +337,12 @@ class Config(BaseModel):
     cache_dir: str | None = Field(
         None,
         description="[BETA] Directory for SQLite cache. Defaults to ~/.fs-report/"
+    )
+    # Optional date filter for assessment reports
+    detected_after: str | None = Field(
+        None,
+        description="Only include findings detected on or after this date (ISO8601). "
+                    "Applies to Assessment reports (CVA, Findings by Project, Triage, Component List)."
     )
     # AI remediation guidance options
     ai: bool = Field(
