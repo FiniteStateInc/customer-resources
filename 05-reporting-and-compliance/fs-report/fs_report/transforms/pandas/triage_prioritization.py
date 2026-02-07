@@ -831,13 +831,24 @@ def build_vex_recommendations(df: pd.DataFrame) -> list[dict[str, Any]]:
                 f"Low priority, reachability inconclusive."
             )
 
+        # Safely coerce values that may be NaN to their defaults
+        severity_val = row.get("severity", "")
+        if pd.isna(severity_val):
+            severity_val = ""
+        project_name_val = row.get("project_name", "")
+        if pd.isna(project_name_val):
+            project_name_val = ""
+
         recommendations.append({
             "id": row.get("id", ""),  # Internal numeric PK (used for API calls)
             "finding_id": row.get("finding_id", ""),  # CVE ID (human-readable)
+            "severity": str(severity_val),
+            "project_name": str(project_name_val),
+            "project_id": str(row.get("project_id", "")),
             "project_version_id": row.get("project_version_id", ""),
+            "version_name": str(row.get("version_name", "")),
             "folder_name": row.get("folder_name", ""),
             "current_vex_status": str(row["status"]) if row.get("status") and str(row.get("status", "")) not in ("", "nan", "None") else None,
-            "current_severity": row.get("severity", ""),
             "priority_band": band,
             "triage_score": row.get("triage_score", 0),
             "recommended_vex_status": vex_status,
