@@ -2,11 +2,12 @@
 
 {% block content %}
 <!-- Filter Information -->
-{% if project_filter %}
+{% if folder_path or project_filter %}
 <div class="chart-container">
     <h3>🔍 Applied Filter</h3>
-    <p><strong>Project Filter:</strong> {{ project_filter }}</p>
-    <p>Showing findings for the specified project(s) only.</p>
+    {% if folder_path %}<p><strong>Folder:</strong> {{ folder_path }}</p>{% endif %}
+    {% if project_filter %}<p><strong>Project Filter:</strong> {{ project_filter }}</p>{% endif %}
+    <p>Showing findings for the specified scope only.</p>
 </div>
 {% endif %}
 
@@ -23,6 +24,7 @@
                 <th>CVE ID</th>
                 <th>Component</th>
                 <th>Version</th>
+                {% if folder_path %}<th>Folder</th>{% endif %}
                 <th>Project</th>
                 <th>Project Version</th>
                 <th>Exploits</th>
@@ -36,7 +38,7 @@
                 {% if row['Project Name'] != current_project.value %}
                     {% set current_project.value = row['Project Name'] %}
                     <tr style="background-color: #f8f9fa; font-weight: bold;">
-                        <td colspan="9">{{ row['Project Name'] }}</td>
+                        <td colspan="{% if folder_path %}10{% else %}9{% endif %}">{{ row['Project Name'] }}</td>
                     </tr>
                 {% endif %}
                 <tr>
@@ -75,6 +77,7 @@
                     </td>
                     <td>{{ row['Component'] }}</td>
                     <td>{{ row['Component Version'] }}</td>
+                    {% if folder_path %}<td>{{ row.get('Folder', '') }}</td>{% endif %}
                     <td>{{ row['Project Name'] }}</td>
                     <td>{{ row['Project Version'] }}</td>
                     <td>{{ row['# of known exploits'] }}</td>

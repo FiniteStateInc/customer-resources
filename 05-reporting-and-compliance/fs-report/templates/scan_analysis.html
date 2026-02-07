@@ -393,6 +393,7 @@
                         <th>Date Completed</th>
                         <th>Status</th>
                         <th>Type</th>
+                        {% if folder_path %}<th>Folder</th>{% endif %}
                         <th>Project</th>
                         <th>Version</th>
                         <th>Duration (min)</th>
@@ -416,6 +417,7 @@
                                     {{ row.get('type', 'N/A') }}
                                 </span>
                             </td>
+                            {% if folder_path %}<td>{{ row.get('folder_name', '') }}</td>{% endif %}
                             <td>{{ row.get('project_name', 'N/A') }}</td>
                             <td>{{ row.get('version_name', '-') if row.get('version_name') else '-' }}</td>
                             <td>{{ "%.1f"|format(row.get('duration_minutes', 0)) if row.get('duration_minutes', 0) > 0 else '-' }}</td>
@@ -440,6 +442,7 @@
                                     {{ row.get('type', 'N/A') }}
                                 </span>
                             </td>
+                            {% if folder_path %}<td>{{ row.get('folder_name', '') }}</td>{% endif %}
                             <td>{{ row.get('project_name', 'N/A') }}</td>
                             <td>{{ row.get('version_name', '-') if row.get('version_name') else '-' }}</td>
                             <td>{{ "%.1f"|format(row.get('duration_minutes', 0)) if row.get('duration_minutes', 0) > 0 else '-' }}</td>

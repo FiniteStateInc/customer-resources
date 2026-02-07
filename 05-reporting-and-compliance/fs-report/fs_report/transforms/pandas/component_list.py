@@ -36,6 +36,7 @@ def component_list_pandas_transform(data: List[Dict[str, Any]], config: Config) 
         'supplier': 'Supplier',
         'declaredLicenses': 'Declared License',
         'concludedLicenses': 'Concluded License',
+        'folder_name': 'Folder',
         'project.name': 'Project Name',
         'projectVersion.version': 'Project Version',
         'branch.name': 'Branch',

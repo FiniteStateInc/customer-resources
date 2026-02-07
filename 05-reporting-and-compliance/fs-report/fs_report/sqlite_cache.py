@@ -59,6 +59,7 @@ FINDING_FIELDS = {
     'risk': 'risk',
     'detected': 'detected',
     'component.id': 'component_id',
+    'component.vcId': 'component_vc_id',  # Version component ID (used in BOM URL componentId= param)
     'component.name': 'component_name',
     'component.version': 'component_version',
     'project.id': 'project_id',
@@ -70,7 +71,11 @@ FINDING_FIELDS = {
     'inKev': 'in_kev',
     'inVcKev': 'in_vc_kev',
     'epssPercentile': 'epss_percentile',
+    'epssScore': 'epss_score',             # Raw EPSS score (0-1)
     'reachabilityScore': 'reachability_score',
+    'attackVector': 'attack_vector',       # NETWORK, ADJACENT, LOCAL, PHYSICAL
+    'factors': 'factors',                  # Reachability factors array (stored as JSON)
+    'hasKnownExploit': 'has_known_exploit',  # Direct boolean from API
 }
 
 SCAN_FIELDS = {
@@ -167,6 +172,7 @@ CREATE TABLE IF NOT EXISTS findings (
     risk REAL,
     detected TEXT,
     component_id TEXT,
+    component_vc_id TEXT,
     component_name TEXT,
     component_version TEXT,
     project_id TEXT,
@@ -178,7 +184,11 @@ CREATE TABLE IF NOT EXISTS findings (
     in_kev INTEGER,
     in_vc_kev INTEGER,
     epss_percentile REAL,
+    epss_score REAL,
     reachability_score REAL,
+    attack_vector TEXT,
+    factors TEXT,
+    has_known_exploit INTEGER,
     PRIMARY KEY (query_hash, id)
 );
 
@@ -249,6 +259,33 @@ CREATE TABLE IF NOT EXISTS audit_events (
     app_version TEXT,
     component TEXT,
     data TEXT
+);
+
+-- LLM-generated remediation guidance (keyed by CVE)
+CREATE TABLE IF NOT EXISTS cve_remediations (
+    cve_id TEXT PRIMARY KEY,
+    component_name TEXT,
+    fix_version TEXT,
+    guidance TEXT,
+    workaround TEXT,
+    code_search_hints TEXT,
+    generated_by TEXT,
+    generated_at TEXT,
+    confidence TEXT
+);
+
+-- CVE detail cache (from /findings/{pvId}/{findingId}/cves)
+CREATE TABLE IF NOT EXISTS cve_detail_cache (
+    finding_id TEXT PRIMARY KEY,
+    cve_metadata TEXT,
+    fetched_at TEXT
+);
+
+-- Exploit detail cache (from /findings/{pvId}/{findingId}/exploits)
+CREATE TABLE IF NOT EXISTS exploit_detail_cache (
+    finding_id TEXT PRIMARY KEY,
+    exploit_metadata TEXT,
+    fetched_at TEXT
 );
 
 -- Index for faster TTL checks
@@ -467,10 +504,30 @@ class SQLiteCache:
         logger.debug(f"SQLite cache initialized at {self.db_path}")
     
     def _init_db(self) -> None:
-        """Initialize the database schema."""
+        """Initialize the database schema and apply migrations."""
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript(SCHEMA_SQL)
+            self._migrate_schema(conn)
             conn.commit()
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Add any missing columns to existing tables (backward-compatible)."""
+        # Column migrations: (table, column_name, column_type)
+        migrations = [
+            ("findings", "epss_score", "REAL"),
+            ("findings", "reachability_score", "REAL"),
+            ("findings", "attack_vector", "TEXT"),
+            ("findings", "factors", "TEXT"),
+            ("findings", "has_known_exploit", "INTEGER"),
+            ("findings", "component_vc_id", "TEXT"),
+        ]
+        for table, col, col_type in migrations:
+            try:
+                conn.execute(f"SELECT {col} FROM {table} LIMIT 1")
+            except sqlite3.OperationalError:
+                # Column doesn't exist — add it
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+                logger.debug(f"Migrated: added {col} ({col_type}) to {table}")
     
     def _get_connection(self) -> sqlite3.Connection:
         """Get a database connection with concurrency settings."""
@@ -615,14 +672,15 @@ class SQLiteCache:
             else:
                 # Parse JSON fields
                 if db_col in ('cwes', 'exploit_info', 'severity_counts', 'source', 
-                             'application', 'app_version', 'component', 'data'):
+                             'application', 'app_version', 'component', 'data',
+                             'factors'):
                     try:
                         value = json.loads(value) if value else None
                     except (json.JSONDecodeError, TypeError):
                         pass
                 
                 # Convert booleans
-                if db_col in ('in_kev', 'in_vc_kev', 'edited'):
+                if db_col in ('in_kev', 'in_vc_kev', 'edited', 'has_known_exploit'):
                     value = bool(value) if value is not None else None
                 
                 record[api_field] = value

@@ -123,6 +123,228 @@ class ReportEngine:
         
         # Cache for latest version IDs when current_version_only is enabled
         self._latest_version_ids: list[int] | None = None
+        
+        # Folder scoping state (populated by _resolve_folder_scope in run())
+        self._folder_project_ids: set[str] | None = None
+        self._project_folder_map: dict[str, str] = {}  # project_id -> folder_name
+        self._folder_name: str | None = None
+        self._folder_path: str | None = None  # e.g. "Division A / Medical Products"
+
+    def _resolve_project_name(self, project_name: str) -> int | None:
+        """
+        Resolve a project name to its numeric API ID.
+
+        Fetches the project list from the API and performs a case-insensitive
+        name match.  Returns the numeric project ID, or None if not found.
+        """
+        from fs_report.models import QueryConfig, QueryParams
+
+        projects_query = QueryConfig(
+            endpoint="/public/v0/projects",
+            params=QueryParams(limit=10000, archived=False, excluded=False),
+        )
+        projects = self.api_client.fetch_data(projects_query)
+
+        for p in projects:
+            name = p.get("name", "")
+            if name.lower() == project_name.lower():
+                return p.get("id")
+
+        # Fuzzy hint: show close matches
+        available = [p.get("name", "") for p in projects if p.get("name")]
+        close = [n for n in available if project_name.lower() in n.lower()]
+        if close:
+            self.logger.info(f"Did you mean one of these? {close[:5]}")
+
+        return None
+
+    def _fetch_all_folders(self) -> list[dict]:
+        """Fetch all folders from the API."""
+        from fs_report.models import QueryConfig, QueryParams
+        folders_query = QueryConfig(
+            endpoint="/public/v0/folders",
+            params=QueryParams(limit=10000),
+        )
+        return self.api_client.fetch_data(folders_query)
+
+    def _resolve_folder(self, folder_input: str) -> dict | None:
+        """
+        Resolve a folder name or ID to its API record.
+        Returns the full folder dict, or None if not found.
+        """
+        folders = self._fetch_all_folders()
+
+        # Try exact ID match first
+        for f in folders:
+            if str(f.get("id", "")) == folder_input:
+                return f
+
+        # Case-insensitive name match
+        for f in folders:
+            if f.get("name", "").lower() == folder_input.lower():
+                return f
+
+        # Fuzzy hint
+        available = [f.get("name", "") for f in folders if f.get("name")]
+        close = [n for n in available if folder_input.lower() in n.lower()]
+        if close:
+            self.logger.info(f"Did you mean one of these folders? {close[:5]}")
+
+        return None
+
+    def _collect_folder_tree(
+        self, target_folder_id: str, all_folders: list[dict] | None = None
+    ) -> tuple[set[str], dict[str, str], list[dict]]:
+        """
+        Walk the folder tree starting from *target_folder_id* and collect:
+        1. All descendant folder IDs (including the target itself).
+        2. project_id -> folder_name mapping for every project in those folders.
+        3. The list of subfolder dicts (for logging/display).
+
+        Returns (folder_ids, project_folder_map, subfolder_list).
+        """
+        if all_folders is None:
+            all_folders = self._fetch_all_folders()
+
+        folder_by_id: dict[str, dict] = {str(f["id"]): f for f in all_folders}
+        children_map: dict[str, list[str]] = {}
+        for f in all_folders:
+            parent = f.get("parentFolderId")
+            if parent:
+                children_map.setdefault(str(parent), []).append(str(f["id"]))
+
+        # BFS to collect all descendant folder IDs
+        from collections import deque
+        queue: deque[str] = deque([target_folder_id])
+        all_folder_ids: set[str] = set()
+        subfolder_list: list[dict] = []
+        while queue:
+            fid = queue.popleft()
+            all_folder_ids.add(fid)
+            if fid != target_folder_id:
+                subfolder_list.append(folder_by_id.get(fid, {}))
+            for child_id in children_map.get(fid, []):
+                if child_id not in all_folder_ids:
+                    queue.append(child_id)
+
+        # For each folder, fetch its projects
+        from fs_report.models import QueryConfig, QueryParams
+        project_folder_map: dict[str, str] = {}
+        all_project_ids: set[str] = set()
+
+        for fid in all_folder_ids:
+            folder_name = folder_by_id.get(fid, {}).get("name", "Unknown")
+            try:
+                projects_query = QueryConfig(
+                    endpoint=f"/public/v0/folders/{fid}/projects",
+                    params=QueryParams(limit=10000, archived=False, excluded=False),
+                )
+                projects = self.api_client.fetch_data(projects_query)
+                for p in projects:
+                    pid = str(p.get("id", ""))
+                    if pid:
+                        all_project_ids.add(pid)
+                        project_folder_map[pid] = folder_name
+            except Exception as e:
+                self.logger.warning(f"Error fetching projects for folder '{folder_name}' ({fid}): {e}")
+
+        self.logger.info(
+            f"Folder tree: {len(all_folder_ids)} folder(s), "
+            f"{len(all_project_ids)} project(s)"
+        )
+
+        return all_project_ids, project_folder_map, subfolder_list
+
+    def _build_folder_path(self, folder_id: str, all_folders: list[dict] | None = None) -> str:
+        """Build a breadcrumb-style path for a folder, e.g. 'Division A / Medical Products'."""
+        if all_folders is None:
+            all_folders = self._fetch_all_folders()
+        folder_by_id = {str(f["id"]): f for f in all_folders}
+
+        parts: list[str] = []
+        current_id: str | None = folder_id
+        seen: set[str] = set()
+        while current_id and current_id not in seen:
+            seen.add(current_id)
+            folder = folder_by_id.get(current_id)
+            if not folder:
+                break
+            parts.append(folder.get("name", "Unknown"))
+            parent = folder.get("parentFolderId")
+            current_id = str(parent) if parent else None
+
+        parts.reverse()
+        return " / ".join(parts)
+
+    def _resolve_folder_scope(self) -> bool:
+        """
+        Called from run() when config.folder_filter is set.
+        Resolves folder, walks tree, collects project IDs & mapping.
+        Returns True on success, False on failure.
+        """
+        folder_input = self.config.folder_filter
+        if not folder_input:
+            return True
+
+        folder = self._resolve_folder(folder_input)
+        if not folder:
+            self.logger.error(
+                f"Could not resolve folder '{folder_input}'. "
+                "Use 'fs-report list-folders' to see available folders."
+            )
+            return False
+
+        folder_id = str(folder["id"])
+        self._folder_name = folder.get("name", folder_input)
+
+        # Fetch all folders once (used for tree walk and path building)
+        all_folders = self._fetch_all_folders()
+        self._folder_path = self._build_folder_path(folder_id, all_folders)
+
+        project_ids, project_folder_map, subfolders = self._collect_folder_tree(
+            folder_id, all_folders
+        )
+
+        self._folder_project_ids = project_ids
+        self._project_folder_map = project_folder_map
+
+        self.logger.info(
+            f"Folder scope: '{self._folder_path}' — "
+            f"{len(subfolders)} subfolder(s), {len(project_ids)} project(s)"
+        )
+
+        # If --project is also specified, validate it's within the folder
+        if self.config.project_filter:
+            pid = str(self.config.project_filter)
+            if pid not in project_ids:
+                self.logger.error(
+                    f"Project '{self.config.project_filter}' is not in folder "
+                    f"'{self._folder_name}' or its subfolders."
+                )
+                return False
+
+        return True
+
+    def _build_project_folder_map_from_projects(self) -> dict[str, str]:
+        """
+        Build a project_id -> folder_name mapping by fetching projects.
+        Used when --folder is not specified, to still populate folder_name
+        from the ProjectV0.folder field.
+        """
+        from fs_report.models import QueryConfig, QueryParams
+        projects_query = QueryConfig(
+            endpoint="/public/v0/projects",
+            params=QueryParams(limit=10000, archived=False, excluded=False),
+        )
+        projects = self.api_client.fetch_data(projects_query)
+        
+        pf_map: dict[str, str] = {}
+        for p in projects:
+            pid = str(p.get("id", ""))
+            folder = p.get("folder")
+            if pid and folder and isinstance(folder, dict):
+                pf_map[pid] = folder.get("name", "")
+        return pf_map
 
     def _get_latest_version_ids(self) -> list[int]:
         """Fetch latest version IDs for all projects (cached)."""
@@ -135,37 +357,46 @@ class ReportEngine:
         from fs_report.models import QueryConfig, QueryParams
         projects_query = QueryConfig(
             endpoint="/public/v0/projects",
-            params=QueryParams(limit=10000)
+            params=QueryParams(limit=10000, archived=False, excluded=False)
         )
         projects = self.api_client.fetch_all_with_resume(projects_query)
         self.logger.info(f"Found {len(projects)} projects")
         
-        # Fetch latest version for each project with progress bar
-        from tqdm import tqdm
-        version_ids = []
-        
-        with tqdm(projects, desc="Fetching latest versions", unit=" projects", leave=False) as pbar:
-            for project in pbar:
-                try:
-                    # Get latest version for this project using the API client
-                    url = f"{self.api_client.base_url}/public/v0/projects/{project['id']}/versions"
-                    response = self.api_client.client.get(
-                        url,
-                        params={"limit": 1, "sort": "-created"}
-                    )
-                    response.raise_for_status()
-                    versions = response.json()
-                    
-                    if versions and len(versions) > 0:
-                        latest = versions[0] if isinstance(versions, list) else versions
-                        version_id = latest.get("id")
-                        if version_id:
-                            version_ids.append(version_id)
-                except Exception as e:
-                    self.logger.debug(f"Error fetching versions for project {project.get('name')}: {e}")
+        project_ids = [p["id"] for p in projects if p.get("id")]
+        version_ids = self._get_latest_version_ids_for_projects(project_ids)
         
         self.logger.info(f"Found {len(version_ids)} latest version IDs")
         self._latest_version_ids = version_ids
+        return version_ids
+
+    def _get_latest_version_ids_for_projects(self, project_ids: list) -> list[int]:
+        """Fetch the current (latest) version ID for each given project.
+
+        Uses the project's defaultBranch.latestVersion.id which is the
+        authoritative current version on the platform.
+        """
+        from tqdm import tqdm
+        version_ids = []
+
+        with tqdm(project_ids, desc="Fetching latest versions", unit=" projects", leave=False) as pbar:
+            for project_id in pbar:
+                try:
+                    url = f"{self.api_client.base_url}/public/v0/projects/{project_id}"
+                    response = self.api_client.client.get(url)
+                    response.raise_for_status()
+                    project = response.json()
+
+                    # Extract defaultBranch.latestVersion.id
+                    default_branch = project.get("defaultBranch") or {}
+                    latest_version = default_branch.get("latestVersion") or {}
+                    version_id = latest_version.get("id")
+                    if version_id:
+                        version_ids.append(version_id)
+                    else:
+                        self.logger.debug(f"No defaultBranch.latestVersion for project {project_id}")
+                except Exception as e:
+                    self.logger.debug(f"Error fetching project {project_id}: {e}")
+
         return version_ids
 
     def _fetch_with_version_batching(
@@ -210,7 +441,9 @@ class ReportEngine:
                     params=QueryParams(
                         limit=base_query.params.limit,
                         filter=combined_filter,
-                        finding_type=base_query.params.finding_type
+                        finding_type=base_query.params.finding_type,
+                        archived=False,
+                        excluded=False,
                     )
                 )
                 
@@ -231,6 +464,12 @@ class ReportEngine:
             return False
 
         # Filter recipes if specific recipe is requested
+        # Check both config.recipe_filter and recipe_loader.recipe_filter
+        # (CLI sets recipe_loader.recipe_filter directly, not config.recipe_filter)
+        explicit_recipe_requested = (
+            self.config.recipe_filter
+            or getattr(self.recipe_loader, 'recipe_filter', None)
+        )
         if self.config.recipe_filter:
             filtered_recipes = [
                 r
@@ -244,12 +483,43 @@ class ReportEngine:
                 return False
             recipes = filtered_recipes
             self.logger.info(f"Filtered to {len(recipes)} recipe(s)")
+        elif not explicit_recipe_requested:
+            # Exclude recipes with auto_run=False only when no specific recipe is requested
+            auto_run_recipes = [r for r in recipes if getattr(r, 'auto_run', True)]
+            skipped = len(recipes) - len(auto_run_recipes)
+            if skipped > 0:
+                self.logger.info(f"Skipping {skipped} recipe(s) with auto_run=false (use --recipe to run them)")
+            recipes = auto_run_recipes
 
         # Sort recipes by execution_order to maximize cache reuse
         # Lower order = runs first (e.g., Scan Analysis fetches scans that other reports reuse)
         recipes = sorted(recipes, key=lambda r: r.execution_order)
         
         self.logger.info(f"Loaded {len(recipes)} recipes")
+
+        # Resolve folder scope first (may narrow down project set)
+        if self.config.folder_filter and not self.data_override:
+            if not self._resolve_folder_scope():
+                return False
+
+        # Resolve project name to numeric ID if needed (API filters require numeric IDs)
+        if self.config.project_filter and not self.data_override:
+            try:
+                int(self.config.project_filter)
+                # Already a numeric ID — no resolution needed
+            except ValueError:
+                resolved_id = self._resolve_project_name(self.config.project_filter)
+                if resolved_id:
+                    self.logger.info(
+                        f"Resolved project '{self.config.project_filter}' to ID {resolved_id}"
+                    )
+                    self.config.project_filter = str(resolved_id)
+                else:
+                    self.logger.error(
+                        f"Could not resolve project name '{self.config.project_filter}'. "
+                        "Use 'fs-report list-projects' to see available projects."
+                    )
+                    return False
 
         # Process each recipe
         all_succeeded = True
@@ -319,7 +589,8 @@ class ReportEngine:
                     "Scan Analysis",
                     "Findings by Project",
                     "Component List",
-                    "User Activity"
+                    "User Activity",
+                    "Triage Prioritization",
                 ]:
                     from fs_report.models import QueryConfig, QueryParams
                     if recipe.name == "User Activity":
@@ -352,7 +623,9 @@ class ReportEngine:
                                 endpoint=recipe.project_list_query.endpoint,
                                 params=QueryParams(
                                     limit=recipe.project_list_query.params.limit,
-                                    offset=0
+                                    offset=0,
+                                    archived=False,
+                                    excluded=False,
                                 )
                             )
                             self._scan_analysis_project_data = self.api_client.fetch_all_with_resume(project_query)
@@ -374,6 +647,10 @@ class ReportEngine:
                                 filters.append(f"project=={project_id}")
                             except ValueError:
                                 filters.append(f"project=={self.config.project_filter}")
+                        elif self._folder_project_ids:
+                            # Folder scoping — add project=in=() filter
+                            folder_pids = list(self._folder_project_ids)
+                            filters.append(f"project=in=({','.join(str(pid) for pid in folder_pids)})")
                         
                         if self.config.version_filter:
                             try:
@@ -388,7 +665,9 @@ class ReportEngine:
                             endpoint=recipe.query.endpoint,
                             params=QueryParams(
                                 limit=recipe.query.params.limit,
-                                filter=combined_filter
+                                filter=combined_filter,
+                                archived=False,
+                                excluded=False,
                             )
                         )
                         
@@ -400,7 +679,7 @@ class ReportEngine:
                         else:
                             self.logger.info(f"Fetching components for {recipe.name} with filter: {combined_filter}")
                             raw_data = self.api_client.fetch_all_with_resume(unified_query)
-                    elif recipe.name in ["Component Vulnerability Analysis (Pandas)", "Component Vulnerability Analysis", "Executive Summary", "Findings by Project"]:
+                    elif recipe.name in ["Component Vulnerability Analysis (Pandas)", "Component Vulnerability Analysis", "Executive Summary", "Findings by Project", "Triage Prioritization"]:
                         # For findings reports: get findings for projects SCANNED in the period
                         # (not findings DETECTED in the period - that misses existing vulnerabilities)
                         
@@ -428,7 +707,9 @@ class ReportEngine:
                                 params=QueryParams(
                                     limit=recipe.query.params.limit,
                                     filter=combined_filter,
-                                    finding_type=finding_type
+                                    finding_type=finding_type,
+                                    archived=False,
+                                    excluded=False,
                                 )
                             )
                             
@@ -444,12 +725,65 @@ class ReportEngine:
                                     params=QueryParams(
                                         limit=recipe.query.params.limit,
                                         filter=combined_filter,
-                                        finding_type=finding_type
+                                        finding_type=finding_type,
+                                        archived=False,
+                                        excluded=False,
                                     )
                                 )
                             
                             self.logger.info(f"Fetching findings for {recipe.name} with type={finding_type}, filter: {combined_filter}")
                             raw_data = self.api_client.fetch_all_with_resume(unified_query)
+                        elif self._folder_project_ids:
+                            # Folder scoping active — use folder's project set directly
+                            folder_pids = list(self._folder_project_ids)
+                            self.logger.info(f"Fetching findings for {recipe.name} scoped to folder '{self._folder_name}' ({len(folder_pids)} projects)")
+                            
+                            combined_filter = ";".join(filters) if filters else None
+                            unified_query = QueryConfig(
+                                endpoint=recipe.query.endpoint,
+                                params=QueryParams(
+                                    limit=recipe.query.params.limit,
+                                    filter=combined_filter,
+                                    finding_type=finding_type,
+                                    archived=False,
+                                    excluded=False,
+                                )
+                            )
+                            
+                            if self.config.current_version_only:
+                                # Get the true latest version for each folder project
+                                version_ids = self._get_latest_version_ids_for_projects(folder_pids)
+                                self.logger.info(f"Fetching findings for folder with --current-version-only ({len(version_ids)} latest versions)")
+                                raw_data = self._fetch_with_version_batching(unified_query, version_ids)
+                            else:
+                                # Batch by project IDs — all versions
+                                raw_data = []
+                                batch_size = 50
+                                from tqdm import tqdm as _tqdm
+                                with _tqdm(range(0, len(folder_pids), batch_size),
+                                           desc=f"Fetching folder findings",
+                                           unit=" batches", leave=False) as pbar:
+                                    for i in pbar:
+                                        batch_ids = folder_pids[i:i + batch_size]
+                                        project_filter_str = f"project=in=({','.join(str(pid) for pid in batch_ids)})"
+                                        batch_filters = [project_filter_str] + filters
+                                        batch_combined = ";".join(batch_filters)
+                                        
+                                        batch_query = QueryConfig(
+                                            endpoint=recipe.query.endpoint,
+                                            params=QueryParams(
+                                                limit=recipe.query.params.limit,
+                                                filter=batch_combined,
+                                                finding_type=finding_type,
+                                                archived=False,
+                                                excluded=False,
+                                            )
+                                        )
+                                        batch_data = self.api_client.fetch_all_with_resume(batch_query, show_progress=False)
+                                        raw_data.extend(batch_data)
+                                        pbar.set_postfix({"records": len(raw_data)})
+                            
+                            self.logger.info(f"Fetched {len(raw_data)} findings for folder scope")
                         else:
                             # No project filter - get projects scanned in the period, then their findings
                             self.logger.info(f"Finding projects scanned between {self.config.start_date} and {self.config.end_date}...")
@@ -496,18 +830,17 @@ class ReportEngine:
                                             if scan_created > existing_created:
                                                 project_latest_version[project_id] = (version_id, scan_created)
                             
-                            # Get unique version IDs (latest per project)
-                            latest_version_ids = [vid for vid, _ in project_latest_version.values()]
-                            
                             self.logger.info(f"Found {len(scanned_project_ids)} unique projects scanned in the period")
                             
                             if not scanned_project_ids:
                                 self.logger.warning("No projects found with scans in the specified period")
                                 raw_data = []
                             elif self.config.current_version_only:
-                                # Use only the latest version per project (1 version per project)
-                                version_ids = latest_version_ids
-                                self.logger.info(f"Fetching findings for {len(version_ids)} projects (latest version each)")
+                                # Use the TRUE latest version per project (queried from API),
+                                # not just the latest version scanned within the period.
+                                # Scans only determine which projects to include.
+                                version_ids = self._get_latest_version_ids_for_projects(list(scanned_project_ids))
+                                self.logger.info(f"Fetching findings for {len(version_ids)} projects (true latest version each)")
                                 
                                 combined_filter = ";".join(filters) if filters else None
                                 unified_query = QueryConfig(
@@ -515,7 +848,9 @@ class ReportEngine:
                                     params=QueryParams(
                                         limit=recipe.query.params.limit,
                                         filter=combined_filter,
-                                        finding_type=finding_type
+                                        finding_type=finding_type,
+                                        archived=False,
+                                        excluded=False,
                                     )
                                 )
                                 raw_data = self._fetch_with_version_batching(unified_query, version_ids)
@@ -545,7 +880,9 @@ class ReportEngine:
                                             params=QueryParams(
                                                 limit=recipe.query.params.limit,
                                                 filter=combined_filter,
-                                                finding_type=finding_type
+                                                finding_type=finding_type,
+                                                archived=False,
+                                                excluded=False,
                                             )
                                         )
                                         batch_data = self.api_client.fetch_all_with_resume(batch_query, show_progress=False)
@@ -580,7 +917,7 @@ class ReportEngine:
 
                 project_query = QueryConfig(
                     endpoint="/public/v0/projects",
-                    params=QueryParams(limit=1000, offset=0),
+                    params=QueryParams(limit=1000, offset=0, archived=False, excluded=False),
                 )
                 projects = self.api_client.fetch_data(project_query)
 
@@ -613,6 +950,32 @@ class ReportEngine:
                             # If project is just an ID, look it up
                             pid_str = str(project_field)
                             finding["project_name"] = project_map.get(pid_str, pid_str)
+
+            # --- Inject folder_name into raw records ---
+            # Build the project-to-folder mapping (either from folder scope or from projects endpoint)
+            if self._project_folder_map:
+                # Folder scoping active — use the pre-built mapping
+                pf_map = self._project_folder_map
+            elif raw_data and isinstance(raw_data, list):
+                # No folder scoping — try to extract folder from projects data
+                pf_map = self._build_project_folder_map_from_projects()
+            else:
+                pf_map = {}
+            
+            if pf_map and raw_data and isinstance(raw_data, list):
+                for record in raw_data:
+                    # Extract project ID from various formats
+                    project_field = record.get("project") or record.get("projectId")
+                    pid = None
+                    if isinstance(project_field, dict):
+                        pid = str(project_field.get("id", ""))
+                    elif project_field:
+                        pid = str(project_field)
+                    
+                    if pid and pid in pf_map:
+                        record["folder_name"] = pf_map[pid]
+                    else:
+                        record["folder_name"] = ""
 
             # Handle additional data for multiple charts
             additional_data: dict[str, Any] = {}
@@ -735,7 +1098,22 @@ class ReportEngine:
                     # Store all keys in additional_data
                     for key, value in transform_result.items():
                         additional_data[key] = value
-                    self.logger.debug(f"Scan analysis: Daily metrics in main data, raw_data available for additional files")
+                    self.logger.debug(f"Transform function returned dict with keys, merged into additional_data")
+
+                    # Write VEX recommendations JSON for Triage Prioritization
+                    if recipe.name == "Triage Prioritization":
+                        vex_recs = transform_result.get('vex_recommendations', [])
+                        if vex_recs:
+                            import json
+                            from pathlib import Path as _Path
+                            # Use the same sanitized directory name as the report renderer
+                            sanitized_name = recipe.name.replace("/", "_").replace("\\", "_").replace(":", "_").replace("*", "_").replace("?", "_").replace('"', "_").replace("<", "_").replace(">", "_").replace("|", "_").strip(" .")
+                            vex_dir = _Path(self.config.output_dir) / sanitized_name
+                            vex_dir.mkdir(parents=True, exist_ok=True)
+                            vex_path = vex_dir / "vex_recommendations.json"
+                            with open(vex_path, "w") as f:
+                                json.dump(vex_recs, f, indent=2, default=str)
+                            self.logger.info(f"Wrote {len(vex_recs)} VEX recommendations to {vex_path}")
 
             # Apply portfolio transforms if available (for Component Vulnerability Analysis)
             portfolio_data = None
@@ -766,6 +1144,10 @@ class ReportEngine:
                     "start_date": self.config.start_date,
                     "end_date": self.config.end_date,
                     "project_filter": self.config.project_filter,
+                    "folder_name": self._folder_name,
+                    "folder_path": self._folder_path,
+                    "folder_filter": self.config.folder_filter,
+                    "domain": self.config.domain,
                 },
             )
 
@@ -913,7 +1295,7 @@ class ReportEngine:
         return all_scans
 
     def _apply_scan_filters(self, query_config: Any) -> Any:
-        """Apply project and version filtering to scan queries."""
+        """Apply project, version, and folder filtering to scan queries."""
         from fs_report.models import QueryConfig, QueryParams
         
         # Start with the original filter
@@ -931,6 +1313,11 @@ class ReportEngine:
                 # Not an integer, treat as project name
                 additional_filters.append(f"project=={self.config.project_filter}")
                 self.logger.debug(f"Added project name filter to scans: project=={self.config.project_filter}")
+        elif self._folder_project_ids:
+            # Folder scoping — add project=in=() filter for scans
+            folder_pids = list(self._folder_project_ids)
+            additional_filters.append(f"project=in=({','.join(str(pid) for pid in folder_pids)})")
+            self.logger.debug(f"Added folder project filter to scans: {len(folder_pids)} projects")
         
         if self.config.version_filter:
             try:

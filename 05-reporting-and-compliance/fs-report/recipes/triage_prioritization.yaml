@@ -1,0 +1,63 @@
+name: "Triage Prioritization"
+template: "triage_prioritization.html"
+description: >
+  Per-project vulnerability triage prioritization using a tiered-gates scoring model.
+  Prioritizes findings based on reachability, exploitability, attack vector, EPSS, and CVSS.
+  Reachable + Exploitable findings are auto-classified as CRITICAL.
+  Generates VEX triage recommendations and detailed risk band breakdowns.
+execution_order: 25  # After scans (10), alongside findings reports (20)
+auto_run: false  # Only runs when explicitly requested with --recipe
+
+parameters:
+  top_components_limit: 15
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+
+transform_function: triage_prioritization_transform
+
+output:
+  table: true
+  formats:
+    - csv
+    - xlsx
+    - html
+  charts:
+    - name: band_distribution
+      chart: bar
+      title: "Priority Band Distribution"
+      description: "Distribution of findings across risk priority bands (CRITICAL through INFO)."
+      x_column: priority_band
+      y_column: count
+    - name: gate_funnel
+      chart: bar
+      title: "Gate Classification Funnel"
+      description: "How findings flow through Gate 1 (Reachable+Exploit), Gate 2 (Strong Signal+Amplifier), and additive scoring."
+      x_column: gate
+      y_column: count
+    - name: cvss_vs_band_heatmap
+      chart: heatmap
+      title: "CVSS Severity vs Priority Band"
+      description: "Cross-tabulation showing how CVSS severity maps to triage priority bands. Highlights cases where CVSS alone would misclassify risk."
+      x_column: priority_band
+      y_column: severity
+    - name: top_components
+      chart: bar
+      title: "Top 15 Riskiest Components"
+      description: "Components with the highest triage scores, broken down by priority band."
+      x_column: component_name
+      y_column: avg_score
+    - name: factor_radar
+      chart: radar
+      title: "Risk Factor Profiles by Project"
+      description: "Radar chart comparing risk factor profiles across top projects."
+      x_column: factor
+      y_column: score
+    - name: project_summary
+      chart: bar
+      title: "Project Risk Summary"
+      description: "Per-project breakdown showing band counts and average triage scores."
+      x_column: project_name
+      y_column: total_findings

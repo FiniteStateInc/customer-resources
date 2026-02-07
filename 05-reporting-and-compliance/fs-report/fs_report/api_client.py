@@ -124,6 +124,8 @@ class APIClient:
             params["offset"] = str(query.params.offset)
         if query.params.archived is not None:
             params["archived"] = str(query.params.archived).lower()
+        if query.params.excluded is not None:
+            params["excluded"] = str(query.params.excluded).lower()
         if query.params.finding_type:
             params["type"] = query.params.finding_type
 
@@ -140,6 +142,8 @@ class APIClient:
             # Handle different API response formats
             # Some endpoints return a list directly, others return {"items": [...]} or {"scans": [...]}
             if isinstance(data, list):
+                # Filter out null/empty rows (can appear for archived/excluded items)
+                data = [rec for rec in data if rec]
                 self.logger.debug(f"Retrieved {len(data)} records (single page, list format)")
                 # Cache the data for this page
                 self.cache.put(query, data)
@@ -216,6 +220,7 @@ class APIClient:
             'sort': query.params.sort,
             'limit': query.params.limit,
             'archived': query.params.archived,
+            'excluded': query.params.excluded,
             'finding_type': query.params.finding_type,
         }
         params = {k: v for k, v in params.items() if v is not None}
@@ -275,6 +280,9 @@ class APIClient:
                 
                 retry_count = 0
                 
+                # Filter out null/empty rows (can appear for archived/excluded items)
+                page = [rec for rec in page if rec] if page else page
+                
                 if not page:
                     consecutive_empty_pages += 1
                     self.logger.debug(f"Empty page at offset {offset} (consecutive empty: {consecutive_empty_pages})")
@@ -332,6 +340,8 @@ class APIClient:
             params["offset"] = str(query.params.offset)
         if query.params.archived is not None:
             params["archived"] = str(query.params.archived).lower()
+        if query.params.excluded is not None:
+            params["excluded"] = str(query.params.excluded).lower()
         if query.params.finding_type:
             params["type"] = query.params.finding_type
         
@@ -444,6 +454,8 @@ class APIClient:
                         break
                     continue
                 retry_count = 0  # Reset on success
+                # Filter out null/empty rows (can appear for archived/excluded items)
+                page = [rec for rec in page if rec] if page else page
                 if not page:
                     consecutive_empty_pages += 1
                     self.logger.debug(f"Empty page at offset {offset} (consecutive empty: {consecutive_empty_pages})")

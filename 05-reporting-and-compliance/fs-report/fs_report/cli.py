@@ -81,10 +81,13 @@ def create_config(
     data_file: Union[str, None] = None,
     project_filter: Union[str, None] = None,
     version_filter: Union[str, None] = None,
+    folder_filter: Union[str, None] = None,
     finding_types: str = "cve",
     current_version_only: bool = True,
     cache_ttl: int = 0,
     cache_dir: Union[str, None] = None,
+    ai: bool = False,
+    ai_depth: str = "summary",
 ) -> Config:
     # Handle period parameter
     if period:
@@ -128,6 +131,20 @@ def create_config(
             console.print(f"[yellow]Valid types: {', '.join(sorted(valid_finding_types))}[/yellow]")
             raise typer.Exit(1)
     
+    # Validate AI options
+    if ai:
+        anthropic_token = os.getenv("ANTHROPIC_AUTH_TOKEN")
+        if not anthropic_token:
+            console.print(
+                "[red]Error: --ai requires ANTHROPIC_AUTH_TOKEN environment variable to be set.[/red]"
+            )
+            raise typer.Exit(2)
+        if ai_depth not in ("summary", "full"):
+            console.print(
+                f"[red]Error: --ai-depth must be 'summary' or 'full', got '{ai_depth}'[/red]"
+            )
+            raise typer.Exit(1)
+
     return Config(
         auth_token=auth_token,
         domain=domain_value,
@@ -139,10 +156,13 @@ def create_config(
         recipe_filter=recipe,
         project_filter=project_filter,
         version_filter=version_filter,
+        folder_filter=folder_filter,
         finding_types=finding_types,
         current_version_only=current_version_only,
         cache_ttl=cache_ttl,
         cache_dir=cache_dir,
+        ai=ai,
+        ai_depth=ai_depth,
     )
 
 
@@ -269,7 +289,7 @@ def list_projects(
         api_client = APIClient(config)
         projects_query = QueryConfig(
             endpoint="/public/v0/projects",
-            params=QueryParams(limit=1000, archived=False)
+            params=QueryParams(limit=1000, archived=False, excluded=False)
         )
         projects = api_client.fetch_data(projects_query)
         
@@ -281,19 +301,134 @@ def list_projects(
         table = Table(title=f"Available Projects ({len(projects)} found)")
         table.add_column("ID", style="cyan", no_wrap=True)
         table.add_column("Name", style="green")
+        table.add_column("Folder", style="yellow")
         table.add_column("Archived", style="dim")
         
         for project in projects:
             project_id = project.get("id", "N/A")
             project_name = project.get("name", "Unknown")
+            folder = project.get("folder")
+            folder_name = folder.get("name", "") if isinstance(folder, dict) else ""
             archived = "Yes" if project.get("archived", False) else "No"
-            table.add_row(str(project_id), project_name, archived)
+            table.add_row(str(project_id), project_name, folder_name, archived)
         
         console.print(table)
         console.print("\n[dim]Use --project with project name or ID to filter reports.[/dim]")
+        console.print("[dim]Use --folder with folder name or ID to scope reports to a folder.[/dim]")
 
     except Exception as e:
         logger.exception("Error fetching projects")
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
+@app.command()
+def list_folders(
+    recipes: Union[Path, None] = typer.Option(
+        None,
+        "--recipes",
+        "-r",
+        help="Path to recipes directory",
+        dir_okay=True,
+        file_okay=False,
+    ),
+    token: Union[str, None] = typer.Option(
+        None,
+        "--token",
+        "-t",
+        help="Finite State API token",
+        hide_input=True,
+    ),
+    domain: Union[str, None] = typer.Option(
+        None,
+        "--domain",
+        "-d",
+        help="Finite State domain (e.g., customer.finitestate.io)",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose logging",
+    ),
+) -> None:
+    """List all available folders with hierarchy."""
+    setup_logging(verbose)
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Create minimal config for API access
+        auth_token = str(token or os.getenv("FINITE_STATE_AUTH_TOKEN") or "")
+        if not auth_token:
+            console.print(
+                "[red]Error: API token required. Set FINITE_STATE_AUTH_TOKEN environment variable or use --token.[/red]"
+            )
+            raise typer.Exit(2)
+        domain_value = str(domain or os.getenv("FINITE_STATE_DOMAIN") or "")
+        if not domain_value:
+            console.print(
+                "[red]Error: Domain required. Set FINITE_STATE_DOMAIN environment variable or use --domain.[/red]"
+            )
+            raise typer.Exit(2)
+
+        config = Config(
+            auth_token=auth_token,
+            domain=domain_value,
+            recipes_dir=str(recipes or Path("./recipes")),
+            output_dir="./output",
+            start_date="2025-01-01",
+            end_date="2025-01-31",
+            verbose=verbose,
+        )
+
+        console.print("[bold cyan]Fetching available folders...[/bold cyan]")
+
+        from fs_report.api_client import APIClient
+        from fs_report.models import QueryConfig, QueryParams
+
+        api_client = APIClient(config)
+        folders_query = QueryConfig(
+            endpoint="/public/v0/folders",
+            params=QueryParams(limit=1000),
+        )
+        folders = api_client.fetch_data(folders_query)
+
+        if not folders:
+            console.print("[yellow]No folders found.[/yellow]")
+            return
+
+        # Build parent-child hierarchy
+        folder_by_id: dict[str, dict] = {}
+        children_map: dict[str | None, list[dict]] = {}
+        for folder in folders:
+            fid = str(folder.get("id", ""))
+            folder_by_id[fid] = folder
+            parent_id = folder.get("parentFolderId")
+            parent_key = str(parent_id) if parent_id else None
+            children_map.setdefault(parent_key, []).append(folder)
+
+        from rich.tree import Tree
+
+        tree = Tree("[bold cyan]Folders[/bold cyan]")
+
+        def _add_children(parent_node: Tree, parent_id: str | None) -> None:
+            children = children_map.get(parent_id, [])
+            children.sort(key=lambda f: f.get("name", ""))
+            for child in children:
+                cid = str(child.get("id", ""))
+                name = child.get("name", "Unknown")
+                count = child.get("projectCount", 0)
+                label = f"[green]{name}[/green]  [dim](ID: {cid}, {count} project{'s' if count != 1 else ''})[/dim]"
+                child_node = parent_node.add(label)
+                _add_children(child_node, cid)
+
+        _add_children(tree, None)
+
+        console.print(tree)
+        console.print(f"\n[dim]Total: {len(folders)} folder(s). Use --folder with folder name or ID to scope reports.[/dim]")
+
+    except Exception as e:
+        logger.exception("Error fetching folders")
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1) from e
 
@@ -625,10 +760,13 @@ def run_reports(
     data_file: Union[str, None],
     project_filter: Union[str, None],
     version_filter: Union[str, None],
+    folder_filter: Union[str, None] = None,
     finding_types: str = "cve",
     current_version_only: bool = True,
     cache_ttl: int = 0,
     cache_dir: Union[str, None] = None,
+    ai: bool = False,
+    ai_depth: str = "summary",
 ) -> None:
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
@@ -650,10 +788,13 @@ def run_reports(
             data_file=data_file,
             project_filter=project_filter,
             version_filter=version_filter,
+            folder_filter=folder_filter,
             finding_types=finding_types,
             current_version_only=current_version_only,
             cache_ttl=cache_ttl,
             cache_dir=cache_dir,
+            ai=ai,
+            ai_depth=ai_depth,
         )
         logger.info("Configuration:")
         logger.info(f"  Domain: {config.domain}")
@@ -666,6 +807,10 @@ def run_reports(
             logger.info(f"  Current version only: Yes (filtering to latest versions)")
         if config.cache_ttl > 0:
             logger.info(f"  [BETA] SQLite cache: Enabled (TTL: {config.cache_ttl}s)")
+        if config.folder_filter:
+            logger.info(f"  Folder scope: {config.folder_filter}")
+        if config.ai:
+            logger.info(f"  AI remediation: Enabled (depth: {config.ai_depth})")
         output_path = Path(config.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         engine = ReportEngine(config, data_override=data_override)
@@ -705,6 +850,8 @@ def run_reports(
         else:
             console.print("[red]Report generation failed![/red]")
             raise typer.Exit(1)
+    except typer.Exit:
+        raise  # Let controlled exits pass through cleanly
     except ValueError as e:
         console.print(f"[red]Validation error: {e}[/red]")
         raise typer.Exit(1) from e
@@ -787,6 +934,12 @@ def main(
         "-pr",
         help="Filter by project (name or ID). Use 'fs-report list-projects' to see available projects.",
     ),
+    folder_filter: Union[str, None] = typer.Option(
+        None,
+        "--folder",
+        "-fl",
+        help="Scope reports to a folder (name or ID, includes subfolders). Use 'fs-report list-folders' to see available folders.",
+    ),
     version_filter: Union[str, None] = typer.Option(
         None,
         "--version",
@@ -819,22 +972,48 @@ def main(
     clear_cache: bool = typer.Option(
         False,
         "--clear-cache",
-        help="Delete all cached data and exit.",
+        help="Delete all cached API data and exit.",
+    ),
+    clear_ai_cache: bool = typer.Option(
+        False,
+        "--clear-ai-cache",
+        help="Delete cached AI remediation guidance and exit.",
+    ),
+    ai: bool = typer.Option(
+        False,
+        "--ai",
+        help="Enable AI remediation guidance for Triage Prioritization (requires ANTHROPIC_AUTH_TOKEN)",
+    ),
+    ai_depth: str = typer.Option(
+        "summary",
+        "--ai-depth",
+        help="AI depth: 'summary' (portfolio/project only) or 'full' (+ Critical/High component guidance)",
     ),
 ) -> None:
     if ctx.invoked_subcommand is not None:
         return
     
-    # Handle --clear-cache
-    if clear_cache:
-        # Get domain for domain-specific cache
-        cache_domain = domain or os.getenv("FINITE_STATE_DOMAIN")
-        cache = SQLiteCache(domain=cache_domain)
-        cache.clear()
-        console.print("[green]Cache cleared successfully.[/green]")
-        console.print(f"[dim]Cache location: {cache.db_path}[/dim]")
-        if cache_domain:
-            console.print(f"[dim]Domain: {cache_domain}[/dim]")
+    # Handle --clear-cache and/or --clear-ai-cache
+    if clear_cache or clear_ai_cache:
+        if clear_cache:
+            cache_domain = domain or os.getenv("FINITE_STATE_DOMAIN")
+            cache = SQLiteCache(domain=cache_domain)
+            cache.clear()
+            console.print("[green]API data cache cleared successfully.[/green]")
+            console.print(f"[dim]Cache location: {cache.db_path}[/dim]")
+            if cache_domain:
+                console.print(f"[dim]Domain: {cache_domain}[/dim]")
+
+        if clear_ai_cache:
+            ai_cache_dir = Path.home() / ".fs-report"
+            ai_cache_db = ai_cache_dir / "cache.db"
+            if ai_cache_db.exists():
+                ai_cache_db.unlink()
+                console.print("[green]AI remediation cache cleared successfully.[/green]")
+            else:
+                console.print("[yellow]No AI cache found (nothing to clear).[/yellow]")
+            console.print(f"[dim]Cache location: {ai_cache_db}[/dim]")
+
         raise typer.Exit(0)
     
     # Parse cache TTL
@@ -863,10 +1042,13 @@ def main(
         data_file=data_file,
         project_filter=project_filter,
         version_filter=version_filter,
+        folder_filter=folder_filter,
         finding_types=finding_types,
         current_version_only=current_version_only,
         cache_ttl=cache_ttl_seconds,
         cache_dir=None,
+        ai=ai,
+        ai_depth=ai_depth,
     )
 
 

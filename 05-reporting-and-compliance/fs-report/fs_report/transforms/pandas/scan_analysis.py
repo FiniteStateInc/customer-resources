@@ -375,7 +375,7 @@ def generate_scan_metrics(df: pd.DataFrame, config: Optional[Config] = None) -> 
     # Select and order columns for the raw data export
     raw_data_columns = [
         'id', 'scan_date', 'completion_date', 'status', 'type', 
-        'project_name', 'version_name', 'duration_minutes', 'current_status_time_minutes', 'errorMessage'
+        'folder_name', 'project_name', 'version_name', 'duration_minutes', 'current_status_time_minutes', 'errorMessage'
     ]
     
     # Only include columns that exist

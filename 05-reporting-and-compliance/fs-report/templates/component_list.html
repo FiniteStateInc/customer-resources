@@ -2,11 +2,12 @@
 
 {% block content %}
 <!-- Filter Information -->
-{% if project_filter %}
+{% if folder_path or project_filter %}
 <div class="chart-container">
     <h3>🔍 Applied Filter</h3>
-    <p><strong>Project Filter:</strong> {{ project_filter }}</p>
-    <p>Showing components for the specified project(s) only.</p>
+    {% if folder_path %}<p><strong>Folder:</strong> {{ folder_path }}</p>{% endif %}
+    {% if project_filter %}<p><strong>Project Filter:</strong> {{ project_filter }}</p>{% endif %}
+    <p>Showing components for the specified scope only.</p>
 </div>
 {% endif %}
 
@@ -25,6 +26,7 @@
                 <th>Supplier</th>
                 <th>Declared License</th>
                 <th>Concluded License</th>
+                {% if folder_path %}<th>Folder</th>{% endif %}
                 <th>Project</th>
                 <th>Project Version</th>
                 <th>Findings</th>
@@ -39,7 +41,7 @@
                 {% if row['Project Name'] != current_project.value %}
                     {% set current_project.value = row['Project Name'] %}
                     <tr style="background-color: #f8f9fa; font-weight: bold;">
-                        <td colspan="12">{{ row['Project Name'] }}</td>
+                        <td colspan="{% if folder_path %}13{% else %}12{% endif %}">{{ row['Project Name'] }}</td>
                     </tr>
                 {% endif %}
                 <tr>
@@ -78,6 +80,7 @@
                             </span>
                         {% endif %}
                     </td>
+                    {% if folder_path %}<td>{{ row.get('Folder', '') }}</td>{% endif %}
                     <td>{{ row['Project Name'] }}</td>
                     <td>{{ row['Project Version'] }}</td>
                     <td>

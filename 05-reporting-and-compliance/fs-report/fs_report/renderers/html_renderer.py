@@ -409,6 +409,10 @@ class HTMLRenderer:
             "start_date": report_data.metadata.get("start_date", ""),
             "end_date": report_data.metadata.get("end_date", ""),
             "project_filter": report_data.metadata.get("project_filter", ""),
+            "folder_name": report_data.metadata.get("folder_name", ""),
+            "folder_path": report_data.metadata.get("folder_path", ""),
+            "folder_filter": report_data.metadata.get("folder_filter", ""),
+            "domain": report_data.metadata.get("domain", ""),
             # Add period label for scan frequency chart
             "scan_frequency_period_label": chart_data.get("scan_frequency_period_label", "Month"),
         }

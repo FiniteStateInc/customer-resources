@@ -64,6 +64,7 @@ class DataCache:
             "limit": query.params.limit,
             "offset": query.params.offset,
             "archived": query.params.archived,
+            "excluded": query.params.excluded,
         }
 
         # Remove None values for consistent hashing

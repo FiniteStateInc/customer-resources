@@ -38,6 +38,7 @@ def findings_by_project_pandas_transform(data: List[Dict[str, Any]], config: Con
         'component.name': 'Component',
         'component.version': 'Component Version',
         'cwe_id': 'CWE',
+        'folder_name': 'Folder',
         'project.name': 'Project Name',
         'project.version': 'Project Version',
         'cve_id': 'CVE ID'

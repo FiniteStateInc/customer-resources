@@ -11,9 +11,12 @@
 ### 1. Set Up Environment Variables
 
 ```bash
-# Set your Finite State credentials
+# Set your Finite State credentials (required)
 export FINITE_STATE_AUTH_TOKEN="your-api-token"
 export FINITE_STATE_DOMAIN="your-domain.finitestate.io"
+
+# Optional: For AI-powered triage remediation guidance
+export ANTHROPIC_AUTH_TOKEN="your-anthropic-api-key"
 ```
 
 **Note**: Add these to your shell profile (`.bashrc`, `.zshrc`, etc.) to make them persistent.
@@ -40,7 +43,7 @@ poetry install
 Activate the Poetry environment and run the CLI:
 
 ```bash
-# Run all reports with default settings
+# Run all default reports
 poetry run fs-report
 
 # Specify a custom date range
@@ -79,6 +82,40 @@ poetry run fs-report --recipes ./my-recipes --output ./my-reports
 poetry run fs-report --verbose
 ```
 
+### 5. Run Triage Prioritization (On-Demand)
+
+The Triage Prioritization report does **not** run with the default reports. You must explicitly request it:
+
+```bash
+# Basic triage report
+poetry run fs-report --recipe "Triage Prioritization" --period 30d
+
+# Single project
+poetry run fs-report --recipe "Triage Prioritization" --project "MyProject"
+
+# With AI-powered remediation guidance (requires Anthropic API key)
+export ANTHROPIC_AUTH_TOKEN="your-anthropic-api-key"
+poetry run fs-report --recipe "Triage Prioritization" --ai --period 30d
+
+# Full AI depth (adds component-level fix guidance for Critical/High)
+poetry run fs-report --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
+```
+
+### 6. Apply VEX Triage Updates (Optional)
+
+After generating a Triage Prioritization report, you can apply the recommended VEX statuses to the platform:
+
+```bash
+# Preview changes (dry run)
+python scripts/apply_vex_triage.py output/Triage_Prioritization/vex_recommendations.json --dry-run
+
+# Apply only CRITICAL band findings
+python scripts/apply_vex_triage.py output/Triage_Prioritization/vex_recommendations.json --filter-band CRITICAL
+
+# Apply all recommendations
+python scripts/apply_vex_triage.py output/Triage_Prioritization/vex_recommendations.json
+```
+
 ## Output Files
 
 Reports are generated in multiple formats:
@@ -109,10 +146,15 @@ fs-reports/
 │   ├── Component_List.html
 │   ├── Component_List.csv
 │   └── Component_List.xlsx
-└── User_Activity/
-    ├── User_Activity.html
-    ├── User_Activity.csv
-    └── User_Activity.xlsx
+├── User_Activity/
+│   ├── User_Activity.html
+│   ├── User_Activity.csv
+│   └── User_Activity.xlsx
+└── Triage_Prioritization/          # Only when explicitly requested
+    ├── Triage_Prioritization.html
+    ├── Triage_Prioritization.csv
+    ├── Triage_Prioritization.xlsx
+    └── vex_recommendations.json    # VEX status recommendations
 ```
 
 ## Performance Features

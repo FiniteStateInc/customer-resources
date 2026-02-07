@@ -14,6 +14,7 @@ This guide explains each report available in the Finite State Reporting Kit, wha
    - [Scan Analysis](#scan-analysis)
    - [Component List](#component-list)
    - [User Activity](#user-activity)
+   - [Triage Prioritization](#triage-prioritization)
 3. [Output Formats](#output-formats)
 4. [Filtering Options](#filtering-options)
 5. [Using Reports Together](#using-reports-together)
@@ -284,6 +285,81 @@ poetry run fs-report --recipe "User Activity" --period 30d
 
 ---
 
+### Triage Prioritization
+
+**Purpose:** Risk-based vulnerability triage that goes beyond CVSS to prioritize findings using reachability, exploit intelligence, attack vectors, and EPSS.
+
+**Who should use it:** Security teams, vulnerability managers, remediation planners
+
+**Important:** This report does **not** run by default. You must explicitly request it:
+
+```bash
+poetry run fs-report --recipe "Triage Prioritization" --period 30d
+```
+
+**What it shows:**
+- Priority bands (CRITICAL, HIGH, MEDIUM, LOW, INFO) based on real-world exploitability
+- Gate classification: findings that short-circuit to CRITICAL/HIGH via exploit+reachability
+- CVSS vs Priority Band heatmap showing where traditional scoring diverges from context-aware triage
+- Per-project risk breakdown with band distribution
+- Top 15 riskiest components with remediation priority
+- Risk factor radar profiles per project
+
+**Scoring Model:**
+
+| Gate | Criteria | Result |
+|------|----------|--------|
+| **Gate 1** | Reachable + (Exploit OR KEV) | → CRITICAL |
+| **Gate 2** | (Reachable OR Exploit/KEV) + (NETWORK OR EPSS≥90th OR CVSS≥9) | → HIGH |
+| **Additive** | Points-based: Reachability (±30), Exploit/KEV (+25/+20), Vector (+15→0), EPSS (0-20), CVSS (0-10) | → Score-based band |
+
+| Band | Score Range | Action |
+|------|-------------|--------|
+| CRITICAL | Gate 1 | Fix immediately |
+| HIGH | Gate 2 or ≥70 | Fix this week |
+| MEDIUM | 40-69 | Fix this month |
+| LOW | 25-39 | Plan remediation |
+| INFO | <25 | Track only |
+
+**AI Remediation Guidance (optional):**
+
+Enable AI-powered remediation guidance with the `--ai` flag:
+
+```bash
+# Summary mode (portfolio + project summaries)
+poetry run fs-report --recipe "Triage Prioritization" --ai --period 30d
+
+# Full mode (+ component-level fix guidance for Critical/High)
+poetry run fs-report --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
+```
+
+Requires `ANTHROPIC_AUTH_TOKEN` environment variable. Uses Claude with model tiering (Sonnet for summaries, Haiku for bulk guidance). Results are cached in `~/.fs-report/cache.db`.
+
+**VEX Integration:**
+
+The report generates a `vex_recommendations.json` file that can be used to update finding statuses in the platform:
+
+```bash
+python scripts/apply_vex_triage.py output/triage_prioritization/vex_recommendations.json --dry-run
+```
+
+**Example commands:**
+```bash
+# Basic triage report
+poetry run fs-report --recipe "Triage Prioritization" --period 30d
+
+# Single project
+poetry run fs-report --recipe "Triage Prioritization" --project "MyProject"
+
+# With AI guidance
+poetry run fs-report --recipe "Triage Prioritization" --ai --period 30d
+
+# Full AI depth (includes component-level fix guidance)
+poetry run fs-report --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
+```
+
+---
+
 ## Output Formats
 
 All reports generate three output formats:
@@ -353,19 +429,21 @@ poetry run fs-report --period 30d --finding-types all
 ### Strategic Workflow
 
 1. **Start with Executive Summary** → Understand overall portfolio health
-2. **Dive into Component Vulnerability Analysis** → Identify organization-wide priorities
-3. **Use Findings by Project** → Plan specific remediation within projects
-4. **Monitor with Scan Analysis** → Ensure scanning infrastructure supports the work
-5. **Track with Component List** → Maintain software inventory for compliance
-6. **Review User Activity** → Ensure platform adoption and engagement
+2. **Run Triage Prioritization** → Identify what to fix first using context-aware scoring
+3. **Dive into Component Vulnerability Analysis** → Identify organization-wide priorities
+4. **Use Findings by Project** → Plan specific remediation within projects
+5. **Monitor with Scan Analysis** → Ensure scanning infrastructure supports the work
+6. **Track with Component List** → Maintain software inventory for compliance
+7. **Review User Activity** → Ensure platform adoption and engagement
 
 ### By Audience
 
 | Audience | Primary Reports |
 |----------|-----------------|
 | **Executives** | Executive Summary |
-| **Security Leadership** | Executive Summary, Component Vulnerability Analysis |
-| **Development Teams** | Findings by Project |
+| **Security Leadership** | Executive Summary, Component Vulnerability Analysis, Triage Prioritization |
+| **Development Teams** | Findings by Project, Triage Prioritization |
+| **Vulnerability Management** | Triage Prioritization (with `--ai`) |
 | **DevSecOps / Operations** | Scan Analysis |
 | **Compliance / Legal** | Component List |
 | **Platform Administrators** | User Activity, Scan Analysis |

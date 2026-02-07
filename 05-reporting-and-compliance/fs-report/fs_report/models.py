@@ -36,6 +36,7 @@ class ChartType(str, Enum):
     PARETO = "pareto"
     BUBBLE = "bubble"
     HEATMAP = "heatmap"
+    RADAR = "radar"
 
 
 class TransformType(str, Enum):
@@ -67,6 +68,7 @@ class QueryParams(BaseModel):
     limit: int | None = Field(None, ge=1, le=10000)
     offset: int | None = Field(None, ge=0)
     archived: bool | None = None
+    excluded: bool | None = None
     finding_type: str | None = Field(None, description="Finding type filter: cve, sast, thirdparty, or all")
 
     @field_validator("filter")
@@ -248,6 +250,11 @@ class Recipe(BaseModel):
                     "so dependent reports can use cached data. "
                     "Default: 50. Recommended: 10=scans, 20=findings, 30=components, 40=audit"
     )
+    auto_run: bool = Field(
+        True,
+        description="Whether to include in default runs. "
+                    "If false, only runs when explicitly requested with --recipe."
+    )
     template: str | None = Field(None, description="HTML template to use for rendering")
     description: str | None = Field(None, description="Recipe description")
     parameters: dict[str, Any] | None = Field(None, description="Recipe parameters for customization")
@@ -302,6 +309,9 @@ class Config(BaseModel):
     project_filter: str | None = Field(
         None, description="Filter by project (name, ID, or version ID). Use 'list' to see available projects."
     )
+    folder_filter: str | None = Field(
+        None, description="Scope reports to a folder (name or ID). Includes subfolders. Use 'list-folders' to see available folders."
+    )
     version_filter: str | None = Field(
         None, description="Filter by project version (version ID or name). Use 'list-versions' to see available versions."
     )
@@ -322,6 +332,15 @@ class Config(BaseModel):
     cache_dir: str | None = Field(
         None,
         description="[BETA] Directory for SQLite cache. Defaults to ~/.fs-report/"
+    )
+    # AI remediation guidance options
+    ai: bool = Field(
+        False,
+        description="Enable AI remediation guidance (requires ANTHROPIC_AUTH_TOKEN env var)"
+    )
+    ai_depth: str = Field(
+        "summary",
+        description="AI depth: 'summary' (portfolio/project) or 'full' (+ Critical/High components)"
     )
 
     @field_validator("domain")

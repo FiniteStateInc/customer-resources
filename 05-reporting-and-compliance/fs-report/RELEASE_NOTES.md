@@ -1,5 +1,40 @@
 # Release Notes
 
+## Version 1.1.0 (February 2026)
+
+### New Features
+
+- **Triage Prioritization Report** - New risk-based vulnerability triage report
+  - Tiered-gates scoring model with additive scoring across reachability, exploitability, and severity
+  - Risk bands (CRITICAL ≥ 85, HIGH ≥ 70, MEDIUM ≥ 40, LOW ≥ 25, INFO < 25) for prioritization
+  - CVSS vs. Priority Band heatmap visualization
+  - Top Riskiest Components analysis
+  - Detailed findings table with clickable links to Finite State platform
+  - AI-powered remediation guidance (optional, requires `--ai` flag)
+  - VEX status recommendations with exportable JSON
+
+- **Clickable Entities in Reports** - Findings, projects, versions, and components in the Triage report link directly to the Finite State platform
+  - Finding IDs link to finding detail pages
+  - Project names link to project overview
+  - Version names link to version overview
+  - Components link to Bill of Materials with specific component selected
+
+- **AI Cache Management** - New `--clear-ai-cache` flag to clear AI-generated content (LLM summaries, remediation guidance) independently of API data cache
+
+### Improvements
+
+- **Folder-Scoped Version Filtering** - `--current-version-only` (default) now works correctly with `--folder` scoping, fetching only findings for the latest version of each project
+- **Accurate Version Resolution** - Uses `defaultBranch.latestVersion.id` from the project object for authoritative current version detection
+
+### Bug Fixes
+
+- Fixed `--clear-cache` and `--clear-ai-cache` not working when both specified together
+- Fixed controlled exit errors showing unnecessary stack traces
+- Fixed component deep links using wrong ID (now uses `vcId` for version-specific BOM links)
+- Fixed SQLite cache not preserving `component.vcId` field
+
+---
+
 ## Version 1.0.5 (February 2026)
 
 ### New Features
