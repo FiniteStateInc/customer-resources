@@ -1,0 +1,30 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+test_api_status.sh
+test.sh
+test2.sh
+test3.sh
+test4.sh
+test5.sh
+test6.sh
+test7.sh
+test8.sh
+.DS_Store
+src/.DS_Store
+src/fs_smartsheets/.DS_Store
+
+# Sensitive / runtime artefacts
+.env
+*.fs-smartsheet-state.json
+*.fs-smartsheet-state.json.backup
+*.fs-smartsheet-state.json.tmp
+.fs-smartsheet/
+*.writeback.lock
