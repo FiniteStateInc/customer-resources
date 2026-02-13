@@ -33,7 +33,9 @@ def executive_scan_frequency_transform(
         df = pd.DataFrame()
         df.period_label = "Day"  # type: ignore[attr-defined]
         return df
-    df["detected_dt"] = pd.to_datetime(df["detected"], errors="coerce")
+    df["detected_dt"] = pd.to_datetime(df["detected"], errors="coerce", utc=True)
+    # Strip timezone so .dt.to_period() doesn't emit a UserWarning
+    df["detected_dt"] = df["detected_dt"].dt.tz_localize(None)
     # Determine period length
     start = pd.to_datetime(config.start_date)
     end = pd.to_datetime(config.end_date)

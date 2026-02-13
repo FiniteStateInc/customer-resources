@@ -684,13 +684,20 @@ class SQLiteCache:
             )
             return True
 
-    def get_cached_data(self, endpoint: str, params: dict) -> list[dict] | None:
+    def get_cached_data(
+        self, endpoint: str, params: dict, *, allow_empty: bool = False
+    ) -> list[dict] | None:
         """
         Retrieve cached data for a query.
 
         Args:
             endpoint: API endpoint
             params: Query parameters
+            allow_empty: If True, return ``[]`` when the cache entry exists but
+                has zero records (i.e. the fetch completed with no results).
+                The caller should first verify the entry is valid via
+                ``is_cache_valid()``.  Default ``False`` preserves the legacy
+                behaviour where empty results return ``None``.
 
         Returns:
             List of records, or None if not cached or endpoint not supported
@@ -716,7 +723,11 @@ class SQLiteCache:
                 return None
 
             if not rows:
-                return None
+                # The query returned 0 data rows.  When allow_empty is set the
+                # caller has already confirmed (via is_cache_valid) that this
+                # entry was completed — so 0 rows is a legitimate cached result
+                # (e.g. a version with no components).
+                return [] if allow_empty else None
 
             # Convert back to original API format
             records = []

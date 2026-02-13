@@ -377,8 +377,7 @@
         {% endif %}
         
         <!-- Raw Scan Data Table -->
-        {% if metadata.additional_data and metadata.additional_data.raw_data %}
-        {% set raw_data = metadata.additional_data.raw_data %}
+        {% if raw_data %}
         <div class="table-container">
             <h2>📋 Individual Scan Details</h2>
             <p style="color: #6c757d; margin-bottom: 15px;">

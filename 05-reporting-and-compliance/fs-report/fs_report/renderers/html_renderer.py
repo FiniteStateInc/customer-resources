@@ -35,17 +35,23 @@ from fs_report.models import Recipe, ReportData
 logger = logging.getLogger(__name__)
 
 
-def convert_to_native_types(obj: Any) -> Any:
+def convert_to_native_types(obj: Any, _depth: int = 0) -> Any:
     """
     Recursively convert pandas/numpy objects to native Python types.
     This helps prevent ambiguous truth value errors in Jinja2 templates.
     """
+    if _depth > 100:
+        # Safety valve — avoid hitting Python's recursion limit on
+        # unexpectedly deep / circular structures.
+        return obj
     if obj is None:
         return None
     elif isinstance(obj, pd.Series):
         return obj.tolist()
     elif isinstance(obj, pd.DataFrame):
-        return obj.to_dict("records")
+        return [
+            convert_to_native_types(row, _depth + 1) for row in obj.to_dict("records")
+        ]
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
     elif isinstance(obj, np.integer):
@@ -55,34 +61,41 @@ def convert_to_native_types(obj: Any) -> Any:
     elif isinstance(obj, np.bool_):
         return bool(obj)
     elif isinstance(obj, dict):
-        return {key: convert_to_native_types(value) for key, value in obj.items()}
+        return {
+            key: convert_to_native_types(value, _depth + 1)
+            for key, value in obj.items()
+        }
     elif isinstance(obj, list):
-        return [convert_to_native_types(item) for item in obj]
+        return [convert_to_native_types(item, _depth + 1) for item in obj]
     elif isinstance(obj, tuple):
-        return tuple(convert_to_native_types(item) for item in obj)
+        return tuple(convert_to_native_types(item, _depth + 1) for item in obj)
     else:
         return obj
 
 
-def scan_for_pandas_objects(obj: Any, path: str = "root") -> None:
+def scan_for_pandas_objects(obj: Any, path: str = "root", _depth: int = 0) -> None:
     """
     Recursively scan for pandas/numpy objects and log them.
     This helps identify variables that might cause ambiguous truth value errors.
     """
+    if _depth > 50:
+        return  # Safety valve — stop recursing into very deep structures
     import logging
 
     logger = logging.getLogger(__name__)
 
     if isinstance(
-        obj, pd.Series | pd.DataFrame | np.ndarray | np.integer | np.floating | np.bool_
+        obj,
+        pd.Series | pd.DataFrame | np.ndarray | np.integer | np.floating | np.bool_,
     ):
-        logger.warning(f"Found pandas/numpy object at {path}: {type(obj)} = {obj}")
+        logger.warning(f"Found pandas/numpy object at {path}: {type(obj)}")
     elif isinstance(obj, dict):
         for key, value in obj.items():
-            scan_for_pandas_objects(value, f"{path}.{key}")
+            scan_for_pandas_objects(value, f"{path}.{key}", _depth + 1)
     elif isinstance(obj, list | tuple):
-        for i, item in enumerate(obj):
-            scan_for_pandas_objects(item, f"{path}[{i}]")
+        # Only scan first few items to avoid O(n) traversal on large lists
+        for i, item in enumerate(obj[:10]):
+            scan_for_pandas_objects(item, f"{path}[{i}]", _depth + 1)
 
 
 class HTMLRenderer:
@@ -135,14 +148,14 @@ class HTMLRenderer:
             scan_for_pandas_objects(template_data)
 
             # Convert all data to native types to prevent ambiguous truth value errors
+            self.logger.debug("Converting template_data to native types...")
             template_data = convert_to_native_types(template_data)
-
-            # Scan again after conversion to ensure all objects are native
-            self.logger.debug("Scanning template_data after conversion...")
-            scan_for_pandas_objects(template_data)
+            self.logger.debug("Conversion complete.")
 
             # Render the template
+            self.logger.debug("Rendering HTML template...")
             html_content = template.render(**template_data)
+            self.logger.debug("HTML rendering complete.")
 
             # Write to file
             output_path.write_text(html_content, encoding="utf-8")
@@ -424,6 +437,22 @@ class HTMLRenderer:
             elif isinstance(portfolio_table_data, pd.Series):  # type: ignore[unreachable]
                 portfolio_table_data = portfolio_table_data.tolist()  # type: ignore[unreachable]
 
+        # Build a slim metadata dict for the template — avoid passing the
+        # full report_data.metadata (which embeds DataFrames, Config objects,
+        # and the entire recipe dump) through convert_to_native_types, as its
+        # recursive traversal can exceed Python's default recursion limit.
+        slim_metadata = {
+            "start_date": report_data.metadata.get("start_date", ""),
+            "end_date": report_data.metadata.get("end_date", ""),
+            "raw_count": report_data.metadata.get("raw_count", 0),
+            "transformed_count": report_data.metadata.get("transformed_count", 0),
+            "project_filter": report_data.metadata.get("project_filter", ""),
+            "folder_name": report_data.metadata.get("folder_name", ""),
+            "folder_path": report_data.metadata.get("folder_path", ""),
+            "folder_filter": report_data.metadata.get("folder_filter", ""),
+            "domain": report_data.metadata.get("domain", ""),
+        }
+
         template_data = {
             "recipe_name": recipe.name,
             "slide_title": recipe.output.slide_title or recipe.name,
@@ -432,18 +461,18 @@ class HTMLRenderer:
             "charts": recipe.output.charts or [],
             "table_data": table_data,
             "portfolio_table_data": portfolio_table_data,
-            "metadata": report_data.metadata,
+            "metadata": slim_metadata,
             "generated_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
             "stacked": is_stacked,
             "is_mttr_chart": is_mttr_chart,
             "y_axis_max": y_axis_max,
-            "start_date": report_data.metadata.get("start_date", ""),
-            "end_date": report_data.metadata.get("end_date", ""),
-            "project_filter": report_data.metadata.get("project_filter", ""),
-            "folder_name": report_data.metadata.get("folder_name", ""),
-            "folder_path": report_data.metadata.get("folder_path", ""),
-            "folder_filter": report_data.metadata.get("folder_filter", ""),
-            "domain": report_data.metadata.get("domain", ""),
+            "start_date": slim_metadata["start_date"],
+            "end_date": slim_metadata["end_date"],
+            "project_filter": slim_metadata["project_filter"],
+            "folder_name": slim_metadata["folder_name"],
+            "folder_path": slim_metadata["folder_path"],
+            "folder_filter": slim_metadata["folder_filter"],
+            "domain": slim_metadata["domain"],
             # Add period label for scan frequency chart
             "scan_frequency_period_label": chart_data.get(
                 "scan_frequency_period_label", "Month"
@@ -456,10 +485,33 @@ class HTMLRenderer:
         else:
             template_data["data"] = report_data.data
 
-        # Always merge additional_data into template_data
+        # Merge additional_data into template context.  Convert DataFrames
+        # and Series to native Python types up-front so that the later
+        # convert_to_native_types pass doesn't recurse through large tables.
         additional_data = report_data.metadata.get("additional_data", {})
         if additional_data:
-            template_data.update(additional_data)
+            for key, value in additional_data.items():
+                if key == "config":
+                    continue  # Config object is not template-safe
+                # Convert top-level DataFrames/Series to native types
+                if isinstance(value, pd.DataFrame):
+                    value = value.to_dict("records")
+                elif isinstance(value, pd.Series):
+                    value = value.tolist()
+                # For nested dicts (e.g. transform_result), convert any
+                # DataFrame/Series values so templates can consume them.
+                elif isinstance(value, dict):
+                    value = {
+                        k: (
+                            v.to_dict("records")
+                            if isinstance(v, pd.DataFrame)
+                            else v.tolist()
+                            if isinstance(v, pd.Series)
+                            else v
+                        )
+                        for k, v in value.items()
+                    }
+                template_data[key] = value
         # If the main data is a dict (custom transform), merge all keys into template_data
         if isinstance(report_data.data, dict):
             for key, value in report_data.data.items():

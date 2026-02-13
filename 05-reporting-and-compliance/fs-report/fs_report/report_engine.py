@@ -595,6 +595,7 @@ class ReportEngine:
         entity_type: str,
         finding_type: str = "",
         category_filter: str | None = None,
+        batch_version_ids: list[int] | None = None,
     ) -> None:
         """Split batch results by projectVersion.id and cache each version individually.
 
@@ -604,11 +605,17 @@ class ReportEngine:
         per-version fetch from Version Comparison can hit the
         SQLite cache entry created by a batch fetch in an earlier run.
 
+        When ``batch_version_ids`` is provided, versions that returned zero records
+        are cached as empty lists.  Without this, empty versions would be re-fetched
+        on every run (the cache only stored versions that had data).
+
         Args:
             records: Raw API records (findings or components).
             entity_type: 'findings' or 'components'.
             finding_type: API finding type (e.g. 'cve'). Only used for findings.
             category_filter: Optional RSQL category filter. Only used for findings.
+            batch_version_ids: Version IDs that were queried in this batch.
+                If provided, any IDs not present in the results are cached as empty.
         """
         from collections import defaultdict
 
@@ -618,6 +625,14 @@ class ReportEngine:
             vid = str(pv.get("id", ""))
             if vid:
                 by_version[vid].append(rec)
+
+        # If we know which version IDs were in the batch, add empty entries
+        # for versions that returned no records so they are cached as "checked".
+        if batch_version_ids is not None:
+            for batch_vid in batch_version_ids:
+                svid = str(batch_vid)
+                if svid not in by_version:
+                    by_version[svid] = []
 
         if entity_type == "findings":
             cache_prefix = "findings|"
@@ -700,7 +715,9 @@ class ReportEngine:
             if self.api_client.sqlite_cache.is_cache_valid(
                 endpoint, params, self.api_client.cache_ttl
             ):
-                cached = self.api_client.sqlite_cache.get_cached_data(endpoint, params)
+                cached = self.api_client.sqlite_cache.get_cached_data(
+                    endpoint, params, allow_empty=True
+                )
                 if cached is not None:
                     # Promote to in-memory cache for fast re-reads
                     self._version_findings_cache[cache_key] = cached
@@ -911,12 +928,15 @@ class ReportEngine:
                     skip_cache_store=True,
                 )
 
-                # Split and cache per-version (in-memory + SQLite)
+                # Split and cache per-version (in-memory + SQLite).
+                # Pass batch_ids so versions with 0 results are cached as
+                # empty — otherwise they'd be re-fetched on every run.
                 self._split_and_cache_by_version(
                     batch_results,
                     entity_type,
                     finding_type,
                     category_filter,
+                    batch_version_ids=batch_ids,
                 )
 
                 # Trim factors in-memory to avoid OOM on large instances.
@@ -1611,7 +1631,23 @@ class ReportEngine:
                             self.config.current_version_only
                             and not self.config.version_filter
                         ):
-                            version_ids = self._get_latest_version_ids()
+                            # Scope version resolution to only the projects
+                            # being queried — avoids fetching version IDs (and
+                            # then components) for projects that the filter will
+                            # exclude anyway.
+                            if self.config.project_filter:
+                                # Single project → resolve just that one version
+                                version_ids = self._get_latest_version_ids_for_projects(
+                                    [self.config.project_filter]
+                                )
+                            elif self._folder_project_ids:
+                                # Folder scope → resolve only folder projects
+                                version_ids = self._get_latest_version_ids_for_projects(
+                                    list(self._folder_project_ids)
+                                )
+                            else:
+                                # No project/folder filter → resolve all
+                                version_ids = self._get_latest_version_ids()
                             self.logger.info(
                                 f"Fetching components for {recipe.name} with --current-version-only ({len(version_ids)} versions), base filter: {combined_filter}"
                             )
@@ -2284,6 +2320,15 @@ class ReportEngine:
                             self.logger.info(
                                 f"Wrote {len(vex_recs)} VEX recommendations to {vex_path}"
                             )
+
+            # When a transform returns a dict with a "main" key, extract the
+            # main DataFrame as the primary report data.  The full dict is
+            # already available via additional_data["transform_result"].
+            if isinstance(transformed_data, dict) and "main" in transformed_data:
+                self.logger.debug(
+                    "Extracting 'main' DataFrame from transform result dict"
+                )
+                transformed_data = transformed_data["main"]
 
             # Apply portfolio transforms if available (for Component Vulnerability Analysis)
             portfolio_data = None

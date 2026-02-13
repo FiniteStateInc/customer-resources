@@ -556,6 +556,49 @@
                     </div>
                 </div>
 
+                <!-- Latest Delta: Component Churn -->
+                {% if proj.latest_delta.component_churn and proj.latest_delta.component_churn|length > 0 %}
+                <div class="section">
+                    <div class="section-header">
+                        <h3>Component Changes ({{ proj.latest_delta.baseline_version }} &rarr; {{ proj.latest_delta.current_version }})</h3>
+                        <span class="badge badge-churn">{{ proj.latest_delta.component_churn|length }} changes</span>
+                    </div>
+                    <table class="data-table" id="churn-{{ loop.index }}">
+                        <thead>
+                            <tr>
+                                <th>Change</th>
+                                <th>Component</th>
+                                <th>Previous Version</th>
+                                <th>Current Version</th>
+                                <th>Findings Impact</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in proj.latest_delta.component_churn %}
+                            <tr class="{% if loop.index > 15 %}hidden-row{% endif %}">
+                                <td><span class="change-badge change-{{ row.change_type }}">
+                                    {% if row.change_type == 'added' %}+ Added{% elif row.change_type == 'removed' %}- Removed{% else %}&uarr; Updated{% endif %}
+                                </span></td>
+                                <td>{{ row.name }}</td>
+                                <td>{{ row.version_baseline | default('-', true) }}</td>
+                                <td>{{ row.version_current | default('-', true) }}</td>
+                                <td>{{ row.findings_impact | default(0) }}</td>
+                            </tr>
+                            {% endfor %}
+                            {% if proj.latest_delta.component_churn|length > 15 %}
+                            <tr class="show-more-row">
+                                <td colspan="5">
+                                    <button class="show-more-btn" onclick="toggleRows('churn-{{ loop.index }}')">
+                                        Show {{ proj.latest_delta.component_churn|length - 15 }} more...
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+
                 <!-- Version changelog: all version-to-version changes (skip for 2-version pairs — already shown above) -->
                 {% if proj.progression|length > 2 %}
                 <div class="section changelog-section">
@@ -646,49 +689,6 @@
                     </div>
                     {% endif %}
                     {% endfor %}
-                </div>
-                {% endif %}
-
-                <!-- Latest Delta: Component Churn -->
-                {% if proj.latest_delta.component_churn and proj.latest_delta.component_churn|length > 0 %}
-                <div class="section">
-                    <div class="section-header">
-                        <h3>Component Changes ({{ proj.latest_delta.baseline_version }} &rarr; {{ proj.latest_delta.current_version }})</h3>
-                        <span class="badge badge-churn">{{ proj.latest_delta.component_churn|length }} changes</span>
-                    </div>
-                    <table class="data-table" id="churn-{{ loop.index }}">
-                        <thead>
-                            <tr>
-                                <th>Change</th>
-                                <th>Component</th>
-                                <th>Previous Version</th>
-                                <th>Current Version</th>
-                                <th>Findings Impact</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for row in proj.latest_delta.component_churn %}
-                            <tr class="{% if loop.index > 15 %}hidden-row{% endif %}">
-                                <td><span class="change-badge change-{{ row.change_type }}">
-                                    {% if row.change_type == 'added' %}+ Added{% elif row.change_type == 'removed' %}- Removed{% else %}&uarr; Updated{% endif %}
-                                </span></td>
-                                <td>{{ row.name }}</td>
-                                <td>{{ row.version_baseline | default('-', true) }}</td>
-                                <td>{{ row.version_current | default('-', true) }}</td>
-                                <td>{{ row.findings_impact | default(0) }}</td>
-                            </tr>
-                            {% endfor %}
-                            {% if proj.latest_delta.component_churn|length > 15 %}
-                            <tr class="show-more-row">
-                                <td colspan="5">
-                                    <button class="show-more-btn" onclick="toggleRows('churn-{{ loop.index }}')">
-                                        Show {{ proj.latest_delta.component_churn|length - 15 }} more...
-                                    </button>
-                                </td>
-                            </tr>
-                            {% endif %}
-                        </tbody>
-                    </table>
                 </div>
                 {% endif %}
 
