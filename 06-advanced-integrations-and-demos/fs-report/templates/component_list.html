@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+
+{% block content %}
+<!-- Filter Information -->
+{% if folder_path or project_filter %}
+<div class="chart-container">
+    <h3>🔍 Applied Filter</h3>
+    {% if folder_path %}<p><strong>Folder:</strong> {{ folder_path }}</p>{% endif %}
+    {% if project_filter %}<p><strong>Project Filter:</strong> {{ project_filter }}</p>{% endif %}
+    <p>Showing components for the specified scope only.</p>
+</div>
+{% endif %}
+
+<!-- Data Table -->
+<div class="table-container">
+    <h2>Component List</h2>
+    <p>Comprehensive inventory of software components across projects</p>
+    
+    {% if data %}
+    <table>
+        <thead>
+            <tr>
+                <th>Component</th>
+                <th>Version</th>
+                <th>Type</th>
+                <th>Supplier</th>
+                <th>Declared License</th>
+                <th>Concluded License</th>
+                {% if folder_path %}<th>Folder</th>{% endif %}
+                <th>Project</th>
+                <th>Project Version</th>
+                <th>Findings</th>
+                <th>Warnings</th>
+                <th>Violations</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% set current_project = namespace(value=None) %}
+            {% for row in data %}
+                {% if row['Project Name'] != current_project.value %}
+                    {% set current_project.value = row['Project Name'] %}
+                    <tr style="background-color: #f8f9fa; font-weight: bold;">
+                        <td colspan="{% if folder_path %}13{% else %}12{% endif %}">{{ row['Project Name'] }}</td>
+                    </tr>
+                {% endif %}
+                <tr>
+                    <td>{{ row['Component'] }}</td>
+                    <td>{{ row['Version'] }}</td>
+                    <td>
+                        <span style="
+                            padding: 2px 8px;
+                            border-radius: 4px;
+                            font-size: 0.85em;
+                            {% if row.get('Type', '').lower() == 'library' %}
+                                background-color: #e3f2fd; color: #1565c0;
+                            {% elif row.get('Type', '').lower() == 'application' %}
+                                background-color: #f3e5f5; color: #7b1fa2;
+                            {% elif row.get('Type', '').lower() == 'firmware' %}
+                                background-color: #fff3e0; color: #ef6c00;
+                            {% elif row.get('Type', '').lower() == 'file' %}
+                                background-color: #e8f5e9; color: #2e7d32;
+                            {% elif row.get('Type', '').lower() == 'operating-system' %}
+                                background-color: #fce4ec; color: #c2185b;
+                            {% else %}
+                                background-color: #f5f5f5; color: #616161;
+                            {% endif %}
+                        ">
+                            {{ row['Type'] }}
+                        </span>
+                    </td>
+                    <td>{{ row['Supplier'] }}</td>
+                    <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;" title="{{ row.get('Declared License', '') }}">
+                        {{ row.get('Declared License', '') }}
+                    </td>
+                    <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;" title="{{ row.get('Concluded License', '') }}">
+                        {% if row.get('Concluded License') %}
+                            <span style="background-color: #e8f5e9; padding: 2px 6px; border-radius: 4px;">
+                                {{ row['Concluded License'] }}
+                            </span>
+                        {% endif %}
+                    </td>
+                    {% if folder_path %}<td>{{ row.get('Folder', '') }}</td>{% endif %}
+                    <td>{{ row['Project Name'] }}</td>
+                    <td>{{ row['Project Version'] }}</td>
+                    <td>
+                        {% if row.get('Findings', 0) > 0 %}
+                            <span style="
+                                font-weight: bold;
+                                padding: 2px 8px;
+                                border-radius: 4px;
+                                {% if row.get('Findings', 0) >= 10 %}
+                                    background-color: #ffebee; color: #c62828;
+                                {% elif row.get('Findings', 0) >= 5 %}
+                                    background-color: #fff3e0; color: #ef6c00;
+                                {% else %}
+                                    background-color: #fff8e1; color: #f57f17;
+                                {% endif %}
+                            ">
+                                {{ row['Findings'] }}
+                            </span>
+                        {% else %}
+                            <span style="color: #4caf50;">0</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if row.get('Warnings', 0) > 0 %}
+                            <span style="color: #ff9800; font-weight: bold;">{{ row['Warnings'] }}</span>
+                        {% else %}
+                            <span style="color: #4caf50;">0</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if row.get('Violations', 0) > 0 %}
+                            <span style="color: #f44336; font-weight: bold;">{{ row['Violations'] }}</span>
+                        {% else %}
+                            <span style="color: #4caf50;">0</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if row.get('Status') and row.get('Status') != 'N/A' %}
+                            <span style="
+                                padding: 2px 6px;
+                                border-radius: 4px;
+                                font-size: 0.85em;
+                                {% if row.get('Status') == 'CONFIRMED' %}
+                                    background-color: #e8f5e9; color: #2e7d32;
+                                {% elif row.get('Status') == 'NEEDS_REVIEW' %}
+                                    background-color: #fff3e0; color: #ef6c00;
+                                {% elif row.get('Status') == 'IN_REVIEW' %}
+                                    background-color: #e3f2fd; color: #1565c0;
+                                {% elif row.get('Status') == 'FALSE_POSITIVE' %}
+                                    background-color: #f5f5f5; color: #616161;
+                                {% else %}
+                                    background-color: #fafafa; color: #757575;
+                                {% endif %}
+                            ">
+                                {{ row['Status'] }}
+                            </span>
+                        {% else %}
+                            <span style="color: #9e9e9e;">-</span>
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div style="text-align: center; padding: 40px; color: #666; font-style: italic;">
+        <h3>No components found</h3>
+        <p>No software components match the current criteria.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

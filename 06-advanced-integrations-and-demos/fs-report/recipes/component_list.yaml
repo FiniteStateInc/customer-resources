@@ -1,0 +1,24 @@
+name: "Component List"
+category: assessment  # Current state: shows today's component inventory regardless of time period
+template: "component_list.html"
+description: "Comprehensive inventory of software components across projects with optional filtering"
+execution_order: 30  # Independent - fetches components
+auto_run: false  # Run explicitly with --recipe when needed
+
+query:
+  endpoint: "/public/v0/components"
+  params:
+    limit: 10000
+
+# Project list query for discovery
+project_list_query:
+  endpoint: "/public/v0/projects"
+  params:
+    limit: 10000
+    archived: false
+
+transform_function: component_list_pandas_transform
+
+output:
+  table: true
+  charts: []

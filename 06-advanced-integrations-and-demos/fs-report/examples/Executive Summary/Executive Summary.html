@@ -1,0 +1,1393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Executive Security Summary - Finite State Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f8f9fa;
+        }
+        
+        .container {
+            margin: 0 auto;
+            padding: 20px;
+            background-color: white;
+            border: 1px solid #dee2e6;
+            min-height: 100%;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #e9ecef;
+        }
+        
+        .logo-container {
+            margin-bottom: 20px;
+        }
+        
+        .company-logo {
+            max-height: 50px;
+            width: auto;
+            margin: 0 auto;
+            display: block;
+        }
+        
+        .header h1 {
+            color: #2c3e50;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header .subtitle {
+            color: #6c757d;
+            font-size: 1.1em;
+        }
+        
+        .metadata {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            font-size: 0.9em;
+            color: #6c757d;
+        }
+        
+        .chart-container {
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+            border: 1px solid #dee2e6;
+        }
+        
+        .chart-wrapper {
+            position: relative;
+            height: 400px;
+            margin: 20px 0;
+        }
+        
+        .chart-row {
+            display: flex;
+            margin-bottom: 30px;
+        }
+        
+        .chart-row > * {
+            margin-right: 20px;
+        }
+        
+        .chart-row > *:last-child {
+            margin-right: 0;
+        }
+        
+        .chart-half {
+            flex: 1;
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid #dee2e6;
+        }
+        
+        .chart-half .chart-wrapper {
+            height: 300px;
+        }
+        
+        .table-container {
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+            border: 1px solid #dee2e6;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            min-width: 600px;
+            table-layout: fixed;
+        }
+        
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #dee2e6;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            max-width: 300px;
+            min-width: 100px;
+        }
+        
+        th {
+            background-color: #f8f9fa;
+            font-weight: 600;
+            color: #495057;
+            z-index: 10;
+        }
+        
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #e9ecef;
+            color: #6c757d;
+            font-size: 0.9em;
+        }
+        
+        .finite-state-logo {
+            color: #007bff;
+            font-weight: bold;
+        }
+        
+        @media print {
+            body {
+                background-color: white;
+            }
+            
+            .container {
+                max-width: none;
+            }
+            
+            .chart-container, .chart-half, .table-container {
+                border: 1px solid #dee2e6;
+            }
+        }
+        
+        /* Add responsive breakpoints for smaller screens */
+        
+        /* Add JavaScript for resizable columns */
+        .resizable {
+            position: relative;
+        }
+        
+        .resizable::after {
+            content: '';
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: rgba(0, 0, 0, 0.1);
+            cursor: col-resize;
+        }
+        
+        .resizable:hover::after {
+            background: rgba(0, 0, 0, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo-container">
+                <img src="https://finitestate.io/hs-fs/hubfs/FS-Logo-Final-01.png?width=256&height=50&name=FS-Logo-Final-01.png" 
+                     alt="Finite State Logo" 
+                     class="company-logo">
+            </div>
+            <h1>Executive Security Summary</h1>
+            <div class="subtitle">Finite State Security Report</div>
+        </div>
+        
+        <div class="metadata">
+            <strong>Report:</strong> Executive Summary | 
+            <strong>Period:</strong> 2026-01-01 to 2026-01-31 | 
+            <strong>Generated:</strong> 2026-02-03 10:15:11 UTC | 
+            <strong>Records:</strong> 
+            
+        </div>
+        
+        
+<!-- Main Project Breakdown Chart -->
+<div class="chart-container">
+    <h2>Security Findings by Project and Severity</h2>
+    <p>Distribution of security findings across projects with severity breakdown</p>
+    <div class="chart-wrapper">
+        <canvas id="projectBreakdownChart"></canvas>
+    </div>
+</div>
+
+<!-- Side by Side Charts -->
+<div class="chart-row">
+    <!-- Open Issues Distribution -->
+    <div class="chart-half">
+        <h2>Open Issues by Severity</h2>
+        <p>Distribution of unresolved security findings by severity level</p>
+        <div class="chart-wrapper">
+            <canvas id="openIssuesChart"></canvas>
+        </div>
+    </div>
+    
+    <!-- Scan Frequency -->
+    <div class="chart-half">
+        <h2>Security Findings Over Time</h2>
+        <p>Number of security findings detected per month</p>
+        <div class="chart-wrapper">
+            <canvas id="scanFrequencyChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Data Table -->
+
+<div class="table-container">
+    <h2>Data Table</h2>
+    <table>
+        <thead>
+            <tr>
+                
+                <th>Project</th>
+                
+                <th>Severity</th>
+                
+                <th>Finding Count</th>
+                
+                <th>Avg Risk Score</th>
+                
+                <th>Total Risk</th>
+                
+                <th>Critical Findings</th>
+                
+                <th>High Findings</th>
+                
+                <th>Medium Findings</th>
+                
+                <th>Low Findings</th>
+                
+                <th>Resolved Count</th>
+                
+                <th>Affected Components</th>
+                
+                <th>Resolution Rate</th>
+                
+            </tr>
+        </thead>
+        <tbody>
+            
+            <tr>
+                
+                <td>Mailtest</td>
+                
+                <td>critical</td>
+                
+                <td>16</td>
+                
+                <td>9.4</td>
+                
+                <td>151</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>16</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>Mailtest</td>
+                
+                <td>high</td>
+                
+                <td>22</td>
+                
+                <td>7.8</td>
+                
+                <td>172</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>22</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>Mailtest</td>
+                
+                <td>low</td>
+                
+                <td>21</td>
+                
+                <td>3.4</td>
+                
+                <td>71</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>21</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>Mailtest</td>
+                
+                <td>medium</td>
+                
+                <td>39</td>
+                
+                <td>5.3</td>
+                
+                <td>205</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>39</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>Mybinary</td>
+                
+                <td>critical</td>
+                
+                <td>14</td>
+                
+                <td>9.4</td>
+                
+                <td>132</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>14</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>Mybinary</td>
+                
+                <td>high</td>
+                
+                <td>18</td>
+                
+                <td>7.6</td>
+                
+                <td>137</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>18</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>Mybinary</td>
+                
+                <td>low</td>
+                
+                <td>22</td>
+                
+                <td>3.2</td>
+                
+                <td>71</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>22</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>Mybinary</td>
+                
+                <td>medium</td>
+                
+                <td>39</td>
+                
+                <td>5.4</td>
+                
+                <td>212</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>39</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>WebGoat</td>
+                
+                <td>critical</td>
+                
+                <td>15</td>
+                
+                <td>9.7</td>
+                
+                <td>146</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>15</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>WebGoat</td>
+                
+                <td>high</td>
+                
+                <td>25</td>
+                
+                <td>8.0</td>
+                
+                <td>199</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>25</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>WebGoat</td>
+                
+                <td>low</td>
+                
+                <td>24</td>
+                
+                <td>3.5</td>
+                
+                <td>84</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>24</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>WebGoat</td>
+                
+                <td>medium</td>
+                
+                <td>50</td>
+                
+                <td>5.4</td>
+                
+                <td>271</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>50</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>elasticsearch</td>
+                
+                <td>critical</td>
+                
+                <td>18</td>
+                
+                <td>9.3</td>
+                
+                <td>167</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>18</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>elasticsearch</td>
+                
+                <td>high</td>
+                
+                <td>17</td>
+                
+                <td>7.4</td>
+                
+                <td>126</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>17</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>elasticsearch</td>
+                
+                <td>low</td>
+                
+                <td>23</td>
+                
+                <td>3.4</td>
+                
+                <td>79</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>23</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>elasticsearch</td>
+                
+                <td>medium</td>
+                
+                <td>42</td>
+                
+                <td>5.3</td>
+                
+                <td>224</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>42</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>guava</td>
+                
+                <td>critical</td>
+                
+                <td>10</td>
+                
+                <td>9.5</td>
+                
+                <td>95</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>10</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>guava</td>
+                
+                <td>high</td>
+                
+                <td>20</td>
+                
+                <td>7.8</td>
+                
+                <td>155</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>20</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>guava</td>
+                
+                <td>low</td>
+                
+                <td>17</td>
+                
+                <td>3.9</td>
+                
+                <td>66</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>17</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>guava</td>
+                
+                <td>medium</td>
+                
+                <td>26</td>
+                
+                <td>5.1</td>
+                
+                <td>133</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>26</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>nifi</td>
+                
+                <td>critical</td>
+                
+                <td>13</td>
+                
+                <td>9.5</td>
+                
+                <td>123</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>13</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>nifi</td>
+                
+                <td>high</td>
+                
+                <td>24</td>
+                
+                <td>7.7</td>
+                
+                <td>184</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>24</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>nifi</td>
+                
+                <td>low</td>
+                
+                <td>17</td>
+                
+                <td>3.4</td>
+                
+                <td>57</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>17</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>nifi</td>
+                
+                <td>medium</td>
+                
+                <td>32</td>
+                
+                <td>5.2</td>
+                
+                <td>167</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>32</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>smob</td>
+                
+                <td>critical</td>
+                
+                <td>20</td>
+                
+                <td>9.3</td>
+                
+                <td>187</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>20</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>smob</td>
+                
+                <td>high</td>
+                
+                <td>31</td>
+                
+                <td>7.8</td>
+                
+                <td>241</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>31</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>smob</td>
+                
+                <td>low</td>
+                
+                <td>26</td>
+                
+                <td>3.6</td>
+                
+                <td>94</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>26</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>smob</td>
+                
+                <td>medium</td>
+                
+                <td>61</td>
+                
+                <td>5.6</td>
+                
+                <td>339</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>61</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>spring-framework</td>
+                
+                <td>critical</td>
+                
+                <td>20</td>
+                
+                <td>9.4</td>
+                
+                <td>188</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>20</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>spring-framework</td>
+                
+                <td>high</td>
+                
+                <td>24</td>
+                
+                <td>7.3</td>
+                
+                <td>176</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>24</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>spring-framework</td>
+                
+                <td>low</td>
+                
+                <td>29</td>
+                
+                <td>3.2</td>
+                
+                <td>93</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>29</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+            <tr>
+                
+                <td>spring-framework</td>
+                
+                <td>medium</td>
+                
+                <td>60</td>
+                
+                <td>5.6</td>
+                
+                <td>338</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>0</td>
+                
+                <td>60</td>
+                
+                <td>0</td>
+                
+            </tr>
+            
+        </tbody>
+    </table>
+</div>
+
+
+<script>
+// Severity order and colors (low=green, medium=yellow, high=orange, critical=red)
+const severityOrder = ['critical', 'high', 'medium', 'low'];
+const severityColors = {
+    'critical': '#d32f2f', // red
+    'high': '#f57c00',    // orange
+    'medium': '#fbc02d',  // yellow
+    'low': '#388e3c'      // green
+};
+
+// Prepare grouped bar chart data (project x severity, no 'none')
+(function() {
+    const raw = {"labels": ["Mailtest", "Mailtest", "Mailtest", "Mailtest", "Mybinary", "Mybinary", "Mybinary", "Mybinary", "WebGoat", "WebGoat", "WebGoat", "WebGoat", "elasticsearch", "elasticsearch", "elasticsearch", "elasticsearch", "guava", "guava", "guava", "guava", "nifi", "nifi", "nifi", "nifi", "smob", "smob", "smob", "smob", "spring-framework", "spring-framework", "spring-framework", "spring-framework"], "datasets": [{"label": "Findings", "data": [16, 22, 21, 39, 14, 18, 22, 39, 15, 25, 24, 50, 18, 17, 23, 42, 10, 20, 17, 26, 13, 24, 17, 32, 20, 31, 26, 61, 20, 24, 29, 60], "backgroundColor": "rgba(54, 162, 235, 0.8)", "stack": true}]};
+    const tableRows = [{"affected_components": 16, "avg_risk_score": 9.4, "critical_findings": 0, "finding_count": 16, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "Mailtest", "resolution_rate": 0, "resolved_count": 0, "severity": "critical", "total_risk": 151}, {"affected_components": 22, "avg_risk_score": 7.8, "critical_findings": 0, "finding_count": 22, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "Mailtest", "resolution_rate": 0, "resolved_count": 0, "severity": "high", "total_risk": 172}, {"affected_components": 21, "avg_risk_score": 3.4, "critical_findings": 0, "finding_count": 21, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "Mailtest", "resolution_rate": 0, "resolved_count": 0, "severity": "low", "total_risk": 71}, {"affected_components": 39, "avg_risk_score": 5.3, "critical_findings": 0, "finding_count": 39, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "Mailtest", "resolution_rate": 0, "resolved_count": 0, "severity": "medium", "total_risk": 205}, {"affected_components": 14, "avg_risk_score": 9.4, "critical_findings": 0, "finding_count": 14, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "Mybinary", "resolution_rate": 0, "resolved_count": 0, "severity": "critical", "total_risk": 132}, {"affected_components": 18, "avg_risk_score": 7.6, "critical_findings": 0, "finding_count": 18, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "Mybinary", "resolution_rate": 0, "resolved_count": 0, "severity": "high", "total_risk": 137}, {"affected_components": 22, "avg_risk_score": 3.2, "critical_findings": 0, "finding_count": 22, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "Mybinary", "resolution_rate": 0, "resolved_count": 0, "severity": "low", "total_risk": 71}, {"affected_components": 39, "avg_risk_score": 5.4, "critical_findings": 0, "finding_count": 39, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "Mybinary", "resolution_rate": 0, "resolved_count": 0, "severity": "medium", "total_risk": 212}, {"affected_components": 15, "avg_risk_score": 9.7, "critical_findings": 0, "finding_count": 15, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "WebGoat", "resolution_rate": 0, "resolved_count": 0, "severity": "critical", "total_risk": 146}, {"affected_components": 25, "avg_risk_score": 8.0, "critical_findings": 0, "finding_count": 25, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "WebGoat", "resolution_rate": 0, "resolved_count": 0, "severity": "high", "total_risk": 199}, {"affected_components": 24, "avg_risk_score": 3.5, "critical_findings": 0, "finding_count": 24, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "WebGoat", "resolution_rate": 0, "resolved_count": 0, "severity": "low", "total_risk": 84}, {"affected_components": 50, "avg_risk_score": 5.4, "critical_findings": 0, "finding_count": 50, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "WebGoat", "resolution_rate": 0, "resolved_count": 0, "severity": "medium", "total_risk": 271}, {"affected_components": 18, "avg_risk_score": 9.3, "critical_findings": 0, "finding_count": 18, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "elasticsearch", "resolution_rate": 0, "resolved_count": 0, "severity": "critical", "total_risk": 167}, {"affected_components": 17, "avg_risk_score": 7.4, "critical_findings": 0, "finding_count": 17, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "elasticsearch", "resolution_rate": 0, "resolved_count": 0, "severity": "high", "total_risk": 126}, {"affected_components": 23, "avg_risk_score": 3.4, "critical_findings": 0, "finding_count": 23, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "elasticsearch", "resolution_rate": 0, "resolved_count": 0, "severity": "low", "total_risk": 79}, {"affected_components": 42, "avg_risk_score": 5.3, "critical_findings": 0, "finding_count": 42, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "elasticsearch", "resolution_rate": 0, "resolved_count": 0, "severity": "medium", "total_risk": 224}, {"affected_components": 10, "avg_risk_score": 9.5, "critical_findings": 0, "finding_count": 10, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "guava", "resolution_rate": 0, "resolved_count": 0, "severity": "critical", "total_risk": 95}, {"affected_components": 20, "avg_risk_score": 7.8, "critical_findings": 0, "finding_count": 20, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "guava", "resolution_rate": 0, "resolved_count": 0, "severity": "high", "total_risk": 155}, {"affected_components": 17, "avg_risk_score": 3.9, "critical_findings": 0, "finding_count": 17, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "guava", "resolution_rate": 0, "resolved_count": 0, "severity": "low", "total_risk": 66}, {"affected_components": 26, "avg_risk_score": 5.1, "critical_findings": 0, "finding_count": 26, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "guava", "resolution_rate": 0, "resolved_count": 0, "severity": "medium", "total_risk": 133}, {"affected_components": 13, "avg_risk_score": 9.5, "critical_findings": 0, "finding_count": 13, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "nifi", "resolution_rate": 0, "resolved_count": 0, "severity": "critical", "total_risk": 123}, {"affected_components": 24, "avg_risk_score": 7.7, "critical_findings": 0, "finding_count": 24, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "nifi", "resolution_rate": 0, "resolved_count": 0, "severity": "high", "total_risk": 184}, {"affected_components": 17, "avg_risk_score": 3.4, "critical_findings": 0, "finding_count": 17, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "nifi", "resolution_rate": 0, "resolved_count": 0, "severity": "low", "total_risk": 57}, {"affected_components": 32, "avg_risk_score": 5.2, "critical_findings": 0, "finding_count": 32, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "nifi", "resolution_rate": 0, "resolved_count": 0, "severity": "medium", "total_risk": 167}, {"affected_components": 20, "avg_risk_score": 9.3, "critical_findings": 0, "finding_count": 20, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "smob", "resolution_rate": 0, "resolved_count": 0, "severity": "critical", "total_risk": 187}, {"affected_components": 31, "avg_risk_score": 7.8, "critical_findings": 0, "finding_count": 31, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "smob", "resolution_rate": 0, "resolved_count": 0, "severity": "high", "total_risk": 241}, {"affected_components": 26, "avg_risk_score": 3.6, "critical_findings": 0, "finding_count": 26, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "smob", "resolution_rate": 0, "resolved_count": 0, "severity": "low", "total_risk": 94}, {"affected_components": 61, "avg_risk_score": 5.6, "critical_findings": 0, "finding_count": 61, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "smob", "resolution_rate": 0, "resolved_count": 0, "severity": "medium", "total_risk": 339}, {"affected_components": 20, "avg_risk_score": 9.4, "critical_findings": 0, "finding_count": 20, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "spring-framework", "resolution_rate": 0, "resolved_count": 0, "severity": "critical", "total_risk": 188}, {"affected_components": 24, "avg_risk_score": 7.3, "critical_findings": 0, "finding_count": 24, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "spring-framework", "resolution_rate": 0, "resolved_count": 0, "severity": "high", "total_risk": 176}, {"affected_components": 29, "avg_risk_score": 3.2, "critical_findings": 0, "finding_count": 29, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "spring-framework", "resolution_rate": 0, "resolved_count": 0, "severity": "low", "total_risk": 93}, {"affected_components": 60, "avg_risk_score": 5.6, "critical_findings": 0, "finding_count": 60, "high_findings": 0, "low_findings": 0, "medium_findings": 0, "project.name": "spring-framework", "resolution_rate": 0, "resolved_count": 0, "severity": "medium", "total_risk": 338}];
+    const projectSeverity = {};
+    tableRows.forEach(row => {
+        const project = row['project.name'];
+        const severity = row['severity'];
+        const count = row['finding_count'];
+        if (severity === 'none') return; // skip 'none'
+        if (!projectSeverity[project]) projectSeverity[project] = {};
+        projectSeverity[project][severity] = count;
+    });
+    const projects = Object.keys(projectSeverity);
+    const datasets = severityOrder.map(sev => ({
+        label: sev.charAt(0).toUpperCase() + sev.slice(1),
+        data: projects.map(p => projectSeverity[p][sev] || 0),
+        backgroundColor: severityColors[sev],
+        stack: true
+    }));
+    const ctx = document.getElementById('projectBreakdownChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: projects,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    stacked: true,
+                    title: { display: true, text: 'Project' }
+                },
+                y: {
+                    stacked: true,
+                    beginAtZero: true,
+                    title: { display: true, text: 'Number of Findings' }
+                }
+            },
+            plugins: {
+                legend: { display: false },
+                title: { display: false }
+            }
+        }
+    });
+})();
+
+// Open Issues Distribution Chart (Pie)
+(function() {
+    const openIssuesCtx = document.getElementById('openIssuesChart').getContext('2d');
+    const raw = {"labels": ["critical", "high", "low", "medium"], "datasets": [{"data": [70, 106, 102, 201], "backgroundColor": ["#FF6384", "#36A2EB", "#FFCE56", "#4BC0C0", "#9966FF", "#FF9F40", "#FF6384", "#C9CBCF"]}]};
+    // Severity color mapping
+    const severityOrder = ['critical', 'high', 'medium', 'low'];
+    const severityColors = {
+        'critical': '#d32f2f', // red
+        'high': '#f57c00',    // orange
+        'medium': '#fbc02d',  // yellow
+        'low': '#388e3c'      // green
+    };
+    // Filter out 'none' and build new data arrays
+    const filteredLabels = [];
+    const filteredData = [];
+    const filteredColors = [];
+    if (raw.labels && raw.datasets && raw.datasets.length > 0) {
+        // Map severity to value for sorting
+        const severityToValue = {};
+        raw.labels.forEach((label, i) => {
+            if (label === 'none') return;
+            severityToValue[label] = raw.datasets[0].data[i];
+        });
+        // Sort by severity order
+        severityOrder.forEach(sev => {
+            if (severityToValue[sev] !== undefined) {
+                filteredLabels.push(sev.charAt(0).toUpperCase() + sev.slice(1));
+                filteredData.push(severityToValue[sev]);
+                filteredColors.push(severityColors[sev]);
+            }
+        });
+    }
+    const pieData = {
+        labels: filteredLabels,
+        datasets: [{
+            data: filteredData,
+            backgroundColor: filteredColors
+        }]
+    };
+    new Chart(openIssuesCtx, {
+        type: 'pie',
+        data: pieData,
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                },
+                title: {
+                    display: false
+                }
+            }
+        }
+    });
+})();
+
+// Scan Frequency Chart (Line)
+const scanFrequencyCtx = document.getElementById('scanFrequencyChart').getContext('2d');
+const scanFrequencyData = {"labels": ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09", "2026-01-10", "2026-01-11", "2026-01-12", "2026-01-13", "2026-01-14", "2026-01-15", "2026-01-16", "2026-01-17", "2026-01-18", "2026-01-19", "2026-01-20", "2026-01-21", "2026-01-22", "2026-01-23", "2026-01-24", "2026-01-25", "2026-01-26", "2026-01-27", "2026-01-28", "2026-01-29", "2026-01-30", "2026-01-31"], "datasets": [{"label": "Scan Count", "data": [5, 5, 2, 2, 5, 5, 5, 5, 5, 2, 2, 5, 5, 5, 5, 5, 2, 2, 5, 5, 5, 5, 5, 2, 2, 5, 5, 5, 5, 5, 2], "borderColor": "rgb(75, 192, 192)", "backgroundColor": "rgba(75, 192, 192, 0.2)", "fill": false}]};
+const scanFrequencyPeriodLabel = "Month";
+new Chart(scanFrequencyCtx, {
+    type: 'line',
+    data: scanFrequencyData,
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            y: {
+                beginAtZero: true,
+                title: {
+                    display: true,
+                    text: 'Number of Findings'
+                }
+            },
+            x: {
+                title: {
+                    display: true,
+                    text: scanFrequencyPeriodLabel
+                }
+            }
+        },
+        plugins: {
+            legend: {
+                position: 'top',
+            },
+            title: {
+                display: false
+            }
+        }
+    }
+});
+</script>
+
+        
+        <div class="footer">
+            <p>Generated by <span class="finite-state-logo">Finite State</span> Security Reporting System</p>
+        </div>
+    </div>
+    
+    <script>
+        // Make table columns resizable
+        document.addEventListener('DOMContentLoaded', function() {
+            const tables = document.querySelectorAll('table');
+            
+            tables.forEach(table => {
+                const headers = table.querySelectorAll('th');
+                
+                headers.forEach((header, index) => {
+                    header.classList.add('resizable');
+                    
+                    let isResizing = false;
+                    let startX, startWidth;
+                    
+                    header.addEventListener('mousedown', function(e) {
+                        isResizing = true;
+                        startX = e.pageX;
+                        startWidth = header.offsetWidth;
+                        
+                        document.addEventListener('mousemove', handleMouseMove);
+                        document.addEventListener('mouseup', handleMouseUp);
+                        
+                        e.preventDefault();
+                    });
+                    
+                    function handleMouseMove(e) {
+                        if (!isResizing) return;
+                        
+                        const width = startWidth + (e.pageX - startX);
+                        if (width > 50) { // Minimum width
+                            header.style.width = width + 'px';
+                            
+                            // Also resize corresponding cells in the column
+                            const cells = table.querySelectorAll(`td:nth-child(${index + 1})`);
+                            cells.forEach(cell => {
+                                cell.style.width = width + 'px';
+                            });
+                        }
+                    }
+                    
+                    function handleMouseUp() {
+                        isResizing = false;
+                        document.removeEventListener('mousemove', handleMouseMove);
+                        document.removeEventListener('mouseup', handleMouseUp);
+                    }
+                });
+            });
+        });
+    </script>
+</body>
+</html>
+ 

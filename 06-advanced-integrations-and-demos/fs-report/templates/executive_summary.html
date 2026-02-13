@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+
+{% block content %}
+<!-- Main Project Breakdown Chart -->
+<div class="chart-container">
+    <h2>{{ charts[0].title }}</h2>
+    <p>{{ charts[0].description }}</p>
+    <div class="chart-wrapper">
+        <canvas id="projectBreakdownChart"></canvas>
+    </div>
+</div>
+
+<!-- Side by Side Charts -->
+<div class="chart-row">
+    <!-- Open Issues Distribution -->
+    <div class="chart-half">
+        <h2>{{ charts[1].title }}</h2>
+        <p>{{ charts[1].description }}</p>
+        <div class="chart-wrapper">
+            <canvas id="openIssuesChart"></canvas>
+        </div>
+    </div>
+    
+    <!-- Scan Frequency -->
+    <div class="chart-half">
+        <h2>{{ charts[2].title }}</h2>
+        <p>{{ charts[2].description }}</p>
+        <div class="chart-wrapper">
+            <canvas id="scanFrequencyChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Data Table -->
+{% if table_data %}
+<div class="table-container">
+    <h2>Data Table</h2>
+    <table>
+        <thead>
+            <tr>
+                {% for header in table_data.headers %}
+                <th>{{ header }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in table_data.rows %}
+            <tr>
+                {% for cell in row.values() %}
+                <td>{{ cell }}</td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<script>
+// Severity order and colors (low=green, medium=yellow, high=orange, critical=red)
+const severityOrder = ['critical', 'high', 'medium', 'low'];
+const severityColors = {
+    'critical': '#d32f2f', // red
+    'high': '#f57c00',    // orange
+    'medium': '#fbc02d',  // yellow
+    'low': '#388e3c'      // green
+};
+
+// Prepare grouped bar chart data (project x severity, no 'none')
+(function() {
+    const raw = {{ chart_data_json.project_breakdown | safe }};
+    const tableRows = {{ table_data.rows | tojson }};
+    const projectSeverity = {};
+    tableRows.forEach(row => {
+        const project = row['project.name'];
+        const severity = row['severity'];
+        const count = row['finding_count'];
+        if (severity === 'none') return; // skip 'none'
+        if (!projectSeverity[project]) projectSeverity[project] = {};
+        projectSeverity[project][severity] = count;
+    });
+    const projects = Object.keys(projectSeverity);
+    const datasets = severityOrder.map(sev => ({
+        label: sev.charAt(0).toUpperCase() + sev.slice(1),
+        data: projects.map(p => projectSeverity[p][sev] || 0),
+        backgroundColor: severityColors[sev],
+        stack: true
+    }));
+    const ctx = document.getElementById('projectBreakdownChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: projects,
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    stacked: true,
+                    title: { display: true, text: 'Project' }
+                },
+                y: {
+                    stacked: true,
+                    beginAtZero: true,
+                    title: { display: true, text: 'Number of Findings' }
+                }
+            },
+            plugins: {
+                legend: { display: false },
+                title: { display: false }
+            }
+        }
+    });
+})();
+
+// Open Issues Distribution Chart (Pie)
+(function() {
+    const openIssuesCtx = document.getElementById('openIssuesChart').getContext('2d');
+    const raw = {{ chart_data_json.open_issues_distribution | safe }};
+    // Severity color mapping
+    const severityOrder = ['critical', 'high', 'medium', 'low'];
+    const severityColors = {
+        'critical': '#d32f2f', // red
+        'high': '#f57c00',    // orange
+        'medium': '#fbc02d',  // yellow
+        'low': '#388e3c'      // green
+    };
+    // Filter out 'none' and build new data arrays
+    const filteredLabels = [];
+    const filteredData = [];
+    const filteredColors = [];
+    if (raw.labels && raw.datasets && raw.datasets.length > 0) {
+        // Map severity to value for sorting
+        const severityToValue = {};
+        raw.labels.forEach((label, i) => {
+            if (label === 'none') return;
+            severityToValue[label] = raw.datasets[0].data[i];
+        });
+        // Sort by severity order
+        severityOrder.forEach(sev => {
+            if (severityToValue[sev] !== undefined) {
+                filteredLabels.push(sev.charAt(0).toUpperCase() + sev.slice(1));
+                filteredData.push(severityToValue[sev]);
+                filteredColors.push(severityColors[sev]);
+            }
+        });
+    }
+    const pieData = {
+        labels: filteredLabels,
+        datasets: [{
+            data: filteredData,
+            backgroundColor: filteredColors
+        }]
+    };
+    new Chart(openIssuesCtx, {
+        type: 'pie',
+        data: pieData,
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                },
+                title: {
+                    display: false
+                }
+            }
+        }
+    });
+})();
+
+// Scan Frequency Chart (Line)
+const scanFrequencyCtx = document.getElementById('scanFrequencyChart').getContext('2d');
+const scanFrequencyData = {{ chart_data_json.scan_frequency | safe }};
+const scanFrequencyPeriodLabel = "{{ scan_frequency_period_label }}";
+new Chart(scanFrequencyCtx, {
+    type: 'line',
+    data: scanFrequencyData,
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            y: {
+                beginAtZero: true,
+                title: {
+                    display: true,
+                    text: 'Number of Findings'
+                }
+            },
+            x: {
+                title: {
+                    display: true,
+                    text: scanFrequencyPeriodLabel
+                }
+            }
+        },
+        plugins: {
+            legend: {
+                position: 'top',
+            },
+            title: {
+                display: false
+            }
+        }
+    }
+});
+</script>
+{% endblock %} 

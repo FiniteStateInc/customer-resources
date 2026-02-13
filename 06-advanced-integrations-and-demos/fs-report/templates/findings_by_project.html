@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block content %}
+<!-- Filter Information -->
+{% if folder_path or project_filter %}
+<div class="chart-container">
+    <h3>🔍 Applied Filter</h3>
+    {% if folder_path %}<p><strong>Folder:</strong> {{ folder_path }}</p>{% endif %}
+    {% if project_filter %}<p><strong>Project Filter:</strong> {{ project_filter }}</p>{% endif %}
+    <p>Showing findings for the specified scope only.</p>
+</div>
+{% endif %}
+
+<!-- Data Table -->
+<div class="table-container">
+    <h2>Findings by Project</h2>
+    <p>Comprehensive inventory of security findings across projects</p>
+    
+    {% if data %}
+    <table>
+        <thead>
+            <tr>
+                <th>CVSS</th>
+                <th>CVE ID</th>
+                <th>Component</th>
+                <th>Version</th>
+                {% if folder_path %}<th>Folder</th>{% endif %}
+                <th>Project</th>
+                <th>Project Version</th>
+                <th>Exploits</th>
+                <th>Weaponization</th>
+                <th>CWE</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% set current_project = namespace(value=None) %}
+            {% for row in data %}
+                {% if row['Project Name'] != current_project.value %}
+                    {% set current_project.value = row['Project Name'] %}
+                    <tr style="background-color: #f8f9fa; font-weight: bold;">
+                        <td colspan="{% if folder_path %}10{% else %}9{% endif %}">{{ row['Project Name'] }}</td>
+                    </tr>
+                {% endif %}
+                <tr>
+                    <td>
+                        <span style="
+                            font-weight: bold;
+                            padding: 4px 8px;
+                            border-radius: 4px;
+                            text-align: center;
+                            display: inline-block;
+                            min-width: 30px;
+                            {% if row.get('CVSS', 0) >= 9.0 %}
+                                background-color: #ffebee; color: #c62828;
+                            {% elif row.get('CVSS', 0) >= 7.0 %}
+                                background-color: #fff3e0; color: #ef6c00;
+                            {% elif row.get('CVSS', 0) >= 4.0 %}
+                                background-color: #fff8e1; color: #f57f17;
+                            {% elif row.get('CVSS', 0) >= 0.1 %}
+                                background-color: #f1f8e9; color: #558b2f;
+                            {% else %}
+                                background-color: #e8f5e8; color: #2e7d32;
+                            {% endif %}
+                        ">
+                            {{ "%.1f"|format(row.get('CVSS', 0)) if row.get('CVSS', 0) is number else row.get('CVSS', 0) }}
+                        </span>
+                    </td>
+                    <td>
+                        {% if row['CVE ID'] and row['CVE ID'] != 'N/A' %}
+                            <a href="https://nvd.nist.gov/vuln/detail/{{ row['CVE ID'] }}" 
+                               target="_blank" style="color: #007bff; text-decoration: none;">
+                                {{ row['CVE ID'] }}
+                            </a>
+                        {% else %}
+                            {{ row['CVE ID'] }}
+                        {% endif %}
+                    </td>
+                    <td>{{ row['Component'] }}</td>
+                    <td>{{ row['Component Version'] }}</td>
+                    {% if folder_path %}<td>{{ row.get('Folder', '') }}</td>{% endif %}
+                    <td>{{ row['Project Name'] }}</td>
+                    <td>{{ row['Project Version'] }}</td>
+                    <td>{{ row['# of known exploits'] }}</td>
+                    <td>{{ row['# of known weaponization'] }}</td>
+                    <td>{{ row['CWE'] }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div style="text-align: center; padding: 40px; color: #666; font-style: italic;">
+        <h3>No findings found</h3>
+        <p>No security findings match the current criteria.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %} 
