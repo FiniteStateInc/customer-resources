@@ -1,0 +1,42 @@
+# IDP Group Sync — Example YAML Mapping File
+#
+# This file defines how IDP groups map to Finite State platform groups.
+# Each entry specifies the IDP group name, the target Finite State group,
+# org-level roles, and the list of members.
+#
+# Usage:
+#   uv run python groupsync.py --mapping mapping.example.yaml --dry-run
+
+groups:
+  - idp_group: "Engineering"
+    # fs_group is optional — if omitted, uses idp_group name ("Engineering")
+    description: "Engineering team"
+    org_roles:
+      - "Projects Admin"
+    members:
+      - email: alice@example.com
+        first_name: Alice
+        last_name: Smith
+      - email: bob@example.com
+        first_name: Bob
+        last_name: Jones
+
+  - idp_group: "Security-Analysts"
+    fs_group: "Security Analysts"
+    description: "Security analysis team"
+    org_roles:
+      - "Global admin"
+    members:
+      - email: alice@example.com
+      - email: charlie@example.com
+        first_name: Charlie
+        last_name: Davis
+
+  - idp_group: "Read-Only-Users"
+    fs_group: "Viewers"
+    description: "Read-only access users"
+    org_roles:
+      - "Portfolio Viewer"
+    members:
+      - email: charlie@example.com
+      - email: dave@example.com
