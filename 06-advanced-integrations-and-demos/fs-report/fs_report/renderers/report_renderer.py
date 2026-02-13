@@ -1,0 +1,232 @@
+# Copyright (c) 2024 Finite State, Inc.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+"""Main report renderer that orchestrates all output formats."""
+
+import logging
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from fs_report.models import Recipe, ReportData
+from fs_report.renderers.csv_renderer import CSVRenderer
+from fs_report.renderers.html_renderer import HTMLRenderer
+from fs_report.renderers.xlsx_renderer import XLSXRenderer
+
+
+class ReportRenderer:
+    """Main renderer that coordinates all output formats."""
+
+    def __init__(self, output_dir: str, config: Any = None) -> None:
+        """Initialize the report renderer."""
+        self.output_dir = Path(output_dir)
+        self.logger = logging.getLogger(__name__)
+        self.config = config
+
+        # Initialize individual renderers
+        self.csv_renderer = CSVRenderer()
+        self.xlsx_renderer = XLSXRenderer()
+        self.html_renderer = HTMLRenderer()
+
+    def render(self, recipe: Recipe, report_data: ReportData) -> list[str]:
+        """Render reports in all configured formats. Returns a list of generated file paths."""
+        self.logger.debug(f"Rendering reports for: {recipe.name}")
+
+        # Create recipe-specific output directory
+        recipe_output_dir = self.output_dir / self._sanitize_filename(recipe.name)
+        recipe_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Determine which formats to generate
+        formats = getattr(recipe.output, "formats", None)
+        if not formats:
+            formats = ["csv", "xlsx", "html"]
+        formats = [f.lower() for f in formats]
+
+        generated_files = []
+
+        # Generate table-based formats if requested
+        if any(fmt in formats for fmt in ["csv", "xlsx"]):
+            generated_files += self._render_table_formats(
+                recipe, report_data, recipe_output_dir, formats
+            )
+
+        # Generate HTML if requested
+        if "html" in formats:
+            generated_files += self._render_chart_formats(
+                recipe, report_data, recipe_output_dir
+            )
+
+        return generated_files
+
+    def _render_table_formats(
+        self,
+        recipe: Recipe,
+        report_data: ReportData,
+        output_dir: Path,
+        formats: list[str],
+    ) -> list[str]:
+        """Render table-based formats (CSV, XLSX). Returns list of generated file paths."""
+        generated_files = []
+        try:
+            # For CVA, use portfolio data instead of main data
+            if "Component Vulnerability Analysis" in recipe.name:
+                self.logger.debug(
+                    "Using project-level data for Component Vulnerability Analysis table"
+                )
+                table_data = report_data.metadata.get(
+                    "portfolio_data", report_data.data
+                )
+            else:
+                table_data = report_data.data
+
+            additional_data = report_data.metadata.get("additional_data", {})
+            detail_findings = additional_data.get("detail_findings")
+            detail_findings_churn = additional_data.get("detail_findings_churn")
+            detail_component_churn = additional_data.get("detail_component_churn")
+            has_detail = recipe.name == "Version Comparison" and (
+                detail_findings is not None
+                or detail_findings_churn is not None
+                or detail_component_churn is not None
+            )
+            if has_detail:
+                detail_findings_df = (
+                    detail_findings
+                    if isinstance(detail_findings, pd.DataFrame)
+                    else pd.DataFrame()
+                )
+                detail_findings_churn_df = (
+                    detail_findings_churn
+                    if isinstance(detail_findings_churn, pd.DataFrame)
+                    else pd.DataFrame()
+                )
+                detail_component_churn_df = (
+                    detail_component_churn
+                    if isinstance(detail_component_churn, pd.DataFrame)
+                    else pd.DataFrame()
+                )
+
+            # Generate main files
+            base_filename = self._sanitize_filename(recipe.name)
+
+            # CSV output
+            if "csv" in formats:
+                csv_path = output_dir / f"{base_filename}.csv"
+                self.csv_renderer.render(table_data, csv_path)
+                self.logger.debug(f"Generated CSV: {csv_path}")
+                generated_files.append(str(csv_path))
+                if has_detail and not detail_findings_df.empty:
+                    detail_csv = output_dir / f"{base_filename}_Detail_Findings.csv"
+                    self.csv_renderer.render(detail_findings_df, detail_csv)
+                    generated_files.append(str(detail_csv))
+                if has_detail and not detail_findings_churn_df.empty:
+                    findings_churn_csv = (
+                        output_dir / f"{base_filename}_Detail_Findings_Churn.csv"
+                    )
+                    self.csv_renderer.render(
+                        detail_findings_churn_df, findings_churn_csv
+                    )
+                    generated_files.append(str(findings_churn_csv))
+                if has_detail and not detail_component_churn_df.empty:
+                    churn_csv = (
+                        output_dir / f"{base_filename}_Detail_Component_Churn.csv"
+                    )
+                    self.csv_renderer.render(detail_component_churn_df, churn_csv)
+                    generated_files.append(str(churn_csv))
+            # XLSX output
+            if "xlsx" in formats:
+                xlsx_path = output_dir / f"{base_filename}.xlsx"
+                if has_detail:
+                    sheets = [("Summary", table_data)]
+                    if detail_findings_df is not None and not detail_findings_df.empty:
+                        sheets.append(("Findings Detail", detail_findings_df))
+                    if (
+                        detail_findings_churn_df is not None
+                        and not detail_findings_churn_df.empty
+                    ):
+                        sheets.append(("Findings Churn", detail_findings_churn_df))
+                    if (
+                        detail_component_churn_df is not None
+                        and not detail_component_churn_df.empty
+                    ):
+                        sheets.append(("Component Churn", detail_component_churn_df))
+                    self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
+                else:
+                    self.xlsx_renderer.render(table_data, xlsx_path, recipe.name)
+                self.logger.debug(f"Generated XLSX: {xlsx_path}")
+                generated_files.append(str(xlsx_path))
+
+            # Generate additional raw data files if available (for scan analysis)
+            raw_data = report_data.metadata.get("additional_data", {}).get("raw_data")
+            if raw_data is not None and hasattr(raw_data, "shape"):
+                self.logger.debug(
+                    f"Generating additional raw data files with {len(raw_data)} records"
+                )
+
+                # CSV raw data output
+                if "csv" in formats:
+                    raw_csv_path = output_dir / f"{base_filename}_Raw_Data.csv"
+                    self.csv_renderer.render(raw_data, raw_csv_path)
+                    self.logger.debug(f"Generated Raw Data CSV: {raw_csv_path}")
+                    generated_files.append(str(raw_csv_path))
+                # XLSX raw data output
+                if "xlsx" in formats:
+                    raw_xlsx_path = output_dir / f"{base_filename}_Raw_Data.xlsx"
+                    self.xlsx_renderer.render(
+                        raw_data, raw_xlsx_path, f"{recipe.name} - Raw Data"
+                    )
+                    self.logger.debug(f"Generated Raw Data XLSX: {raw_xlsx_path}")
+                    generated_files.append(str(raw_xlsx_path))
+        except Exception as e:
+            self.logger.error(f"Error generating table formats: {e}")
+        return generated_files
+
+    def _render_chart_formats(
+        self, recipe: Recipe, report_data: ReportData, output_dir: Path
+    ) -> list[str]:
+        """Render chart-based formats (HTML only). Returns list of generated file paths."""
+        generated_files = []
+        try:
+            # HTML output
+            html_path = output_dir / f"{self._sanitize_filename(recipe.name)}.html"
+            self.html_renderer.render(recipe, report_data, html_path)
+            self.logger.debug(f"Generated HTML: {html_path}")
+            generated_files.append(str(html_path))
+        except Exception as e:
+            self.logger.error(f"Error generating chart formats: {e}")
+        return generated_files
+
+    def _sanitize_filename(self, filename: str) -> str:
+        """Sanitize filename for safe file system usage."""
+        # Replace problematic characters
+        sanitized = filename.replace("/", "_").replace("\\", "_")
+        sanitized = sanitized.replace(":", "_").replace("*", "_")
+        sanitized = sanitized.replace("?", "_").replace('"', "_")
+        sanitized = sanitized.replace("<", "_").replace(">", "_")
+        sanitized = sanitized.replace("|", "_")
+
+        # Remove leading/trailing spaces and dots
+        sanitized = sanitized.strip(" .")
+
+        # Ensure filename is not empty
+        if not sanitized:
+            sanitized = "report"
+
+        return sanitized

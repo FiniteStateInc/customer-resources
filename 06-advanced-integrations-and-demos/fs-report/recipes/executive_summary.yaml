@@ -1,0 +1,69 @@
+name: "Executive Summary"
+category: operational  # Period-bound: shows trends and activity within the specified time window
+template: "executive_summary.html"
+description: "High-level security posture overview with key performance indicators and project-level breakdowns"
+execution_order: 20  # Reuses cached scans from Scan Analysis
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+    filter: "detected>=${start};detected<=${end}"
+
+# Main transform for project breakdown (stacked bar chart)
+transform:
+  # Flatten nested data structures
+  - flatten: ["component", "project"]
+  # Group by project and severity for stacked bar chart
+  - group_by:
+      keys: ["project.name", severity]
+      aggs:
+        finding_count: "count:id"
+  # Sort by project name and severity
+  - sort:
+      sort: ["project.name", severity]
+      ascending: true
+
+# Transform for open issues pie chart
+open_issues_transform:
+  # Flatten nested data structures
+  - flatten: ["component", "project"]
+  # Rename fields for consistency
+  - rename:
+      columns:
+        project.name: project_name
+  # Filter OUT resolved statuses (null/missing status = open by default)
+  # This correctly counts all un-triaged findings as open
+  - filter: "status=notin=(RESOLVED,RESOLVED_WITH_PEDIGREE,NOT_AFFECTED,FALSE_POSITIVE)"
+  # Group by severity for pie chart
+  - group_by: [severity]
+  # Sort by severity (descending for better visualization)
+  - sort:
+      sort: [severity]
+      ascending: false
+
+# Transform for scan frequency line chart
+scan_frequency_transform:
+  - transform_function: executive_scan_frequency_transform
+
+output:
+  charts:
+    - name: "project_breakdown"
+      chart: bar
+      stacked: true
+      title: "Security Findings by Project and Severity"
+      description: "Distribution of security findings across projects with severity breakdown"
+    
+    - name: "open_issues_distribution"
+      chart: pie
+      title: "Open Issues by Severity"
+      description: "Distribution of unresolved security findings by severity level"
+    
+    - name: "scan_frequency"
+      chart: line
+      title: "Security Findings Over Time"
+      description: "Number of security findings detected per month"
+  
+  table: true
+  slide_title: "Executive Security Summary"
+  description: "High-level security posture overview with key performance indicators, risk metrics, and project-level breakdowns" 

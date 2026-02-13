@@ -1,0 +1,21 @@
+name: "Version Comparison"
+category: assessment
+template: "version_comparison.html"
+description: "Full version and component changelog for every project: progression across all versions with fixed/new findings and component churn per version pair. Scope with --project or --folder; use --baseline-version and --current-version to limit to a single pair."
+execution_order: 50
+auto_run: false
+
+# Data is fetched by the report engine via scan discovery.
+# The primary query is a placeholder; the engine overrides it.
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+
+transform_function: version_comparison_transform
+
+output:
+  formats: ["csv", "xlsx", "html"]
+  chart: bar
+  table: true
+  slide_title: "Version Comparison"
