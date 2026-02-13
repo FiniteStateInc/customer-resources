@@ -70,7 +70,7 @@ Assessment reports show the current security state of the target — the latest 
 |--------|---------------|
 | **Component Vulnerability Analysis** | Current vulnerability posture by component |
 | **Findings by Project** | Current findings inventory per project |
-| **Component List** | Current software component inventory |
+| **Component List** | Current software component inventory with license analysis |
 | **Triage Prioritization** | Current triage priorities based on today's data |
 | **Version Comparison** | Full version and component changelog across all version pairs (on-demand) |
 
@@ -242,16 +242,28 @@ poetry run fs-report --recipe "Scan Analysis" --period 14d
 
 **Category:** Assessment — shows the current component inventory regardless of time period.
 
-**Purpose:** Complete software inventory (SBOM) across your portfolio.
+**Purpose:** Complete software inventory (SBOM) with license analysis across your portfolio.
 
-**Who should use it:** Compliance teams, legal, engineering leadership
+**Who should use it:** Compliance teams, legal, engineering leadership, security auditors
 
 **What it shows:**
 - All software components in the current (latest) version of each project
 - Component versions, types, and suppliers
-- License information
+- **Declared and concluded license information** with copyleft classification
+- **License policy compliance** (Permitted, Warning, Violation)
+- **Source type** — how each component was discovered (Source SCA, Binary SCA, SBOM Import, etc.)
 - Associated projects, versions, and branches
 - Risk metrics per component (findings, warnings, violations)
+- BOM references (PURLs, CPEs)
+- Release dates (when available)
+
+**HTML report features:**
+- **KPI cards** — Total components, unique licenses, unlicensed count, policy violations, copyleft count
+- **License distribution chart** — Top 15 licenses by component count (horizontal bar)
+- **Policy status chart** — Permitted/Warning/Violation breakdown (doughnut)
+- **Copyleft classification chart** — Permissive/Weak/Strong/Unknown (doughnut)
+- **Source type chart** — Discovery method breakdown (bar)
+- **Interactive table** — Grouped by project, with show-more pagination for large datasets
 
 **Date Filtering:**
 By default, no date filtering is applied — the report shows the full current inventory. To restrict to components discovered after a specific date, use `--detected-after YYYY-MM-DD`.
@@ -261,18 +273,36 @@ By default, no date filtering is applied — the report shows the full current i
 |--------|-------------|
 | **Component** | Software component name |
 | **Version** | Specific version in use |
-| **Type** | Library, framework, etc. |
-| **Supplier** | Vendor or maintainer |
-| **Licenses** | License information for compliance |
+| **Type** | Library, framework, application, etc. |
+| **Source** | How discovered: Source SCA, Binary SCA, SBOM Import, etc. |
+| **Declared License** | Automatically detected license (SPDX) |
+| **Concluded License** | Human-reviewed/confirmed license (SPDX) |
+| **Copyleft Status** | Permissive, Weak Copyleft, or Strong Copyleft |
+| **Policy Status** | PERMITTED, WARNING, or VIOLATION per license policy |
+| **License URL** | Link to license text (when available) |
+| **Release Date** | Component release date (when available) |
 | **Project/Version/Branch** | Where the component is used |
-| **Findings/Warnings/Violations** | Risk indicators |
+| **BOM Reference** | PURL or CPE identifier |
+| **Findings** | Number of associated vulnerability findings |
+| **Component Status** | Triage status: Confirmed, Needs Review, In Review, False Positive |
+
+**XLSX output:**
+When exported as XLSX, the report contains multiple sheets:
+- **Summary** — KPI metrics and aggregated distributions
+- **Detail** — Full component inventory with all columns
+- **License Distribution** — License-by-count breakdown
+- **Policy Distribution** — Policy status counts
+- **Copyleft Distribution** — Copyleft classification counts
 
 **Use cases:**
-- **SBOM Compliance** — Export for regulatory requirements
-- **License Reviews** — Filter by license type for legal review
-- **Standardization** — Identify version fragmentation
+- **SBOM Compliance** — Export for regulatory requirements (CSV/XLSX)
+- **License Reviews** — Filter by license type and copyleft classification for legal review
+- **License Policy Enforcement** — Identify components violating license policy
+- **Copyleft Risk Assessment** — Find strong copyleft licenses requiring source disclosure
+- **Standardization** — Identify version fragmentation across projects
 - **Risk Assessment** — Focus on high-finding components
 - **New Components Report** — Track what new software entered the portfolio this period
+- **Audit Preparation** — Comprehensive report with all license obligations
 
 **Example commands:**
 ```bash
@@ -583,7 +613,7 @@ poetry run fs-report --period 30d --finding-types all
 | **Release Managers** | Version Comparison |
 | **Vulnerability Management** | Triage Prioritization (with `--ai`) |
 | **DevSecOps / Operations** | Scan Analysis |
-| **Compliance / Legal** | Component List |
+| **Compliance / Legal** | Component List (license analysis, copyleft, policy) |
 | **Platform Administrators** | User Activity, Scan Analysis |
 
 ---
@@ -605,7 +635,7 @@ poetry run fs-report --period 30d --finding-types all
 | **Triage Prioritization** | Weekly (active remediation), On-demand | Prioritize what to fix next |
 | **Component Vulnerability Analysis** | Quarterly (strategic), Monthly (active remediation) | Prioritize risky components |
 | **Findings by Project** | Weekly (dev teams), Daily (during sprints) | Plan project-level remediation |
-| **Component List** | Monthly (audits), On-demand (SBOM requests) | Compliance and inventory tracking |
+| **Component List** | Monthly (audits), On-demand (SBOM requests) | Compliance, license review, and inventory tracking |
 | **Version Comparison** | On-demand (after remediation or releases) | Validate specific version improvements |
 
 ---

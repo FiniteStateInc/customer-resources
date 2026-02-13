@@ -121,6 +121,7 @@ PROJECT_FIELDS = {
     "type": "type",
     "created": "created",
     "createdBy": "created_by",
+    "defaultBranch.latestVersion.id": "default_branch_latest_version_id",
 }
 
 AUDIT_FIELDS = {
@@ -242,6 +243,7 @@ CREATE TABLE IF NOT EXISTS projects (
     type TEXT,
     created TEXT,
     created_by TEXT,
+    default_branch_latest_version_id TEXT,
     PRIMARY KEY (query_hash, id)
 );
 
@@ -351,6 +353,78 @@ def parse_ttl(ttl_string: str) -> int:
         total_seconds += int(value) * multipliers[unit]
 
     return total_seconds
+
+
+def _trim_factors(factors: list) -> list:
+    """
+    Trim a reachability factors array to only the fields consumed downstream.
+
+    The raw ``factors`` array from the API can be enormous (up to 7 MB per
+    finding) because ``details.stripped_bins`` / ``details.non_stripped_bins``
+    list every binary path in the firmware image — repeated identically in
+    every factor entry.
+
+    Preserved per factor entry:
+    - ``entity_type`` + ``entity_name`` (triage_prioritization, llm_client)
+    - ``summary`` truncated to 300 chars (triage_prioritization)
+    - ``score_change`` (required API field, per-factor score contribution)
+    - ``details`` scalars (e.g. ``builtin_modules``, ``loadable_modules``)
+    - ``details.comp_files`` capped at 5 entries (llm_client)
+
+    Stripped from ``details`` (the bloat):
+    - ``stripped_bins`` — list of every stripped binary path in the firmware
+    - ``non_stripped_bins`` — same for non-stripped binaries
+    - ``missing_callgraph_bins`` — same for binaries missing callgraph info
+
+    These lists contain 100-367 long firmware extraction paths (~200 chars each),
+    duplicated identically across every factor entry in the same finding.
+
+    Trimming before SQLite storage typically reduces the column from ~22 KB
+    average (up to 7.6 MB) to ~200-500 bytes per finding — a 97 %+ reduction.
+    """
+    # details keys that contain huge lists of binary paths — the source of bloat.
+    # comp_files is handled separately (capped at 5 instead of dropped).
+    _BLOAT_KEYS = {
+        "stripped_bins",
+        "non_stripped_bins",
+        "missing_callgraph_bins",
+        "component_files",  # Full list of component binaries (100-300+ paths)
+        "non_comp_files",  # Binaries not associated with the component
+    }
+
+    trimmed: list[dict[str, Any]] = []
+    for item in factors:
+        if not isinstance(item, dict):
+            continue
+        entry: dict[str, Any] = {}
+        if "entity_type" in item:
+            entry["entity_type"] = item["entity_type"]
+        if "entity_name" in item:
+            entry["entity_name"] = item["entity_name"]
+        if "summary" in item:
+            summary = item["summary"]
+            if isinstance(summary, str) and len(summary) > 300:
+                summary = summary[:300]
+            entry["summary"] = summary
+        if "score_change" in item:
+            entry["score_change"] = item["score_change"]
+        # Keep all details *except* the bloat keys (binary path lists).
+        # Cap comp_files at 5 entries (only sub-field consumed by llm_client).
+        details = item.get("details")
+        if isinstance(details, dict):
+            trimmed_details: dict[str, Any] = {}
+            for dk, dv in details.items():
+                if dk in _BLOAT_KEYS:
+                    continue
+                if dk == "comp_files" and isinstance(dv, list):
+                    if dv:
+                        trimmed_details[dk] = dv[:5]
+                else:
+                    trimmed_details[dk] = dv
+            if trimmed_details:
+                entry["details"] = trimmed_details
+        trimmed.append(entry)
+    return trimmed
 
 
 def get_nested_value(record: dict, key: str) -> Any:
@@ -534,6 +608,7 @@ class SQLiteCache:
             ("findings", "factors", "TEXT"),
             ("findings", "has_known_exploit", "INTEGER"),
             ("findings", "component_vc_id", "TEXT"),
+            ("projects", "default_branch_latest_version_id", "TEXT"),
         ]
         for table, col, col_type in migrations:
             try:
@@ -877,6 +952,10 @@ class SQLiteCache:
         for api_field, db_column in fields.items():
             value = get_nested_value(record, api_field)
 
+            # Trim factors to only the sub-fields consumed downstream
+            if db_column == "factors" and isinstance(value, list):
+                value = _trim_factors(value)
+
             # Convert complex types to JSON strings
             if isinstance(value, list | dict):
                 value = json.dumps(value)
@@ -952,6 +1031,13 @@ class SQLiteCache:
 
         # Recreate tables with current schema
         self._init_db()
+
+        # Reclaim disk space — SQLite keeps freed pages in the file without VACUUM
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("VACUUM")
+        except Exception as e:
+            logger.debug(f"VACUUM after clear failed (non-fatal): {e}")
 
         logger.info(
             f"Cache cleared and schema reset{f' for {endpoint}' if endpoint else ''}"

@@ -386,6 +386,12 @@ class Config(BaseModel):
         description="Delay in seconds between API requests to avoid overloading the server. "
         "Increase for large portfolios, decrease (e.g. 0.1) for small runs.",
     )
+    batch_size: int = Field(
+        5,
+        description="Number of project versions to fetch per API batch. "
+        "Lower values reduce server load (use 3 for very large instances). "
+        "Higher values are faster but may overload smaller servers (max 25).",
+    )
 
     @field_validator("domain")
     @classmethod

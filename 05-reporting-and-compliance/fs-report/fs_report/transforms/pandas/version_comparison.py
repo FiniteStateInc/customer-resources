@@ -28,7 +28,7 @@ SEVERITY_RANK = {s: i for i, s in enumerate(SEVERITY_ORDER)}
 
 
 def version_comparison_transform(
-    data: list[dict[str, Any]],
+    data: "list[dict[str, Any]] | pd.DataFrame",
     config: Any = None,
     additional_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:

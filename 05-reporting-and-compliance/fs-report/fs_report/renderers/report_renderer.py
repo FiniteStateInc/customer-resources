@@ -168,6 +168,87 @@ class ReportRenderer:
                     ):
                         sheets.append(("Component Churn", detail_component_churn_df))
                     self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
+                elif recipe.name == "Component List":
+                    # Component List: multi-sheet with Summary + Detail
+                    transform_result = additional_data.get("transform_result", {})
+                    comp_summary = (
+                        transform_result.get("component_summary")
+                        if isinstance(transform_result, dict)
+                        else None
+                    )
+                    if comp_summary and comp_summary.get("total_components", 0) > 0:
+                        summary_rows = []
+                        summary_rows.append(
+                            {
+                                "Metric": "Total Components",
+                                "Value": comp_summary["total_components"],
+                            }
+                        )
+                        summary_rows.append(
+                            {
+                                "Metric": "Unique Licenses",
+                                "Value": comp_summary["unique_licenses"],
+                            }
+                        )
+                        summary_rows.append(
+                            {
+                                "Metric": "No License",
+                                "Value": comp_summary["no_license_count"],
+                            }
+                        )
+                        summary_rows.append(
+                            {
+                                "Metric": "Policy Violations",
+                                "Value": comp_summary["violation_count"],
+                            }
+                        )
+                        summary_rows.append(
+                            {
+                                "Metric": "Policy Warnings",
+                                "Value": comp_summary["warning_count"],
+                            }
+                        )
+                        summary_rows.append(
+                            {
+                                "Metric": "Copyleft (Strong)",
+                                "Value": comp_summary["copyleft_strong"],
+                            }
+                        )
+                        summary_rows.append(
+                            {
+                                "Metric": "Copyleft (Weak)",
+                                "Value": comp_summary["copyleft_weak"],
+                            }
+                        )
+                        summary_rows.append(
+                            {
+                                "Metric": "Permissive",
+                                "Value": comp_summary["copyleft_permissive"],
+                            }
+                        )
+                        summary_df = pd.DataFrame(summary_rows)
+
+                        cl_sheets: list[tuple[str, Any]] = [
+                            ("Summary", summary_df),
+                            ("Detail", table_data),
+                        ]
+
+                        # Add distribution tables as additional sheets
+                        lic_dist = comp_summary.get("license_distribution")
+                        if isinstance(lic_dist, pd.DataFrame) and not lic_dist.empty:
+                            cl_sheets.append(("License Distribution", lic_dist))
+
+                        pol_dist = comp_summary.get("policy_distribution")
+                        if isinstance(pol_dist, pd.DataFrame) and not pol_dist.empty:
+                            cl_sheets.append(("Policy Distribution", pol_dist))
+
+                        cop_dist = comp_summary.get("copyleft_distribution")
+                        if isinstance(cop_dist, pd.DataFrame) and not cop_dist.empty:
+                            cl_sheets.append(("Copyleft Distribution", cop_dist))
+
+                        self.xlsx_renderer.render_multi_sheet(cl_sheets, xlsx_path)
+                    else:
+                        self.xlsx_renderer.render(table_data, xlsx_path, recipe.name)
                 else:
                     self.xlsx_renderer.render(table_data, xlsx_path, recipe.name)
                 self.logger.debug(f"Generated XLSX: {xlsx_path}")

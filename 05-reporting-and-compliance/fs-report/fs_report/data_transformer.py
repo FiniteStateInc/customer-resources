@@ -76,17 +76,22 @@ class DataTransformer:
 
     def transform(
         self,
-        data: list[dict[str, Any]],
+        data: list[dict[str, Any]] | pd.DataFrame,
         transforms: list[Transform],
         additional_data: dict[str, Any] | None = None,
     ) -> pd.DataFrame | dict[str, Any]:
         """Apply a series of transforms to the data. Optionally use additional_data for joins."""
-        if not data:
+        if isinstance(data, pd.DataFrame):
+            if data.empty:
+                self.logger.warning("No data to transform")
+                return pd.DataFrame()
+            df = data
+        elif not data:
             self.logger.warning("No data to transform")
             return pd.DataFrame()
-
-        # Convert to DataFrame
-        df = pd.DataFrame(data)
+        else:
+            # Convert to DataFrame
+            df = pd.DataFrame(data)
         self.logger.debug(f"Starting transformation with {len(df)} rows")
         self.logger.debug(f"DataFrame shape: {df.shape}")
         self.logger.debug(f"DataFrame columns: {list(df.columns)}")
@@ -1031,8 +1036,10 @@ class DataTransformer:
 
             transform_func = getattr(module, transform_function_name)
 
-            # Convert DataFrame to list of dicts for the transform function
-            data_list = df.to_dict("records")
+            # Pass DataFrame directly to avoid expensive list-of-dicts conversion.
+            # Transform functions should accept both list[dict] and pd.DataFrame.
+            # This eliminates the triple-copy problem: raw_data -> DF -> list -> DF.
+            data_for_transform = df
 
             # Prepare additional DataFrames if available
             additional_data.get("projects") if additional_data else None
@@ -1048,7 +1055,7 @@ class DataTransformer:
                 # First try with config and additional_data (newest style for transforms needing extra data)
                 config_val = additional_data.get("config") if additional_data else None
                 result = transform_func(
-                    data_list,
+                    data_for_transform,
                     config=config_val,
                     additional_data=additional_data,
                 )
@@ -1058,10 +1065,10 @@ class DataTransformer:
                     config_val = (
                         additional_data.get("config") if additional_data else None
                     )
-                    result = transform_func(data_list, config=config_val)
+                    result = transform_func(data_for_transform, config=config_val)
                 except TypeError:
                     # Fallback to older style without config
-                    result = transform_func(data_list)
+                    result = transform_func(data_for_transform)
 
             # Handle both DataFrame and dictionary returns
             if isinstance(result, dict):

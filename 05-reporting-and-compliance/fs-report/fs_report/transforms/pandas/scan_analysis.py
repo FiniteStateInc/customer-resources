@@ -11,7 +11,7 @@ from fs_report.models import Config
 
 
 def scan_analysis_transform(
-    data: list[dict[str, Any]],
+    data: list[dict[str, Any]] | pd.DataFrame,
     config: Config | None = None,
     additional_data: dict[str, Any] | None = None,
 ) -> pd.DataFrame | dict[str, Any]:
@@ -19,7 +19,7 @@ def scan_analysis_transform(
     Transform scan data for the Scan Analysis report.
 
     Args:
-        data: Raw scan data from API
+        data: Raw scan data from API (list of dicts or DataFrame)
         config: Configuration object with start_date and end_date for filtering
         additional_data: Optional dict containing 'projects' list for new vs existing analysis
 
@@ -29,16 +29,19 @@ def scan_analysis_transform(
         - 'raw_data': All individual scans with metadata
         - 'failure_types': Failure distribution by scan type
     """
-    if not data:
+    if isinstance(data, pd.DataFrame):
+        if data.empty:
+            return pd.DataFrame()
+        df = data
+    elif not data:
         return pd.DataFrame()
+    else:
+        df = pd.DataFrame(data)
 
     # Extract project data if available (for new vs existing analysis)
     projects_data = None
     if additional_data and "projects" in additional_data:
         projects_data = additional_data["projects"]
-
-    # Convert to DataFrame
-    df = pd.DataFrame(data)
 
     # Filter by date range client-side (since 'created' is not filterable on scans endpoint)
     # Include scans that were either created OR completed within the date range

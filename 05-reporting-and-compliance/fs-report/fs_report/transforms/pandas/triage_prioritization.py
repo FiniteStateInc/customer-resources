@@ -58,7 +58,7 @@ BAND_LOW_THRESHOLD = 25
 
 
 def triage_prioritization_transform(
-    data: list[dict[str, Any]],
+    data: list[dict[str, Any]] | pd.DataFrame,
     config: Any = None,
     additional_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -66,21 +66,26 @@ def triage_prioritization_transform(
     Main transform entry point for Triage Prioritization report.
 
     Args:
-        data: Raw findings data from the API
+        data: Raw findings data from the API (list of dicts or DataFrame)
         config: Config object (optional)
         additional_data: Extra data dict (optional)
 
     Returns:
         Dictionary with multiple DataFrames for template rendering
     """
-    logger.info(f"Triage prioritization transform: processing {len(data)} findings")
-
-    if not data:
-        logger.warning("No findings data provided")
-        return _empty_result()
-
-    # Build the main DataFrame
-    df = pd.DataFrame(data)
+    if isinstance(data, pd.DataFrame):
+        logger.info(f"Triage prioritization transform: processing {len(data)} findings")
+        if data.empty:
+            logger.warning("No findings data provided")
+            return _empty_result()
+        df = data
+    else:
+        logger.info(f"Triage prioritization transform: processing {len(data)} findings")
+        if not data:
+            logger.warning("No findings data provided")
+            return _empty_result()
+        # Build the main DataFrame
+        df = pd.DataFrame(data)
     logger.debug(f"Initial DataFrame shape: {df.shape}, columns: {list(df.columns)}")
 
     # Normalize columns — handle both nested and flat structures

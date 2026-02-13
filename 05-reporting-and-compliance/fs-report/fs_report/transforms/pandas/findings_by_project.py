@@ -10,24 +10,28 @@ from fs_report.models import Config
 
 
 def findings_by_project_pandas_transform(
-    data: list[dict[str, Any]], config: Config
+    data: list[dict[str, Any]] | pd.DataFrame, config: Config
 ) -> pd.DataFrame:
     """
     Transform findings data for the Findings by Project report with optional project filtering.
 
     Args:
-        data: Raw findings data from API
+        data: Raw findings data from API (list of dicts or DataFrame)
         config: Configuration including optional project_filter
 
     Returns:
         Processed DataFrame with findings organized by project
     """
 
-    if not data:
+    if isinstance(data, pd.DataFrame):
+        if data.empty:
+            return pd.DataFrame()
+        df = data
+    elif not data:
         return pd.DataFrame()
-
-    # Convert to DataFrame
-    df = pd.DataFrame(data)
+    else:
+        # Convert to DataFrame
+        df = pd.DataFrame(data)
 
     # Flatten nested data structures first
     df = flatten_findings_data(df)
@@ -56,6 +60,9 @@ def findings_by_project_pandas_transform(
         else:
             # Handle missing columns gracefully
             output_df[output_col] = None
+
+    # Free the large intermediate DataFrame now that we've extracted needed columns
+    del df
 
     # Sort by CVSS score (descending) and then by Project Name
     output_df = output_df.sort_values(["CVSS", "Project Name"], ascending=[False, True])

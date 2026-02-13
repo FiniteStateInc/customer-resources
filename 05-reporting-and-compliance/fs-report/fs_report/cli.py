@@ -94,6 +94,7 @@ def create_config(
     current_version: Union[str, None] = None,
     open_only: bool = False,
     request_delay: float = 0.5,
+    batch_size: int = 5,
 ) -> Config:
     # Handle period parameter
     if period:
@@ -199,6 +200,7 @@ def create_config(
         current_version=current_version,
         open_only=open_only,
         request_delay=request_delay,
+        batch_size=batch_size,
     )
 
 
@@ -857,7 +859,9 @@ def list_versions(
             # Display summary table
             total_versions = sum(p["version_count"] for p in project_version_counts)  # type: ignore[misc]
             projects_with_versions = sum(
-                1 for p in project_version_counts if p["version_count"] > 0  # type: ignore[misc, operator]
+                1  # type: ignore[misc]
+                for p in project_version_counts
+                if p["version_count"] > 0  # type: ignore[operator]
             )
 
             console.print(
@@ -935,6 +939,7 @@ def run_reports(
     current_version: Union[str, None] = None,
     open_only: bool = False,
     request_delay: float = 0.5,
+    batch_size: int = 5,
 ) -> None:
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
@@ -969,6 +974,7 @@ def run_reports(
             current_version=current_version,
             open_only=open_only,
             request_delay=request_delay,
+            batch_size=batch_size,
         )
         logger.info("Configuration:")
         logger.info(f"  Domain: {config.domain}")
@@ -1199,6 +1205,15 @@ def main(
         help="Delay in seconds between API requests to avoid overloading the server. "
         "Increase for large portfolios (e.g. 1.0), decrease for small runs (e.g. 0.1).",
     ),
+    batch_size: int = typer.Option(
+        5,
+        "--batch-size",
+        help="Number of project versions to fetch per API batch. "
+        "Lower values reduce server load (use 3 for very large instances). "
+        "Higher values are faster but may overload smaller servers (default 5, max 25).",
+        min=1,
+        max=25,
+    ),
 ) -> None:
     if ctx.invoked_subcommand is not None:
         return
@@ -1269,6 +1284,7 @@ def main(
         current_version=current_version,
         open_only=open_only,
         request_delay=request_delay,
+        batch_size=batch_size,
     )
 
 

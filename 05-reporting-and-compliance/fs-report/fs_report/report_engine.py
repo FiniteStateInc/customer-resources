@@ -20,8 +20,11 @@
 
 """Main report engine for orchestrating the reporting process."""
 
+import gc
 import hashlib
 import logging
+import platform
+import resource
 import time
 from typing import Any
 
@@ -34,8 +37,23 @@ from fs_report.data_transformer import DataTransformer
 from fs_report.models import Config, QueryConfig, Recipe, ReportData
 from fs_report.recipe_loader import RecipeLoader
 from fs_report.renderers import ReportRenderer
+from fs_report.sqlite_cache import _trim_factors
 
 # [REMOVED] All DuckDB-related logic and imports. Only pandas transformer is used.
+
+
+def _log_memory(logger: logging.Logger, label: str) -> None:
+    """Log current process memory usage (RSS) for diagnostics."""
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        # macOS reports ru_maxrss in bytes; Linux reports in kilobytes
+        if platform.system() == "Darwin":
+            rss_mb = usage.ru_maxrss / (1024 * 1024)
+        else:
+            rss_mb = usage.ru_maxrss / 1024
+        logger.info(f"[Memory] {label}: {rss_mb:.0f} MB peak RSS")
+    except Exception:
+        pass  # Don't let memory logging break the report
 
 
 # Finding type/category mapping for --finding-types flag
@@ -403,7 +421,9 @@ class ReportEngine:
 
         self.logger.info("Fetching latest version IDs for all projects...")
 
-        # Fetch all projects
+        # Fetch all projects — _get_latest_version_ids_for_projects will
+        # also fetch them, but the DataCache / SQLite cache makes the
+        # second call essentially free.
         from fs_report.models import QueryConfig, QueryParams
 
         projects_query = QueryConfig(
@@ -413,8 +433,19 @@ class ReportEngine:
         projects = self.api_client.fetch_all_with_resume(projects_query)
         self.logger.info(f"Found {len(projects)} projects")
 
-        project_ids = [p["id"] for p in projects if p.get("id")]
-        version_ids = self._get_latest_version_ids_for_projects(project_ids)
+        project_ids = [str(p["id"]) for p in projects if p.get("id")]
+
+        # Try extracting version IDs from the data we already have.
+        # This avoids a second fetch when the list response (or cache)
+        # already includes defaultBranch.
+        requested_set = set(project_ids)
+        version_ids = self._extract_version_ids_from_projects(projects, requested_set)
+        if not version_ids and project_ids:
+            # Batch data lacked defaultBranch — delegate to the fallback
+            # path which does per-project detail calls.
+            version_ids = self._get_latest_version_ids_for_projects(project_ids)
+        else:
+            self.logger.info(f"Resolved {len(version_ids)} version IDs from batch data")
 
         self.logger.info(f"Found {len(version_ids)} latest version IDs")
         self._latest_version_ids = version_ids
@@ -426,50 +457,136 @@ class ReportEngine:
         Uses the project's defaultBranch.latestVersion.id which is the
         authoritative current version on the platform.
 
+        Strategy:
+        1. Try a single batch call to /public/v0/projects and extract
+           defaultBranch.latestVersion.id for each requested project.
+           This is fast and cache-friendly.
+        2. If the batch response lacks defaultBranch data (some API versions
+           omit it from list responses, or the SQLite cache may have been
+           populated before this field was stored), fall back to individual
+           /public/v0/projects/{id} calls with throttling.
+
         Results are cached in-memory so subsequent reports in the same run
-        skip the per-project API calls entirely.
+        skip the API call entirely.
         """
         # Build a stable cache key from sorted project IDs
         cache_key = ",".join(str(pid) for pid in sorted(project_ids))
         if cache_key in self._folder_version_ids_cache:
             cached = self._folder_version_ids_cache[cache_key]
             self.logger.info(
-                f"Using cached version IDs ({len(cached)} versions for {len(project_ids)} projects)"
+                f"Using cached version IDs ({len(cached)} versions "
+                f"for {len(project_ids)} projects)"
             )
             return cached
 
-        from tqdm import tqdm
+        from fs_report.models import QueryConfig, QueryParams
 
-        version_ids = []
+        # ------------------------------------------------------------------
+        # Step 1: Try batch fetch
+        # ------------------------------------------------------------------
+        projects_query = QueryConfig(
+            endpoint="/public/v0/projects",
+            params=QueryParams(limit=10000, archived=False, excluded=False),
+        )
+        all_projects = self.api_client.fetch_all_with_resume(
+            projects_query, show_progress=True
+        )
+        self.logger.info(
+            f"Resolving latest versions for {len(project_ids)} projects "
+            f"(from {len(all_projects)} total projects)"
+        )
 
-        delay = getattr(self.config, "request_delay", 0.5)
-        with tqdm(
-            project_ids, desc="Fetching latest versions", unit=" projects", leave=False
-        ) as pbar:
-            for project_id in pbar:
-                try:
-                    url = f"{self.api_client.base_url}/public/v0/projects/{project_id}"
-                    response = self.api_client.client.get(url)
-                    response.raise_for_status()
-                    project = response.json()
+        requested_ids = {str(pid) for pid in project_ids}
+        version_ids = self._extract_version_ids_from_projects(
+            all_projects, requested_ids
+        )
 
-                    # Extract defaultBranch.latestVersion.id
-                    default_branch = project.get("defaultBranch") or {}
-                    latest_version = default_branch.get("latestVersion") or {}
-                    version_id = latest_version.get("id")
-                    if version_id:
-                        version_ids.append(version_id)
-                    else:
-                        self.logger.debug(
-                            f"No defaultBranch.latestVersion for project {project_id}"
-                        )
-                except Exception as e:
-                    self.logger.debug(f"Error fetching project {project_id}: {e}")
-
-                if delay > 0:
-                    time.sleep(delay)
+        # ------------------------------------------------------------------
+        # Step 2: Fallback — per-project detail calls when batch yields nothing
+        # ------------------------------------------------------------------
+        if not version_ids and project_ids:
+            self.logger.info(
+                "Batch project list did not include defaultBranch data; "
+                "falling back to per-project API calls "
+                f"({len(project_ids)} projects, "
+                f"delay={self.config.request_delay}s)"
+            )
+            version_ids = self._fetch_version_ids_per_project(project_ids)
 
         self._folder_version_ids_cache[cache_key] = version_ids
+        return version_ids
+
+    # ------------------------------------------------------------------
+    # Helpers for _get_latest_version_ids_for_projects
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_version_ids_from_projects(
+        projects: list[dict], requested_ids: set[str]
+    ) -> list[int]:
+        """Extract defaultBranch.latestVersion.id from a list of project dicts."""
+        version_ids: list[int] = []
+        for project in projects:
+            pid = str(project.get("id", ""))
+            if pid not in requested_ids:
+                continue
+            default_branch = project.get("defaultBranch") or {}
+            latest_version = (
+                default_branch.get("latestVersion") or {}
+                if isinstance(default_branch, dict)
+                else {}
+            )
+            version_id = (
+                latest_version.get("id") if isinstance(latest_version, dict) else None
+            )
+            if version_id:
+                version_ids.append(version_id)
+        return version_ids
+
+    def _fetch_version_ids_per_project(self, project_ids: list) -> list[int]:
+        """Fetch defaultBranch.latestVersion.id one project at a time.
+
+        Used as a fallback when the batch /projects list doesn't include
+        branch data. Respects --request-delay for throttling.
+        """
+        from tqdm import tqdm
+
+        delay = max(0.5, self.config.request_delay)
+        version_ids: list[int] = []
+        for pid in tqdm(
+            project_ids,
+            desc="Fetching latest versions",
+            unit=" projects",
+            leave=True,
+        ):
+            try:
+                url = f"/api/public/v0/projects/{pid}"
+                resp = self.api_client.client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+                default_branch = data.get("defaultBranch") or {}
+                latest_version = (
+                    default_branch.get("latestVersion") or {}
+                    if isinstance(default_branch, dict)
+                    else {}
+                )
+                vid = (
+                    latest_version.get("id")
+                    if isinstance(latest_version, dict)
+                    else None
+                )
+                if vid:
+                    version_ids.append(vid)
+                else:
+                    self.logger.debug(
+                        f"No defaultBranch.latestVersion for project {pid}"
+                    )
+            except Exception:
+                self.logger.warning(
+                    f"Failed to fetch version for project {pid}",
+                    exc_info=True,
+                )
+            time.sleep(delay)
         return version_ids
 
     def _split_and_cache_by_version(
@@ -671,11 +788,21 @@ class ReportEngine:
 
         return all_records
 
+    def _volume_based_cooldown(self, records_in_batch: int) -> float:
+        """Return a cooldown duration (seconds) scaled by data volume."""
+        if records_in_batch > 50_000:
+            return max(90.0, self.config.request_delay * 15)
+        if records_in_batch > 20_000:
+            return max(45.0, self.config.request_delay * 10)
+        if records_in_batch > 5_000:
+            return max(15.0, self.config.request_delay * 5)
+        return max(5.0, self.config.request_delay * 2)
+
     def _fetch_with_version_batching(
         self,
         base_query: "QueryConfig",
         version_ids: list[int],
-        batch_size: int = 25,
+        batch_size: int | None = None,
         finding_type: str = "",
         category_filter: str | None = None,
         entity_type: str = "findings",
@@ -687,9 +814,13 @@ class ReportEngine:
         Uses ``skip_cache_store=True`` to avoid duplicating batch-level SQLite
         entries (per-version storage handles it).
 
-        Default batch_size is 25 to keep URL length well under server limits
-        (version IDs can be 20+ digits, 100 IDs caused 414 Request-URI Too Long).
+        batch_size defaults to ``self.config.batch_size`` (CLI: ``--batch-size``,
+        default 5).  Kept small to avoid overloading the server on large
+        instances.  Each batch is followed by an adaptive cooldown that scales
+        with the number of records fetched.
         """
+        if batch_size is None:
+            batch_size = self.config.batch_size
         from tqdm import tqdm
 
         all_results = []
@@ -729,6 +860,11 @@ class ReportEngine:
         )
 
         # Split uncached version IDs into batches with progress bar
+        # Track elevated cooldown state: after server errors, keep cooldowns
+        # elevated for several batches so the server gets sustained recovery.
+        elevated_batches_remaining = 0
+        elevated_cooldown = 0.0
+
         with tqdm(
             range(0, len(uncached_ids), batch_size),
             desc="Fetching version batches",
@@ -783,12 +919,56 @@ class ReportEngine:
                     category_filter,
                 )
 
+                # Trim factors in-memory to avoid OOM on large instances.
+                # The full factors are already persisted (trimmed) in SQLite;
+                # here we apply the same trim so the in-memory accumulation
+                # doesn't hold multi-MB factors arrays per finding.
+                for record in batch_results:
+                    raw_factors = record.get("factors")
+                    if isinstance(raw_factors, list) and raw_factors:
+                        record["factors"] = _trim_factors(raw_factors)
+
                 all_results.extend(batch_results)
                 pbar.set_postfix({"records": len(all_results)})
 
-                # Brief pause between batches to avoid rate limiting
+                # Adaptive cooldown between batches — scale with data volume
                 if i + batch_size < len(uncached_ids):
-                    time.sleep(max(1, self.config.request_delay))
+                    records_in_batch = len(batch_results)
+                    # Check if the API client hit any retries during this batch
+                    retries_in_batch = getattr(self.api_client, "last_fetch_retries", 0)
+                    if retries_in_batch > 0:
+                        # Server was struggling — give it a long recovery and
+                        # keep cooldowns elevated for the next several batches
+                        # so the server gets sustained breathing room.
+                        cooldown = max(120.0, self.config.request_delay * 20)
+                        elevated_cooldown = max(60.0, self.config.request_delay * 10)
+                        elevated_batches_remaining = 5
+                        self.logger.warning(
+                            f"Server had {retries_in_batch} retries in batch; "
+                            f"extended cooldown {cooldown:.0f}s "
+                            f"(next {elevated_batches_remaining} batches "
+                            f"will use ≥{elevated_cooldown:.0f}s)"
+                        )
+                    elif elevated_batches_remaining > 0:
+                        # Still in recovery window from a previous retry event
+                        elevated_batches_remaining -= 1
+                        volume_cooldown = self._volume_based_cooldown(records_in_batch)
+                        cooldown = max(volume_cooldown, elevated_cooldown)
+                        self.logger.info(
+                            f"Recovery cooldown {cooldown:.0f}s "
+                            f"({elevated_batches_remaining} elevated batches left)"
+                        )
+                    else:
+                        cooldown = self._volume_based_cooldown(records_in_batch)
+                    batches_remaining = total_batches - (i // batch_size + 1)
+                    est_minutes = (batches_remaining * cooldown) / 60
+                    self.logger.info(
+                        f"Batch {i // batch_size + 1}/{total_batches}: "
+                        f"{records_in_batch:,} records. "
+                        f"Cooling down {cooldown:.0f}s. "
+                        f"~{est_minutes:.0f} min remaining"
+                    )
+                    time.sleep(cooldown)
 
         return all_results
 
@@ -1589,9 +1769,13 @@ class ReportEngine:
                                     )
                                 else:
                                     raw_data = []
-                                    batch_size = 25  # Keep URLs under server limits (IDs are 20+ digits)
+                                    # Adaptive batch sizing: reduce batch size for large project counts
+                                    batch_size = (
+                                        15 if len(folder_pids) > 200 else 25
+                                    )  # Keep URLs under server limits
                                     from tqdm import tqdm as _tqdm
 
+                                    total_records = 0
                                     with _tqdm(
                                         range(0, len(folder_pids), batch_size),
                                         desc="Fetching folder findings",
@@ -1622,7 +1806,16 @@ class ReportEngine:
                                                 )
                                             )
                                             raw_data.extend(batch_data)
-                                            pbar.set_postfix({"records": len(raw_data)})
+                                            total_records += len(batch_data)
+                                            del batch_data  # Free batch memory immediately
+                                            pbar.set_postfix({"records": total_records})
+
+                                            # Inter-batch delay to reduce server load
+                                            # Scales with --request-delay (minimum 1s between batches)
+                                            if i + batch_size < len(folder_pids):
+                                                time.sleep(
+                                                    max(1.0, self.config.request_delay)
+                                                )
                                     self._findings_cache[_cache_key] = raw_data
 
                             self.logger.info(
@@ -1714,10 +1907,18 @@ class ReportEngine:
                                 )
 
                                 # Batch by project IDs to avoid URL length limits
+                                # Adaptive batch sizing: reduce for large project counts to limit memory and server load
                                 raw_data = []
-                                batch_size = 50  # Projects per batch
+                                batch_size = (
+                                    20 if len(project_ids) > 200 else 50
+                                )  # Projects per batch
                                 from tqdm import tqdm
 
+                                total_records = 0
+                                _log_memory(
+                                    self.logger,
+                                    f"Before batch fetch ({len(project_ids)} projects, batch_size={batch_size})",
+                                )
                                 with tqdm(
                                     range(0, len(project_ids), batch_size),
                                     desc="Fetching project findings",
@@ -1747,10 +1948,23 @@ class ReportEngine:
                                             )
                                         )
                                         raw_data.extend(batch_data)
-                                        pbar.set_postfix({"records": len(raw_data)})
+                                        total_records += len(batch_data)
+                                        del batch_data  # Free batch memory immediately
+                                        pbar.set_postfix({"records": total_records})
 
+                                        # Inter-batch delay to reduce server load
+                                        # Scales with --request-delay (minimum 1s between batches)
+                                        if i + batch_size < len(project_ids):
+                                            time.sleep(
+                                                max(1.0, self.config.request_delay)
+                                            )
+
+                                _log_memory(
+                                    self.logger,
+                                    f"After batch fetch ({total_records} findings)",
+                                )
                                 self.logger.info(
-                                    f"Fetched {len(raw_data)} total findings for scanned projects"
+                                    f"Fetched {total_records} total findings for scanned projects"
                                 )
                 else:
                     raw_data = self.api_client.fetch_data(recipe.query)
@@ -2021,14 +2235,11 @@ class ReportEngine:
             self.logger.debug(
                 f"Transform count: {len(transforms_to_apply) if transforms_to_apply else 0}"
             )
+            _log_memory(self.logger, f"Before transform ({recipe.name})")
+            raw_data_count = len(raw_data) if hasattr(raw_data, "__len__") else 0
             transformed_data = self.transformer.transform(
                 raw_data, transforms_to_apply, additional_data=additional_data
             )
-            # print(f"DEBUG: transformed_data type: {type(transformed_data)}")
-            # if isinstance(transformed_data, dict):
-            #     print(f"DEBUG: transformed_data keys: {list(transformed_data.keys())}")
-            # else:
-            #     print(f"DEBUG: transformed_data is not a dict")
 
             # Handle custom transform functions that return dictionaries with additional data
             if hasattr(recipe, "transform_function") and recipe.transform_function:
@@ -2093,12 +2304,19 @@ class ReportEngine:
                     pd.DataFrame()
                 )  # Empty for main data since we only need portfolio data
 
+            # Free raw_data now that all transforms have consumed it.
+            # (For folder-scoped paths, _findings_cache may still hold a reference
+            # for cross-report reuse — that's fine; del here just drops this local ref.)
+            del raw_data
+            gc.collect()
+            _log_memory(self.logger, f"After transforms + gc ({recipe.name})")
+
             # Create report data
             report_data = ReportData(
                 recipe_name=recipe.name,
                 data=transformed_data,
                 metadata={
-                    "raw_count": len(raw_data),
+                    "raw_count": raw_data_count,
                     "transformed_count": len(transformed_data)
                     if hasattr(transformed_data, "__len__")
                     else 1,

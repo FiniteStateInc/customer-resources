@@ -10,13 +10,13 @@ from fs_report.models import Config
 
 
 def user_activity_pandas_transform(
-    data: list[dict[str, Any]], config: Config | None = None
+    data: list[dict[str, Any]] | pd.DataFrame, config: Config | None = None
 ) -> dict[str, Any]:
     """
     Transform audit data for the User Activity report.
 
     Args:
-        data: Raw audit events from API
+        data: Raw audit events from API (list of dicts or DataFrame)
         config: Configuration object
 
     Returns:
@@ -31,23 +31,30 @@ def user_activity_pandas_transform(
 
     logger = logging.getLogger(__name__)
 
-    if not data:
-        logger.warning("User activity transform: No data provided")
-        return {
-            "main": pd.DataFrame(),
-            "summary": {
-                "total_events": 0,
-                "unique_users": 0,
-                "active_days": 0,
-                "event_types": 0,
-            },
-            "daily_logins": [],
-            "activity_by_type": [],
-            "top_users": [],
-        }
+    _empty = {
+        "main": pd.DataFrame(),
+        "summary": {
+            "total_events": 0,
+            "unique_users": 0,
+            "active_days": 0,
+            "event_types": 0,
+        },
+        "daily_logins": [],
+        "activity_by_type": [],
+        "top_users": [],
+    }
 
-    # Convert to DataFrame
-    df = pd.DataFrame(data)
+    if isinstance(data, pd.DataFrame):
+        if data.empty:
+            logger.warning("User activity transform: No data provided")
+            return _empty
+        df = data
+    elif not data:
+        logger.warning("User activity transform: No data provided")
+        return _empty
+    else:
+        # Convert to DataFrame
+        df = pd.DataFrame(data)
     logger.debug(f"User activity transform: DataFrame created with shape {df.shape}")
 
     # Normalize fields that may be strings or {value: ...} objects

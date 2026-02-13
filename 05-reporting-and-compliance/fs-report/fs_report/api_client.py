@@ -64,6 +64,9 @@ class APIClient:
         self.cache = cache or DataCache()
         self.cache_ttl = cache_ttl
         self.request_delay = getattr(config, "request_delay", 0.5)
+        # Track retries in the most recent fetch call so callers (e.g. the
+        # version-batching loop) can adapt cooldowns after server errors.
+        self.last_fetch_retries: int = 0
 
         # Initialize SQLite cache if TTL is set or explicitly provided
         if sqlite_cache:
@@ -223,6 +226,9 @@ class APIClient:
                             Used when the caller handles per-entity caching (e.g., per-version
                             storage after batch fetch) to avoid duplicating data in SQLite.
         """
+        # Reset retry counter so callers can check after the fetch completes
+        self.last_fetch_retries = 0
+
         # Use SQLite cache if available (unless caller is handling storage)
         if self.sqlite_cache is not None and not skip_cache_store:
             return self._fetch_all_with_sqlite(query, max_retries, show_progress)
@@ -317,8 +323,9 @@ class APIClient:
                 except httpx.HTTPStatusError as e:
                     status = e.response.status_code
                     retry_count += 1
-                    if status in (429, 502, 503):
-                        # Server overloaded or rate limited: use longer backoff
+                    self.last_fetch_retries += 1
+                    if status in (429, 500, 502, 503):
+                        # Server overloaded, internal error, or rate limited: use longer backoff
                         retry_after = e.response.headers.get("Retry-After")
                         wait = (
                             float(retry_after)
@@ -328,7 +335,7 @@ class APIClient:
                         label = (
                             "Rate limited (429)"
                             if status == 429
-                            else f"Server overloaded ({status})"
+                            else f"Server error ({status})"
                         )
                         self.logger.warning(
                             f"{label} at offset {offset}. "
@@ -349,6 +356,7 @@ class APIClient:
                     continue
                 except Exception as e:
                     retry_count += 1
+                    self.last_fetch_retries += 1
                     wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
                     self.logger.warning(
                         f"Error at offset {offset}: {e}. "
@@ -471,7 +479,9 @@ class APIClient:
                 except httpx.HTTPStatusError as e:
                     status = e.response.status_code
                     retry_count += 1
-                    if status in (429, 502, 503):
+                    self.last_fetch_retries += 1
+                    if status in (429, 500, 502, 503):
+                        # Server overloaded, internal error, or rate limited: use longer backoff
                         retry_after = e.response.headers.get("Retry-After")
                         wait = (
                             float(retry_after)
@@ -481,7 +491,7 @@ class APIClient:
                         label = (
                             "Rate limited (429)"
                             if status == 429
-                            else f"Server overloaded ({status})"
+                            else f"Server error ({status})"
                         )
                         self.logger.warning(
                             f"{label} at offset {offset}. "
@@ -502,6 +512,7 @@ class APIClient:
                     continue
                 except Exception as e:
                     retry_count += 1
+                    self.last_fetch_retries += 1
                     wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
                     self.logger.warning(
                         f"Error at offset {offset}: {e}. "
@@ -726,6 +737,7 @@ class APIClient:
                     )
                     time.sleep(wait)
                     retry_count += 1
+                    self.last_fetch_retries += 1
                     if retry_count > max_retries:
                         self.logger.error(
                             f"Max retries exceeded at offset {offset}. Aborting."
