@@ -22,16 +22,18 @@
 
 import importlib
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, cast
 
 import pandas as pd
 
-from fs_report.models import Transform
+from fs_report.models import GroupByConfig, Transform
 
 
-def flatten_dict(d: dict[str, Any], parent_key: str = '', sep: str = '.') -> dict[str, Any]:
+def flatten_dict(
+    d: dict[str, Any], parent_key: str = "", sep: str = "."
+) -> dict[str, Any]:
     """Flatten a nested dictionary."""
-    items = []
+    items: list[tuple[str, Any]] = []
     for k, v in d.items():
         new_key = f"{parent_key}{sep}{k}" if parent_key else k
         if isinstance(v, dict):
@@ -41,7 +43,9 @@ def flatten_dict(d: dict[str, Any], parent_key: str = '', sep: str = '.') -> dic
     return dict(items)
 
 
-def flatten_records(records: list[dict[str, Any]], fields_to_flatten: list[str] | None = None) -> list[dict[str, Any]]:
+def flatten_records(
+    records: list[dict[str, Any]], fields_to_flatten: list[str] | None = None
+) -> list[dict[str, Any]]:
     """Flatten nested dictionaries in a list of records."""
     flat_records = []
     for rec in records:
@@ -92,9 +96,16 @@ class DataTransformer:
             self.logger.debug(f"Applying transform {i+1}: {transform}")
             try:
                 # Check if this is a pandas transform function
-                if hasattr(transform, 'transform_function') and transform.transform_function:
-                    self.logger.debug(f"Applying pandas transform function: {transform.transform_function}")
-                    df = self._apply_pandas_transform_function(df, transform.transform_function, additional_data)
+                if (
+                    hasattr(transform, "transform_function")
+                    and transform.transform_function
+                ):
+                    self.logger.debug(
+                        f"Applying pandas transform function: {transform.transform_function}"
+                    )
+                    df = self._apply_pandas_transform_function(
+                        df, transform.transform_function, additional_data
+                    )
                 elif hasattr(transform, "join") and transform.join is not None:
                     self.logger.debug(f"Applying join transform: {transform.join}")
                     if additional_data is not None:
@@ -114,11 +125,15 @@ class DataTransformer:
         if "i_d" in df.columns:
             if "finding_count" in df.columns:
                 # If both exist, drop the unwanted i_d column
-                self.logger.debug("Dropping duplicate 'i_d' column in favor of 'finding_count'")
+                self.logger.debug(
+                    "Dropping duplicate 'i_d' column in favor of 'finding_count'"
+                )
                 df = df.drop(columns=["i_d"])
             else:
                 # If only i_d exists, rename it to finding_count
-                self.logger.debug("Renaming 'i_d' column to 'finding_count' for better readability")
+                self.logger.debug(
+                    "Renaming 'i_d' column to 'finding_count' for better readability"
+                )
                 df = df.rename(columns={"i_d": "finding_count"})
 
         return df
@@ -153,19 +168,26 @@ class DataTransformer:
             self.logger.error(f"Error applying transform: {e}")
             raise ValueError("Error applying transform") from e  # noqa: B904
 
-    def _apply_group_by(self, df: pd.DataFrame, group_by_config: list[str] | dict[str, Any]) -> pd.DataFrame:
+    def _apply_group_by(
+        self,
+        df: pd.DataFrame,
+        group_by_config: list[str] | dict[str, Any] | GroupByConfig,
+    ) -> pd.DataFrame:
         """Apply group by transformation with comprehensive aggregations."""
         # Handle both legacy list format and new GroupByConfig format
         if isinstance(group_by_config, list):
             # Legacy format: just a list of column names
             columns = group_by_config
             custom_aggs = None
+        elif isinstance(group_by_config, GroupByConfig):
+            # Pydantic model format
+            columns = group_by_config.keys
+            custom_aggs = group_by_config.aggs
         else:
-            # New format: GroupByConfig with keys and aggs
-            # Access attributes directly since it's a Pydantic model
-            columns = group_by_config.keys if hasattr(group_by_config, 'keys') else []
-            custom_aggs = group_by_config.aggs if hasattr(group_by_config, 'aggs') else None
-        
+            # Dict format
+            columns = list(group_by_config.keys())
+            custom_aggs = group_by_config.get("aggs")
+
         self.logger.debug(f"Grouping by columns: {columns}")
         self.logger.debug(f"Custom aggregations: {custom_aggs}")
         self.logger.debug(f"Available columns: {list(df.columns)}")
@@ -200,7 +222,7 @@ class DataTransformer:
         # Add custom aggregation columns to the cleaning list
         if custom_aggs and isinstance(custom_aggs, dict):
             all_columns.extend(custom_aggs.keys())
-        
+
         for col in all_columns:
             if col in df_clean.columns:
                 # Fill missing values appropriately by dtype
@@ -232,7 +254,7 @@ class DataTransformer:
                 self.logger.debug(f"  {col}: {df_clean[col].head(3).tolist()}")
 
         # Only use pandas fallback aggregation logic for group by operations
-        agg_dict = {}
+        agg_dict: dict[str, Any] = {}
         # Add custom aggregations to pandas fallback
         if custom_aggs:
             for col, agg_func in custom_aggs.items():
@@ -259,7 +281,9 @@ class DataTransformer:
                         elif func_name == "ANY":
                             agg_dict[column_name] = lambda x: x.any()
                     else:
-                        self.logger.warning(f"Column '{column_name}' not found for aggregation '{agg_func}'")
+                        self.logger.warning(
+                            f"Column '{column_name}' not found for aggregation '{agg_func}'"
+                        )
                 else:
                     # Handle simple function names
                     if col in df_clean.columns:
@@ -282,11 +306,9 @@ class DataTransformer:
                 agg_dict["risk"] = ["mean", "sum"]
 
         if agg_dict:
-            grouped = df_clean.groupby(columns).agg(agg_dict)  # type: ignore[arg-type]
+            grouped = df_clean.groupby(columns).agg(agg_dict)
             # Flatten column names
-            grouped.columns = [
-                "_".join(col).strip() for col in grouped.columns.values
-            ]
+            grouped.columns = ["_".join(col).strip() for col in grouped.columns.values]
             grouped = grouped.reset_index()
             # Rename columns to match expected names and convert to integers
             if "risk_mean" in grouped.columns:
@@ -432,7 +454,7 @@ class DataTransformer:
             try:
                 # Build the SELECT clause with aggregations
                 select_parts = [f'"{col}"' for col in df_copy.columns]
-                select_parts.append(f'{calc_config.expr} as {calc_config.name}')
+                select_parts.append(f"{calc_config.expr} as {calc_config.name}")
 
                 query = f"""
                 SELECT {', '.join(select_parts)}
@@ -440,7 +462,7 @@ class DataTransformer:
                 """
 
                 self.logger.debug(f"Executing DuckDB query: {query}")
-                result = pd.read_sql_query(query, df_copy.to_sql("df"))
+                result = pd.read_sql_query(query, df_copy.to_sql("df"))  # type: ignore[call-arg]
 
                 return result
 
@@ -453,11 +475,16 @@ class DataTransformer:
                     return df_copy
                 except Exception as e2:
                     self.logger.error(f"Pandas eval also failed: {e2}")
-                    
+
                     # Final fallback: handle specific expressions manually
-                    if calc_config.name == "month_year" and "detected" in calc_config.expr:
+                    if (
+                        calc_config.name == "month_year"
+                        and "detected" in calc_config.expr
+                    ):
                         # Extract year-month from detected column
-                        df_copy[calc_config.name] = df_copy["detected"].astype(str).str[:7]
+                        df_copy[calc_config.name] = (
+                            df_copy["detected"].astype(str).str[:7]
+                        )
                         return df_copy
                     elif "CASE WHEN" in calc_config.expr.upper():
                         return self._apply_case_when(df_copy, calc_config)
@@ -571,14 +598,17 @@ class DataTransformer:
             "!=" in filter_expr and "'" in filter_expr,  # severity != 'none'
             "==" in filter_expr and "'" in filter_expr,  # severity == 'high'
             "=in=" in filter_expr and "(" in filter_expr,  # status=in=(open,closed)
-            "=notin=" in filter_expr and "(" in filter_expr,  # status=notin=(resolved,closed)
+            "=notin=" in filter_expr
+            and "(" in filter_expr,  # status=notin=(resolved,closed)
         ]
         return any(simple_patterns)
 
-    def _apply_simple_string_filter(self, df: pd.DataFrame, filter_expr: str) -> pd.DataFrame:
+    def _apply_simple_string_filter(
+        self, df: pd.DataFrame, filter_expr: str
+    ) -> pd.DataFrame:
         """Apply simple string filters using pandas operations."""
         self.logger.debug(f"Applying simple string filter: {filter_expr}")
-        
+
         try:
             # Handle severity != 'none'
             if "!=" in filter_expr and "'" in filter_expr:
@@ -589,7 +619,7 @@ class DataTransformer:
                     if col in df.columns:
                         # Handle NULL values properly
                         return df[df[col].notna() & (df[col] != val)]
-            
+
             # Handle severity == 'high'
             elif "==" in filter_expr and "'" in filter_expr:
                 parts = filter_expr.split("==")
@@ -598,35 +628,39 @@ class DataTransformer:
                     val = parts[1].strip().strip("'\"")
                     if col in df.columns:
                         return df[df[col] == val]
-            
+
             # Handle status=in=(open,closed)
             elif "=in=" in filter_expr and "(" in filter_expr:
                 # Extract column name and values
                 col_part = filter_expr.split("=in=")[0].strip()
                 values_part = filter_expr.split("=in=")[1].strip()
                 if values_part.startswith("(") and values_part.endswith(")"):
-                    values = [v.strip().strip("'\"") for v in values_part[1:-1].split(",")]
+                    values = [
+                        v.strip().strip("'\"") for v in values_part[1:-1].split(",")
+                    ]
                     if col_part in df.columns:
                         return df[df[col_part].isin(values)]
-            
+
             # Handle status=notin=(resolved,closed) - excludes values but INCLUDES null/missing
             elif "=notin=" in filter_expr and "(" in filter_expr:
                 # Extract column name and values
                 col_part = filter_expr.split("=notin=")[0].strip()
                 values_part = filter_expr.split("=notin=")[1].strip()
                 if values_part.startswith("(") and values_part.endswith(")"):
-                    values = [v.strip().strip("'\"") for v in values_part[1:-1].split(",")]
+                    values = [
+                        v.strip().strip("'\"") for v in values_part[1:-1].split(",")
+                    ]
                     if col_part in df.columns:
                         # Include rows where value is NOT in list OR value is null
                         return df[~df[col_part].isin(values) | df[col_part].isna()]
                     else:
                         # Column doesn't exist = all null = all included
                         return df
-            
+
             # If we can't handle it, try pandas query as last resort
             pandas_expr = filter_expr.replace("'", "'").replace('"', '"')
             return df.query(pandas_expr)
-            
+
         except Exception as e:
             self.logger.error(f"Simple string filter failed: {e}")
             raise ValueError(f"Filter failed: {filter_expr}") from e
@@ -822,9 +856,7 @@ class DataTransformer:
                     )
                     return df
             else:
-                self.logger.error(
-                    f"Right join column '{col}' not in right DataFrame."
-                )
+                self.logger.error(f"Right join column '{col}' not in right DataFrame.")
                 return df
 
         self.logger.debug(
@@ -852,49 +884,53 @@ class DataTransformer:
     def _apply_flatten(self, df: pd.DataFrame, flatten_config: Any) -> pd.DataFrame:
         """Apply flatten transform to handle nested data structures."""
         self.logger.debug(f"Applying flatten transform: {flatten_config}")
-        
+
         # Convert DataFrame back to records for flattening
-        records = df.to_dict('records')
-        
+        records = df.to_dict("records")
+
         # Determine fields to flatten
         fields_to_flatten = None
-        if isinstance(flatten_config, dict) and 'fields' in flatten_config:
-            fields_to_flatten = flatten_config['fields']
+        if isinstance(flatten_config, dict) and "fields" in flatten_config:
+            fields_to_flatten = flatten_config["fields"]
         elif isinstance(flatten_config, list):
             fields_to_flatten = flatten_config
-        
+
         # Flatten the records
-        flat_records = flatten_records(records, fields_to_flatten)
-        
+        flat_records = flatten_records(records, fields_to_flatten)  # type: ignore[arg-type]
+
         # Debug: print columns and a sample row after flattening
         if flat_records:
             sample_row = flat_records[0]
             if isinstance(sample_row, dict):
-                self.logger.debug(f"[DEBUG] Columns after flatten: {list(sample_row.keys())}")
+                self.logger.debug(
+                    f"[DEBUG] Columns after flatten: {list(sample_row.keys())}"
+                )
                 self.logger.debug(f"[DEBUG] Sample row after flatten: {sample_row}")
             else:
-                self.logger.info(f"[DEBUG] Sample row is not a dict: {type(sample_row)}")
+                self.logger.info(  # type: ignore[unreachable]
+                    f"[DEBUG] Sample row is not a dict: {type(sample_row)}"
+                )
         else:
             self.logger.info("[DEBUG] No records after flatten.")
-        
+
         # Convert back to DataFrame
         return pd.DataFrame(flat_records)
 
     def _apply_rename(self, df: pd.DataFrame, rename_config: Any) -> pd.DataFrame:
         """Apply rename transform to rename DataFrame columns."""
         self.logger.debug(f"Applying rename transform: {rename_config}")
-        
+
         # Handle RenameTransform object
-        if hasattr(rename_config, 'columns'):
+        if hasattr(rename_config, "columns"):
             columns_mapping = rename_config.columns
-        elif isinstance(rename_config, dict) and 'columns' in rename_config:
-            columns_mapping = rename_config['columns']
+        elif isinstance(rename_config, dict) and "columns" in rename_config:
+            columns_mapping = rename_config["columns"]
         else:
             columns_mapping = rename_config
-        
+
         self.logger.debug(f"Renaming columns: {columns_mapping}")
         self.logger.debug(f"Available columns before rename: {list(df.columns)}")
-        
+
         # Create a mapping of old names to new names
         rename_mapping = {}
         for old_name, new_name in columns_mapping.items():
@@ -902,8 +938,10 @@ class DataTransformer:
                 rename_mapping[old_name] = new_name
                 self.logger.debug(f"Will rename '{old_name}' to '{new_name}'")
             else:
-                self.logger.warning(f"Column '{old_name}' not found for renaming to '{new_name}'")
-        
+                self.logger.warning(
+                    f"Column '{old_name}' not found for renaming to '{new_name}'"
+                )
+
         if rename_mapping:
             result = df.rename(columns=rename_mapping)
             self.logger.debug(f"Available columns after rename: {list(result.columns)}")
@@ -915,114 +953,156 @@ class DataTransformer:
     def _apply_fillna(self, df: pd.DataFrame, fillna_config: Any) -> pd.DataFrame:
         """Apply fillna transform to fill null values in a column."""
         self.logger.debug(f"Applying fillna transform: {fillna_config}")
-        
+
         # Handle FillnaTransform object or dict
-        if hasattr(fillna_config, 'column'):
+        if hasattr(fillna_config, "column"):
             column = fillna_config.column
             value = fillna_config.value
         elif isinstance(fillna_config, dict):
-            column = fillna_config.get('column')
-            value = fillna_config.get('value')
+            column = fillna_config.get("column")
+            value = fillna_config.get("value")
         else:
             self.logger.error(f"Invalid fillna config: {fillna_config}")
             return df
-        
+
         if column not in df.columns:
             self.logger.warning(f"Column '{column}' not found for fillna")
             return df
-        
+
         df_copy = df.copy()
         null_count = df_copy[column].isna().sum()
         df_copy[column] = df_copy[column].fillna(value)
-        self.logger.debug(f"Filled {null_count} null values in '{column}' with '{value}'")
-        
+        self.logger.debug(
+            f"Filled {null_count} null values in '{column}' with '{value}'"
+        )
+
         return df_copy
 
     def _apply_pandas_transform_function(
-        self, 
-        df: pd.DataFrame, 
+        self,
+        df: pd.DataFrame,
         transform_function_name: str,
-        additional_data: dict[str, Any] | None = None
+        additional_data: dict[str, Any] | None = None,
     ) -> pd.DataFrame:
         """Apply a pandas transform function dynamically imported from transforms.pandas module."""
         try:
             # Try different import paths
             module_name_variants = []
-            
+
             # Handle different function naming patterns
-            if transform_function_name.endswith('_pandas_transform'):
+            if transform_function_name.endswith("_pandas_transform"):
                 # For functions like findings_by_project_pandas_transform
-                base_name = transform_function_name.replace('_pandas_transform', '')
+                base_name = transform_function_name.replace("_pandas_transform", "")
                 module_name_variants.extend([base_name, transform_function_name])
-            elif transform_function_name.endswith('_transform'):
+            elif transform_function_name.endswith("_transform"):
                 # For functions like scan_analysis_transform
-                base_name = transform_function_name.replace('_transform', '')
+                base_name = transform_function_name.replace("_transform", "")
                 module_name_variants.extend([base_name, transform_function_name])
             else:
                 # For other patterns
                 module_name_variants.append(transform_function_name)
-            
+
             import_paths = []
             for variant in module_name_variants:
-                import_paths.extend([
-                    f"fs_report.transforms.pandas.{variant}",
-                    f"transforms.pandas.{variant}",
-                ])
-            
+                import_paths.extend(
+                    [
+                        f"fs_report.transforms.pandas.{variant}",
+                        f"transforms.pandas.{variant}",
+                    ]
+                )
+
             module = None
             for module_path in import_paths:
                 try:
-                    self.logger.debug(f"Trying to import {transform_function_name} from {module_path}")
+                    self.logger.debug(
+                        f"Trying to import {transform_function_name} from {module_path}"
+                    )
                     module = importlib.import_module(module_path)
                     self.logger.debug(f"Successfully imported from {module_path}")
                     break
                 except ImportError as e:
                     self.logger.debug(f"Failed to import from {module_path}: {e}")
                     continue
-            
+
             if module is None:
-                raise ImportError(f"Could not import transform function {transform_function_name} from any known location")
-                    
+                raise ImportError(
+                    f"Could not import transform function {transform_function_name} from any known location"
+                )
+
             transform_func = getattr(module, transform_function_name)
-            
+
             # Convert DataFrame to list of dicts for the transform function
-            data_list = df.to_dict('records')
-            
+            data_list = df.to_dict("records")
+
             # Prepare additional DataFrames if available
-            df_projects = additional_data.get('projects') if additional_data else None
-            df_components = additional_data.get('components') if additional_data else None
-            
+            additional_data.get("projects") if additional_data else None
+            (additional_data.get("components") if additional_data else None)
+
             # Call the transform function with proper arguments
-            self.logger.debug(f"Calling pandas transform function: {transform_function_name}")
-            
+            self.logger.debug(
+                f"Calling pandas transform function: {transform_function_name}"
+            )
+
             # Try different calling patterns based on function signature
             try:
                 # First try with config and additional_data (newest style for transforms needing extra data)
-                result = transform_func(data_list, config=additional_data.get('config'), additional_data=additional_data)
+                config_val = additional_data.get("config") if additional_data else None
+                result = transform_func(
+                    data_list,
+                    config=config_val,
+                    additional_data=additional_data,
+                )
             except TypeError:
                 try:
                     # Try with config parameter only (standard style)
-                    result = transform_func(data_list, config=additional_data.get('config'))
+                    config_val = (
+                        additional_data.get("config") if additional_data else None
+                    )
+                    result = transform_func(data_list, config=config_val)
                 except TypeError:
                     # Fallback to older style without config
                     result = transform_func(data_list)
-            
+
             # Handle both DataFrame and dictionary returns
             if isinstance(result, dict):
-                self.logger.debug(f"Pandas transform returned dictionary with keys: {list(result.keys())}")
+                self.logger.debug(
+                    f"Pandas transform returned dictionary with keys: {list(result.keys())}"
+                )
                 # Store the full result in additional_data for later use
                 if additional_data is not None:
-                    additional_data['transform_result'] = result
+                    additional_data["transform_result"] = result
                 # Return the main dataset (usually daily_metrics for primary table)
-                main_result = result.get('daily_metrics', result.get('main', list(result.values())[0]))
-                self.logger.debug(f"Main result shape: {main_result.shape}")
+                # NOTE: use explicit None checks — `or` fails on DataFrames
+                #       ("truth value of a DataFrame is ambiguous")
+                main_result = result.get("daily_metrics")
+                if main_result is None:
+                    main_result = result.get("main")
+                if main_result is None:
+                    main_result = result.get("summary")
+                if main_result is None:
+                    # Fallback: find the first DataFrame value
+                    for v in result.values():
+                        if isinstance(v, pd.DataFrame):
+                            main_result = v
+                            break
+                if main_result is None:
+                    # Last resort: return an empty DataFrame
+                    main_result = pd.DataFrame()
+                if hasattr(main_result, "shape"):
+                    self.logger.debug(f"Main result shape: {main_result.shape}")
+                else:
+                    self.logger.debug(f"Main result type: {type(main_result).__name__}")
                 return main_result  # Return the main DataFrame, not the dictionary
             else:
-                self.logger.debug(f"Pandas transform completed. Result shape: {result.shape}")
+                self.logger.debug(
+                    f"Pandas transform completed. Result shape: {result.shape}"
+                )
                 self.logger.debug(f"Result columns: {list(result.columns)}")
-                return result
-            
+                return cast(pd.DataFrame, result)
+
         except Exception as e:
-            self.logger.error(f"Error applying pandas transform function {transform_function_name}: {e}")
+            self.logger.error(
+                f"Error applying pandas transform function {transform_function_name}: {e}"
+            )
             self.logger.exception("Full traceback:")
             raise

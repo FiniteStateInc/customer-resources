@@ -35,7 +35,9 @@ class RecipeLoader:
         """Initialize the recipe loader."""
         self.recipes_dir = Path(recipes_dir)
         self.logger = logging.getLogger(__name__)
-        self.recipe_filter: list[str] | None = None  # List of lower-case recipe names to include
+        self.recipe_filter: list[
+            str
+        ] | None = None  # List of lower-case recipe names to include
 
     def load_recipes(self) -> list[Recipe]:
         """Load all recipe files from the recipes directory, applying recipe_filter if set."""
@@ -59,7 +61,7 @@ class RecipeLoader:
             if yaml_file.name.startswith("_"):
                 self.logger.debug(f"Skipping template/example file: {yaml_file}")
                 continue
-            
+
             try:
                 recipe = self._load_recipe_file(yaml_file)
                 if recipe:
@@ -70,7 +72,7 @@ class RecipeLoader:
 
         # Apply recipe_filter if set
         if self.recipe_filter:
-            filter_set = set(r.lower() for r in self.recipe_filter)
+            filter_set = {r.lower() for r in self.recipe_filter}
             filtered_recipes = [r for r in recipes if r.name.lower() in filter_set]
             self.logger.info(f"Filtered recipes: {[r.name for r in filtered_recipes]}")
             return filtered_recipes

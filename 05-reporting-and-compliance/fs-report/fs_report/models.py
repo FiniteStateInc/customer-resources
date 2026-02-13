@@ -69,7 +69,9 @@ class QueryParams(BaseModel):
     offset: int | None = Field(None, ge=0)
     archived: bool | None = None
     excluded: bool | None = None
-    finding_type: str | None = Field(None, description="Finding type filter: cve, sast, thirdparty, or all")
+    finding_type: str | None = Field(
+        None, description="Finding type filter: cve, sast, thirdparty, or all"
+    )
 
     @field_validator("filter")
     @classmethod
@@ -96,7 +98,10 @@ class GroupByConfig(BaseModel):
     """Group by transform configuration with support for aggregations."""
 
     keys: list[str] = Field(..., description="Columns to group by")
-    aggs: dict[str, str] | None = Field(None, description="Column aggregations (e.g., {'finding_count': 'SUM', 'risk_score': 'SUM'})")
+    aggs: dict[str, str] | None = Field(
+        None,
+        description="Column aggregations (e.g., {'finding_count': 'SUM', 'risk_score': 'SUM'})",
+    )
 
 
 class StringAggTransform(BaseModel):
@@ -171,6 +176,7 @@ class RenameTransform(BaseModel):
 
 class FillnaTransform(BaseModel):
     """Configuration for fillna transform."""
+
     column: str = Field(..., description="Column to fill null values in")
     value: str | int | float = Field(..., description="Value to fill nulls with")
 
@@ -235,7 +241,7 @@ class OutputConfig(BaseModel):
     )
     formats: list[str] | None = Field(
         default=None,
-        description="List of output formats to generate (e.g., ['csv', 'xlsx', 'html'])"
+        description="List of output formats to generate (e.g., ['csv', 'xlsx', 'html'])",
     )
 
 
@@ -246,26 +252,29 @@ class Recipe(BaseModel):
     category: str | None = Field(
         None,
         description="Report category: 'assessment' (current state, period ignored) "
-                    "or 'operational' (period-bound, shows trends over time)."
+        "or 'operational' (period-bound, shows trends over time).",
     )
     execution_order: int = Field(
-        50, 
+        50,
         description="Order in which to run this recipe (lower = earlier). "
-                    "Reports that fetch base data (scans, projects) should run first "
-                    "so dependent reports can use cached data. "
-                    "Default: 50. Recommended: 10=scans, 20=findings, 30=components, 40=audit"
+        "Reports that fetch base data (scans, projects) should run first "
+        "so dependent reports can use cached data. "
+        "Default: 50. Recommended: 10=scans, 20=findings, 30=components, 40=audit",
     )
     auto_run: bool = Field(
         True,
         description="Whether to include in default runs. "
-                    "If false, only runs when explicitly requested with --recipe."
+        "If false, only runs when explicitly requested with --recipe.",
     )
     template: str | None = Field(None, description="HTML template to use for rendering")
     description: str | None = Field(None, description="Recipe description")
-    parameters: dict[str, Any] | None = Field(None, description="Recipe parameters for customization")
+    parameters: dict[str, Any] | None = Field(
+        None, description="Recipe parameters for customization"
+    )
     query: QueryConfig = Field(..., description="API query configuration")
     project_list_query: QueryConfig | None = Field(
-        None, description="Query for fetching project data (for new vs existing analysis)"
+        None,
+        description="Query for fetching project data (for new vs existing analysis)",
     )
     additional_queries: dict[str, QueryConfig] | None = Field(
         None, description="Additional queries for multiple charts"
@@ -312,46 +321,70 @@ class Config(BaseModel):
         None, description="Name of specific recipe to run"
     )
     project_filter: str | None = Field(
-        None, description="Filter by project (name, ID, or version ID). Use 'list' to see available projects."
+        None,
+        description="Filter by project (name, ID, or version ID). Use 'list' to see available projects.",
     )
     folder_filter: str | None = Field(
-        None, description="Scope reports to a folder (name or ID). Includes subfolders. Use 'list-folders' to see available folders."
+        None,
+        description="Scope reports to a folder (name or ID). Includes subfolders. Use 'list-folders' to see available folders.",
     )
     version_filter: str | None = Field(
-        None, description="Filter by project version (version ID or name). Use 'list-versions' to see available versions."
+        None,
+        description="Filter by project version (version ID or name). Use 'list-versions' to see available versions.",
     )
     finding_types: str = Field(
         "cve",
-        description="Comma-separated finding types: cve, sast, thirdparty, credentials, config_issues, crypto_material, or 'all'"
+        description="Comma-separated finding types: cve, sast, binary_sca, source_sca, thirdparty, credentials, config_issues, crypto_material, or 'all'",
     )
     current_version_only: bool = Field(
         True,
-        description="Only include latest version per project (default for performance). Use --all-versions for full history."
+        description="Only include latest version per project (default for performance). Use --all-versions for full history.",
     )
     # [BETA] SQLite cache options
     cache_ttl: int = Field(
         0,
         description="[BETA] Cache TTL in seconds. 0 disables cross-run caching (default). "
-                    "Use --cache-ttl flag to enable persistent cache."
+        "Use --cache-ttl flag to enable persistent cache.",
     )
     cache_dir: str | None = Field(
-        None,
-        description="[BETA] Directory for SQLite cache. Defaults to ~/.fs-report/"
+        None, description="[BETA] Directory for SQLite cache. Defaults to ~/.fs-report/"
     )
     # Optional date filter for assessment reports
     detected_after: str | None = Field(
         None,
         description="Only include findings detected on or after this date (ISO8601). "
-                    "Applies to Assessment reports (CVA, Findings by Project, Triage, Component List)."
+        "Applies to Assessment reports (CVA, Findings by Project, Triage, Component List).",
     )
     # AI remediation guidance options
     ai: bool = Field(
         False,
-        description="Enable AI remediation guidance (requires ANTHROPIC_AUTH_TOKEN env var)"
+        description="Enable AI remediation guidance (requires ANTHROPIC_AUTH_TOKEN env var)",
     )
     ai_depth: str = Field(
         "summary",
-        description="AI depth: 'summary' (portfolio/project) or 'full' (+ Critical/High components)"
+        description="AI depth: 'summary' (portfolio/project) or 'full' (+ Critical/High components)",
+    )
+    # Version comparison / progress options
+    baseline_date: str | None = Field(
+        None,
+        description="Baseline date for Security Progress report (YYYY-MM-DD). "
+        "Overrides the default behaviour of using the earliest version in the period window.",
+    )
+    baseline_version: str | None = Field(
+        None, description="Baseline version ID for Version Comparison report."
+    )
+    current_version: str | None = Field(
+        None, description="Current version ID for Version Comparison report."
+    )
+    open_only: bool = Field(
+        False,
+        description="Only count open findings (exclude NOT_AFFECTED, FALSE_POSITIVE, RESOLVED, RESOLVED_WITH_PEDIGREE). "
+        "Applies to Security Progress report.",
+    )
+    request_delay: float = Field(
+        0.5,
+        description="Delay in seconds between API requests to avoid overloading the server. "
+        "Increase for large portfolios, decrease (e.g. 0.1) for small runs.",
     )
 
     @field_validator("domain")

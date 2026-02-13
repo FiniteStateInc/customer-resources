@@ -83,6 +83,7 @@ class LLMClient:
         # Lazy import to avoid requiring anthropic when --ai is not used
         try:
             import anthropic
+
             self.client = anthropic.Anthropic(api_key=self.api_key)
         except ImportError:
             raise ImportError(
@@ -101,14 +102,17 @@ class LLMClient:
         self._cached_count = 0
 
         if self.cache_ttl > 0:
-            logger.info(f"AI cache enabled (TTL: {self.cache_ttl}s, DB: {self.db_path})")
+            logger.info(
+                f"AI cache enabled (TTL: {self.cache_ttl}s, DB: {self.db_path})"
+            )
         else:
             logger.info("AI cache disabled (TTL=0, will regenerate every run)")
 
     def _init_cache_tables(self) -> None:
         """Ensure remediation cache tables exist."""
         with sqlite3.connect(str(self.db_path)) as conn:
-            conn.executescript("""
+            conn.executescript(
+                """
                 CREATE TABLE IF NOT EXISTS cve_remediations (
                     cve_id TEXT PRIMARY KEY,
                     component_name TEXT,
@@ -137,7 +141,8 @@ class LLMClient:
                     generated_by TEXT,
                     generated_at TEXT
                 );
-            """)
+            """
+            )
 
     def _is_fresh(self, generated_at: str | None) -> bool:
         """Check if a cached entry is still within the TTL window."""
@@ -224,7 +229,8 @@ class LLMClient:
                 (finding_id,),
             ).fetchone()
             if row and row[0]:
-                return json.loads(row[0])
+                result: dict[str, Any] = json.loads(row[0])
+                return result
         return None
 
     def cache_cve_detail(self, finding_id: str, metadata: Any) -> None:
@@ -234,7 +240,11 @@ class LLMClient:
                 """INSERT OR REPLACE INTO cve_detail_cache
                    (finding_id, cve_metadata, fetched_at)
                    VALUES (?, ?, ?)""",
-                (finding_id, json.dumps(metadata, default=str), datetime.utcnow().isoformat()),
+                (
+                    finding_id,
+                    json.dumps(metadata, default=str),
+                    datetime.utcnow().isoformat(),
+                ),
             )
 
     def get_cached_exploit_detail(self, finding_id: str) -> dict[str, Any] | None:
@@ -245,7 +255,8 @@ class LLMClient:
                 (finding_id,),
             ).fetchone()
             if row and row[0]:
-                return json.loads(row[0])
+                result: dict[str, Any] = json.loads(row[0])
+                return result
         return None
 
     def cache_exploit_detail(self, finding_id: str, metadata: Any) -> None:
@@ -255,7 +266,11 @@ class LLMClient:
                 """INSERT OR REPLACE INTO exploit_detail_cache
                    (finding_id, exploit_metadata, fetched_at)
                    VALUES (?, ?, ?)""",
-                (finding_id, json.dumps(metadata, default=str), datetime.utcnow().isoformat()),
+                (
+                    finding_id,
+                    json.dumps(metadata, default=str),
+                    datetime.utcnow().isoformat(),
+                ),
             )
 
     # =========================================================================
@@ -276,9 +291,11 @@ class LLMClient:
         """
         # Build a stable cache key from the input data
         import hashlib
+
         key_data = json.dumps(
             {"portfolio": portfolio_summary, "reach": reachability_summary},
-            sort_keys=True, default=str,
+            sort_keys=True,
+            default=str,
         )
         cache_key = f"portfolio:{hashlib.sha256(key_data.encode()).hexdigest()[:16]}"
 
@@ -290,7 +307,9 @@ class LLMClient:
             return cached
 
         prompt = self._build_portfolio_prompt(
-            portfolio_summary, project_summaries, top_components,
+            portfolio_summary,
+            project_summaries,
+            top_components,
             reachability_summary,
         )
 
@@ -301,7 +320,7 @@ class LLMClient:
                 messages=[{"role": "user", "content": prompt}],
             )
             self._call_count += 1
-            result_text = response.content[0].text
+            result_text = response.content[0].text  # type: ignore[union-attr]
             self.cache_summary(cache_key, "portfolio", result_text, SONNET_MODEL)
             return result_text
         except Exception as e:
@@ -372,9 +391,11 @@ Be specific with component names and versions. When vulnerable functions are ide
         Uses Sonnet for rich analysis. Cached by project name + band distribution.
         """
         import hashlib
+
         key_data = json.dumps(
             {"project": project_name, "bands": band_counts},
-            sort_keys=True, default=str,
+            sort_keys=True,
+            default=str,
         )
         cache_key = f"project:{hashlib.sha256(key_data.encode()).hexdigest()[:16]}"
 
@@ -393,7 +414,7 @@ Be specific with component names and versions. When vulnerable functions are ide
                 messages=[{"role": "user", "content": prompt}],
             )
             self._call_count += 1
-            result_text = response.content[0].text
+            result_text = response.content[0].text  # type: ignore[union-attr]
             self.cache_summary(cache_key, "project", result_text, SONNET_MODEL)
             return result_text
         except Exception as e:
@@ -426,35 +447,32 @@ Be specific with component names and versions. When vulnerable functions are ide
                 if f.get("reachability_score", 0) > 0
             ]
             unreachable_count = sum(
-                1 for f in comp_findings
-                if f.get("reachability_score", 0) < 0
+                1 for f in comp_findings if f.get("reachability_score", 0) < 0
             )
-            vuln_funcs = set()
+            vuln_funcs: set[str] = set()
             for f in comp_findings:
                 vf = f.get("vuln_functions", "")
                 if vf:
                     vuln_funcs.update(fn.strip() for fn in vf.split(",") if fn.strip())
 
-            component_summary.append({
-                "component": comp_key,
-                "findings_count": len(comp_findings),
-                "bands": [f.get("priority_band", "INFO") for f in comp_findings],
-                "cves": [f.get("finding_id", "") for f in comp_findings[:5]],
-                "reachable_cves": reachable_cves[:5],
-                "unreachable_count": unreachable_count,
-                "vuln_functions": list(vuln_funcs)[:5],
-            })
+            component_summary.append(
+                {
+                    "component": comp_key,
+                    "findings_count": len(comp_findings),
+                    "bands": [f.get("priority_band", "INFO") for f in comp_findings],
+                    "cves": [f.get("finding_id", "") for f in comp_findings[:5]],
+                    "reachable_cves": reachable_cves[:5],
+                    "unreachable_count": unreachable_count,
+                    "vuln_functions": list(vuln_funcs)[:5],
+                }
+            )
 
         # Aggregate reachability stats for the project
-        reachable_total = sum(
-            1 for f in findings if f.get("reachability_score", 0) > 0
-        )
+        reachable_total = sum(1 for f in findings if f.get("reachability_score", 0) > 0)
         unreachable_total = sum(
             1 for f in findings if f.get("reachability_score", 0) < 0
         )
-        unknown_total = sum(
-            1 for f in findings if f.get("reachability_score", 0) == 0
-        )
+        unknown_total = sum(1 for f in findings if f.get("reachability_score", 0) == 0)
 
         return f"""You are a firmware security analyst. Provide remediation guidance for project "{project_name}".
 
@@ -513,8 +531,12 @@ Be specific with component names and versions."""
 
         # Build prompt with enriched data
         prompt = self._build_component_prompt(
-            component_name, component_version, cve_ids,
-            cve_details, exploit_details, reachability_info,
+            component_name,
+            component_version,
+            cve_ids,
+            cve_details,
+            exploit_details,
+            reachability_info,
         )
 
         try:
@@ -524,7 +546,7 @@ Be specific with component names and versions."""
                 messages=[{"role": "user", "content": prompt}],
             )
             self._call_count += 1
-            result_text = response.content[0].text
+            result_text = response.content[0].text  # type: ignore[union-attr]
 
             # Parse structured response
             remediation = self._parse_component_response(
@@ -578,18 +600,21 @@ Be specific with component names and versions."""
             for exploit in exploit_details[:5]:
                 exploit_section += f"\n- Source: {exploit.get('source', 'Unknown')}"
                 exploit_section += f"\n  URL: {exploit.get('url', 'N/A')}"
-                exploit_section += f"\n  Description: {str(exploit.get('description', ''))[:200]}"
+                exploit_section += (
+                    f"\n  Description: {str(exploit.get('description', ''))[:200]}"
+                )
 
         # Build reachability section from binary analysis evidence
         reach_section = ""
         if reachability_info:
             reach_items = []
-            all_vuln_funcs = set()
+            all_vuln_funcs: set[str] = set()
             all_binary_paths = set()
             for ri in reachability_info:
                 score = ri.get("reachability_score", 0)
                 label = (
-                    "REACHABLE" if score > 0
+                    "REACHABLE"
+                    if score > 0
                     else ("UNREACHABLE" if score < 0 else "INCONCLUSIVE")
                 )
                 cve_id = ri.get("finding_id", "Unknown")
@@ -610,10 +635,7 @@ Be specific with component names and versions."""
                     for factor in factors:
                         if isinstance(factor, dict):
                             entity_name = factor.get("entity_name", "")
-                            if (
-                                factor.get("entity_type") == "vuln_func"
-                                and entity_name
-                            ):
+                            if factor.get("entity_type") == "vuln_func" and entity_name:
                                 all_vuln_funcs.add(entity_name)
                             # Extract binary paths for context
                             details = factor.get("details", {})
@@ -630,8 +652,7 @@ Be specific with component names and versions."""
                 )
             if all_binary_paths:
                 reach_section += (
-                    f"\nBinary locations: "
-                    f"{', '.join(sorted(all_binary_paths)[:5])}"
+                    f"\nBinary locations: " f"{', '.join(sorted(all_binary_paths)[:5])}"
                 )
             reach_section += (
                 "\n\nNote: REACHABLE means binary analysis confirmed these "
@@ -723,7 +744,9 @@ CONFIDENCE: <high|medium|low>"""
 
         from tqdm import tqdm
 
-        with tqdm(components, desc="Generating AI guidance", unit=" components") as pbar:
+        with tqdm(
+            components, desc="Generating AI guidance", unit=" components"
+        ) as pbar:
             for comp in pbar:
                 comp_key = f"{comp['component_name']}:{comp['component_version']}"
                 pbar.set_postfix_str(comp_key[:40])
@@ -751,7 +774,9 @@ CONFIDENCE: <high|medium|low>"""
                     component_version=comp["component_version"],
                     cve_ids=comp.get("cve_ids", []),
                     cve_details=cve_details if cve_details else None,
-                    exploit_details=exploit_details_list if exploit_details_list else None,
+                    exploit_details=exploit_details_list
+                    if exploit_details_list
+                    else None,
                     reachability_info=reach_info_list if reach_info_list else None,
                 )
                 results[comp_key] = guidance

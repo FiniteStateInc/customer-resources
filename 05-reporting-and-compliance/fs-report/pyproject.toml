@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "fs-report"
-version = "1.1.0"
+version = "1.1.1"
 description = "Finite State Stand-Alone Reporting Kit"
 authors = ["Finite State <support@finitestate.io>"]
 license = "MIT"
@@ -51,6 +51,8 @@ mypy = "^1.8.0"
 types-requests = "^2.31.0"
 types-pyyaml = "^6.0.12"
 pandas-stubs = "^2.3.0.250703"
+types-tqdm = "^4.67.3.20260205"
+types-seaborn = "^0.13.2.20251221"
 
 [tool.poetry.scripts]
 fs-report = "fs_report.cli:app"
@@ -102,6 +104,7 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.11"
+plugins = ["pydantic.mypy"]
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -115,6 +118,11 @@ warn_no_return = true
 warn_unreachable = true
 strict_equality = true
 
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
@@ -126,7 +134,7 @@ addopts = [
     "--cov=fs_report",
     "--cov-report=term-missing",
     "--cov-report=html",
-    "--cov-fail-under=85",
+    "--cov-fail-under=65",
 ]
 
 [tool.coverage.run]

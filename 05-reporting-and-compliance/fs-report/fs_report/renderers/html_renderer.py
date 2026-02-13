@@ -24,15 +24,16 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, cast
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from fs_report.models import Recipe, ReportData
 
 logger = logging.getLogger(__name__)
+
 
 def convert_to_native_types(obj: Any) -> Any:
     """
@@ -44,7 +45,7 @@ def convert_to_native_types(obj: Any) -> Any:
     elif isinstance(obj, pd.Series):
         return obj.tolist()
     elif isinstance(obj, pd.DataFrame):
-        return obj.to_dict('records')
+        return obj.to_dict("records")
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
     elif isinstance(obj, np.integer):
@@ -62,22 +63,27 @@ def convert_to_native_types(obj: Any) -> Any:
     else:
         return obj
 
+
 def scan_for_pandas_objects(obj: Any, path: str = "root") -> None:
     """
     Recursively scan for pandas/numpy objects and log them.
     This helps identify variables that might cause ambiguous truth value errors.
     """
     import logging
+
     logger = logging.getLogger(__name__)
-    
-    if isinstance(obj, (pd.Series, pd.DataFrame, np.ndarray, np.integer, np.floating, np.bool_)):
+
+    if isinstance(
+        obj, pd.Series | pd.DataFrame | np.ndarray | np.integer | np.floating | np.bool_
+    ):
         logger.warning(f"Found pandas/numpy object at {path}: {type(obj)} = {obj}")
     elif isinstance(obj, dict):
         for key, value in obj.items():
             scan_for_pandas_objects(value, f"{path}.{key}")
-    elif isinstance(obj, (list, tuple)):
+    elif isinstance(obj, list | tuple):
         for i, item in enumerate(obj):
             scan_for_pandas_objects(item, f"{path}[{i}]")
+
 
 class HTMLRenderer:
     """Renderer for HTML output format using Jinja2 templates."""
@@ -99,7 +105,7 @@ class HTMLRenderer:
         """Render the report to HTML."""
         try:
             # Use template from recipe if specified
-            template_name = getattr(recipe, 'template', None)
+            template_name = getattr(recipe, "template", None)
             if template_name:
                 template = self.env.get_template(template_name)
             elif recipe.output.charts and len(recipe.output.charts) > 1:
@@ -117,7 +123,9 @@ class HTMLRenderer:
                     # Convert enum to string if needed
                     if chart_type is not None and hasattr(chart_type, "value"):
                         chart_type = chart_type.value
-                template = self._get_template(str(chart_type) if chart_type else None, recipe.name)
+                template = self._get_template(
+                    str(chart_type) if chart_type else None, recipe.name
+                )
 
             # Prepare template data
             template_data = self._prepare_template_data(recipe, report_data)
@@ -125,10 +133,10 @@ class HTMLRenderer:
             # Scan for any remaining pandas/numpy objects before rendering
             self.logger.debug("Scanning template_data for pandas/numpy objects...")
             scan_for_pandas_objects(template_data)
-            
+
             # Convert all data to native types to prevent ambiguous truth value errors
             template_data = convert_to_native_types(template_data)
-            
+
             # Scan again after conversion to ensure all objects are native
             self.logger.debug("Scanning template_data after conversion...")
             scan_for_pandas_objects(template_data)
@@ -144,10 +152,13 @@ class HTMLRenderer:
         except Exception as e:
             self.logger.error(f"Error generating HTML: {e}")
             import traceback
+
             self.logger.error(f"Full traceback:\n{traceback.format_exc()}")
             raise
 
-    def _get_template(self, chart_type: str | None, recipe_name: str | None = None) -> Any:
+    def _get_template(
+        self, chart_type: str | None, recipe_name: str | None = None
+    ) -> Any:
         """Get the appropriate template for the chart type."""
         # Handle special template names
         if recipe_name == "Component Vulnerability Analysis":
@@ -194,16 +205,18 @@ class HTMLRenderer:
             self.logger.debug(
                 f"Processing multiple charts: {[chart.name for chart in recipe.output.charts]}"
             )
-            chart_data = {}
+            chart_data: dict[str, Any] = {}
 
             # Component Vulnerability Analysis charts
             if "Component Vulnerability Analysis" in recipe.name:
                 # Individual project risk chart
-                if "individual_project_risk" in [chart.name for chart in recipe.output.charts]:
+                if "individual_project_risk" in [
+                    chart.name for chart in recipe.output.charts
+                ]:
                     self.logger.debug("Preparing individual project risk chart")
-                    chart_data["individual_project_risk"] = self._prepare_bar_chart_data(
-                        df, is_stacked=False
-                    )
+                    chart_data[
+                        "individual_project_risk"
+                    ] = self._prepare_bar_chart_data(df, is_stacked=False)
 
                 # Portfolio risk chart
                 if "portfolio_risk" in [chart.name for chart in recipe.output.charts]:
@@ -218,13 +231,20 @@ class HTMLRenderer:
                         else:
                             portfolio_df = pd.DataFrame(portfolio_data)
                         chart_data["portfolio_risk"] = self._prepare_bar_chart_data(
-                            portfolio_df, is_stacked=False, y_col="portfolio_composite_risk"
+                            portfolio_df,
+                            is_stacked=False,
+                            y_col="portfolio_composite_risk",
                         )
                     else:
                         self.logger.debug("No portfolio data found")
                         chart_data["portfolio_risk"] = {
                             "labels": [],
-                            "datasets": [{"data": [], "backgroundColor": "rgba(54, 162, 235, 0.8)"}],
+                            "datasets": [
+                                {
+                                    "data": [],
+                                    "backgroundColor": "rgba(54, 162, 235, 0.8)",
+                                }
+                            ],
                         }
 
                 # Add the specialized CVA charts using portfolio data
@@ -237,17 +257,25 @@ class HTMLRenderer:
                         portfolio_df = portfolio_data
                     else:
                         portfolio_df = pd.DataFrame(portfolio_data)
-                    chart_data["pareto_chart"] = self._prepare_pareto_chart_data(portfolio_df, recipe)
-                    chart_data["bubble_matrix"] = self._prepare_bubble_matrix_data(portfolio_df)
+                    chart_data["pareto_chart"] = self._prepare_pareto_chart_data(
+                        portfolio_df, recipe
+                    )
+                    chart_data["bubble_matrix"] = self._prepare_bubble_matrix_data(
+                        portfolio_df
+                    )
                 else:
                     # Fallback to main data if portfolio data not available
-                    chart_data["pareto_chart"] = self._prepare_pareto_chart_data(df, recipe)
+                    chart_data["pareto_chart"] = self._prepare_pareto_chart_data(
+                        df, recipe
+                    )
                     chart_data["bubble_matrix"] = self._prepare_bubble_matrix_data(df)
 
             # Executive Summary charts
             else:
                 # Main project breakdown chart
-                if "project_breakdown" in [chart.name for chart in recipe.output.charts]:
+                if "project_breakdown" in [
+                    chart.name for chart in recipe.output.charts
+                ]:
                     self.logger.debug("Preparing project breakdown chart")
                     chart_data["project_breakdown"] = self._prepare_bar_chart_data(
                         df, is_stacked=True
@@ -258,14 +286,16 @@ class HTMLRenderer:
                     chart.name for chart in recipe.output.charts
                 ]:
                     self.logger.debug("Preparing open issues distribution chart")
-                    open_issues_data = report_data.metadata.get("additional_data", {}).get(
-                        "open_issues"
-                    )
+                    open_issues_data = report_data.metadata.get(
+                        "additional_data", {}
+                    ).get("open_issues")
                     if open_issues_data is not None and not (
                         isinstance(open_issues_data, pd.DataFrame)
                         and len(open_issues_data) == 0
                     ):
-                        self.logger.debug(f"Open issues data type: {type(open_issues_data)}")
+                        self.logger.debug(
+                            f"Open issues data type: {type(open_issues_data)}"
+                        )
                         if isinstance(open_issues_data, pd.DataFrame):
                             open_issues_df = open_issues_data
                         else:
@@ -299,7 +329,9 @@ class HTMLRenderer:
                         else:
                             scan_frequency_df = pd.DataFrame(scan_frequency_data)
                         # Get period_label if present
-                        period_label = getattr(scan_frequency_df, 'period_label', 'Month')
+                        period_label = getattr(
+                            scan_frequency_df, "period_label", "Month"
+                        )
                         chart_data["scan_frequency"] = self._prepare_line_chart_data(
                             scan_frequency_df
                         )
@@ -343,8 +375,7 @@ class HTMLRenderer:
         if "Component Vulnerability Analysis" in recipe.name:
             portfolio_data = report_data.metadata.get("portfolio_data")
             if portfolio_data is not None and not (
-                isinstance(portfolio_data, pd.DataFrame)
-                and len(portfolio_data) == 0
+                isinstance(portfolio_data, pd.DataFrame) and len(portfolio_data) == 0
             ):
                 if isinstance(portfolio_data, pd.DataFrame):
                     portfolio_df = portfolio_data
@@ -352,7 +383,7 @@ class HTMLRenderer:
                     portfolio_df = pd.DataFrame(portfolio_data)
                 portfolio_table_data = self._prepare_table_data(portfolio_df)
                 # Debug: Print columns and first few rows for portfolio data
-                if 'portfolio_risk_score' in portfolio_df.columns:
+                if "portfolio_risk_score" in portfolio_df.columns:
                     pass
 
         # Calculate Y-axis max for charts
@@ -381,17 +412,17 @@ class HTMLRenderer:
             chart_data_json[key] = json.dumps(value, default=self._json_serializer)
 
         # Ensure table_data is a dict of native types
-        if isinstance(table_data, pd.DataFrame):
-            table_data = table_data.to_dict(orient="records")
-        elif isinstance(table_data, pd.Series):
-            table_data = table_data.tolist()
+        if isinstance(table_data, pd.DataFrame):  # type: ignore[unreachable]
+            table_data = table_data.to_dict(orient="records")  # type: ignore[unreachable]
+        elif isinstance(table_data, pd.Series):  # type: ignore[unreachable]
+            table_data = table_data.tolist()  # type: ignore[unreachable]
 
         # Ensure portfolio_table_data is a dict of native types
         if portfolio_table_data is not None:
-            if isinstance(portfolio_table_data, pd.DataFrame):
-                portfolio_table_data = portfolio_table_data.to_dict(orient="records")
-            elif isinstance(portfolio_table_data, pd.Series):
-                portfolio_table_data = portfolio_table_data.tolist()
+            if isinstance(portfolio_table_data, pd.DataFrame):  # type: ignore[unreachable]
+                portfolio_table_data = portfolio_table_data.to_dict(orient="records")  # type: ignore[unreachable]
+            elif isinstance(portfolio_table_data, pd.Series):  # type: ignore[unreachable]
+                portfolio_table_data = portfolio_table_data.tolist()  # type: ignore[unreachable]
 
         template_data = {
             "recipe_name": recipe.name,
@@ -414,9 +445,11 @@ class HTMLRenderer:
             "folder_filter": report_data.metadata.get("folder_filter", ""),
             "domain": report_data.metadata.get("domain", ""),
             # Add period label for scan frequency chart
-            "scan_frequency_period_label": chart_data.get("scan_frequency_period_label", "Month"),
+            "scan_frequency_period_label": chart_data.get(
+                "scan_frequency_period_label", "Month"
+            ),
         }
-        
+
         # Add raw data for templates that need it (like findings by project)
         if isinstance(report_data.data, pd.DataFrame):
             template_data["data"] = report_data.data.to_dict(orient="records")
@@ -424,21 +457,21 @@ class HTMLRenderer:
             template_data["data"] = report_data.data
 
         # Always merge additional_data into template_data
-        additional_data = report_data.metadata.get('additional_data', {})
+        additional_data = report_data.metadata.get("additional_data", {})
         if additional_data:
             template_data.update(additional_data)
         # If the main data is a dict (custom transform), merge all keys into template_data
         if isinstance(report_data.data, dict):
             for key, value in report_data.data.items():
-                if key == 'raw_ttr_data':
-                    template_data['table_data'] = value
+                if key == "raw_ttr_data":
+                    template_data["table_data"] = value
                 else:
                     template_data[key] = value
         # Convert all data to native Python types to prevent ambiguous truth value errors
         converted_data = convert_to_native_types(template_data)
         # Add debug print
         # print(f"DEBUG: filter_options in template_data: {'filter_options' in converted_data}")
-        return converted_data
+        return cast(dict[str, Any], converted_data)
 
     def _json_serializer(self, obj: Any) -> Any:
         """Custom JSON serializer to handle numpy types and booleans."""
@@ -492,7 +525,7 @@ class HTMLRenderer:
                 return {"labels": [], "datasets": []}
         else:
             # If it's already converted to native types, check if it's empty
-            if not df or len(df) == 0:
+            if not df or len(df) == 0:  # type: ignore[unreachable]
                 return {"labels": [], "datasets": []}
 
         # For line charts, we typically need x and y values
@@ -529,10 +562,12 @@ class HTMLRenderer:
                             "total_risk": "Total Risk",
                             "project_count": "Projects",
                             "severity": "Severity",
-                            "resolution_count": "Resolutions"
+                            "resolution_count": "Resolutions",
                         }
-                        label = friendly_label_map.get(y_col, y_col.replace('_', ' ').title())
-                    
+                        label = friendly_label_map.get(
+                            y_col, y_col.replace("_", " ").title()
+                        )
+
                     datasets.append(
                         {
                             "label": label,
@@ -547,7 +582,7 @@ class HTMLRenderer:
         return {"labels": [], "datasets": []}
 
     def _prepare_bar_chart_data(
-        self, df: pd.DataFrame, is_stacked: bool = False, y_col: str = None
+        self, df: pd.DataFrame, is_stacked: bool = False, y_col: str | None = None
     ) -> dict[str, Any]:
         """Prepare bar chart data for CVA and other reports."""
         try:
@@ -556,24 +591,39 @@ class HTMLRenderer:
                 # Check if DataFrame is empty using native Python bool
                 if len(df) == 0:
                     return {"labels": [], "datasets": []}
-                self.logger.debug(f"DataFrame shape: {df.shape}, columns: {list(df.columns)}")
+                self.logger.debug(
+                    f"DataFrame shape: {df.shape}, columns: {list(df.columns)}"
+                )
             else:
                 # If it's already converted to native types, check if it's empty
-                if not df or len(df) == 0:
+                if not df or len(df) == 0:  # type: ignore[unreachable]
                     return {"labels": [], "datasets": []}
-                self.logger.debug(f"Data is not DataFrame, type: {type(df)}, length: {len(df) if hasattr(df, '__len__') else 'N/A'}")
-            
+                self.logger.debug(
+                    f"Data is not DataFrame, type: {type(df)}, length: {len(df) if hasattr(df, '__len__') else 'N/A'}"
+                )
+
             # Use the first column as x, and y_col if provided, else first numeric column after x
             if isinstance(df, pd.DataFrame):
                 x_col = df.columns[0]
+                actual_y_col: str | None
                 if y_col is not None and y_col in df.columns:
                     actual_y_col = y_col
                 else:
                     # Try to find the first numeric column after x_col
-                    numeric_cols = [col for col in df.columns if col != x_col and pd.api.types.is_numeric_dtype(df[col])]
-                    actual_y_col = numeric_cols[0] if numeric_cols else (df.columns[1] if len(df.columns) > 1 else None)
-                self.logger.debug(f"Using DataFrame columns: x_col={x_col}, y_col={actual_y_col}")
-                
+                    numeric_cols = [
+                        col
+                        for col in df.columns
+                        if col != x_col and pd.api.types.is_numeric_dtype(df[col])
+                    ]
+                    actual_y_col = (
+                        numeric_cols[0]
+                        if numeric_cols
+                        else (df.columns[1] if len(df.columns) > 1 else None)
+                    )
+                self.logger.debug(
+                    f"Using DataFrame columns: x_col={x_col}, y_col={actual_y_col}"
+                )
+
                 # Create labels with versions if available
                 labels = []
                 for _, row in df.iterrows():
@@ -587,11 +637,11 @@ class HTMLRenderer:
                             labels.append(name)
                     else:
                         labels.append(name)
-                
+
                 data = df[actual_y_col].tolist() if actual_y_col else []
             else:
                 # Handle case where df is already a list of dictionaries
-                if df and len(df) > 0:
+                if df and len(df) > 0:  # type: ignore[unreachable]
                     first_item = df[0]
                     keys = list(first_item.keys())
                     x_col = keys[0]
@@ -599,10 +649,20 @@ class HTMLRenderer:
                         actual_y_col = y_col
                     else:
                         # Try to find the first numeric key after x_col
-                        numeric_keys = [k for k in keys if k != x_col and isinstance(first_item[k], (int, float))]
-                        actual_y_col = numeric_keys[0] if numeric_keys else (keys[1] if len(keys) > 1 else None)
-                    self.logger.debug(f"Using dict keys: x_col={x_col}, y_col={actual_y_col}")
-                    
+                        numeric_keys = [
+                            k
+                            for k in keys
+                            if k != x_col and isinstance(first_item[k], int | float)
+                        ]
+                        actual_y_col = (
+                            numeric_keys[0]
+                            if numeric_keys
+                            else (keys[1] if len(keys) > 1 else None)
+                        )
+                    self.logger.debug(
+                        f"Using dict keys: x_col={x_col}, y_col={actual_y_col}"
+                    )
+
                     # Create labels with versions if available
                     labels = []
                     for item in df:
@@ -616,11 +676,13 @@ class HTMLRenderer:
                                 labels.append(name)
                         else:
                             labels.append(name)
-                    
+
                     data = [item[actual_y_col] for item in df] if actual_y_col else []
                 else:
                     return {"labels": [], "datasets": []}
-            self.logger.debug(f"Generated labels count: {len(labels)}, data count: {len(data)}")
+            self.logger.debug(
+                f"Generated labels count: {len(labels)}, data count: {len(data)}"
+            )
             # Create user-friendly label for the dataset
             friendly_label_map = {
                 "finding_count": "Findings",
@@ -630,10 +692,15 @@ class HTMLRenderer:
                 "total_risk": "Total Risk",
                 "project_count": "Projects",
                 "severity": "Severity",
-                "resolution_count": "Resolutions"
+                "resolution_count": "Resolutions",
             }
-            friendly_label = friendly_label_map.get(actual_y_col, actual_y_col.replace('_', ' ').title())
-            
+            if actual_y_col is not None:
+                friendly_label = friendly_label_map.get(
+                    actual_y_col, actual_y_col.replace("_", " ").title()
+                )
+            else:
+                friendly_label = "Value"
+
             return {
                 "labels": list(labels),
                 "datasets": [
@@ -641,9 +708,9 @@ class HTMLRenderer:
                         "label": friendly_label,
                         "data": list(data),
                         "backgroundColor": "rgba(54, 162, 235, 0.8)",
-                        "stack": is_stacked
+                        "stack": is_stacked,
                     }
-                ]
+                ],
             }
         except Exception as e:
             self.logger.error(f"Error in _prepare_bar_chart_data: {e}")
@@ -664,8 +731,8 @@ class HTMLRenderer:
             if len(df.columns) >= 2:
                 labels = df.iloc[:, 0].tolist()
                 # Prefer 'finding_count' column if present (group_by adds extra columns like avg_risk_score)
-                if 'finding_count' in df.columns:
-                    values = df['finding_count'].tolist()
+                if "finding_count" in df.columns:
+                    values = df["finding_count"].tolist()
                 else:
                     values = df.iloc[:, 1].tolist()
                 return {
@@ -688,14 +755,14 @@ class HTMLRenderer:
                 }
         else:
             # Handle case where df is already a list of dictionaries
-            if df and len(df) > 0:
+            if df and len(df) > 0:  # type: ignore[unreachable]
                 first_item = df[0]
                 keys = list(first_item.keys())
                 if len(keys) >= 2:
                     labels = [item[keys[0]] for item in df]
                     # Prefer 'finding_count' if present
-                    if 'finding_count' in first_item:
-                        values = [item['finding_count'] for item in df]
+                    if "finding_count" in first_item:
+                        values = [item["finding_count"] for item in df]
                     else:
                         values = [item[keys[1]] for item in df]
                     return {
@@ -743,15 +810,13 @@ class HTMLRenderer:
                 }
         else:
             # Handle case where df is already a list of dictionaries
-            if df and len(df) > 0:
+            if df and len(df) > 0:  # type: ignore[unreachable]
                 first_item = df[0]
                 keys = list(first_item.keys())
                 if len(keys) >= 2:
                     x_col = keys[0]
                     y_col = keys[1]
-                    data = [
-                        {"x": item[x_col], "y": item[y_col]} for item in df
-                    ]
+                    data = [{"x": item[x_col], "y": item[y_col]} for item in df]
                     return {
                         "datasets": [
                             {
@@ -765,17 +830,17 @@ class HTMLRenderer:
 
     def _prepare_table_data(self, df: pd.DataFrame) -> dict[str, Any]:
         """Prepare data for table rendering.
-        
+
         Returns rows as list of dicts for named access in templates.
         Templates should use row.column_name or row['column_name'] syntax.
         """
         # Convert DataFrame to native types to avoid ambiguous truth value errors
         if not isinstance(df, pd.DataFrame):
             # If it's already converted to native types, return as is
-            if df and len(df) > 0:
+            if df and len(df) > 0:  # type: ignore[unreachable]
                 # Already a list of dictionaries - perfect!
                 first_item = df[0]
-                headers = [col.replace('_', ' ').title() for col in first_item.keys()]
+                headers = [col.replace("_", " ").title() for col in first_item.keys()]
                 columns = list(first_item.keys())
                 return {
                     "headers": headers,
@@ -790,7 +855,7 @@ class HTMLRenderer:
                     "rows": [],
                     "row_count": 0,
                 }
-        
+
         # Check if DataFrame is empty using native Python bool
         if len(df) == 0:
             return {
@@ -799,11 +864,15 @@ class HTMLRenderer:
                 "rows": [],
                 "row_count": 0,
             }
-        
+
         # Identify likely numeric columns
         numeric_cols = [
-            col for col in df.columns
-            if any(key in col.lower() for key in ["score", "count", "risk", "epss", "reachability"])
+            col
+            for col in df.columns
+            if any(
+                key in col.lower()
+                for key in ["score", "count", "risk", "epss", "reachability"]
+            )
         ]
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -811,60 +880,63 @@ class HTMLRenderer:
         seen = set()
         unique_cols = []
         for col in df.columns:
-            if col not in seen and not col.endswith(' 2'):
+            if col not in seen and not col.endswith(" 2"):
                 unique_cols.append(col)
                 seen.add(col)
         df = df[unique_cols]
         # Convert all boolean columns to Python bools
         for col in df.columns:
-            if df[col].dtype == 'bool' or str(df[col].dtype).startswith('bool'):
+            if df[col].dtype == "bool" or str(df[col].dtype).startswith("bool"):
                 df[col] = df[col].apply(bool)
-        
+
         # Create user-friendly column names mapping
         friendly_names = {
-            'name': 'Component Name',
-            'version': 'Version',
-            'type': 'Type',
-            'project.name': 'Project',
-            'composite_risk_score': 'Composite Risk Score',
-            'portfolio_risk_score': 'Portfolio Risk Score',
-            'portfolio_composite_risk': 'Portfolio Composite Risk',
-            'normalized_risk_score': 'Normalized Risk Score',
-            'finding_count': 'Finding Count',
-            'findings_count': 'Findings Count',
-            'project_count': 'Project Count',
-            'has_kev': 'Has KEV',
-            'has_exploits': 'Has Exploits',
+            "name": "Component Name",
+            "version": "Version",
+            "type": "Type",
+            "project.name": "Project",
+            "composite_risk_score": "Composite Risk Score",
+            "portfolio_risk_score": "Portfolio Risk Score",
+            "portfolio_composite_risk": "Portfolio Composite Risk",
+            "normalized_risk_score": "Normalized Risk Score",
+            "finding_count": "Finding Count",
+            "findings_count": "Findings Count",
+            "project_count": "Project Count",
+            "has_kev": "Has KEV",
+            "has_exploits": "Has Exploits",
         }
-        
+
         # Build friendly headers while preserving original column names
         friendly_headers = []
         columns = list(df.columns)
-        
+
         for col in columns:
             if col in friendly_names:
                 friendly_headers.append(friendly_names[col])
             else:
-                friendly_headers.append(col.replace('_', ' ').title())
-        
+                friendly_headers.append(col.replace("_", " ").title())
+
         # Clean and format the data as list of dicts
         cleaned_rows = []
         for _, row in df.iterrows():
             cleaned_row = {}
             for col in columns:
                 value = row[col]
-                
+
                 # Handle case where value might be a pandas Series or numpy array
-                if hasattr(value, '__len__') and not isinstance(value, (str, bytes)):
+                if hasattr(value, "__len__") and not isinstance(value, str | bytes):
                     # Convert to scalar if it's an array-like object
                     if len(value) == 1:
-                        value = value.iloc[0] if hasattr(value, 'iloc') else value[0]
+                        value = value.iloc[0] if hasattr(value, "iloc") else value[0]
                     else:
                         # If it's a list/array with multiple values, join them
-                        value = str(value.tolist() if hasattr(value, 'tolist') else list(value))
-                
+                        value = str(
+                            value.tolist() if hasattr(value, "tolist") else list(value)
+                        )
+
                 # Clean the value
-                if col in ['has_kev', 'has_exploits']:
+                cleaned_value: Any
+                if col in ["has_kev", "has_exploits"]:
                     # Keep as boolean for template logic
                     if pd.isna(value):
                         cleaned_value = False
@@ -874,24 +946,28 @@ class HTMLRenderer:
                         cleaned_value = value.lower() == "true"
                     else:
                         cleaned_value = bool(value)
-                elif col in ['finding_count', 'findings_count', 'project_count']:
+                elif col in ["finding_count", "findings_count", "project_count"]:
                     cleaned_value = int(value) if pd.notna(value) else 0
-                elif col in ['portfolio_composite_risk', 'normalized_risk_score', 'composite_risk_score']:
+                elif col in [
+                    "portfolio_composite_risk",
+                    "normalized_risk_score",
+                    "composite_risk_score",
+                ]:
                     # Always convert risk scores to integers
                     cleaned_value = int(value) if pd.notna(value) else 0
                 elif pd.isna(value):
-                    cleaned_value = ''
-                elif isinstance(value, (int, float)):
+                    cleaned_value = ""
+                elif isinstance(value, int | float):
                     if value == int(value):
                         cleaned_value = int(value)
                     else:
                         cleaned_value = round(value, 1)
                 else:
                     cleaned_value = value
-                
+
                 cleaned_row[col] = cleaned_value
             cleaned_rows.append(cleaned_row)
-        
+
         return {
             "headers": friendly_headers,
             "columns": columns,  # Original column names for reference
@@ -899,17 +975,19 @@ class HTMLRenderer:
             "row_count": len(df),
         }
 
-    def _prepare_pareto_chart_data(self, df: pd.DataFrame, recipe: Recipe | None = None) -> dict[str, Any]:
+    def _prepare_pareto_chart_data(
+        self, df: pd.DataFrame, recipe: Recipe | None = None
+    ) -> dict[str, Any]:
         """Prepare Pareto chart data for CVA - shows cumulative risk contribution with KEV/exploit styling."""
         # Get pareto chart limit from recipe parameters, default to 20
         pareto_limit = 20
         if recipe and recipe.parameters and "pareto_chart_limit" in recipe.parameters:
             pareto_limit = recipe.parameters["pareto_chart_limit"]
-        
+
         # Convert DataFrame to native types to avoid ambiguous truth value errors
         if not isinstance(df, pd.DataFrame):
             # If it's already converted to native types, handle as list of dictionaries
-            if not df or len(df) == 0:
+            if not df or len(df) == 0:  # type: ignore[unreachable]
                 return {"labels": [], "datasets": [], "markers": {}}
             # Convert back to DataFrame for processing
             df = pd.DataFrame(df)
@@ -917,18 +995,22 @@ class HTMLRenderer:
             # Check if DataFrame is empty using native Python bool
             if len(df) == 0:
                 return {"labels": [], "datasets": [], "markers": {}}
-        
+
         # Check for either composite_risk_score (main data) or portfolio_composite_risk (portfolio data)
-        risk_column = "portfolio_composite_risk" if "portfolio_composite_risk" in df.columns else "composite_risk_score"
+        risk_column = (
+            "portfolio_composite_risk"
+            if "portfolio_composite_risk" in df.columns
+            else "composite_risk_score"
+        )
         if risk_column not in df.columns:
             return {"labels": [], "datasets": [], "markers": {}}
-        
+
         # Sort by risk score descending
         df_sorted = df.sort_values(risk_column, ascending=False)
-        
+
         # Take top N components based on parameter
         df_top = df_sorted.head(pareto_limit)
-        
+
         # Create labels with versions
         labels = []
         for _, row in df_top.iterrows():
@@ -938,61 +1020,65 @@ class HTMLRenderer:
                 labels.append(f"{name} ({version})")
             else:
                 labels.append(name)
-        
+
         risk_scores = [int(score) for score in df_top[risk_column].tolist()]
-        
+
         # Calculate cumulative percentage
         total_risk = float(sum(risk_scores))
         cumulative_percentages = []
         cumulative = 0.0
         for score in risk_scores:
             cumulative += float(score)
-            cumulative_percentages.append((cumulative / total_risk) * 100 if total_risk > 0 else 0)
-        
+            cumulative_percentages.append(
+                (cumulative / total_risk) * 100 if total_risk > 0 else 0
+            )
+
         # Prepare markers and colors for KEV and exploit flags
         kev_markers = []
         exploit_markers = []
         background_colors = []
         border_colors = []
-        
+
         # Calculate min and max risk scores for gradient scaling
         min_risk = float(min(risk_scores)) if risk_scores else 1
         max_risk = float(max(risk_scores)) if risk_scores else 1
-        
-        def get_risk_color(risk_score):
+
+        def get_risk_color(risk_score: float) -> str:
             """Get color based on logarithmic risk score (green to red)"""
             # Use logarithmic scale for color mapping
             log_min = math.log(max(1, min_risk))
             log_max = math.log(max_risk)
             log_value = math.log(max(1, risk_score))
-            
+
             # Handle case where log_max == log_min (single data point or same values)
             if log_max == log_min:
                 ratio = 0.5  # Use middle color (orange) for single data point
             else:
                 ratio = max(0, min(1, (log_value - log_min) / (log_max - log_min)))
-            
+
             return f"hsl({120 - ratio * 120}, 70%, 50%)"  # Green to red
-        
+
         for _, row in df_top.iterrows():
             has_kev = bool(row.get("has_kev", False))
             has_exploit = bool(row.get("has_exploits", False))
             kev_markers.append(has_kev)
             exploit_markers.append(has_exploit)
-            
+
             # Get risk score for this component
             risk_score = float(row[risk_column])
-            
+
             # Color bars based on logarithmic risk score (green to red)
             background_colors.append(get_risk_color(risk_score))
-            
+
             # Border colors based on KEV and exploit status
             if has_kev and has_exploit:
                 border_colors.append("#000000")  # Black border for KEV + Exploit
             elif has_exploit:
                 border_colors.append("#FF0000")  # Red border for Has Exploit
             else:
-                border_colors.append(get_risk_color(risk_score))  # Matching border for standard risk
+                border_colors.append(
+                    get_risk_color(risk_score)
+                )  # Matching border for standard risk
         return {
             "labels": list(labels),
             "datasets": [
@@ -1002,7 +1088,7 @@ class HTMLRenderer:
                     "backgroundColor": list(background_colors),
                     "borderColor": list(border_colors),
                     "borderWidth": 3,
-                    "yAxisID": "y"
+                    "yAxisID": "y",
                 },
                 {
                     "label": "Cumulative Percentage",
@@ -1015,13 +1101,10 @@ class HTMLRenderer:
                     "pointBorderColor": "#FF6B35",
                     "pointRadius": 6,
                     "pointBorderWidth": 2,
-                    "yAxisID": "y1"
-                }
+                    "yAxisID": "y1",
+                },
             ],
-            "markers": {
-                "kev": list(kev_markers),
-                "exploit": list(exploit_markers)
-            }
+            "markers": {"kev": list(kev_markers), "exploit": list(exploit_markers)},
         }
 
     def _prepare_bubble_matrix_data(self, df: pd.DataFrame) -> dict[str, Any]:
@@ -1029,7 +1112,7 @@ class HTMLRenderer:
         # Convert DataFrame to native types to avoid ambiguous truth value errors
         if not isinstance(df, pd.DataFrame):
             # If it's already converted to native types, handle as list of dictionaries
-            if not df or len(df) == 0:
+            if not df or len(df) == 0:  # type: ignore[unreachable]
                 return {"data": []}
             # Convert back to DataFrame for processing
             df = pd.DataFrame(df)
@@ -1037,9 +1120,13 @@ class HTMLRenderer:
             # Check if DataFrame is empty using native Python bool
             if len(df) == 0:
                 return {"data": []}
-        
+
         # Check for either composite_risk_score (main data) or portfolio_composite_risk (portfolio data)
-        risk_column = "portfolio_composite_risk" if "portfolio_composite_risk" in df.columns else "composite_risk_score"
+        risk_column = (
+            "portfolio_composite_risk"
+            if "portfolio_composite_risk" in df.columns
+            else "composite_risk_score"
+        )
         if risk_column not in df.columns:
             return {"data": []}
         # Handle portfolio data (already aggregated) vs main data (needs aggregation)
@@ -1047,31 +1134,31 @@ class HTMLRenderer:
             # Portfolio data is already aggregated by component
             component_data = []
             finding_counts = []
-            
+
             # First pass: collect all finding counts for scaling
             for _, row in df.iterrows():
                 finding_count = int(row.get("findings_count", 1))
                 finding_counts.append(finding_count)
-            
+
             # Calculate size scaling factors
             min_findings = min(finding_counts) if finding_counts else 1
             max_findings = max(finding_counts) if finding_counts else 1
             size_range = max_findings - min_findings
-            
+
             for _, row in df.iterrows():
                 risk_score = float(row[risk_column])
                 projects_affected = int(row.get("project_count", 1))
                 finding_count = int(row.get("findings_count", 1))
                 has_exploit = bool(row.get("has_exploits", False))
                 in_kev = bool(row.get("has_kev", False))
-                
+
                 # Calculate bubble size with better scaling
                 if size_range > 0:
                     normalized_size = (finding_count - min_findings) / size_range
                     bubble_size = 10 + (normalized_size * 40)  # Range from 10 to 50
                 else:
                     bubble_size = 30
-                
+
                 # Create label with version
                 name = str(row.get("name", "Unknown"))
                 version = str(row.get("version", ""))
@@ -1079,16 +1166,18 @@ class HTMLRenderer:
                     label = f"{name} ({version})"
                 else:
                     label = name
-                
-                component_data.append({
-                    "x": int(risk_score),  # Risk score on x-axis (as integer)
-                    "y": projects_affected,  # Projects affected on y-axis
-                    "r": bubble_size,
-                    "component": label,
-                    "findingCount": finding_count,
-                    "hasExploit": has_exploit,
-                    "inKev": in_kev
-                })
+
+                component_data.append(
+                    {
+                        "x": int(risk_score),  # Risk score on x-axis (as integer)
+                        "y": projects_affected,  # Projects affected on y-axis
+                        "r": bubble_size,
+                        "component": label,
+                        "findingCount": finding_count,
+                        "hasExploit": has_exploit,
+                        "inKev": in_kev,
+                    }
+                )
             return {"data": component_data}
         else:
             # Main data needs aggregation by component
@@ -1098,7 +1187,11 @@ class HTMLRenderer:
                 # First pass: collect all finding counts for scaling
                 for component_name in df["name"].unique():
                     component_rows = df[df["name"] == component_name]
-                    finding_count = int(component_rows["finding_count"].sum() if "finding_count" in component_rows.columns else len(component_rows))
+                    finding_count = int(
+                        component_rows["finding_count"].sum()
+                        if "finding_count" in component_rows.columns
+                        else len(component_rows)
+                    )
                     finding_counts.append(finding_count)
                 # Calculate size scaling factors
                 min_findings = min(finding_counts) if finding_counts else 1
@@ -1109,33 +1202,51 @@ class HTMLRenderer:
                     # Aggregate data for this component
                     risk_score = float(component_rows[risk_column].max())
                     projects_affected = int(len(component_rows))  # Ensure integer
-                    finding_count = int(component_rows["finding_count"].sum() if "finding_count" in component_rows.columns else len(component_rows))
-                    has_exploit = bool(component_rows["has_exploits"].any()) if "has_exploits" in component_rows.columns and not component_rows["has_exploits"].empty else False
-                    in_kev = bool(component_rows["has_kev"].any()) if "has_kev" in component_rows.columns and not component_rows["has_kev"].empty else False
+                    finding_count = int(
+                        component_rows["finding_count"].sum()
+                        if "finding_count" in component_rows.columns
+                        else len(component_rows)
+                    )
+                    has_exploit = (
+                        bool(component_rows["has_exploits"].any())
+                        if "has_exploits" in component_rows.columns
+                        and not component_rows["has_exploits"].empty
+                        else False
+                    )
+                    in_kev = (
+                        bool(component_rows["has_kev"].any())
+                        if "has_kev" in component_rows.columns
+                        and not component_rows["has_kev"].empty
+                        else False
+                    )
                     # Calculate bubble size with better scaling
                     if size_range > 0:
                         normalized_size = (finding_count - min_findings) / size_range
                         bubble_size = 10 + (normalized_size * 40)  # Range from 10 to 50
                     else:
                         bubble_size = 30
-                    
+
                     # Create label with version
-                    version = str(component_rows["version"].iloc[0]) if "version" in component_rows.columns else ""
+                    version = (
+                        str(component_rows["version"].iloc[0])
+                        if "version" in component_rows.columns
+                        else ""
+                    )
                     if version and version != "nan":
                         label = f"{component_name} ({version})"
                     else:
                         label = component_name
-                    
-                    component_data.append({
-                        "x": int(risk_score),  # Risk score on x-axis (as integer)
-                        "y": projects_affected,  # Projects affected on y-axis
-                        "r": bubble_size,
-                        "component": label,
-                        "findingCount": finding_count,
-                        "hasExploit": has_exploit,
-                        "inKev": in_kev
-                    })
+
+                    component_data.append(
+                        {
+                            "x": int(risk_score),  # Risk score on x-axis (as integer)
+                            "y": projects_affected,  # Projects affected on y-axis
+                            "r": bubble_size,
+                            "component": label,
+                            "findingCount": finding_count,
+                            "hasExploit": has_exploit,
+                            "inKev": in_kev,
+                        }
+                    )
                 return {"data": component_data}
         return {"data": []}
-
-

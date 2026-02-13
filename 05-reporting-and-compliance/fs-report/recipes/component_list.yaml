@@ -3,6 +3,7 @@ category: assessment  # Current state: shows today's component inventory regardl
 template: "component_list.html"
 description: "Comprehensive inventory of software components across projects with optional filtering"
 execution_order: 30  # Independent - fetches components
+auto_run: false  # Run explicitly with --recipe when needed
 
 query:
   endpoint: "/public/v0/components"

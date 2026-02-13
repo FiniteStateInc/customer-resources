@@ -14,7 +14,7 @@ A powerful, stand-alone reporting utility for Finite State customers that genera
 
 ## Available Reports
 
-Reports fall into two categories. See `REPORT_GUIDE.md` for full details.
+Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, including Version Comparison’s full version and component changelog and CSV/XLSX detail exports (findings detail, findings churn, component churn).
 
 **Operational** — period-bound, showing trends and activity within a time window:
 
@@ -32,6 +32,7 @@ Reports fall into two categories. See `REPORT_GUIDE.md` for full details.
 | Findings by Project | Complete findings inventory per project |
 | Component List | Software inventory (SBOM) for compliance |
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
+| Version Comparison | Full version and component changelog (every version pair); fixed/new findings and component churn per step; CSV/XLSX include summary plus detail *(on-demand)* |
 
 ## Quick Start
 
@@ -43,37 +44,10 @@ Reports fall into two categories. See `REPORT_GUIDE.md` for full details.
 
 ### Installation
 
-#### Option 1: Install from Package (Recommended for Customers)
-
-1. **Download and extract the package**:
-   ```bash
-   # Download fs_report-0.1.1.tar.gz
-   tar -xzf fs_report-0.1.1.tar.gz
-   cd fs_report-0.1.1
-   ```
-
-2. **Install with Poetry**:
-   ```bash
-   poetry install
-   ```
-
-3. **Set up API credentials**:
-   ```bash
-   export FINITE_STATE_AUTH_TOKEN="your-api-token"
-   export FINITE_STATE_DOMAIN="customer.finitestate.io"
-   ```
-
-4. **Verify installation**:
-   ```bash
-   poetry run fs-report --help
-   ```
-
-#### Option 2: Development Installation
-
 1. **Clone the repository**:
    ```bash
-   git clone <repository-url>
-   cd fs-report
+   git clone https://github.com/FiniteStateInc/customer-resources.git
+   cd customer-resources/05-reporting-and-compliance/fs-report
    ```
 
 2. **Install dependencies**:
@@ -85,6 +59,11 @@ Reports fall into two categories. See `REPORT_GUIDE.md` for full details.
    ```bash
    export FINITE_STATE_AUTH_TOKEN="your-api-token"
    export FINITE_STATE_DOMAIN="customer.finitestate.io"
+   ```
+
+4. **Verify installation**:
+   ```bash
+   poetry run fs-report --help
    ```
 
 ### CLI Usage Examples
@@ -140,6 +119,10 @@ poetry run fs-report list-versions
 # List top 10 projects by version count
 poetry run fs-report list-versions -n 10
 
+# Only projects in a folder (fewer API calls)
+poetry run fs-report list-versions --folder "Product Line A"
+poetry run fs-report list-versions --top 20 --folder "Product Line A"
+
 # Specify custom recipes and output directories
 poetry run fs-report --recipes ./my-recipes --output ./my-reports
 
@@ -187,82 +170,51 @@ Cache location: `~/.fs-report/cache.db`
 
 ## Docker Usage
 
-### Build the Image
+If you prefer Docker over a local Python install, you can run reports in a container. All default recipes and templates are baked into the image.
+
+1. **Build the image** (from the `fs-report` directory):
+   ```bash
+   docker build -t fs-report .
+   ```
+
+2. **Set your API credentials**:
+   ```bash
+   export FINITE_STATE_AUTH_TOKEN="your-api-token"
+   export FINITE_STATE_DOMAIN="customer.finitestate.io"
+   ```
+
+3. **Run a report** (output is written to the mounted `./output` directory):
+   ```bash
+   docker run --rm \
+     -v $(pwd)/output:/app/output \
+     -e FINITE_STATE_AUTH_TOKEN \
+     -e FINITE_STATE_DOMAIN \
+     fs-report --period 1m --recipe "Executive Summary"
+   ```
+
+The same CLI flags documented above work inside Docker. Just replace `poetry run fs-report` with the `docker run ...` prefix. A few more examples:
+
 ```bash
-docker build -t fs-report .
-```
+# Run all reports for January 2026
+docker run --rm -v $(pwd)/output:/app/output \
+  -e FINITE_STATE_AUTH_TOKEN -e FINITE_STATE_DOMAIN \
+  fs-report --start 2026-01-01 --end 2026-01-31
 
-### Basic Usage (Built-in Recipes)
-The container includes all default recipes. First, set your environment variables:
+# Scope to a folder
+docker run --rm -v $(pwd)/output:/app/output \
+  -e FINITE_STATE_AUTH_TOKEN -e FINITE_STATE_DOMAIN \
+  fs-report --folder "Product Line A" --period 1m
 
-```bash
-export FINITE_STATE_AUTH_TOKEN="your-token"
-export FINITE_STATE_DOMAIN="customer.finitestate.io"
-```
+# List projects (no output volume needed)
+docker run --rm -e FINITE_STATE_AUTH_TOKEN -e FINITE_STATE_DOMAIN \
+  fs-report list-projects
 
-Then run with your existing environment variables:
-
-```bash
-docker run -v $(pwd)/output:/app/output \
-           -e FINITE_STATE_AUTH_TOKEN \
-           -e FINITE_STATE_DOMAIN \
-           fs-report
-```
-
-### Advanced Usage (Custom Recipes)
-To use your own recipes, mount the recipes directory:
-
-```bash
-docker run -v $(pwd)/recipes:/app/recipes \
-           -v $(pwd)/output:/app/output \
-           -e FINITE_STATE_AUTH_TOKEN \
-           -e FINITE_STATE_DOMAIN \
-           fs-report
-```
-
-### Available Commands
-```bash
-# View help
-docker run --rm fs-report --help
-
-# Generate reports with custom date range
-docker run -v $(pwd)/output:/app/output \
-           -e FINITE_STATE_AUTH_TOKEN \
-           -e FINITE_STATE_DOMAIN \
-           fs-report --start 2025-01-01 --end 2025-01-31
-
-# Filter by project and version
-docker run -v $(pwd)/output:/app/output \
-           -e FINITE_STATE_AUTH_TOKEN \
-           -e FINITE_STATE_DOMAIN \
-           fs-report --project "MyProject" --version "v1.2.3"
-
-# Filter by version ID only (no project needed)
-docker run -v $(pwd)/output:/app/output \
-           -e FINITE_STATE_AUTH_TOKEN \
-           -e FINITE_STATE_DOMAIN \
-           fs-report --version "1234567890"
-
-# Use period shortcuts
-docker run -v $(pwd)/output:/app/output \
-           -e FINITE_STATE_AUTH_TOKEN \
-           -e FINITE_STATE_DOMAIN \
-           fs-report --period 1w
-
-# List available projects
-docker run --rm -e FINITE_STATE_AUTH_TOKEN \
-           -e FINITE_STATE_DOMAIN \
-           fs-report list-projects
-
-# List available versions for a project
-docker run --rm -e FINITE_STATE_AUTH_TOKEN \
-           -e FINITE_STATE_DOMAIN \
-           fs-report list-versions "MyProject"
-
-# List all versions across the portfolio
-docker run --rm -e FINITE_STATE_AUTH_TOKEN \
-           -e FINITE_STATE_DOMAIN \
-           fs-report list-versions
+# Use custom recipes by mounting your own recipes directory
+docker run --rm \
+  -v $(pwd)/my-recipes:/app/recipes \
+  -v $(pwd)/output:/app/output \
+  -e FINITE_STATE_AUTH_TOKEN -e FINITE_STATE_DOMAIN \
+  fs-report
 ```
 
 ## Data Comparison Tools

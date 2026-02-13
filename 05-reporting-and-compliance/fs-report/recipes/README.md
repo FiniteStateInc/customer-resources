@@ -12,6 +12,8 @@ This directory contains YAML recipe files that define the available reports in t
 | `scan_analysis.yaml` | Scan Analysis | Scanning infrastructure performance with throughput, failure analysis, and new vs existing project tracking |
 | `component_list.yaml` | Component List | Complete inventory of software components across projects |
 | `user_activity.yaml` | User Activity | Platform usage tracking with user engagement metrics |
+| `version_comparison.yaml` | Version Comparison | Full version and component changelog (every version pair); fixed/new findings and component churn per step; CSV/XLSX include summary + detail *(on-demand)* |
+| `triage_prioritization.yaml` | Triage Prioritization | Context-aware vulnerability triage with optional AI guidance *(on-demand)* |
 
 ## Usage
 

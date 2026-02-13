@@ -16,6 +16,7 @@ This guide explains each report available in the Finite State Reporting Kit, wha
    - [Findings by Project](#findings-by-project) *(Assessment)*
    - [Component List](#component-list) *(Assessment)*
    - [Triage Prioritization](#triage-prioritization) *(Assessment)*
+   - [Version Comparison](#version-comparison) *(Assessment, on-demand: full version & component changelog)*
 4. [Output Formats](#output-formats)
 5. [Filtering Options](#filtering-options)
 6. [Using Reports Together](#using-reports-together)
@@ -71,6 +72,7 @@ Assessment reports show the current security state of the target — the latest 
 | **Findings by Project** | Current findings inventory per project |
 | **Component List** | Current software component inventory |
 | **Triage Prioritization** | Current triage priorities based on today's data |
+| **Version Comparison** | Full version and component changelog across all version pairs (on-demand) |
 
 > **Tip:** If you need to date-filter an Assessment report (e.g., "only show findings detected after January 1"), use the `--detected-after YYYY-MM-DD` flag. This injects a date floor without changing the report's current-state nature.
 
@@ -408,6 +410,72 @@ poetry run fs-report --recipe "Triage Prioritization" --ai --ai-depth full --per
 
 ---
 
+### Version Comparison
+
+**Category:** Assessment (on-demand) — full version and component changelog for every active project.
+
+**Purpose:** Show the complete progression of each project across *all* its versions: for every version pair (v1→v2, v2→v3, …), what was fixed, what was new, and which component changes drove the difference. It’s a full changelog, not just a single two-version snapshot.
+
+**Who should use it:** Development teams, security engineers, release managers
+
+**How it works:** The report discovers every project that had scan activity in the period and loads *all* scanned versions for each project. It then builds a version-by-version progression: for each step (e.g. 3.14 → 3.15), it shows fixed findings, new findings, and component churn. You can scope to `--project` or `--folder`, or use `--baseline-version` and `--current-version` to limit to a single version pair.
+
+**What it shows:**
+- Project summary table (multi-project mode): per-project deltas at a glance
+- KPI delta cards: total findings, critical, high, and component counts (before → after)
+- Severity comparison: grouped bar chart showing each severity level side by side
+- **Changes (latest pair):** Fixed findings table (resolved issues) and New findings table (regressions), side by side with severity summaries
+- **Component Changes (latest pair):** Added, removed, and updated components with finding impact
+- **Version changelog:** One collapsible entry per version pair (e.g. 3.14 → 3.15) with Fixed | New findings tables and **Component changes** for that pair. The first entry is expanded by default; click a row to expand others.
+
+**Key visualizations:**
+- **Project Summary** (multi-project) — One row per project with version names and deltas
+- **KPI Delta Cards** — At-a-glance before/after for total, critical, high, and components
+- **Severity Comparison** — Grouped bar chart (baseline vs current)
+- **Fixed / New Findings** — Side-by-side tables with severity summary line
+- **Component Churn** — Added, removed, updated components with finding impact
+- **Version changelog** — Per-version-pair fixed/new findings and component changes (expand to see)
+
+**"Fixed" Definition:** A finding is fixed if it is present in the baseline version but **absent from the current version**. Matching is by CVE ID (preferred) or finding ID.
+
+**CSV and XLSX (detail exports):**  
+In addition to the **Summary** (one row per version), the report produces detail exports:
+
+| Export | Content |
+|--------|---------|
+| **Summary** | One row per version: Project, Version, Date, Total/Critical/High/Medium/Low, Fixed (vs prev), New (vs prev), Components |
+| **Findings Detail** | One row per finding per version: Project, Version, Date, ID, Severity, Component Name/Version, Risk, Title |
+| **Findings Churn** | One row per finding that was fixed or new in some version pair: Project, From Version, To Version, Change Type (Fixed/New), ID, Severity, Component, Risk, Title |
+| **Component Churn** | One row per component change (added/removed/updated) across version pairs: Project, From Version, To Version, Change Type, Component Name, Version Baseline/Current, Findings Impact |
+
+- **CSV:** Main file `Version Comparison.csv` (summary) plus `Version Comparison_Detail_Findings.csv`, `Version Comparison_Detail_Findings_Churn.csv`, and `Version Comparison_Detail_Component_Churn.csv` when data exists.
+- **XLSX:** Single workbook with sheets **Summary**, **Findings Detail**, **Findings Churn**, and **Component Churn** (sheets omitted if empty).
+
+**What to look for:**
+| Healthy | Needs Attention |
+|---------|-----------------|
+| More fixed than new | More new than fixed |
+| Critical count decreasing | New critical findings |
+| Component updates reducing findings | Component additions bringing new findings |
+
+**Example commands:**
+```bash
+# Portfolio-wide: full version changelog for every active project
+poetry run fs-report --recipe "Version Comparison" --period 90d
+
+# Scope to a single project
+poetry run fs-report --recipe "Version Comparison" --project "Router Firmware"
+
+# Scope to a folder (product group)
+poetry run fs-report --recipe "Version Comparison" --folder "Toy Cars"
+
+# Explicit version pair (advanced)
+poetry run fs-report --recipe "Version Comparison" \
+  --baseline-version 12345 --current-version 67890
+```
+
+---
+
 ## Output Formats
 
 All reports generate three output formats:
@@ -417,6 +485,8 @@ All reports generate three output formats:
 | **HTML** | Interactive viewing, sharing, presentations | `output/{Report Name}/{Report Name}.html` |
 | **CSV** | Data analysis, spreadsheet import, scripting | `output/{Report Name}/{Report Name}.csv` |
 | **XLSX** | Excel users, formatted reports, filtering | `output/{Report Name}/{Report Name}.xlsx` |
+
+**Version Comparison** (full version and component changelog) produces additional detail in CSV and XLSX: alongside the summary file/sheet, it writes **Findings Detail**, **Findings Churn** (fixed/new per version pair), and **Component Churn** as separate CSV files or as additional sheets in the same XLSX workbook. See [Version Comparison](#version-comparison) for the full export table.
 
 ---
 
@@ -431,6 +501,8 @@ All reports generate three output formats:
 | `--version` | Filter by version ID | All reports | `--version "1234567890"` |
 | `--recipe` | Run specific report only | N/A | `--recipe "Scan Analysis"` |
 | `--finding-types` | Finding types to include | Findings reports | `--finding-types cve,credentials` |
+| `--baseline-version` | Baseline version ID | Version Comparison | `--baseline-version 12345` |
+| `--current-version` | Current version ID | Version Comparison | `--current-version 67890` |
 
 **How `--period` interacts with report categories:**
 
@@ -457,7 +529,9 @@ poetry run fs-report --recipe "Findings by Project" --detected-after 2026-01-01
 | Value | Description |
 |-------|-------------|
 | `cve` | CVE/vulnerability findings (default) |
-| `sast` | SAST/binary analysis findings |
+| `sast` | Binary SAST / non-CVE findings (requests both legacy SAST_ANALYSIS and BINARY_SCA so either API naming works) |
+| `binary_sca` | Binary SCA findings only (API category BINARY_SCA) |
+| `source_sca` | Source SCA findings only (API category SOURCE_SCA) |
 | `thirdparty` | Third-party findings |
 | `credentials` | Exposed credentials |
 | `config_issues` | Configuration issues |
@@ -494,9 +568,10 @@ poetry run fs-report --period 30d --finding-types all
 2. **Run Triage Prioritization** → Identify what to fix first using context-aware scoring
 3. **Dive into Component Vulnerability Analysis** → Identify organization-wide priorities
 4. **Use Findings by Project** → Plan specific remediation within projects
-5. **Monitor with Scan Analysis** → Ensure scanning infrastructure supports the work
-6. **Track with Component List** → Maintain software inventory for compliance
-7. **Review User Activity** → Ensure platform adoption and engagement
+5. **Run Version Comparison** → Validate that remediation work produced results
+6. **Monitor with Scan Analysis** → Ensure scanning infrastructure supports the work
+7. **Track with Component List** → Maintain software inventory for compliance
+8. **Review User Activity** → Ensure platform adoption and engagement
 
 ### By Audience
 
@@ -504,7 +579,8 @@ poetry run fs-report --period 30d --finding-types all
 |----------|-----------------|
 | **Executives** | Executive Summary |
 | **Security Leadership** | Executive Summary, Component Vulnerability Analysis, Triage Prioritization |
-| **Development Teams** | Findings by Project, Triage Prioritization |
+| **Development Teams** | Findings by Project, Version Comparison, Triage Prioritization |
+| **Release Managers** | Version Comparison |
 | **Vulnerability Management** | Triage Prioritization (with `--ai`) |
 | **DevSecOps / Operations** | Scan Analysis |
 | **Compliance / Legal** | Component List |
@@ -530,6 +606,7 @@ poetry run fs-report --period 30d --finding-types all
 | **Component Vulnerability Analysis** | Quarterly (strategic), Monthly (active remediation) | Prioritize risky components |
 | **Findings by Project** | Weekly (dev teams), Daily (during sprints) | Plan project-level remediation |
 | **Component List** | Monthly (audits), On-demand (SBOM requests) | Compliance and inventory tracking |
+| **Version Comparison** | On-demand (after remediation or releases) | Validate specific version improvements |
 
 ---
 

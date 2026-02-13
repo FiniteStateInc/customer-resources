@@ -12,10 +12,7 @@ Additive scoring: Points-based scoring for remaining findings
 import logging
 from typing import Any
 
-import numpy as np
 import pandas as pd
-
-from fs_report.models import Config
 
 logger = logging.getLogger(__name__)
 
@@ -34,20 +31,20 @@ BAND_COLORS = {
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE"]
 
 # Additive scoring weights
-POINTS_REACHABLE = 30       # reachabilityScore > 0
-POINTS_UNKNOWN = 0          # reachabilityScore == 0
-POINTS_UNREACHABLE = -15    # reachabilityScore < 0
+POINTS_REACHABLE = 30  # reachabilityScore > 0
+POINTS_UNKNOWN = 0  # reachabilityScore == 0
+POINTS_UNREACHABLE = -15  # reachabilityScore < 0
 
-POINTS_EXPLOIT = 25         # Has known exploit
-POINTS_KEV_ONLY = 20        # In KEV but no exploit info
+POINTS_EXPLOIT = 25  # Has known exploit
+POINTS_KEV_ONLY = 20  # In KEV but no exploit info
 
 POINTS_VECTOR_NETWORK = 15
 POINTS_VECTOR_ADJACENT = 10
 POINTS_VECTOR_LOCAL = 5
 POINTS_VECTOR_PHYSICAL = 0
 
-EPSS_MAX_POINTS = 20        # 20 × percentile
-CVSS_MAX_POINTS = 10        # 10 × (score/10)
+EPSS_MAX_POINTS = 20  # 20 × percentile
+CVSS_MAX_POINTS = 10  # 10 × (score/10)
 
 # Band thresholds for additive scoring
 BAND_HIGH_THRESHOLD = 70
@@ -58,6 +55,7 @@ BAND_LOW_THRESHOLD = 25
 # =============================================================================
 # Main Entry Point
 # =============================================================================
+
 
 def triage_prioritization_transform(
     data: list[dict[str, Any]],
@@ -133,16 +131,18 @@ def triage_prioritization_transform(
 
     ai_config = _get_ai_config(config, additional_data)
     if ai_config.get("enabled"):
-        ai_portfolio_summary, ai_project_summaries, ai_component_guidance = (
-            _generate_ai_guidance(
-                df=df,
-                portfolio_summary=portfolio_summary,
-                project_summary_df=project_summary_df,
-                top_components=top_components,
-                ai_depth=ai_config.get("depth", "summary"),
-                cache_dir=ai_config.get("cache_dir"),
-                cache_ttl=ai_config.get("cache_ttl", 0),
-            )
+        (
+            ai_portfolio_summary,
+            ai_project_summaries,
+            ai_component_guidance,
+        ) = _generate_ai_guidance(
+            df=df,
+            portfolio_summary=portfolio_summary,
+            project_summary_df=project_summary_df,
+            top_components=top_components,
+            ai_depth=ai_config.get("depth", "summary"),
+            cache_dir=ai_config.get("cache_dir"),
+            cache_ttl=ai_config.get("cache_ttl", 0),
         )
 
     # Defensive recompute of reachability_label from reachability_score
@@ -162,13 +162,27 @@ def triage_prioritization_transform(
 
     # Select columns for the main output table
     output_columns = [
-        "finding_id", "internal_id", "severity",
-        "component_name", "component_version", "component_id",
-        "project_name", "project_id", "project_version_id", "version_name",
-        "priority_band", "triage_score", "gate_assignment",
-        "reachability_label", "reachability_score", "vuln_functions",
-        "has_exploit", "in_kev",
-        "attack_vector", "epss_percentile", "risk",
+        "finding_id",
+        "internal_id",
+        "severity",
+        "component_name",
+        "component_version",
+        "component_id",
+        "project_name",
+        "project_id",
+        "project_version_id",
+        "version_name",
+        "priority_band",
+        "triage_score",
+        "gate_assignment",
+        "reachability_label",
+        "reachability_score",
+        "vuln_functions",
+        "has_exploit",
+        "in_kev",
+        "attack_vector",
+        "epss_percentile",
+        "risk",
     ]
     # Only keep columns that exist
     output_columns = [c for c in output_columns if c in df.columns]
@@ -177,7 +191,11 @@ def triage_prioritization_transform(
     # Determine if this is a single-project report
     unique_projects = df["project_name"].unique()
     is_single_project = len(unique_projects) <= 1
-    single_project_name = str(unique_projects[0]) if is_single_project and len(unique_projects) == 1 else None
+    single_project_name = (
+        str(unique_projects[0])
+        if is_single_project and len(unique_projects) == 1
+        else None
+    )
 
     return {
         "findings_df": findings_df,
@@ -200,6 +218,7 @@ def triage_prioritization_transform(
 # =============================================================================
 # Column Normalization
 # =============================================================================
+
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize columns from various API formats into a consistent schema."""
@@ -252,7 +271,11 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["project_id"] = df["project.id"].astype(str)
     elif "project" in df.columns:
         df["project_id"] = df["project"].apply(
-            lambda x: str(x.get("id", "")) if isinstance(x, dict) else str(x) if x else ""
+            lambda x: str(x.get("id", ""))
+            if isinstance(x, dict)
+            else str(x)
+            if x
+            else ""
         )
     elif "projectId" in df.columns:
         df["project_id"] = df["projectId"].astype(str)
@@ -297,7 +320,11 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     # --- Exploit info ---
     # Use hasKnownExploit boolean if available (direct from API), fall back to exploitInfo array
     if "hasKnownExploit" in df.columns or "has_known_exploit" in df.columns:
-        col = "hasKnownExploit" if "hasKnownExploit" in df.columns else "has_known_exploit"
+        col = (
+            "hasKnownExploit"
+            if "hasKnownExploit" in df.columns
+            else "has_known_exploit"
+        )
         df["has_exploit"] = df[col].fillna(False).astype(bool)
     elif "exploitInfo" in df.columns:
         df["has_exploit"] = df["exploitInfo"].apply(
@@ -306,7 +333,8 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     elif "exploit_info" in df.columns:
         df["has_exploit"] = df["exploit_info"].apply(
             lambda x: (isinstance(x, list) and len(x) > 0)
-            if not isinstance(x, str) else (x not in ("", "[]", "null"))
+            if not isinstance(x, str)
+            else (x not in ("", "[]", "null"))
         )
     else:
         df["has_exploit"] = False
@@ -321,9 +349,13 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     # --- Reachability ---
     if "reachabilityScore" in df.columns:
-        df["reachability_score"] = pd.to_numeric(df["reachabilityScore"], errors="coerce").fillna(0)
+        df["reachability_score"] = pd.to_numeric(
+            df["reachabilityScore"], errors="coerce"
+        ).fillna(0)
     elif "reachability_score" in df.columns:
-        df["reachability_score"] = pd.to_numeric(df["reachability_score"], errors="coerce").fillna(0)
+        df["reachability_score"] = pd.to_numeric(
+            df["reachability_score"], errors="coerce"
+        ).fillna(0)
     else:
         df["reachability_score"] = 0.0
 
@@ -343,11 +375,13 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
                 return x
             if isinstance(x, str) and x not in ("", "null", "[]"):
                 import json as _json
+
                 try:
-                    return _json.loads(x)
+                    return _json.loads(x)  # type: ignore[no-any-return]
                 except (ValueError, TypeError):
                     return []
             return []
+
         df["reachability_factors"] = df["factors"].apply(_parse_factors)
     else:
         df["reachability_factors"] = [[] for _ in range(len(df))]
@@ -372,9 +406,16 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         f"UNREACHABLE={reach_counts.get('UNREACHABLE', 0)}, "
         f"UNKNOWN={reach_counts.get('UNKNOWN', 0)}"
     )
-    if reach_counts.get("REACHABLE", 0) == 0 and reach_counts.get("UNREACHABLE", 0) == 0:
+    if (
+        reach_counts.get("REACHABLE", 0) == 0
+        and reach_counts.get("UNREACHABLE", 0) == 0
+    ):
         # All unknown — check if reachabilityScore column was present at all
-        score_col = "reachabilityScore" if "reachabilityScore" in df.columns else "reachability_score"
+        score_col = (
+            "reachabilityScore"
+            if "reachabilityScore" in df.columns
+            else "reachability_score"
+        )
         if score_col in df.columns:
             non_null = df[score_col].notna().sum()
             non_zero = (df[score_col] != 0).sum() if non_null > 0 else 0
@@ -391,11 +432,15 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     # --- EPSS ---
     if "epssPercentile" in df.columns:
-        df["epss_percentile"] = pd.to_numeric(df["epssPercentile"], errors="coerce").fillna(0)
+        df["epss_percentile"] = pd.to_numeric(
+            df["epssPercentile"], errors="coerce"
+        ).fillna(0)
     elif "epss_percentile" not in df.columns:
         df["epss_percentile"] = 0.0
     else:
-        df["epss_percentile"] = pd.to_numeric(df["epss_percentile"], errors="coerce").fillna(0)
+        df["epss_percentile"] = pd.to_numeric(
+            df["epss_percentile"], errors="coerce"
+        ).fillna(0)
 
     if "epssScore" in df.columns:
         df["epss_score"] = pd.to_numeric(df["epssScore"], errors="coerce").fillna(0)
@@ -404,9 +449,13 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     # --- Attack vector ---
     if "attackVector" in df.columns:
-        df["attack_vector"] = df["attackVector"].fillna("UNKNOWN").astype(str).str.upper()
+        df["attack_vector"] = (
+            df["attackVector"].fillna("UNKNOWN").astype(str).str.upper()
+        )
     elif "attack_vector" in df.columns:
-        df["attack_vector"] = df["attack_vector"].fillna("UNKNOWN").astype(str).str.upper()
+        df["attack_vector"] = (
+            df["attack_vector"].fillna("UNKNOWN").astype(str).str.upper()
+        )
     else:
         df["attack_vector"] = "UNKNOWN"
 
@@ -429,6 +478,7 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 # Tiered Gates
 # =============================================================================
 
+
 def apply_tiered_gates(df: pd.DataFrame) -> pd.DataFrame:
     """
     Apply Gate 1 and Gate 2 classification.
@@ -440,10 +490,7 @@ def apply_tiered_gates(df: pd.DataFrame) -> pd.DataFrame:
     df["gate_assignment"] = "NONE"
 
     # Gate 1: Reachable + Exploit/KEV → CRITICAL
-    gate1_mask = (
-        (df["reachability_score"] > 0) &
-        (df["has_exploit"] | df["in_kev"])
-    )
+    gate1_mask = (df["reachability_score"] > 0) & (df["has_exploit"] | df["in_kev"])
     df.loc[gate1_mask, "gate_assignment"] = "GATE_1"
     logger.debug(f"Gate 1 (CRITICAL): {gate1_mask.sum()} findings")
 
@@ -452,17 +499,17 @@ def apply_tiered_gates(df: pd.DataFrame) -> pd.DataFrame:
     # Inconclusive (score == 0) CAN qualify if they have exploit/KEV + amplifier.
     not_unreachable = df["reachability_score"] >= 0  # reachable or inconclusive
     has_strong_signal = (
-        (df["reachability_score"] > 0) |
-        df["has_exploit"] |
-        df["in_kev"]
+        (df["reachability_score"] > 0) | df["has_exploit"] | df["in_kev"]
     )
     has_amplifier = (
-        (df["attack_vector"] == "NETWORK") |
-        (df["epss_percentile"] >= 0.9) |
-        (df["risk"] >= 9.0)
+        (df["attack_vector"] == "NETWORK")
+        | (df["epss_percentile"] >= 0.9)
+        | (df["risk"] >= 9.0)
     )
     gate2_mask = (
-        not_unreachable & has_strong_signal & has_amplifier
+        not_unreachable
+        & has_strong_signal
+        & has_amplifier
         & (df["gate_assignment"] == "NONE")
     )
     df.loc[gate2_mask, "gate_assignment"] = "GATE_2"
@@ -475,6 +522,7 @@ def apply_tiered_gates(df: pd.DataFrame) -> pd.DataFrame:
 # Additive Scoring
 # =============================================================================
 
+
 def calculate_additive_score(df: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate additive triage score for findings that didn't hit a gate.
@@ -485,7 +533,9 @@ def calculate_additive_score(df: pd.DataFrame) -> pd.DataFrame:
 
     # Reachability points
     df["_pts_reachability"] = df["reachability_score"].apply(
-        lambda x: POINTS_REACHABLE if x > 0 else (POINTS_UNREACHABLE if x < 0 else POINTS_UNKNOWN)
+        lambda x: POINTS_REACHABLE
+        if x > 0
+        else (POINTS_UNREACHABLE if x < 0 else POINTS_UNKNOWN)
     )
 
     # Exploit/KEV points
@@ -532,6 +582,7 @@ def calculate_additive_score(df: pd.DataFrame) -> pd.DataFrame:
 # Risk Band Assignment
 # =============================================================================
 
+
 def assign_risk_bands(df: pd.DataFrame) -> pd.DataFrame:
     """Map gate assignments and additive scores to priority bands."""
     df = df.copy()
@@ -558,13 +609,20 @@ def assign_risk_bands(df: pd.DataFrame) -> pd.DataFrame:
 # Aggregation Views
 # =============================================================================
 
+
 def build_project_summaries(df: pd.DataFrame) -> pd.DataFrame:
     """Build per-project band counts and total scores."""
     if df.empty:
-        return pd.DataFrame(columns=["project_name", "folder_name"] + BAND_ORDER + ["total_findings", "avg_score"])
+        return pd.DataFrame(
+            columns=["project_name", "folder_name"]
+            + BAND_ORDER
+            + ["total_findings", "avg_score"]
+        )
 
     # Cross-tabulate project × band
-    ct = pd.crosstab(df["project_name"], df["priority_band"]).reindex(columns=BAND_ORDER, fill_value=0)
+    ct = pd.crosstab(df["project_name"], df["priority_band"]).reindex(
+        columns=BAND_ORDER, fill_value=0
+    )
     ct["total_findings"] = ct.sum(axis=1)
 
     # Average triage score per project
@@ -605,9 +663,13 @@ def build_project_summaries(df: pd.DataFrame) -> pd.DataFrame:
 def build_portfolio_summary(df: pd.DataFrame) -> dict[str, Any]:
     """Build portfolio-level totals."""
     band_counts = df["priority_band"].value_counts()
-    summary = {band: int(band_counts.get(band, 0)) for band in BAND_ORDER}
+    summary: dict[str, Any] = {
+        band: int(band_counts.get(band, 0)) for band in BAND_ORDER
+    }
     summary["total"] = len(df)
-    summary["avg_score"] = round(float(df["triage_score"].mean()), 1) if not df.empty else 0
+    summary["avg_score"] = (
+        round(float(df["triage_score"].mean()), 1) if not df.empty else 0.0
+    )
     return summary
 
 
@@ -631,19 +693,25 @@ def build_cvss_vs_band_matrix(df: pd.DataFrame) -> dict[str, Any]:
     matrix_data = []
     for sev_idx, sev in enumerate(SEVERITY_ORDER):
         for band_idx, band in enumerate(BAND_ORDER):
-            value = int(ct.loc[sev, band]) if sev in ct.index and band in ct.columns else 0
+            value = (
+                int(ct.loc[sev, band]) if sev in ct.index and band in ct.columns else 0  # type: ignore[arg-type]
+            )
             if value > 0:
-                matrix_data.append({
-                    "x": sev_idx,                          # CVSS on x-axis
-                    "y": (num_bands - 1) - band_idx,       # Invert: CRITICAL=top
-                    "v": value,
-                    "severity": sev,
-                    "band": band,
-                })
+                matrix_data.append(
+                    {
+                        "x": sev_idx,  # CVSS on x-axis
+                        "y": (num_bands - 1) - band_idx,  # Invert: CRITICAL=top
+                        "v": value,
+                        "severity": sev,
+                        "band": band,
+                    }
+                )
 
     return {
-        "rows": list(reversed(BAND_ORDER)),   # y-axis labels top-to-bottom: CRITICAL, HIGH, ...
-        "cols": SEVERITY_ORDER,                # x-axis labels: CRITICAL, HIGH, MEDIUM, LOW, NONE
+        "rows": list(
+            reversed(BAND_ORDER)
+        ),  # y-axis labels top-to-bottom: CRITICAL, HIGH, ...
+        "cols": SEVERITY_ORDER,  # x-axis labels: CRITICAL, HIGH, MEDIUM, LOW, NONE
         "data": matrix_data,
     }
 
@@ -671,29 +739,45 @@ def build_top_components(df: pd.DataFrame, top_n: int = 15) -> pd.DataFrame:
         return pd.DataFrame()
 
     # Aggregate by component
-    component_agg = df.groupby(["component_name", "component_version"]).agg(
-        total_findings=("finding_id", "count"),
-        avg_score=("triage_score", "mean"),
-        max_score=("triage_score", "max"),
-    ).reset_index()
+    component_agg = (
+        df.groupby(["component_name", "component_version"])
+        .agg(
+            total_findings=("finding_id", "count"),
+            avg_score=("triage_score", "mean"),
+            max_score=("triage_score", "max"),
+        )
+        .reset_index()
+    )
 
     # Add representative IDs for platform deep links
     for col_name in ("project_id", "project_version_id", "component_id"):
         if col_name in df.columns:
-            id_map = df.groupby(["component_name", "component_version"])[col_name].first().reset_index()
+            id_map = (
+                df.groupby(["component_name", "component_version"])[col_name]
+                .first()
+                .reset_index()
+            )
             id_map.columns = ["component_name", "component_version", col_name]
-            component_agg = component_agg.merge(id_map, on=["component_name", "component_version"], how="left")
+            component_agg = component_agg.merge(
+                id_map, on=["component_name", "component_version"], how="left"
+            )
         else:
             component_agg[col_name] = ""
 
     # Get band counts per component
-    band_ct = pd.crosstab(
-        [df["component_name"], df["component_version"]],
-        df["priority_band"],
-    ).reindex(columns=BAND_ORDER, fill_value=0).reset_index()
+    band_ct = (
+        pd.crosstab(
+            [df["component_name"], df["component_version"]],
+            df["priority_band"],
+        )
+        .reindex(columns=BAND_ORDER, fill_value=0)
+        .reset_index()
+    )
 
     # Merge
-    result = component_agg.merge(band_ct, on=["component_name", "component_version"], how="left")
+    result = component_agg.merge(
+        band_ct, on=["component_name", "component_version"], how="left"
+    )
 
     # Sort by severity: CRITICAL count desc, then HIGH, then avg_score
     for band in BAND_ORDER:
@@ -738,18 +822,24 @@ def build_factor_radar_data(df: pd.DataFrame, top_n: int = 5) -> dict[str, Any]:
 
         # CVSS/risk: API returns 0–10 scale
         raw_cvss = proj_df["risk"].mean()
-        cvss = min((raw_cvss / 10.0) * 100, 100) if raw_cvss <= 10.0 else min(raw_cvss, 100)
+        cvss = (
+            min((raw_cvss / 10.0) * 100, 100)
+            if raw_cvss <= 10.0
+            else min(raw_cvss, 100)
+        )
 
-        datasets.append({
-            "label": project,
-            "data": [
-                round(max(0, min(reachability, 100)), 1),
-                round(max(0, min(exploits, 100)), 1),
-                round(max(0, min(vector, 100)), 1),
-                round(max(0, min(epss, 100)), 1),
-                round(max(0, min(cvss, 100)), 1),
-            ],
-        })
+        datasets.append(
+            {
+                "label": project,
+                "data": [
+                    round(max(0, min(reachability, 100)), 1),
+                    round(max(0, min(exploits, 100)), 1),
+                    round(max(0, min(vector, 100)), 1),
+                    round(max(0, min(epss, 100)), 1),
+                    round(max(0, min(cvss, 100)), 1),
+                ],
+            }
+        )
 
     return {
         "labels": ["Reachability", "Exploits", "Attack Vector", "EPSS", "CVSS"],
@@ -760,6 +850,7 @@ def build_factor_radar_data(df: pd.DataFrame, top_n: int = 5) -> dict[str, Any]:
 # =============================================================================
 # VEX Recommendations
 # =============================================================================
+
 
 def build_vex_recommendations(df: pd.DataFrame) -> list[dict[str, Any]]:
     """
@@ -782,7 +873,8 @@ def build_vex_recommendations(df: pd.DataFrame) -> list[dict[str, Any]]:
         band = row.get("priority_band", "INFO")
         reach_score = row.get("reachability_score", 0)
         reach_label = (
-            "REACHABLE" if reach_score > 0
+            "REACHABLE"
+            if reach_score > 0
             else ("UNREACHABLE" if reach_score < 0 else "UNKNOWN")
         )
         vuln_funcs = row.get("vuln_functions", "")
@@ -839,26 +931,31 @@ def build_vex_recommendations(df: pd.DataFrame) -> list[dict[str, Any]]:
         if pd.isna(project_name_val):
             project_name_val = ""
 
-        recommendations.append({
-            "id": row.get("id", ""),  # Internal numeric PK (used for API calls)
-            "finding_id": row.get("finding_id", ""),  # CVE ID (human-readable)
-            "severity": str(severity_val),
-            "project_name": str(project_name_val),
-            "project_id": str(row.get("project_id", "")),
-            "project_version_id": row.get("project_version_id", ""),
-            "version_name": str(row.get("version_name", "")),
-            "folder_name": row.get("folder_name", ""),
-            "current_vex_status": str(row["status"]) if row.get("status") and str(row.get("status", "")) not in ("", "nan", "None") else None,
-            "priority_band": band,
-            "triage_score": row.get("triage_score", 0),
-            "recommended_vex_status": vex_status,
-            "reason": reason,
-            "reachability_score": reach_score,
-            "reachability_label": reach_label,
-            "vuln_functions": vuln_funcs,
-            "component_name": row.get("component_name", ""),
-            "component_version": row.get("component_version", ""),
-        })
+        recommendations.append(
+            {
+                "id": row.get("id", ""),  # Internal numeric PK (used for API calls)
+                "finding_id": row.get("finding_id", ""),  # CVE ID (human-readable)
+                "severity": str(severity_val),
+                "project_name": str(project_name_val),
+                "project_id": str(row.get("project_id", "")),
+                "project_version_id": row.get("project_version_id", ""),
+                "version_name": str(row.get("version_name", "")),
+                "folder_name": row.get("folder_name", ""),
+                "current_vex_status": str(row["status"])
+                if row.get("status")
+                and str(row.get("status", "")) not in ("", "nan", "None")
+                else None,
+                "priority_band": band,
+                "triage_score": row.get("triage_score", 0),
+                "recommended_vex_status": vex_status,
+                "reason": reason,
+                "reachability_score": reach_score,
+                "reachability_label": reach_label,
+                "vuln_functions": vuln_funcs,
+                "component_name": row.get("component_name", ""),
+                "component_version": row.get("component_version", ""),
+            }
+        )
 
     return recommendations
 
@@ -867,7 +964,10 @@ def build_vex_recommendations(df: pd.DataFrame) -> list[dict[str, Any]]:
 # AI Remediation Guidance
 # =============================================================================
 
-def _get_ai_config(config: Any, additional_data: dict[str, Any] | None) -> dict[str, Any]:
+
+def _get_ai_config(
+    config: Any, additional_data: dict[str, Any] | None
+) -> dict[str, Any]:
     """Extract AI configuration from config/additional_data."""
     result = {"enabled": False, "depth": "summary", "cache_dir": None, "cache_ttl": 0}
 
@@ -936,10 +1036,7 @@ def _generate_ai_guidance(
                 .str.strip()
             )
             top_vuln_funcs = (
-                all_funcs[all_funcs != ""]
-                .value_counts()
-                .head(10)
-                .index.tolist()
+                all_funcs[all_funcs != ""].value_counts().head(10).index.tolist()
             )
         reachability_summary = {
             "reachable": reachable_count,
@@ -957,14 +1054,18 @@ def _generate_ai_guidance(
         ai_portfolio = ""
     else:
         logger.info("Generating AI portfolio summary...")
-        project_summaries_list = (
-            project_summary_df.to_dict("records") if not project_summary_df.empty else []
+        project_summaries_list: list[dict[str, Any]] = (
+            project_summary_df.to_dict("records")  # type: ignore[assignment]
+            if not project_summary_df.empty
+            else []
         )
-        top_components_list = (
-            top_components.to_dict("records") if not top_components.empty else []
+        top_components_list: list[dict[str, Any]] = (
+            top_components.to_dict("records") if not top_components.empty else []  # type: ignore[assignment]
         )
         ai_portfolio = llm.generate_portfolio_summary(
-            portfolio_summary, project_summaries_list, top_components_list,
+            portfolio_summary,
+            project_summaries_list,
+            top_components_list,
             reachability_summary=reachability_summary,
         )
 
@@ -1006,7 +1107,9 @@ def _generate_ai_guidance(
             # Build reachability map: finding_id -> reachability info
             reachability_map: dict[str, dict[str, Any]] = {}
             reach_cols = [
-                "finding_id", "reachability_score", "reachability_label",
+                "finding_id",
+                "reachability_score",
+                "reachability_label",
                 "vuln_functions",
             ]
             if "reachability_factors" in df.columns:
@@ -1018,7 +1121,9 @@ def _generate_ai_guidance(
                     if fid:
                         ri = {"finding_id": fid}
                         ri["reachability_score"] = row.get("reachability_score", 0)
-                        ri["reachability_label"] = row.get("reachability_label", "UNKNOWN")
+                        ri["reachability_label"] = row.get(
+                            "reachability_label", "UNKNOWN"
+                        )
                         ri["vuln_functions"] = row.get("vuln_functions", "")
                         if "reachability_factors" in row.index:
                             ri["factors"] = row.get("reachability_factors", [])
@@ -1042,6 +1147,7 @@ def _generate_ai_guidance(
 # Helpers
 # =============================================================================
 
+
 def _empty_result() -> dict[str, Any]:
     """Return an empty result structure."""
     return {
@@ -1050,9 +1156,12 @@ def _empty_result() -> dict[str, Any]:
         "portfolio_summary": {band: 0 for band in BAND_ORDER},
         "cvss_band_matrix": {"rows": SEVERITY_ORDER, "cols": BAND_ORDER, "data": []},
         "gate_funnel": {
-            "gate_1_critical": 0, "gate_2_high": 0,
-            "additive_high": 0, "additive_medium": 0,
-            "additive_low": 0, "additive_info": 0,
+            "gate_1_critical": 0,
+            "gate_2_high": 0,
+            "additive_high": 0,
+            "additive_medium": 0,
+            "additive_low": 0,
+            "additive_info": 0,
             "total": 0,
         },
         "top_components": pd.DataFrame(),

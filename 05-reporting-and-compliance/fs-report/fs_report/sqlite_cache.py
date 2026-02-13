@@ -26,7 +26,7 @@ This module provides a persistent cache that:
 - Supports crash recovery via implicit progress tracking
 - Enables optional cache reuse across runs with configurable TTL
 
-[BETA] This feature is experimental. Default behavior (fresh data each run) 
+[BETA] This feature is experimental. Default behavior (fresh data each run)
 is unchanged unless --cache-ttl is specified.
 """
 
@@ -38,9 +38,8 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -52,97 +51,97 @@ logger = logging.getLogger(__name__)
 # Nested fields use dot notation (e.g., 'component.name').
 
 FINDING_FIELDS = {
-    'id': 'id',
-    'findingId': 'finding_id',
-    'severity': 'severity',
-    'status': 'status',
-    'risk': 'risk',
-    'detected': 'detected',
-    'component.id': 'component_id',
-    'component.vcId': 'component_vc_id',  # Version component ID (used in BOM URL componentId= param)
-    'component.name': 'component_name',
-    'component.version': 'component_version',
-    'project.id': 'project_id',
-    'project.name': 'project_name',
-    'projectVersion.id': 'project_version_id',
-    'projectVersion.version': 'project_version',
-    'cwes': 'cwes',  # Stored as JSON array
-    'exploitInfo': 'exploit_info',  # Stored as JSON array
-    'inKev': 'in_kev',
-    'inVcKev': 'in_vc_kev',
-    'epssPercentile': 'epss_percentile',
-    'epssScore': 'epss_score',             # Raw EPSS score (0-1)
-    'reachabilityScore': 'reachability_score',
-    'attackVector': 'attack_vector',       # NETWORK, ADJACENT, LOCAL, PHYSICAL
-    'factors': 'factors',                  # Reachability factors array (stored as JSON)
-    'hasKnownExploit': 'has_known_exploit',  # Direct boolean from API
+    "id": "id",
+    "findingId": "finding_id",
+    "severity": "severity",
+    "status": "status",
+    "risk": "risk",
+    "detected": "detected",
+    "component.id": "component_id",
+    "component.vcId": "component_vc_id",  # Version component ID (used in BOM URL componentId= param)
+    "component.name": "component_name",
+    "component.version": "component_version",
+    "project.id": "project_id",
+    "project.name": "project_name",
+    "projectVersion.id": "project_version_id",
+    "projectVersion.version": "project_version",
+    "cwes": "cwes",  # Stored as JSON array
+    "exploitInfo": "exploit_info",  # Stored as JSON array
+    "inKev": "in_kev",
+    "inVcKev": "in_vc_kev",
+    "epssPercentile": "epss_percentile",
+    "epssScore": "epss_score",  # Raw EPSS score (0-1)
+    "reachabilityScore": "reachability_score",
+    "attackVector": "attack_vector",  # NETWORK, ADJACENT, LOCAL, PHYSICAL
+    "factors": "factors",  # Reachability factors array (stored as JSON)
+    "hasKnownExploit": "has_known_exploit",  # Direct boolean from API
 }
 
 SCAN_FIELDS = {
-    'id': 'id',
-    'type': 'type',
-    'status': 'status',
-    'created': 'created',
-    'completed': 'completed',
-    'errorMessage': 'error_message',
-    'project.id': 'project_id',
-    'project.name': 'project_name',
-    'projectVersion.id': 'project_version_id',
-    'projectVersion.version': 'project_version',
+    "id": "id",
+    "type": "type",
+    "status": "status",
+    "created": "created",
+    "completed": "completed",
+    "errorMessage": "error_message",
+    "project.id": "project_id",
+    "project.name": "project_name",
+    "projectVersion.id": "project_version_id",
+    "projectVersion.version": "project_version",
 }
 
 COMPONENT_FIELDS = {
-    'id': 'id',
-    'gcId': 'gc_id',
-    'name': 'name',
-    'version': 'version',
-    'type': 'type',
-    'supplier': 'supplier',
-    'declaredLicenses': 'declared_licenses',  # Auto-detected licenses
-    'concludedLicenses': 'concluded_licenses',  # User-specified licenses (takes precedence)
-    'releaseDate': 'release_date',
-    'findings': 'findings',
-    'warnings': 'warnings',
-    'violations': 'violations',
-    'severityCounts': 'severity_counts',  # Stored as JSON
-    'source': 'source',  # Stored as JSON array
-    'status': 'status',
-    'edited': 'edited',
+    "id": "id",
+    "gcId": "gc_id",
+    "name": "name",
+    "version": "version",
+    "type": "type",
+    "supplier": "supplier",
+    "declaredLicenses": "declared_licenses",  # Auto-detected licenses
+    "concludedLicenses": "concluded_licenses",  # User-specified licenses (takes precedence)
+    "releaseDate": "release_date",
+    "findings": "findings",
+    "warnings": "warnings",
+    "violations": "violations",
+    "severityCounts": "severity_counts",  # Stored as JSON
+    "source": "source",  # Stored as JSON array
+    "status": "status",
+    "edited": "edited",
     # Project context (needed for Component List report)
-    'project.id': 'project_id',
-    'project.name': 'project_name',
-    'projectVersion.id': 'project_version_id',
-    'projectVersion.version': 'project_version',
+    "project.id": "project_id",
+    "project.name": "project_name",
+    "projectVersion.id": "project_version_id",
+    "projectVersion.version": "project_version",
 }
 
 PROJECT_FIELDS = {
-    'id': 'id',
-    'name': 'name',
-    'description': 'description',
-    'type': 'type',
-    'created': 'created',
-    'createdBy': 'created_by',
+    "id": "id",
+    "name": "name",
+    "description": "description",
+    "type": "type",
+    "created": "created",
+    "createdBy": "created_by",
 }
 
 AUDIT_FIELDS = {
-    'user': 'user',
-    'time': 'time',
-    'type': 'type',
-    'comment': 'comment',
-    'username': 'username',
-    'application': 'application',  # Stored as JSON
-    'appVersion': 'app_version',  # Stored as JSON
-    'component': 'component',  # Stored as JSON
-    'data': 'data',  # Stored as JSON
+    "user": "user",
+    "time": "time",
+    "type": "type",
+    "comment": "comment",
+    "username": "username",
+    "application": "application",  # Stored as JSON
+    "appVersion": "app_version",  # Stored as JSON
+    "component": "component",  # Stored as JSON
+    "data": "data",  # Stored as JSON
 }
 
 # Map endpoint patterns to field definitions
 ENDPOINT_FIELD_MAP = {
-    '/findings': FINDING_FIELDS,
-    '/scans': SCAN_FIELDS,
-    '/components': COMPONENT_FIELDS,
-    '/projects': PROJECT_FIELDS,
-    '/audit': AUDIT_FIELDS,
+    "/findings": FINDING_FIELDS,
+    "/scans": SCAN_FIELDS,
+    "/components": COMPONENT_FIELDS,
+    "/projects": PROJECT_FIELDS,
+    "/audit": AUDIT_FIELDS,
 }
 
 
@@ -288,6 +287,13 @@ CREATE TABLE IF NOT EXISTS exploit_detail_cache (
     fetched_at TEXT
 );
 
+-- Per-project version lists (lightweight cache for /projects/{id}/versions)
+CREATE TABLE IF NOT EXISTS version_lists (
+    project_id TEXT PRIMARY KEY,
+    versions_json TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
 -- Index for faster TTL checks
 CREATE INDEX IF NOT EXISTS idx_cache_meta_created ON cache_meta(created_at);
 CREATE INDEX IF NOT EXISTS idx_findings_query ON findings(query_hash);
@@ -302,64 +308,67 @@ CREATE INDEX IF NOT EXISTS idx_audit_query ON audit_events(query_hash);
 # Helper Functions
 # =============================================================================
 
+
 def parse_ttl(ttl_string: str) -> int:
     """
     Parse a TTL string into seconds.
-    
+
     Supports formats: '1h', '30m', '1d', '3600s', '1h30m'
     Bare numbers are treated as hours (e.g., '4' = 4 hours).
-    
+
     Args:
         ttl_string: TTL specification string
-        
+
     Returns:
         TTL in seconds
-        
+
     Raises:
         ValueError: If format is invalid
     """
     if not ttl_string:
         return 0
-    
+
     # If it's just a number, treat as hours (more intuitive default)
     try:
         hours = int(ttl_string)
         return hours * 3600
     except ValueError:
         pass
-    
+
     # Parse duration string like '1h', '30m', '1d', '1h30m'
     total_seconds = 0
-    pattern = r'(\d+)([dhms])'
+    pattern = r"(\d+)([dhms])"
     matches = re.findall(pattern, ttl_string.lower())
-    
+
     if not matches:
-        raise ValueError(f"Invalid TTL format: {ttl_string}. Use formats like '1h', '30m', '1d', or seconds.")
-    
-    multipliers = {'d': 86400, 'h': 3600, 'm': 60, 's': 1}
-    
+        raise ValueError(
+            f"Invalid TTL format: {ttl_string}. Use formats like '1h', '30m', '1d', or seconds."
+        )
+
+    multipliers = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+
     for value, unit in matches:
         total_seconds += int(value) * multipliers[unit]
-    
+
     return total_seconds
 
 
 def get_nested_value(record: dict, key: str) -> Any:
     """
     Get a value from a nested dictionary using dot notation.
-    
+
     Args:
         record: Dictionary to extract from
         key: Key with optional dot notation (e.g., 'component.name')
-        
+
     Returns:
         The value, or None if not found
     """
-    if '.' not in key:
+    if "." not in key:
         return record.get(key)
-    
-    parts = key.split('.')
-    value = record
+
+    parts = key.split(".")
+    value: Any = record
     for part in parts:
         if isinstance(value, dict):
             value = value.get(part)
@@ -371,11 +380,11 @@ def get_nested_value(record: dict, key: str) -> Any:
 def generate_query_hash(endpoint: str, params: dict) -> str:
     """
     Generate a unique hash for a query based on endpoint and parameters.
-    
+
     Args:
         endpoint: API endpoint path
         params: Query parameters
-        
+
     Returns:
         MD5 hash of the query
     """
@@ -388,28 +397,28 @@ def generate_query_hash(endpoint: str, params: dict) -> str:
 def get_table_for_endpoint(endpoint: str) -> str:
     """
     Determine the table name for a given endpoint.
-    
+
     Args:
         endpoint: API endpoint path
-        
+
     Returns:
         Table name
-        
+
     Raises:
         ValueError: If endpoint is not recognized (security measure to prevent
                    dynamic table name creation from untrusted input)
     """
     endpoint_lower = endpoint.lower()
-    if '/findings' in endpoint_lower:
-        return 'findings'
-    elif '/scans' in endpoint_lower:
-        return 'scans'
-    elif '/components' in endpoint_lower:
-        return 'components'
-    elif '/projects' in endpoint_lower:
-        return 'projects'
-    elif '/audit' in endpoint_lower:
-        return 'audit_events'
+    if "/findings" in endpoint_lower:
+        return "findings"
+    elif "/scans" in endpoint_lower:
+        return "scans"
+    elif "/components" in endpoint_lower:
+        return "components"
+    elif "/projects" in endpoint_lower:
+        return "projects"
+    elif "/audit" in endpoint_lower:
+        return "audit_events"
     else:
         raise ValueError(
             f"Unknown endpoint '{endpoint}'. SQLite cache only supports: "
@@ -421,10 +430,10 @@ def get_table_for_endpoint(endpoint: str) -> str:
 def get_fields_for_endpoint(endpoint: str) -> dict:
     """
     Get the field mapping for a given endpoint.
-    
+
     Args:
         endpoint: API endpoint path
-        
+
     Returns:
         Field mapping dictionary
     """
@@ -440,9 +449,11 @@ def get_fields_for_endpoint(endpoint: str) -> dict:
 # SQLiteCache Class
 # =============================================================================
 
+
 @dataclass
 class CacheStats:
     """Statistics about cache usage."""
+
     total_entries: int
     total_records: int
     cache_hits: int
@@ -453,21 +464,21 @@ class CacheStats:
 class SQLiteCache:
     """
     SQLite-based cache for API data with TTL support and crash recovery.
-    
+
     [BETA] This feature is experimental.
     """
-    
+
     def __init__(
-        self, 
-        cache_dir: Optional[str] = None,
+        self,
+        cache_dir: str | None = None,
         default_ttl: int = 0,  # 0 = no caching across runs
-        domain: Optional[str] = None,  # Domain for instance-specific cache
+        domain: str | None = None,  # Domain for instance-specific cache
     ):
         """
         Initialize the SQLite cache.
-        
+
         Args:
-            cache_dir: Directory to store cache database. 
+            cache_dir: Directory to store cache database.
                        Defaults to ~/.fs-report/
             default_ttl: Default TTL in seconds. 0 disables cross-run caching.
             domain: Finite State domain (e.g., "customer.finitestate.io").
@@ -476,33 +487,36 @@ class SQLiteCache:
         self.default_ttl = default_ttl
         self.cache_hits = 0
         self.cache_misses = 0
-        
+
         # Session start time - cache validity is checked against this, not current time
         # This ensures cache doesn't expire mid-report for long-running reports
         self.session_start_time = time.time()
-        
+
         # Determine cache directory
         if cache_dir:
             self.cache_dir = Path(cache_dir)
         else:
-            self.cache_dir = Path.home() / '.fs-report'
-        
+            self.cache_dir = Path.home() / ".fs-report"
+
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Use domain-specific cache file to avoid mixing data between instances
         if domain:
             # Sanitize domain for filename (replace dots, remove protocol)
-            safe_domain = domain.replace('https://', '').replace('http://', '')
-            safe_domain = safe_domain.replace('/', '_').replace(':', '_')
-            self.db_path = self.cache_dir / f'{safe_domain}.db'
+            safe_domain = domain.replace("https://", "").replace("http://", "")
+            safe_domain = safe_domain.replace("/", "_").replace(":", "_")
+            self.db_path = self.cache_dir / f"{safe_domain}.db"
         else:
-            self.db_path = self.cache_dir / 'cache.db'
-        
+            self.db_path = self.cache_dir / "cache.db"
+
         # Initialize database
         self._init_db()
-        
+
+        # Clean up expired and incomplete entries on startup
+        self._startup_cleanup()
+
         logger.debug(f"SQLite cache initialized at {self.db_path}")
-    
+
     def _init_db(self) -> None:
         """Initialize the database schema and apply migrations."""
         with sqlite3.connect(self.db_path) as conn:
@@ -528,7 +542,7 @@ class SQLiteCache:
                 # Column doesn't exist — add it
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
                 logger.debug(f"Migrated: added {col} ({col_type}) to {table}")
-    
+
     def _get_connection(self) -> sqlite3.Connection:
         """Get a database connection with concurrency settings."""
         conn = sqlite3.connect(self.db_path, timeout=30.0)  # Wait up to 30s for locks
@@ -537,69 +551,72 @@ class SQLiteCache:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")  # 30 second timeout
         return conn
-    
+
     def is_cache_valid(
-        self, 
-        endpoint: str, 
-        params: dict, 
-        ttl: Optional[int] = None
+        self, endpoint: str, params: dict, ttl: int | None = None
     ) -> bool:
         """
         Check if cached data exists and is still valid.
-        
+
         Args:
             endpoint: API endpoint
             params: Query parameters
             ttl: TTL to check against (uses default if not specified)
-            
+
         Returns:
             True if cache is valid and can be used
         """
         ttl = ttl if ttl is not None else self.default_ttl
-        
+
         # If TTL is 0, never use cache from previous runs
         if ttl == 0:
             return False
-        
+
         query_hash = generate_query_hash(endpoint, params)
-        
+
         with self._get_connection() as conn:
             cursor = conn.execute(
                 """
-                SELECT created_at, completed_at, record_count 
-                FROM cache_meta 
+                SELECT created_at, completed_at, record_count
+                FROM cache_meta
                 WHERE query_hash = ?
                 """,
-                (query_hash,)
+                (query_hash,),
             )
             row = cursor.fetchone()
-            
+
             if not row:
                 return False
-            
+
             # Check if fetch was completed
-            if row['completed_at'] is None:
-                logger.debug(f"Cache entry for {endpoint} exists but fetch was incomplete")
+            if row["completed_at"] is None:
+                logger.debug(
+                    f"Cache entry for {endpoint} exists but fetch was incomplete"
+                )
                 return False
-            
+
             # Check TTL against session start time (not current time)
             # This ensures cache doesn't expire mid-report for long-running reports
-            age_at_session_start = self.session_start_time - row['created_at']
+            age_at_session_start = self.session_start_time - row["created_at"]
             if age_at_session_start > ttl:
-                logger.debug(f"Cache entry for {endpoint} expired at session start (age: {age_at_session_start:.0f}s, ttl: {ttl}s)")
+                logger.debug(
+                    f"Cache entry for {endpoint} expired at session start (age: {age_at_session_start:.0f}s, ttl: {ttl}s)"
+                )
                 return False
-            
-            logger.debug(f"Cache hit for {endpoint} (age at session start: {age_at_session_start:.0f}s, records: {row['record_count']})")
+
+            logger.debug(
+                f"Cache hit for {endpoint} (age at session start: {age_at_session_start:.0f}s, records: {row['record_count']})"
+            )
             return True
-    
-    def get_cached_data(self, endpoint: str, params: dict) -> Optional[List[dict]]:
+
+    def get_cached_data(self, endpoint: str, params: dict) -> list[dict] | None:
         """
         Retrieve cached data for a query.
-        
+
         Args:
             endpoint: API endpoint
             params: Query parameters
-            
+
         Returns:
             List of records, or None if not cached or endpoint not supported
         """
@@ -608,61 +625,60 @@ class SQLiteCache:
         except ValueError:
             # Unknown endpoint - not cacheable
             return None
-        
+
         query_hash = generate_query_hash(endpoint, params)
         fields = get_fields_for_endpoint(endpoint)
-        
+
         with self._get_connection() as conn:
             # Get all records for this query
             try:
                 cursor = conn.execute(
-                    f"SELECT * FROM {table_name} WHERE query_hash = ?",
-                    (query_hash,)
+                    f"SELECT * FROM {table_name} WHERE query_hash = ?", (query_hash,)
                 )
                 rows = cursor.fetchall()
             except sqlite3.OperationalError as e:
                 logger.warning(f"Error reading from cache table {table_name}: {e}")
                 return None
-            
+
             if not rows:
                 return None
-            
+
             # Convert back to original API format
             records = []
             for row in rows:
                 record = self._row_to_record(dict(row), fields)
                 records.append(record)
-            
+
             self.cache_hits += 1
             return records
-    
+
     def _row_to_record(self, row: dict, fields: dict) -> dict:
         """
         Convert a database row back to API record format.
-        
+
         Args:
             row: Database row as dict
             fields: Field mapping (api_field -> db_column)
-            
+
         Returns:
             Record in original API format
         """
         # Remove query_hash from output
-        row.pop('query_hash', None)
-        
+        row.pop("query_hash", None)
+
         # Reverse the field mapping
         reverse_map = {v: k for k, v in fields.items()}
-        
-        record = {}
+
+        record: dict[str, Any] = {}
         for db_col, value in row.items():
             if value is None:
                 continue
-                
+
             api_field = reverse_map.get(db_col, db_col)
-            
+
             # Handle nested fields
-            if '.' in api_field:
-                parts = api_field.split('.')
+            if "." in api_field:
+                parts = api_field.split(".")
                 current = record
                 for part in parts[:-1]:
                     if part not in current:
@@ -671,32 +687,40 @@ class SQLiteCache:
                 current[parts[-1]] = value
             else:
                 # Parse JSON fields
-                if db_col in ('cwes', 'exploit_info', 'severity_counts', 'source', 
-                             'application', 'app_version', 'component', 'data',
-                             'factors'):
+                if db_col in (
+                    "cwes",
+                    "exploit_info",
+                    "severity_counts",
+                    "source",
+                    "application",
+                    "app_version",
+                    "component",
+                    "data",
+                    "factors",
+                ):
                     try:
                         value = json.loads(value) if value else None
                     except (json.JSONDecodeError, TypeError):
                         pass
-                
+
                 # Convert booleans
-                if db_col in ('in_kev', 'in_vc_kev', 'edited', 'has_known_exploit'):
+                if db_col in ("in_kev", "in_vc_kev", "edited", "has_known_exploit"):
                     value = bool(value) if value is not None else None
-                
+
                 record[api_field] = value
-        
+
         return record
-    
+
     def get_progress(self, endpoint: str, params: dict) -> int:
         """
         Get the current progress (record count) for an incomplete fetch.
-        
+
         Used for crash recovery - returns the number of records already fetched.
-        
+
         Args:
             endpoint: API endpoint
             params: Query parameters
-            
+
         Returns:
             Number of records already fetched, or 0 if no progress or endpoint not supported
         """
@@ -705,200 +729,203 @@ class SQLiteCache:
         except ValueError:
             # Unknown endpoint - no progress tracking
             return 0
-        
+
         query_hash = generate_query_hash(endpoint, params)
-        
+
         with self._get_connection() as conn:
             # Check if we have an incomplete fetch
             cursor = conn.execute(
                 "SELECT completed_at FROM cache_meta WHERE query_hash = ?",
-                (query_hash,)
+                (query_hash,),
             )
             row = cursor.fetchone()
-            
-            if not row or row['completed_at'] is not None:
+
+            if not row or row["completed_at"] is not None:
                 # No incomplete fetch, or fetch was completed
                 return 0
-            
+
             # Count records in the table
             try:
                 cursor = conn.execute(
                     f"SELECT COUNT(*) as count FROM {table_name} WHERE query_hash = ?",
-                    (query_hash,)
+                    (query_hash,),
                 )
                 count_row = cursor.fetchone()
-                return count_row['count'] if count_row else 0
+                return count_row["count"] if count_row else 0
             except sqlite3.OperationalError:
                 return 0
-    
-    def start_fetch(self, endpoint: str, params: dict, ttl: Optional[int] = None) -> str:
+
+    def start_fetch(self, endpoint: str, params: dict, ttl: int | None = None) -> str:
         """
         Start tracking a new fetch operation.
-        
+
         Args:
             endpoint: API endpoint
             params: Query parameters
             ttl: TTL for this cache entry
-            
+
         Returns:
             Query hash for this fetch
         """
         query_hash = generate_query_hash(endpoint, params)
         ttl = ttl if ttl is not None else self.default_ttl
-        
+
         with self._get_connection() as conn:
             # Clear any existing data for this query
             self._clear_query_data(conn, query_hash, endpoint)
-            
+
             # Insert new metadata entry
             conn.execute(
                 """
-                INSERT OR REPLACE INTO cache_meta 
+                INSERT OR REPLACE INTO cache_meta
                 (query_hash, endpoint, query_params, created_at, completed_at, record_count, ttl_seconds)
                 VALUES (?, ?, ?, ?, NULL, 0, ?)
                 """,
-                (query_hash, endpoint, json.dumps(params), time.time(), ttl)
+                (query_hash, endpoint, json.dumps(params), time.time(), ttl),
             )
             conn.commit()
-        
+
         self.cache_misses += 1
         return query_hash
-    
-    def _clear_query_data(self, conn: sqlite3.Connection, query_hash: str, endpoint: str) -> None:
+
+    def _clear_query_data(
+        self, conn: sqlite3.Connection, query_hash: str, endpoint: str
+    ) -> None:
         """Clear existing data for a query hash."""
         try:
             table_name = get_table_for_endpoint(endpoint)
         except ValueError:
             return  # Unknown endpoint - nothing to clear
-        
+
         try:
-            conn.execute(f"DELETE FROM {table_name} WHERE query_hash = ?", (query_hash,))
+            conn.execute(
+                f"DELETE FROM {table_name} WHERE query_hash = ?", (query_hash,)
+            )
         except sqlite3.OperationalError:
             pass  # Table might not exist yet
-    
-    def store_records(
-        self, 
-        query_hash: str, 
-        endpoint: str, 
-        records: List[dict]
-    ) -> int:
+
+    def store_records(self, query_hash: str, endpoint: str, records: list[dict]) -> int:
         """
         Store a batch of records in the cache.
-        
+
         Args:
             query_hash: Query hash from start_fetch
             endpoint: API endpoint (for determining table)
             records: Records to store
-            
+
         Returns:
             Number of records stored, or 0 if endpoint not supported
         """
         if not records:
             return 0
-        
+
         try:
             table_name = get_table_for_endpoint(endpoint)
         except ValueError as e:
             logger.warning(f"Cannot cache records: {e}")
             return 0
-        
+
         fields = get_fields_for_endpoint(endpoint)
-        
+
         # Trim records to needed fields
         trimmed_records = [self._trim_record(r, fields) for r in records]
-        
+
         with self._get_connection() as conn:
             stored = 0
             for record in trimmed_records:
-                record['query_hash'] = query_hash
+                record["query_hash"] = query_hash
                 try:
                     self._insert_record(conn, table_name, record)
                     stored += 1
                 except sqlite3.IntegrityError:
                     # Duplicate record, skip
-                    logger.debug(f"Skipping duplicate record: {record.get('id', 'unknown')}")
+                    logger.debug(
+                        f"Skipping duplicate record: {record.get('id', 'unknown')}"
+                    )
                 except Exception as e:
                     logger.warning(f"Error storing record: {e}")
-            
+
             # Update record count in metadata
             conn.execute(
                 """
-                UPDATE cache_meta 
+                UPDATE cache_meta
                 SET record_count = record_count + ?
                 WHERE query_hash = ?
                 """,
-                (stored, query_hash)
+                (stored, query_hash),
             )
             conn.commit()
-        
+
         return stored
-    
+
     def _trim_record(self, record: dict, fields: dict) -> dict:
         """
         Trim a record to only the needed fields.
-        
+
         Args:
             record: Full API record
             fields: Field mapping (api_field -> db_column)
-            
+
         Returns:
             Trimmed record with only needed fields
         """
         if not fields:
             # Unknown endpoint, store essential fields only
-            return {'id': record.get('id'), 'data': json.dumps(record)}
-        
+            return {"id": record.get("id"), "data": json.dumps(record)}
+
         trimmed = {}
         for api_field, db_column in fields.items():
             value = get_nested_value(record, api_field)
-            
+
             # Convert complex types to JSON strings
-            if isinstance(value, (list, dict)):
+            if isinstance(value, list | dict):
                 value = json.dumps(value)
             # Convert booleans to integers for SQLite
             elif isinstance(value, bool):
                 value = 1 if value else 0
-            
+
             trimmed[db_column] = value
-        
+
         return trimmed
-    
-    def _insert_record(self, conn: sqlite3.Connection, table_name: str, record: dict) -> None:
+
+    def _insert_record(
+        self, conn: sqlite3.Connection, table_name: str, record: dict
+    ) -> None:
         """Insert a single record into the appropriate table."""
         columns = list(record.keys())
-        placeholders = ','.join(['?' for _ in columns])
-        column_names = ','.join(columns)
+        placeholders = ",".join(["?" for _ in columns])
+        column_names = ",".join(columns)
         values = [record[c] for c in columns]
-        
+
         conn.execute(
             f"INSERT OR IGNORE INTO {table_name} ({column_names}) VALUES ({placeholders})",
-            values
+            values,
         )
-    
+
     def complete_fetch(self, query_hash: str) -> None:
         """
         Mark a fetch as complete.
-        
+
         Args:
             query_hash: Query hash from start_fetch
         """
         with self._get_connection() as conn:
             conn.execute(
                 "UPDATE cache_meta SET completed_at = ? WHERE query_hash = ?",
-                (time.time(), query_hash)
+                (time.time(), query_hash),
             )
             conn.commit()
-        
+
         logger.debug(f"Fetch completed for query {query_hash}")
-    
-    def clear(self, endpoint: Optional[str] = None) -> None:
+
+    def clear(self, endpoint: str | None = None) -> None:
         """
         Clear cached data and reset schema.
-        
+
         Args:
             endpoint: If specified, only clear data for this endpoint.
                      If None, clear all cached data and recreate tables with current schema.
-                     
+
         Raises:
             ValueError: If endpoint is specified but not recognized
         """
@@ -907,122 +934,207 @@ class SQLiteCache:
                 table_name = get_table_for_endpoint(endpoint)  # May raise ValueError
                 # Drop and recreate to get updated schema
                 conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-                conn.execute("DELETE FROM cache_meta WHERE endpoint LIKE ?", (f'%{endpoint}%',))
+                conn.execute(
+                    "DELETE FROM cache_meta WHERE endpoint LIKE ?", (f"%{endpoint}%",)
+                )
             else:
                 # Drop all tables to reset schema
-                for table in ['findings', 'scans', 'components', 'projects', 'audit_events', 'cache_meta']:
+                for table in [
+                    "findings",
+                    "scans",
+                    "components",
+                    "projects",
+                    "audit_events",
+                    "cache_meta",
+                ]:
                     conn.execute(f"DROP TABLE IF EXISTS {table}")
             conn.commit()
-        
+
         # Recreate tables with current schema
         self._init_db()
-        
-        logger.info(f"Cache cleared and schema reset{f' for {endpoint}' if endpoint else ''}")
-    
+
+        logger.info(
+            f"Cache cleared and schema reset{f' for {endpoint}' if endpoint else ''}"
+        )
+
     def get_stats(self) -> dict:
         """
         Get cache statistics.
-        
+
         Returns:
             Dictionary with cache stats
         """
         with self._get_connection() as conn:
             # Count entries
             cursor = conn.execute("SELECT COUNT(*) as count FROM cache_meta")
-            total_entries = cursor.fetchone()['count']
-            
+            total_entries = cursor.fetchone()["count"]
+
             # Count total records
             total_records = 0
-            for table in ['findings', 'scans', 'components', 'projects', 'audit_events']:
+            for table in [
+                "findings",
+                "scans",
+                "components",
+                "projects",
+                "audit_events",
+            ]:
                 try:
                     cursor = conn.execute(f"SELECT COUNT(*) as count FROM {table}")
-                    total_records += cursor.fetchone()['count']
+                    total_records += cursor.fetchone()["count"]
                 except sqlite3.OperationalError:
                     pass
-        
+
         # Get database size
         db_size = os.path.getsize(self.db_path) if self.db_path.exists() else 0
-        
+
         return {
-            'total_entries': total_entries,
-            'total_records': total_records,
-            'cache_hits': self.cache_hits,
-            'cache_misses': self.cache_misses,
-            'db_size_bytes': db_size,
-            'db_size_mb': round(db_size / (1024 * 1024), 2),
-            'db_path': str(self.db_path),
+            "total_entries": total_entries,
+            "total_records": total_records,
+            "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
+            "db_size_bytes": db_size,
+            "db_size_mb": round(db_size / (1024 * 1024), 2),
+            "db_path": str(self.db_path),
         }
-    
+
+    # ------------------------------------------------------------------
+    # Lightweight version-list cache (per-project, not per-query)
+    # ------------------------------------------------------------------
+
+    def get_version_list(self, project_id: str, ttl: int) -> list[dict] | None:
+        """
+        Retrieve a cached version list for a project.
+
+        Returns the list of version dicts, or None on cache miss / expiry.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT versions_json, created_at FROM version_lists WHERE project_id = ?",
+                (project_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            age = self.session_start_time - row["created_at"]
+            if age > ttl:
+                return None
+            try:
+                result: list[dict[Any, Any]] | None = json.loads(row["versions_json"])
+                return result
+            except (json.JSONDecodeError, TypeError):
+                return None
+
+    def store_version_list(self, project_id: str, versions: list[dict]) -> None:
+        """Store a version list for a project (upsert)."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO version_lists (project_id, versions_json, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (project_id, json.dumps(versions), time.time()),
+            )
+            conn.commit()
+
+    def _startup_cleanup(self) -> None:
+        """Run cleanup tasks on initialization: expired entries and stale incomplete fetches."""
+        expired = self.cleanup_expired()
+        incomplete = self.cleanup_incomplete()
+        if expired or incomplete:
+            logger.info(
+                f"Startup cleanup: removed {expired} expired + {incomplete} stale incomplete cache entries"
+            )
+
     def cleanup_expired(self) -> int:
         """
-        Remove expired cache entries.
-        
+        Remove expired cache entries and their associated records.
+
         Returns:
             Number of entries removed
         """
         now = time.time()
         removed = 0
-        
+
         with self._get_connection() as conn:
-            # Find expired entries
+            # Find expired completed entries
             cursor = conn.execute(
                 """
-                SELECT query_hash, endpoint 
-                FROM cache_meta 
-                WHERE ttl_seconds > 0 AND (? - created_at) > ttl_seconds
+                SELECT query_hash, endpoint
+                FROM cache_meta
+                WHERE completed_at IS NOT NULL
+                  AND ttl_seconds > 0
+                  AND (created_at + ttl_seconds) < ?
                 """,
-                (now,)
+                (now,),
             )
             expired = cursor.fetchall()
-            
+
             for row in expired:
-                query_hash = row['query_hash']
-                endpoint = row['endpoint']
-                
+                query_hash = row["query_hash"]
+                endpoint = row["endpoint"]
+
                 # Clear data for this query
                 self._clear_query_data(conn, query_hash, endpoint)
-                
+
                 # Remove metadata
-                conn.execute("DELETE FROM cache_meta WHERE query_hash = ?", (query_hash,))
+                conn.execute(
+                    "DELETE FROM cache_meta WHERE query_hash = ?", (query_hash,)
+                )
                 removed += 1
-            
+
+            # Also clean expired version_lists (use default_ttl as threshold)
+            if self.default_ttl > 0:
+                try:
+                    conn.execute(
+                        "DELETE FROM version_lists WHERE (created_at + ?) < ?",
+                        (self.default_ttl, now),
+                    )
+                except sqlite3.OperationalError:
+                    pass  # Table may not exist yet
+
             conn.commit()
-        
-        if removed:
-            logger.info(f"Cleaned up {removed} expired cache entries")
-        
+
         return removed
-    
+
     def cleanup_incomplete(self) -> int:
         """
-        Remove incomplete fetch entries (from crashed runs).
-        
+        Remove incomplete fetch entries older than 1 hour (from crashed/interrupted runs).
+
+        Only removes entries older than 1 hour to avoid deleting an in-progress
+        fetch from the current session.
+
         Returns:
             Number of entries removed
         """
+        now = time.time()
+        one_hour_ago = now - 3600
         removed = 0
-        
+
         with self._get_connection() as conn:
-            # Find incomplete entries
+            # Find incomplete entries older than 1 hour
             cursor = conn.execute(
-                "SELECT query_hash, endpoint FROM cache_meta WHERE completed_at IS NULL"
+                """
+                SELECT query_hash, endpoint
+                FROM cache_meta
+                WHERE completed_at IS NULL AND created_at < ?
+                """,
+                (one_hour_ago,),
             )
             incomplete = cursor.fetchall()
-            
+
             for row in incomplete:
-                query_hash = row['query_hash']
-                endpoint = row['endpoint']
-                
+                query_hash = row["query_hash"]
+                endpoint = row["endpoint"]
+
                 # Clear data for this query
                 self._clear_query_data(conn, query_hash, endpoint)
-                
+
                 # Remove metadata
-                conn.execute("DELETE FROM cache_meta WHERE query_hash = ?", (query_hash,))
+                conn.execute(
+                    "DELETE FROM cache_meta WHERE query_hash = ?", (query_hash,)
+                )
                 removed += 1
-            
+
             conn.commit()
-        
-        if removed:
-            logger.info(f"Cleaned up {removed} incomplete cache entries")
-        
+
         return removed

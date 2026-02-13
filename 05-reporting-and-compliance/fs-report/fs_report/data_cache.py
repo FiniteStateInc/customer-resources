@@ -185,9 +185,11 @@ class DataCache:
         """Get data from cache if available and reusable."""
         cache_key = self._generate_cache_key(query)
         cache_id = f"{cache_key.endpoint}:{cache_key.params_hash}"
-        
+
         # Debug logging to see cache key generation
-        self.logger.debug(f"Cache lookup for {cache_id} with params: {cache_key.full_params}")
+        self.logger.debug(
+            f"Cache lookup for {cache_id} with params: {cache_key.full_params}"
+        )
 
         if cache_id in self.cache:
             cached_entry = self.cache[cache_id]
@@ -216,9 +218,11 @@ class DataCache:
         """Store data in cache."""
         cache_key = self._generate_cache_key(query)
         cache_id = f"{cache_key.endpoint}:{cache_key.params_hash}"
-        
+
         # Debug logging to see what's being cached
-        self.logger.debug(f"Caching data for {cache_id} with params: {cache_key.full_params}")
+        self.logger.debug(
+            f"Caching data for {cache_id} with params: {cache_key.full_params}"
+        )
 
         import time
 
