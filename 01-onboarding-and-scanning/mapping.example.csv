@@ -1,7 +1,0 @@
-user_email,first_name,last_name,idp_group,fs_group,description,org_roles
-alice@example.com,Alice,Smith,Engineering,,Engineering team,Projects Admin
-bob@example.com,Bob,Jones,Engineering,,Engineering team,Projects Admin
-alice@example.com,Alice,Smith,Security-Analysts,Security Analysts,Security analysis team,Global admin
-charlie@example.com,Charlie,Davis,Security-Analysts,Security Analysts,Security analysis team,Global admin
-charlie@example.com,Charlie,Davis,Read-Only-Users,Viewers,Read-only access users,Portfolio Viewer
-dave@example.com,,,Read-Only-Users,Viewers,Read-only access users,Portfolio Viewer
