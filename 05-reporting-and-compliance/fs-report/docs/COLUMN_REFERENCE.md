@@ -201,7 +201,7 @@ This document lists all column names produced by each transform function. Use th
 | `priority_band` | string | Triage band: CRITICAL, HIGH, MEDIUM, LOW, INFO |
 | `triage_score` | float | Composite triage score (0-100) |
 | `gate_assignment` | string | GATE_1, GATE_2, ADDITIVE, or NONE |
-| `reachability_label` | string | REACHABLE, UNKNOWN, UNREACHABLE |
+| `reachability_label` | string | REACHABLE, INCONCLUSIVE, UNREACHABLE |
 | `reachability_score` | float | Raw reachability score (positive/zero/negative) |
 | `has_exploit` | bool | Whether known exploits exist |
 | `in_kev` | bool | Whether in CISA KEV |

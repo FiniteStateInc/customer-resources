@@ -53,6 +53,7 @@ def setup_logging(verbose: bool) -> None:
         format="%(message)s",
         datefmt="[%X]",
         handlers=[RichHandler(console=console, rich_tracebacks=True)],
+        force=True,
     )
 
 
@@ -89,12 +90,17 @@ def create_config(
     detected_after: Union[str, None] = None,
     ai: bool = False,
     ai_depth: str = "summary",
+    ai_prompts: bool = False,
     baseline_date: Union[str, None] = None,
     baseline_version: Union[str, None] = None,
     current_version: Union[str, None] = None,
     open_only: bool = False,
     request_delay: float = 0.5,
     batch_size: int = 5,
+    cve_filter: Union[str, None] = None,
+    scoring_file: Union[str, None] = None,
+    vex_override: bool = False,
+    overwrite: bool = False,
 ) -> Config:
     # Handle period parameter
     if period:
@@ -180,7 +186,7 @@ def create_config(
         auth_token=auth_token,
         domain=domain_value,
         recipes_dir=str(recipes or Path("./recipes")),
-        output_dir=str(output or Path("./output")),
+        output_dir=str(Path(output or "./output").expanduser()),
         start_date=start,
         end_date=end,
         verbose=verbose,
@@ -195,12 +201,17 @@ def create_config(
         detected_after=detected_after,
         ai=ai,
         ai_depth=ai_depth,
+        ai_prompts=ai_prompts,
         baseline_date=baseline_date,
         baseline_version=baseline_version,
         current_version=current_version,
         open_only=open_only,
         request_delay=request_delay,
         batch_size=batch_size,
+        cve_filter=cve_filter,
+        scoring_file=scoring_file,
+        vex_override=vex_override,
+        overwrite=overwrite,
     )
 
 
@@ -934,12 +945,17 @@ def run_reports(
     detected_after: Union[str, None] = None,
     ai: bool = False,
     ai_depth: str = "summary",
+    ai_prompts: bool = False,
     baseline_date: Union[str, None] = None,
     baseline_version: Union[str, None] = None,
     current_version: Union[str, None] = None,
     open_only: bool = False,
     request_delay: float = 0.5,
     batch_size: int = 5,
+    cve_filter: Union[str, None] = None,
+    scoring_file: Union[str, None] = None,
+    vex_override: bool = False,
+    overwrite: bool = False,
 ) -> None:
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
@@ -969,12 +985,17 @@ def run_reports(
             detected_after=detected_after,
             ai=ai,
             ai_depth=ai_depth,
+            ai_prompts=ai_prompts,
             baseline_date=baseline_date,
             baseline_version=baseline_version,
             current_version=current_version,
             open_only=open_only,
             request_delay=request_delay,
             batch_size=batch_size,
+            cve_filter=cve_filter,
+            scoring_file=scoring_file,
+            vex_override=vex_override,
+            overwrite=overwrite,
         )
         logger.info("Configuration:")
         logger.info(f"  Domain: {config.domain}")
@@ -989,6 +1010,8 @@ def run_reports(
             logger.info(f"  [BETA] SQLite cache: Enabled (TTL: {config.cache_ttl}s)")
         if config.folder_filter:
             logger.info(f"  Folder scope: {config.folder_filter}")
+        if config.cve_filter:
+            logger.info(f"  CVE filter: {config.cve_filter}")
         if config.ai:
             logger.info(f"  AI remediation: Enabled (depth: {config.ai_depth})")
         output_path = Path(config.output_dir)
@@ -1035,6 +1058,9 @@ def run_reports(
             raise typer.Exit(1)
     except typer.Exit:
         raise  # Let controlled exits pass through cleanly
+    except FileExistsError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from e
     except ValueError as e:
         console.print(f"[red]Validation error: {e}[/red]")
         raise typer.Exit(1) from e
@@ -1126,7 +1152,7 @@ def main(
     version_filter: Union[str, None] = typer.Option(
         None,
         "--version",
-        "-v",
+        "-V",
         help="Filter by project version (version ID or name). Use 'fs-report list-versions <project>' to see available versions.",
     ),
     finding_types: str = typer.Option(
@@ -1171,12 +1197,17 @@ def main(
     ai: bool = typer.Option(
         False,
         "--ai",
-        help="Enable AI remediation guidance for Triage Prioritization (requires ANTHROPIC_AUTH_TOKEN)",
+        help="Enable AI remediation guidance for Triage Prioritization and CVE Impact (requires ANTHROPIC_AUTH_TOKEN)",
     ),
     ai_depth: str = typer.Option(
         "summary",
         "--ai-depth",
         help="AI depth: 'summary' (portfolio/project only) or 'full' (+ Critical/High component guidance)",
+    ),
+    ai_prompts: bool = typer.Option(
+        False,
+        "--ai-prompts",
+        help="Export AI prompts to file and HTML for use with any LLM. No API key required. Can be combined with --ai.",
     ),
     baseline_date: Union[str, None] = typer.Option(
         None,
@@ -1213,6 +1244,32 @@ def main(
         "Higher values are faster but may overload smaller servers (default 5, max 25).",
         min=1,
         max=25,
+    ),
+    cve_filter: Union[str, None] = typer.Option(
+        None,
+        "--cve",
+        help="CVE(s) to analyse in the CVE Impact report (required). "
+        "Comma-separated (e.g. CVE-2024-1234,CVE-2024-5678). "
+        "Produces detailed dossiers for the specified CVEs. "
+        "Optionally combine with --project to narrow results to one project.",
+    ),
+    scoring_file: Union[str, None] = typer.Option(
+        None,
+        "--scoring-file",
+        help="Path to a YAML file with custom scoring weights for Triage Prioritization. "
+        "Overrides the default weights in the recipe.",
+    ),
+    vex_override: bool = typer.Option(
+        False,
+        "--vex-override",
+        help="Overwrite existing VEX statuses when generating triage recommendations. "
+        "By default, findings that already have a VEX status are skipped.",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Overwrite existing report files. Without this flag, the CLI refuses "
+        "to write into a recipe output directory that already has files.",
     ),
 ) -> None:
     if ctx.invoked_subcommand is not None:
@@ -1279,12 +1336,17 @@ def main(
         detected_after=detected_after,
         ai=ai,
         ai_depth=ai_depth,
+        ai_prompts=ai_prompts,
         baseline_date=baseline_date,
         baseline_version=baseline_version,
         current_version=current_version,
         open_only=open_only,
         request_delay=request_delay,
         batch_size=batch_size,
+        cve_filter=cve_filter,
+        scoring_file=scoring_file,
+        vex_override=vex_override,
+        overwrite=overwrite,
     )
 
 

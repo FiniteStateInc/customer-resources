@@ -164,7 +164,9 @@ class ReportEngine:
         self.transformer = DataTransformer()
         # self.logger.info("Using Pandas transformer")
 
-        self.renderer = ReportRenderer(config.output_dir, config)
+        self.renderer = ReportRenderer(
+            config.output_dir, config, overwrite=getattr(config, "overwrite", False)
+        )
         self.data_override = data_override
 
         # Cache for latest version IDs when current_version_only is enabled
@@ -1069,7 +1071,7 @@ class ReportEngine:
         for idx, recipe in enumerate(recipes, 1):
             try:
                 self.logger.info(f"[{idx}/{total}] Generating: {recipe.name} ...")
-                # Removed rich spinner: rely on tqdm for progress during data fetch
+                self.renderer.check_output_guard(recipe)
                 report_data = self._process_recipe(recipe)
                 if report_data:
                     files = self.renderer.render(recipe, report_data)
@@ -1527,6 +1529,7 @@ class ReportEngine:
                     "User Activity",
                     "Triage Prioritization",
                     "Version Comparison",
+                    "CVE Impact",
                 ]:
                     from fs_report.models import QueryConfig, QueryParams
 
@@ -1578,6 +1581,94 @@ class ReportEngine:
                             self.logger.info(
                                 f"Fetched {len(self._scan_analysis_project_data)} projects for new/existing analysis"
                             )
+                    elif recipe.name == "CVE Impact":
+                        # CVE Impact uses the /public/v0/cves endpoint which
+                        # returns data pre-aggregated by CVE ID. Simple pagination,
+                        # no version batching needed.
+
+                        # Scope guard: --cve is always required.
+                        # A project-scoped query (--project without --cve)
+                        # can return thousands of CVEs and overwhelm the
+                        # report.  For a project with N CVEs the dossier
+                        # enrichment alone would issue ~3*N API calls
+                        # (e.g. 4 000 CVEs → ~12 000 requests).
+                        # --project is still accepted as an optional
+                        # narrowing filter alongside --cve.
+                        if not self.config.cve_filter:
+                            self.logger.error(
+                                "CVE Impact requires --cve to specify which CVE(s) to analyse. "
+                                "--project alone is not supported because it can return "
+                                "thousands of CVEs (e.g. 4 000 CVEs → ~12 000 API calls for "
+                                "dossier enrichment).  Examples:\n"
+                                "  --cve CVE-2022-37434\n"
+                                "  --cve CVE-2022-37434,CVE-2023-44487\n"
+                                "  --cve CVE-2022-37434 --project openwrt"
+                            )
+                            raw_data = []
+                        else:
+                            cve_filters: list[str] = []
+
+                            # Apply --cve filter at the API level
+                            if self.config.cve_filter:
+                                cve_ids = [
+                                    c.strip()
+                                    for c in self.config.cve_filter.split(",")
+                                    if c.strip()
+                                ]
+                                if len(cve_ids) == 1:
+                                    cve_filters.append(f"cveId=={cve_ids[0]}")
+                                else:
+                                    cve_filters.append(
+                                        f"cveId=in=({','.join(cve_ids)})"
+                                    )
+
+                            # Apply --project filter
+                            if self.config.project_filter:
+                                try:
+                                    project_id = int(self.config.project_filter)
+                                    cve_filters.append(f"project=={project_id}")
+                                except ValueError:
+                                    # Resolve project name to ID
+                                    resolved_id = self._resolve_project_name(
+                                        self.config.project_filter
+                                    )
+                                    if resolved_id:
+                                        cve_filters.append(f"project=={resolved_id}")
+
+                            # Apply --detected-after
+                            if getattr(self.config, "detected_after", None):
+                                cve_filters.append(
+                                    f"detectionDate>={self.config.detected_after}T00:00:00"
+                                )
+
+                            cve_query = QueryConfig(
+                                endpoint="/public/v0/cves",
+                                params=QueryParams(
+                                    limit=10000,
+                                    filter=";".join(cve_filters)
+                                    if cve_filters
+                                    else None,
+                                ),
+                            )
+                            self.logger.info(
+                                f"Fetching CVEs for {recipe.name}"
+                                + (
+                                    f" with filter: {cve_query.params.filter}"
+                                    if cve_query.params.filter
+                                    else ""
+                                )
+                            )
+                            raw_data = self.api_client.fetch_all_with_resume(cve_query)
+
+                            # In dossier mode, enrich with per-finding reachability,
+                            # CVE descriptions, and exploit details
+                            if self.config.cve_filter and raw_data:
+                                (
+                                    self._cve_impact_reachability,
+                                    self._cve_impact_descriptions,
+                                    self._cve_impact_exploit_details,
+                                ) = self._fetch_cve_reachability(raw_data)
+
                     elif recipe.name == "Component List":
                         # Assessment report: shows current component inventory
                         # No date filtering by default (current state, not period-bound)
@@ -2041,7 +2132,7 @@ class ReportEngine:
 
             if not raw_data:
                 self.logger.warning(f"No data returned for recipe: {recipe.name}")
-                return None
+                raw_data = []
 
             # --- Apply flattening if needed ---
             if recipe.name == "Component Vulnerability Analysis":
@@ -2132,6 +2223,9 @@ class ReportEngine:
             additional_data: dict[str, Any] = {}
             # Add config for pandas transform functions
             additional_data["config"] = self.config
+            # Pass recipe parameters so transforms can access them
+            if recipe.parameters:
+                additional_data["recipe_parameters"] = recipe.parameters
 
             # Add project data for Scan Analysis (for new vs existing analysis)
             if (
@@ -2140,6 +2234,26 @@ class ReportEngine:
                 and self._scan_analysis_project_data
             ):
                 additional_data["projects"] = self._scan_analysis_project_data
+
+            # Inject CVE Impact reachability data, descriptions, and exploits
+            if recipe.name == "CVE Impact":
+                if (
+                    hasattr(self, "_cve_impact_reachability")
+                    and self._cve_impact_reachability
+                ):
+                    additional_data["reachability"] = self._cve_impact_reachability
+                if (
+                    hasattr(self, "_cve_impact_descriptions")
+                    and self._cve_impact_descriptions
+                ):
+                    additional_data["cve_descriptions"] = self._cve_impact_descriptions
+                if (
+                    hasattr(self, "_cve_impact_exploit_details")
+                    and self._cve_impact_exploit_details
+                ):
+                    additional_data[
+                        "exploit_details"
+                    ] = self._cve_impact_exploit_details
 
             # Inject Version Comparison data into additional_data
             if recipe.name == "Version Comparison" and hasattr(
@@ -2388,6 +2502,214 @@ class ReportEngine:
     def get_cache_stats(self) -> dict[str, Any]:
         """Get cache statistics."""
         return self.cache.get_stats()
+
+    def _fetch_cve_reachability(
+        self, cve_records: list[dict]
+    ) -> tuple[dict[str, list[dict]], dict[str, str], dict[str, list[dict]]]:
+        """Fetch per-finding reachability from /findings for dossier mode.
+
+        For each CVE in the records, queries the findings endpoint with
+        ``findingId==<cveId>`` to retrieve reachability scores per finding.
+
+        Also fetches CVE descriptions from ``/findings/{findingId}/cves``
+        and exploit details from ``/findings/{findingId}/exploits`` for
+        each CVE (using any finding's numeric ``id``).
+
+        Returns:
+            Tuple of:
+            - reachability_map: cveId -> list of finding dicts
+            - descriptions_map: cveId -> NVD description string
+            - exploit_details_map: cveId -> list of exploit detail dicts
+        """
+        from fs_report.models import QueryConfig, QueryParams
+
+        reachability_map: dict[str, list[dict]] = {}
+        descriptions_map: dict[str, str] = {}
+        exploit_details_map: dict[str, list[dict]] = {}
+
+        # Collect unique CVE IDs from the data
+        cve_ids: set[str] = set()
+        for rec in cve_records:
+            cve_id = rec.get("cveId") or rec.get("cve_id")
+            if cve_id:
+                cve_ids.add(cve_id)
+
+        if not cve_ids:
+            return reachability_map, descriptions_map, exploit_details_map
+
+        self.logger.info(
+            f"Enriching {len(cve_ids)} CVEs with reachability data from /findings"
+        )
+
+        for cve_id in sorted(cve_ids):
+            finding_query = QueryConfig(
+                endpoint="/public/v0/findings",
+                params=QueryParams(
+                    limit=10000,
+                    filter=f"findingId=={cve_id}",
+                ),
+            )
+            try:
+                findings = self.api_client.fetch_all_with_resume(finding_query)
+                reachability_map[cve_id] = findings
+                self.logger.debug(
+                    f"  {cve_id}: {len(findings)} findings with reachability"
+                )
+
+                # Fetch CVE description and exploit details using the
+                # finding's numeric id and projectVersionId.
+                if findings:
+                    f0 = findings[0]
+                    finding_numeric_id = f0.get("id")
+                    # projectVersionId: nested dict or flat cache key
+                    pv_obj = f0.get("projectVersion")
+                    pv_id = (
+                        pv_obj.get("id")
+                        if isinstance(pv_obj, dict)
+                        else f0.get("project_version_id")
+                    )
+                    if finding_numeric_id and pv_id:
+                        fid = str(finding_numeric_id)
+                        pvid = str(pv_id)
+                        desc = self._fetch_cve_description(pvid, fid, cve_id)
+                        if desc:
+                            descriptions_map[cve_id] = desc
+                        exploits = self._fetch_cve_exploits(pvid, fid, cve_id)
+                        if exploits:
+                            exploit_details_map[cve_id] = exploits
+            except Exception as exc:
+                self.logger.warning(f"Failed to fetch reachability for {cve_id}: {exc}")
+                reachability_map[cve_id] = []
+
+        return reachability_map, descriptions_map, exploit_details_map
+
+    def _fetch_cve_description(
+        self, project_version_id: str, finding_numeric_id: str, cve_id: str
+    ) -> str:
+        """Fetch CVE description from /findings/{pvId}/{findingId}/cves.
+
+        The response is a nested dict keyed by CVE ID::
+
+            {
+              "CVE-XXXX": {
+                "results": {
+                  "results": [
+                    {
+                      "descriptions": [
+                        {"lang": "en", "value": "..."},
+                        {"lang": "es", "value": "..."}
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+
+        Returns the English NVD description string, or empty string on failure.
+        """
+        import time
+
+        url = (
+            f"{self.api_client.base_url}/public/v0/findings"
+            f"/{project_version_id}/{finding_numeric_id}/cves"
+        )
+        result = ""
+        try:
+            resp = self.api_client.client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            # Navigate the nested structure: data[cveId].results.results[0].descriptions
+            if isinstance(data, dict):
+                cve_entry = data.get(cve_id, {})
+                if isinstance(cve_entry, dict):
+                    results_outer = cve_entry.get("results", {})
+                    if isinstance(results_outer, dict):
+                        results_inner = results_outer.get("results", [])
+                        if isinstance(results_inner, list) and results_inner:
+                            descriptions = results_inner[0].get("descriptions", [])
+                            # Prefer English description
+                            for desc in descriptions:
+                                if isinstance(desc, dict) and desc.get("lang") == "en":
+                                    result = desc.get("value", "")
+                                    break
+                            # Fall back to first available description
+                            if not result and descriptions:
+                                first = descriptions[0]
+                                if isinstance(first, dict):
+                                    result = first.get("value", "")
+            if result:
+                self.logger.debug(
+                    f"  {cve_id}: fetched description ({len(result)} chars)"
+                )
+        except Exception as exc:
+            self.logger.warning(
+                f"Could not fetch CVE description for {cve_id} "
+                f"(pv={project_version_id}, finding={finding_numeric_id}): {exc}"
+            )
+        # Polite delay between API calls
+        time.sleep(0.3)
+        return result
+
+    def _fetch_cve_exploits(
+        self, project_version_id: str, finding_numeric_id: str, cve_id: str
+    ) -> list[dict]:
+        """Fetch exploit details from /findings/{pvId}/{findingId}/exploits.
+
+        The response is a nested dict keyed by CVE ID::
+
+            {
+              "CVE-XXXX": {
+                "request": {
+                  "exploits": [
+                    {
+                      "url": "https://...",
+                      "name": "exploit description",
+                      "refsource": "github-exploits",
+                      "exploit_maturity": "poc",
+                      "exploit_type": "denial-of-service",
+                      ...
+                    }
+                  ],
+                  "counts": {"exploits": 5, ...},
+                  "epss": {...}
+                }
+              }
+            }
+
+        Returns a list of exploit detail dicts, or empty list on failure.
+        """
+        import time
+
+        url = (
+            f"{self.api_client.base_url}/public/v0/findings"
+            f"/{project_version_id}/{finding_numeric_id}/exploits"
+        )
+        result: list[dict] = []
+        try:
+            resp = self.api_client.client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict):
+                # Navigate: data[cveId].request.exploits
+                cve_entry = data.get(cve_id, {})
+                if isinstance(cve_entry, dict):
+                    request_obj = cve_entry.get("request", {})
+                    if isinstance(request_obj, dict):
+                        exploits_list = request_obj.get("exploits", [])
+                        if isinstance(exploits_list, list):
+                            result = exploits_list
+            elif isinstance(data, list):
+                result = data
+            if result:
+                self.logger.debug(f"  {cve_id}: fetched {len(result)} exploit details")
+        except Exception as exc:
+            self.logger.warning(
+                f"Could not fetch exploit details for {cve_id} "
+                f"(pv={project_version_id}, finding={finding_numeric_id}): {exc}"
+            )
+        # Polite delay between API calls
+        time.sleep(0.3)
+        return result
 
     def _fetch_scans_with_early_termination(
         self, query_config: "QueryConfig"

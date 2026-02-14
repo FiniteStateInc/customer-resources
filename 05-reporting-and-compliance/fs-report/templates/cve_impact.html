@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CVE Impact - Finite State Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6; color: #333; background-color: #f8f9fa;
+        }
+        .container { margin: 0 auto; padding: 20px; background: white; border: 1px solid #dee2e6; min-height: 100%; }
+        .header { text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid #e9ecef; }
+        .header h1 { color: #2c3e50; font-size: 2.2em; margin-bottom: 8px; }
+        .header .subtitle { color: #6c757d; font-size: 1.05em; }
+        .company-logo { max-height: 50px; width: auto; margin: 0 auto 15px; display: block; }
+        .metadata { background: #f8f9fa; padding: 12px 15px; border-radius: 8px; margin-bottom: 25px; font-size: 0.9em; color: #6c757d; }
+
+        /* Summary cards */
+        .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .summary-card { background: white; border-radius: 8px; padding: 18px; border: 1px solid #dee2e6; text-align: center; }
+        .summary-card h3 { color: #495057; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+        .summary-card .value { font-size: 2em; font-weight: 700; color: #2c3e50; }
+        .summary-card .sub { color: #6c757d; font-size: 0.8em; margin-top: 2px; }
+
+        /* Charts */
+        .chart-container { background: white; border-radius: 8px; padding: 20px; margin-bottom: 25px; border: 1px solid #dee2e6; }
+        .chart-title { color: #2c3e50; font-size: 1.3em; margin-bottom: 5px; }
+        .chart-desc { color: #6c757d; font-size: 0.9em; margin-bottom: 15px; }
+        .chart-wrapper { position: relative; height: 350px; }
+
+        /* Badges */
+        .severity-badge { padding: 3px 10px; border-radius: 4px; font-size: 0.75em; font-weight: 700; text-transform: uppercase; display: inline-block; }
+        .severity-CRITICAL { background: #dc3545; color: white; }
+        .severity-HIGH { background: #fd7e14; color: white; }
+        .severity-MEDIUM { background: #ffc107; color: #333; }
+        .severity-LOW { background: #28a745; color: white; }
+        .severity-INFO, .severity-UNKNOWN { background: #6c757d; color: white; }
+
+        .reach-badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }
+        .reach-REACHABLE { background: #dc3545; color: white; }
+        .reach-UNREACHABLE { background: #28a745; color: white; }
+        .reach-INCONCLUSIVE { background: #6c757d; color: white; }
+
+        .kev-badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; background: #dc3545; color: white; }
+        .exploit-badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; background: #fd7e14; color: white; }
+
+        /* Search bar */
+        .search-bar { margin-bottom: 20px; }
+        .search-bar input { width: 100%; padding: 10px 15px; border: 1px solid #dee2e6; border-radius: 6px; font-size: 0.95em; }
+        .search-bar input:focus { outline: none; border-color: #007bff; box-shadow: 0 0 0 3px rgba(0,123,255,0.15); }
+
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #e9ecef; }
+        th { background: #f8f9fa; font-weight: 600; color: #495057; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.3px; }
+        tr:hover { background: #f8f9fa; }
+        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+        /* Summary table container */
+        .table-container { background: white; border-radius: 8px; padding: 20px; margin-bottom: 25px; border: 1px solid #dee2e6; }
+        .table-container h2 { color: #2c3e50; font-size: 1.3em; margin-bottom: 10px; }
+
+        /* Dossier sections */
+        .dossier { background: white; border: 1px solid #dee2e6; border-radius: 10px; margin-bottom: 30px; overflow: hidden; }
+        .dossier-header { padding: 20px 25px; border-bottom: 1px solid #e9ecef; display: flex; align-items: center; gap: 15px; flex-wrap: wrap; }
+        .dossier-header h2 { font-size: 1.4em; color: #2c3e50; }
+        .dossier-header h2 a { color: #007bff; text-decoration: none; }
+        .dossier-header h2 a:hover { text-decoration: underline; }
+        .dossier-body { padding: 20px 25px; }
+        .dossier-description { color: #495057; font-size: 1em; margin-bottom: 18px; line-height: 1.7; }
+        .dossier-meta { display: flex; gap: 25px; flex-wrap: wrap; margin-bottom: 20px; padding: 12px 15px; background: #f8f9fa; border-radius: 6px; font-size: 0.9em; }
+        .dossier-meta .meta-item { display: flex; align-items: center; gap: 6px; }
+        .dossier-meta .meta-label { font-weight: 600; color: #495057; }
+
+        .dossier-section { margin-bottom: 20px; }
+        .dossier-section h3 { font-size: 1.05em; color: #2c3e50; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px solid #e9ecef; }
+        .empty-state { color: #6c757d; font-style: italic; padding: 10px 0; }
+
+        .reach-summary { font-size: 0.95em; margin-bottom: 12px; padding: 10px 15px; background: #f8f9fa; border-radius: 6px; }
+        .reach-summary .reach-count { font-weight: 700; }
+        .reach-summary .reach-count.danger { color: #dc3545; }
+        .reach-summary .reach-count.safe { color: #28a745; }
+
+        /* Show more */
+        .hidden-row { display: none; }
+        .show-more-btn { background: none; border: 1px solid #dee2e6; padding: 6px 16px; border-radius: 4px; cursor: pointer; color: #007bff; font-size: 0.85em; }
+        .show-more-btn:hover { background: #f0f6ff; }
+
+        .footer { text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e9ecef; color: #6c757d; font-size: 0.9em; }
+        .finite-state-logo { color: #007bff; font-weight: bold; }
+
+        .no-data { text-align: center; color: #6c757d; font-style: italic; padding: 60px 20px; }
+
+        /* Entity links */
+        .entity-link { color: #007bff; text-decoration: none; }
+        .entity-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <img src="https://finitestate.io/hs-fs/hubfs/FS-Logo-Final-01.png?width=256&height=50&name=FS-Logo-Final-01.png"
+             alt="Finite State Logo" class="company-logo">
+        <h1>CVE Impact</h1>
+        <div class="subtitle">
+            {% if mode == 'dossier' %}CVE Dossier Report{% else %}Portfolio CVE Summary{% endif %}
+        </div>
+    </div>
+
+    <div class="metadata">
+        <strong>Report:</strong> {{ recipe_name }} |
+        <strong>Generated:</strong> {{ generated_at }} |
+        <strong>Date Range:</strong> {{ start_date }} to {{ end_date }}
+        {% if mode == 'dossier' %} | <strong>CVEs:</strong> {{ dossiers | length }}{% endif %}
+    </div>
+
+    {% if summary and summary.total_cves > 0 %}
+
+    <!-- ===== Summary Cards ===== -->
+    <div class="summary-cards">
+        {% if mode == 'dossier' %}
+        {# Dossier mode: focused cards for the selected CVE(s) #}
+        <div class="summary-card">
+            <h3>Severity</h3>
+            <div class="value"><span class="severity-badge severity-{{ summary.worst_severity|default('UNKNOWN') }}">{{ summary.worst_severity|default('UNKNOWN') }}</span></div>
+            <div class="sub">CVSS {{ "%.1f"|format(summary.worst_cvss|default(0)) }}</div>
+        </div>
+        <div class="summary-card">
+            <h3>Projects</h3>
+            <div class="value">{{ summary.total_projects }}</div>
+        </div>
+        <div class="summary-card">
+            <h3>Reachable</h3>
+            <div class="value" style="color:#dc3545">{{ summary.total_reachable }}</div>
+            <div class="sub">CVE-project pairs</div>
+        </div>
+        <div class="summary-card">
+            <h3>Unreachable</h3>
+            <div class="value" style="color:#28a745">{{ summary.total_unreachable }}</div>
+            <div class="sub">CVE-project pairs</div>
+        </div>
+        <div class="summary-card">
+            <h3>Attack Vector</h3>
+            <div class="value" style="font-size:1.2em">{{ summary.worst_attack_vector|default('N/A') }}</div>
+        </div>
+        {% else %}
+        {# Summary mode: portfolio-wide counts #}
+        <div class="summary-card">
+            <h3>Unique CVEs</h3>
+            <div class="value">{{ summary.total_cves }}</div>
+        </div>
+        <div class="summary-card">
+            <h3>Projects</h3>
+            <div class="value">{{ summary.total_projects }}</div>
+        </div>
+        <div class="summary-card">
+            <h3>Critical</h3>
+            <div class="value" style="color:#dc3545">{{ summary.severity_counts.get('CRITICAL', 0) }}</div>
+        </div>
+        <div class="summary-card">
+            <h3>High</h3>
+            <div class="value" style="color:#fd7e14">{{ summary.severity_counts.get('HIGH', 0) }}</div>
+        </div>
+        <div class="summary-card">
+            <h3>Medium</h3>
+            <div class="value" style="color:#b8860b">{{ summary.severity_counts.get('MEDIUM', 0) }}</div>
+        </div>
+        <div class="summary-card">
+            <h3>Low</h3>
+            <div class="value" style="color:#28a745">{{ summary.severity_counts.get('LOW', 0) }}</div>
+        </div>
+        <div class="summary-card">
+            <h3>Info / Unknown</h3>
+            <div class="value" style="color:#6c757d">{{ summary.severity_counts.get('INFO', 0) + summary.severity_counts.get('UNKNOWN', 0) }}</div>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if mode == 'summary' %}
+    <!-- ===== MODE A: Portfolio Summary ===== -->
+
+    <!-- Severity distribution chart -->
+    {% if summary.severity_counts %}
+    <div class="chart-container">
+        <h2 class="chart-title">CVE Severity Distribution</h2>
+        <p class="chart-desc">Number of unique CVEs by severity level across the portfolio</p>
+        <div class="chart-wrapper">
+            <canvas id="severityDistChart"></canvas>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Top CVEs by project spread -->
+    {% if summary.top_cves %}
+    <div class="chart-container">
+        <h2 class="chart-title">Top CVEs by Project Spread</h2>
+        <p class="chart-desc">CVEs affecting the most projects</p>
+        <div class="chart-wrapper">
+            <canvas id="topCvesChart"></canvas>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Search + summary table -->
+    <div class="table-container">
+        <h2>CVE Summary</h2>
+        <div class="search-bar">
+            <input type="text" id="cveSearch" placeholder="Search by CVE ID, project, or component..."
+                   onkeyup="filterTable()">
+        </div>
+        {% if table_data and table_data.rows %}
+        <table id="cveSummaryTable">
+            <thead>
+                <tr>
+                    <th>CVE ID</th>
+                    <th>Severity</th>
+                    <th>CVSS</th>
+                    <th>Projects</th>
+                    <th>KEV</th>
+                    <th>EPSS</th>
+                    <th>Exploits</th>
+                    <th>Components</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in table_data.rows %}
+                <tr>
+                    <td><a href="https://nvd.nist.gov/vuln/detail/{{ row.get('CVE ID', '') }}" target="_blank" rel="noopener">{{ row.get('CVE ID', '') }}</a></td>
+                    <td><span class="severity-badge severity-{{ row.get('Severity', 'UNKNOWN') }}">{{ row.get('Severity', '') }}</span></td>
+                    <td class="num">{{ "%.1f"|format(row.get('CVSS', 0)) }}</td>
+                    <td class="num">{{ row.get('Affected Projects', 0) }}</td>
+                    <td>{% if row.get('KEV') %}<span class="kev-badge">KEV</span>{% endif %}</td>
+                    <td class="num">{{ "%.1f"|format(row.get('EPSS Percentile', 0) * 100) }}%</td>
+                    <td class="num">{{ row.get('Exploits', 0) }}</td>
+                    <td>{{ row.get('Components', '')[:60] }}{% if row.get('Components', '')|length > 60 %}...{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="empty-state">No CVE data available.</p>
+        {% endif %}
+    </div>
+
+    {% else %}
+    <!-- ===== MODE B: CVE Dossiers ===== -->
+
+    {% for d in dossiers %}
+    <div class="dossier" id="dossier-{{ loop.index }}">
+        <div class="dossier-header">
+            <h2><a href="{{ d.nvd_url }}" target="_blank" rel="noopener">{{ d.cve_id }}</a></h2>
+            <span class="severity-badge severity-{{ d.severity }}">{{ d.severity }}</span>
+            <span style="font-size:1.1em;font-weight:700">CVSS {{ "%.1f"|format(d.cvss) }}</span>
+            {% if d.kev %}<span class="kev-badge">CISA KEV</span>{% endif %}
+            {% if d.has_exploit %}<span class="exploit-badge">Known Exploit</span>{% endif %}
+        </div>
+        <div class="dossier-body">
+            <!-- Description (prefer full NVD description, fall back to title) -->
+            {% if d.description %}
+            <p class="dossier-description">{{ d.description }}</p>
+            {% elif d.title %}
+            <p class="dossier-description">{{ d.title }}</p>
+            {% endif %}
+
+            <!-- Vulnerability details -->
+            <div class="dossier-meta">
+                {% if d.cwe %}
+                <div class="meta-item">
+                    <span class="meta-label">CWE:</span>
+                    {% if d.cwe_url %}<a href="{{ d.cwe_url }}" target="_blank" rel="noopener">{{ d.cwe }}</a>{% else %}{{ d.cwe }}{% endif %}
+                </div>
+                {% endif %}
+                <div class="meta-item">
+                    <span class="meta-label">EPSS:</span>
+                    {{ "%.1f"|format(d.epss_percentile * 100) }}th percentile
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">First Detected:</span>
+                    {{ d.first_detected[:10] if d.first_detected else 'N/A' }}
+                </div>
+                <div class="meta-item">
+                    <span class="meta-label">Last Detected:</span>
+                    {{ d.last_detected[:10] if d.last_detected else 'N/A' }}
+                </div>
+                {% if d.attack_vector and d.attack_vector != 'N/A' %}
+                <div class="meta-item">
+                    <span class="meta-label">Attack Vector:</span>
+                    {{ d.attack_vector }}
+                </div>
+                {% endif %}
+                {% if d.vuln_functions %}
+                <div class="meta-item">
+                    <span class="meta-label">Vulnerable Functions:</span>
+                    {{ d.vuln_functions }}
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Known exploits -->
+            <div class="dossier-section">
+                <h3>Known Exploits</h3>
+                {% if d.exploit_details and d.exploit_details|length > 0 %}
+                <table>
+                    <thead>
+                        <tr><th>Source</th><th>URL</th><th>Description</th><th>Maturity</th><th>Type</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for exp in d.exploit_details %}
+                        <tr>
+                            <td>{{ exp.source }}</td>
+                            <td>{% if exp.url %}<a href="{{ exp.url }}" target="_blank" rel="noopener">{{ exp.url[:60] }}{% if exp.url|length > 60 %}...{% endif %}</a>{% else %}-{% endif %}</td>
+                            <td>{{ exp.description[:150] }}{% if exp.description|length > 150 %}...{% endif %}</td>
+                            <td>{{ exp.maturity|default('-', true) }}</td>
+                            <td>{{ exp.type|default('-', true) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="empty-state">None known.</p>
+                {% endif %}
+            </div>
+
+            <!-- AI Prompt (when --ai-prompts) — placed before Affected Projects for quick access -->
+            {% if d.ai_prompt %}
+            <div class="dossier-section">
+                <details>
+                    <summary style="cursor:pointer;color:#007bff;font-weight:600;font-size:0.95em;">
+                        AI Prompt (click to expand, copy &amp; paste into any LLM)
+                    </summary>
+                    <div style="position:relative;margin-top:10px;">
+                        <button onclick="copyPrompt(this)" style="position:absolute;top:5px;right:5px;padding:4px 10px;font-size:0.8em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
+                        <pre style="background:#f8f9fa;padding:15px;border-radius:6px;font-size:0.85em;white-space:pre-wrap;word-wrap:break-word;max-height:400px;overflow-y:auto;">{{ d.ai_prompt }}</pre>
+                    </div>
+                </details>
+            </div>
+            {% endif %}
+
+            <!-- AI Remediation Guidance (when --ai) — placed just above Affected Projects -->
+            {% if d.ai_guidance %}
+            <div class="dossier-section" style="border-left: 4px solid #6f42c1; padding-left: 15px;">
+                <h3>AI Remediation Guidance</h3>
+                <table>
+                    <tbody>
+                        <tr><td style="font-weight:600;width:130px">Fix Version</td><td>{{ d.ai_guidance.fix_version|default('-') }}</td></tr>
+                        <tr><td style="font-weight:600">Guidance</td><td>{{ d.ai_guidance.guidance|default('-') }}</td></tr>
+                        <tr><td style="font-weight:600">Workaround</td><td>{{ d.ai_guidance.workaround|default('-') }}</td></tr>
+                        <tr><td style="font-weight:600">Code Search</td><td><code>{{ d.ai_guidance.code_search_hints|default('-') }}</code></td></tr>
+                        <tr><td style="font-weight:600">Confidence</td><td>{{ d.ai_guidance.confidence|default('-') }}</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+
+            <!-- Reachability summary -->
+            <div class="dossier-section">
+                <h3>Affected Projects</h3>
+                <div class="reach-summary">
+                    Affects <strong>{{ d.affected_count }}</strong> project{{ 's' if d.affected_count != 1 else '' }}.
+                    {% if d.reachable_count > 0 %}
+                    <span class="reach-count danger">Reachable in {{ d.reachable_count }}</span>.
+                    {% endif %}
+                    {% if d.unreachable_count > 0 %}
+                    <span class="reach-count safe">Unreachable in {{ d.unreachable_count }}</span>.
+                    {% endif %}
+                    {% if d.unknown_count > 0 %}
+                    Inconclusive in {{ d.unknown_count }}.
+                    {% endif %}
+                </div>
+
+                <!-- Per-project table -->
+                {% if d.project_details and d.project_details|length > 0 %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Project</th>
+                            <th>Version</th>
+                            <th>Reachability</th>
+                            <th>Component</th>
+                            <th>Status</th>
+                            <th>Detected</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for p in d.project_details %}
+                        <tr{% if p.reachability_label == 'REACHABLE' %} style="background:#fff5f5"{% endif %}>
+                            <td>{% if domain and p.project_id %}<a href="https://{{ domain }}/projects/{{ p.project_id }}/" target="_blank" rel="noopener" class="entity-link" title="View project in Finite State">{{ p.project_name }}</a>{% else %}{{ p.project_name }}{% endif %}</td>
+                            <td>{% if domain and p.project_id and p.project_version_id %}<a href="https://{{ domain }}/projects/{{ p.project_id }}/versions/{{ p.project_version_id }}/overview" target="_blank" rel="noopener" class="entity-link" title="View version in Finite State">{{ p.project_version }}</a>{% else %}{{ p.project_version }}{% endif %}</td>
+                            <td><span class="reach-badge reach-{{ p.reachability_label }}">{{ p.reachability_label }}</span></td>
+                            <td>{% if domain and p.project_id and p.project_version_id and p.component_id %}<a href="https://{{ domain }}/projects/{{ p.project_id }}/versions/{{ p.project_version_id }}/bill-of-materials?view=list&componentId={{ p.component_id }}" target="_blank" rel="noopener" class="entity-link" title="View component in Finite State">{{ p.component }}</a>{% else %}{{ p.component }}{% endif %}</td>
+                            <td>{{ p.triage_status|default('-') if p.triage_status else '-' }}</td>
+                            <td>{{ p.detected[:10] if p.detected else '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+            </div>
+
+        </div>
+    </div>
+    {% endfor %}
+
+    {% endif %}
+
+    {% else %}
+    <div class="no-data">
+        <p>No CVE data available for the selected filters.</p>
+    </div>
+    {% endif %}
+
+    <div class="footer">
+        <p>Generated by <span class="finite-state-logo">Finite State</span> | {{ generated_at }}</p>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    {% if summary and summary.total_cves > 0 and mode == 'summary' %}
+
+    // --- Severity Distribution Chart ---
+    {% if summary.severity_counts %}
+    const sevCounts = {{ summary.severity_counts | tojson }};
+    const sevOrder = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO', 'UNKNOWN'];
+    const sevColors = { CRITICAL: '#dc3545', HIGH: '#fd7e14', MEDIUM: '#ffc107', LOW: '#28a745', INFO: '#6c757d', UNKNOWN: '#adb5bd' };
+    const activeSevs = sevOrder.filter(s => sevCounts[s]);
+    const sevCtx = document.getElementById('severityDistChart');
+    if (sevCtx) {
+        new Chart(sevCtx.getContext('2d'), {
+            type: 'doughnut',
+            data: {
+                labels: activeSevs,
+                datasets: [{
+                    data: activeSevs.map(s => sevCounts[s]),
+                    backgroundColor: activeSevs.map(s => sevColors[s] || '#adb5bd')
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { position: 'bottom' } }
+            }
+        });
+    }
+    {% endif %}
+
+    // --- Top CVEs Chart ---
+    {% if summary.top_cves %}
+    const topCves = {{ summary.top_cves | tojson }};
+    const topCtx = document.getElementById('topCvesChart');
+    if (topCtx) {
+        new Chart(topCtx.getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: topCves.map(c => c.cve_id),
+                datasets: [{
+                    label: 'Affected Projects',
+                    data: topCves.map(c => c.count),
+                    backgroundColor: topCves.map(c => sevColors[c.severity] || '#6c757d')
+                }]
+            },
+            options: {
+                indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+                scales: { x: { beginAtZero: true, title: { display: true, text: 'Projects Affected' } } },
+                plugins: { legend: { display: false } }
+            }
+        });
+    }
+    {% endif %}
+
+    {% endif %}
+});
+
+function filterTable() {
+    const q = document.getElementById('cveSearch').value.toLowerCase();
+    const rows = document.querySelectorAll('#cveSummaryTable tbody tr');
+    rows.forEach(row => {
+        row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+}
+
+function copyPrompt(btn) {
+    const pre = btn.parentElement.querySelector('pre');
+    if (pre) {
+        navigator.clipboard.writeText(pre.textContent).then(() => {
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+        });
+    }
+}
+</script>
+</body>
+</html>

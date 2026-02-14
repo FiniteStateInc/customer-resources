@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 FINDING_FIELDS = {
     "id": "id",
     "findingId": "finding_id",
+    "title": "title",
     "severity": "severity",
     "status": "status",
     "risk": "risk",
@@ -124,6 +125,24 @@ PROJECT_FIELDS = {
     "defaultBranch.latestVersion.id": "default_branch_latest_version_id",
 }
 
+CVE_FIELDS = {
+    "cveId": "cve_id",
+    "severity": "severity",
+    "risk": "risk",
+    "cwes": "cwes",  # Stored as JSON array
+    "exploitInfo": "exploit_info",  # Stored as JSON array
+    "exploitMaturity": "exploit_maturity",
+    "epssPercentile": "epss_percentile",
+    "epssScore": "epss_score",
+    "inKev": "in_kev",
+    "inVcKev": "in_vc_kev",
+    "firstDetected": "first_detected",
+    "lastDetected": "last_detected",
+    "affectedProjects": "affected_projects",  # Stored as JSON array
+    "affectedComponents": "affected_components",  # Stored as JSON array
+    "cvssSeverity": "cvss_severity",  # Stored as JSON object
+}
+
 AUDIT_FIELDS = {
     "user": "user",
     "time": "time",
@@ -143,6 +162,7 @@ ENDPOINT_FIELD_MAP = {
     "/components": COMPONENT_FIELDS,
     "/projects": PROJECT_FIELDS,
     "/audit": AUDIT_FIELDS,
+    "/cves": CVE_FIELDS,
 }
 
 
@@ -167,6 +187,7 @@ CREATE TABLE IF NOT EXISTS findings (
     query_hash TEXT NOT NULL,
     id TEXT NOT NULL,
     finding_id TEXT,
+    title TEXT,
     severity TEXT,
     status TEXT,
     risk REAL,
@@ -260,6 +281,27 @@ CREATE TABLE IF NOT EXISTS audit_events (
     app_version TEXT,
     component TEXT,
     data TEXT
+);
+
+-- CVEs table (pre-aggregated by CVE ID from /public/v0/cves)
+CREATE TABLE IF NOT EXISTS cves (
+    query_hash TEXT NOT NULL,
+    cve_id TEXT NOT NULL,
+    severity TEXT,
+    risk REAL,
+    cwes TEXT,
+    exploit_info TEXT,
+    exploit_maturity TEXT,
+    epss_percentile REAL,
+    epss_score REAL,
+    in_kev INTEGER,
+    in_vc_kev INTEGER,
+    first_detected TEXT,
+    last_detected TEXT,
+    affected_projects TEXT,
+    affected_components TEXT,
+    cvss_severity TEXT,
+    PRIMARY KEY (query_hash, cve_id)
 );
 
 -- LLM-generated remediation guidance (keyed by CVE)
@@ -483,7 +525,10 @@ def get_table_for_endpoint(endpoint: str) -> str:
                    dynamic table name creation from untrusted input)
     """
     endpoint_lower = endpoint.lower()
-    if "/findings" in endpoint_lower:
+    # Check /cves before /components to avoid false match on substrings
+    if endpoint_lower.endswith("/cves") or "/cves?" in endpoint_lower:
+        return "cves"
+    elif "/findings" in endpoint_lower:
         return "findings"
     elif "/scans" in endpoint_lower:
         return "scans"
@@ -496,7 +541,7 @@ def get_table_for_endpoint(endpoint: str) -> str:
     else:
         raise ValueError(
             f"Unknown endpoint '{endpoint}'. SQLite cache only supports: "
-            "findings, scans, components, projects, audit. "
+            "findings, scans, components, projects, audit, cves. "
             "Data from this endpoint will not be cached."
         )
 
@@ -608,6 +653,7 @@ class SQLiteCache:
             ("findings", "factors", "TEXT"),
             ("findings", "has_known_exploit", "INTEGER"),
             ("findings", "component_vc_id", "TEXT"),
+            ("findings", "title", "TEXT"),
             ("projects", "default_branch_latest_version_id", "TEXT"),
         ]
         for table, col, col_type in migrations:
@@ -783,6 +829,9 @@ class SQLiteCache:
                     "component",
                     "data",
                     "factors",
+                    "affected_projects",
+                    "affected_components",
+                    "cvss_severity",
                 ):
                     try:
                         value = json.loads(value) if value else None

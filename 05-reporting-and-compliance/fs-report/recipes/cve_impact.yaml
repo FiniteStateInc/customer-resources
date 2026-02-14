@@ -1,0 +1,16 @@
+name: "CVE Impact"
+category: assessment
+template: "cve_impact.html"
+description: "CVE-centric dossier showing affected projects, reachability, exploits, and risk details per CVE"
+execution_order: 20
+auto_run: false
+
+query:
+  endpoint: "/public/v0/cves"
+  params:
+    limit: 10000
+
+transform_function: cve_impact_pandas_transform
+output:
+  table: true
+  charts: []

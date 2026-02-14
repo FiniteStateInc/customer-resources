@@ -69,12 +69,15 @@
         .band-LOW { background-color: #28a745; }
         .band-INFO { background-color: #6c757d; }
 
+        /* Reachability badges (matches CVE Impact styling) */
+        .reach-badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }
+        .reach-REACHABLE { background: #dc3545; color: white; }
+        .reach-UNREACHABLE { background: #28a745; color: white; }
+        .reach-INCONCLUSIVE { background: #6c757d; color: white; }
+
         /* Icons */
         .icon-exploit { color: #6f42c1; }
         .icon-kev { color: #dc3545; }
-        .icon-reachable { color: #28a745; }
-        .icon-unreachable { color: #6c757d; }
-        .icon-unknown { color: #ffc107; }
 
         /* Entity links */
         a.entity-link { color: #007bff; text-decoration: none; font-weight: 500; }
@@ -232,7 +235,7 @@
 
             <h4>Additive Scoring (Remaining Findings)</h4>
             <ul>
-                <li><strong>Reachability</strong>: +30 (reachable), 0 (unknown), −15 (unreachable)</li>
+                <li><strong>Reachability</strong>: +30 (reachable), 0 (inconclusive), −15 (unreachable)</li>
                 <li><strong>Exploit/KEV</strong>: +25 (exploit), +20 (KEV only)</li>
                 <li><strong>Attack Vector</strong>: +15 (NETWORK), +10 (ADJACENT), +5 (LOCAL), 0 (PHYSICAL)</li>
                 <li><strong>EPSS</strong>: 0–20 points (scaled by percentile)</li>
@@ -242,9 +245,9 @@
 
             <h4>Reachability Interpretation</h4>
             <ul>
-                <li>🟢 <strong>Positive</strong> (score &gt; 0): Code path is reachable — vulnerability can be triggered</li>
-                <li>🟡 <strong>Zero</strong> (score = 0): Unknown — reachability analysis inconclusive</li>
-                <li>🔴 <strong>Negative</strong> (score &lt; 0): Unreachable — code path cannot be triggered</li>
+                <li><span class="reach-badge reach-REACHABLE">REACHABLE</span> (score &gt; 0): Code path is reachable — vulnerability can be triggered</li>
+                <li><span class="reach-badge reach-INCONCLUSIVE">INCONCLUSIVE</span> (score = 0): Reachability analysis inconclusive or not analyzed</li>
+                <li><span class="reach-badge reach-UNREACHABLE">UNREACHABLE</span> (score &lt; 0): Code path cannot be triggered</li>
             </ul>
         </div>
 
@@ -440,9 +443,9 @@
                             {% endif %}
                         </td>
                         <td>
-                            {% if row.reachability_score is defined and row.reachability_score > 0 %}<span class="icon-reachable">🟢 Reachable</span>
-                            {% elif row.reachability_score is defined and row.reachability_score < 0 %}<span class="icon-unreachable">🔴 Unreachable</span>
-                            {% else %}<span class="icon-unknown">🟡 Unknown</span>{% endif %}
+                            {% if row.reachability_score is defined and row.reachability_score > 0 %}<span class="reach-badge reach-REACHABLE">REACHABLE</span>
+                            {% elif row.reachability_score is defined and row.reachability_score < 0 %}<span class="reach-badge reach-UNREACHABLE">UNREACHABLE</span>
+                            {% else %}<span class="reach-badge reach-INCONCLUSIVE">INCONCLUSIVE</span>{% endif %}
                         </td>
                         <td>{{ row.reachability_score|int if row.reachability_score else '—' }}</td>
                         <td>{{ row.vuln_functions if row.vuln_functions else '—' }}</td>

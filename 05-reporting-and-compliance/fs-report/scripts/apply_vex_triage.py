@@ -50,7 +50,7 @@ except ImportError:
 try:
     from tqdm import tqdm
 except ImportError:
-    tqdm = None  # type: ignore[assignment]
+    tqdm = None  # type: ignore[assignment, misc]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,13 +105,13 @@ DEFAULT_API_JUSTIFICATION = "CODE_NOT_PRESENT"
 
 def get_smart_defaults(
     vex_status: str,
-    reachability_label: str = "UNKNOWN",
+    reachability_label: str = "INCONCLUSIVE",
 ) -> tuple[str, str]:
     """Pick contextually appropriate response/justification enum defaults.
 
     Args:
         vex_status: The VEX status being set (e.g., EXPLOITABLE, NOT_AFFECTED).
-        reachability_label: REACHABLE, UNREACHABLE, or UNKNOWN from triage data.
+        reachability_label: REACHABLE, UNREACHABLE, or INCONCLUSIVE from triage data.
 
     Returns:
         (response_enum, justification_enum) tuple.
@@ -125,7 +125,7 @@ def get_smart_defaults(
     return (DEFAULT_API_RESPONSE, DEFAULT_API_JUSTIFICATION)
 
 
-def load_recommendations(input_path: str) -> list[dict]:
+def load_recommendations(input_path: str) -> list[dict[str, object]]:
     """Load VEX recommendations from JSON file."""
     path = Path(input_path)
     if not path.exists():
@@ -133,7 +133,7 @@ def load_recommendations(input_path: str) -> list[dict]:
         sys.exit(1)
 
     with open(path) as f:
-        recs = json.load(f)
+        recs: list[dict[str, object]] = json.load(f)
 
     logger.info(f"Loaded {len(recs)} VEX recommendations from {input_path}")
     return recs
@@ -167,7 +167,7 @@ def validate_recommendations(recs: list[dict]) -> tuple[list[dict], list[dict]]:
 
     for rec in recs:
         internal_id = rec.get("id", "")
-        finding_id = rec.get("finding_id", "")
+        _finding_id = rec.get("finding_id", "")  # noqa: F841 – kept for debugging
         pv_id = rec.get("project_version_id", "")
         vex_status = rec.get("recommended_vex_status", "")
 
@@ -213,7 +213,7 @@ def apply_vex_status(
     reason: str,
     response_enum: str | None = None,
     justification_enum: str | None = None,
-    reachability_label: str = "UNKNOWN",
+    reachability_label: str = "INCONCLUSIVE",
 ) -> dict:
     """
     Update a finding's VEX status via the API with retry on rate-limit/server errors.
@@ -472,7 +472,7 @@ def main() -> None:
     if args.dry_run:
         print("\n[DRY RUN] No changes will be made.")
         for rec in valid_recs[:10]:
-            reach = rec.get("reachability_label", "UNKNOWN")
+            reach = rec.get("reachability_label", "INCONCLUSIVE")
             default_resp, default_just = get_smart_defaults(
                 rec["recommended_vex_status"], reach
             )
@@ -512,7 +512,7 @@ def main() -> None:
         pv_id = rec["project_version_id"]
         vex_status = rec["recommended_vex_status"]
         reason = rec.get("reason", "")
-        reachability_label = rec.get("reachability_label", "UNKNOWN")
+        reachability_label = rec.get("reachability_label", "INCONCLUSIVE")
 
         # Each thread gets its own client to avoid connection sharing issues
         client = httpx.Client(
@@ -550,7 +550,7 @@ def main() -> None:
             desc="Applying VEX updates",
             unit="finding",
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]  {postfix}",
-        ) if tqdm else None
+        ) if tqdm is not None else None
 
         for future in as_completed(futures):
             result = future.result()
@@ -577,7 +577,7 @@ def main() -> None:
     # Final summary
     rate = len(results) / elapsed if elapsed > 0 else 0
     print(f"\n{'=' * 60}")
-    print(f"VEX Update Results")
+    print("VEX Update Results")
     print(f"{'=' * 60}")
     print(f"Total processed: {len(results)}")
     print(f"Succeeded:       {succeeded}")
@@ -593,7 +593,7 @@ def main() -> None:
             if not r.get("success"):
                 code = str(r.get("status_code", "connection_error"))
                 error_codes[code] = error_codes.get(code, 0) + 1
-        print(f"\nFailures by error code:")
+        print("\nFailures by error code:")
         for code, count in sorted(error_codes.items()):
             print(f"  HTTP {code}: {count}")
 

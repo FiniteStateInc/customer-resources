@@ -5,11 +5,12 @@ Implements a tiered-gates scoring model that prioritizes findings based on
 real-world exploitability and reachability rather than CVSS alone.
 
 Gate 1 (CRITICAL): Reachable + (Exploit OR KEV) — imminent threat
-Gate 2 (HIGH): Single strong signal + amplifying factor
+Gate 2 (HIGH): (Reachable or inconclusive) AND NETWORK AND EPSS >= 50%
 Additive scoring: Points-based scoring for remaining findings
 """
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -17,7 +18,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# Constants
+# Constants (defaults — can be overridden via recipe parameters or --scoring-file)
 # =============================================================================
 
 BAND_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
@@ -32,7 +33,7 @@ SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE"]
 
 # Additive scoring weights
 POINTS_REACHABLE = 30  # reachabilityScore > 0
-POINTS_UNKNOWN = 0  # reachabilityScore == 0
+POINTS_UNKNOWN = 0  # reachabilityScore == 0 (inconclusive)
 POINTS_UNREACHABLE = -15  # reachabilityScore < 0
 
 POINTS_EXPLOIT = 25  # Has known exploit
@@ -50,6 +51,84 @@ CVSS_MAX_POINTS = 10  # 10 × (score/10)
 BAND_HIGH_THRESHOLD = 70
 BAND_MEDIUM_THRESHOLD = 40
 BAND_LOW_THRESHOLD = 25
+
+# Default weights dict (built from module constants)
+DEFAULT_WEIGHTS: dict[str, int | float] = {
+    "reachable": POINTS_REACHABLE,
+    "unknown": POINTS_UNKNOWN,
+    "unreachable": POINTS_UNREACHABLE,
+    "exploit": POINTS_EXPLOIT,
+    "kev_only": POINTS_KEV_ONLY,
+    "vector_network": POINTS_VECTOR_NETWORK,
+    "vector_adjacent": POINTS_VECTOR_ADJACENT,
+    "vector_local": POINTS_VECTOR_LOCAL,
+    "vector_physical": POINTS_VECTOR_PHYSICAL,
+    "epss_max": EPSS_MAX_POINTS,
+    "cvss_max": CVSS_MAX_POINTS,
+    "band_high_threshold": BAND_HIGH_THRESHOLD,
+    "band_medium_threshold": BAND_MEDIUM_THRESHOLD,
+    "band_low_threshold": BAND_LOW_THRESHOLD,
+}
+
+
+def _load_weights(
+    config: Any = None,
+    additional_data: dict[str, Any] | None = None,
+) -> dict[str, int | float]:
+    """Load scoring weights with priority: --scoring-file > recipe parameters > defaults.
+
+    Returns a dict with all weight keys populated.
+    """
+    weights = dict(DEFAULT_WEIGHTS)
+
+    # Layer 1: recipe parameters (lowest priority override)
+    if additional_data:
+        recipe_params = additional_data.get("recipe_parameters", {})
+        recipe_weights = (
+            recipe_params.get("scoring_weights", {}) if recipe_params else {}
+        )
+        if recipe_weights and isinstance(recipe_weights, dict):
+            for k, v in recipe_weights.items():
+                if k in weights:
+                    weights[k] = v
+            logger.debug(
+                f"Applied {len(recipe_weights)} weights from recipe parameters"
+            )
+
+    # Layer 2: --scoring-file (highest priority override)
+    scoring_file = None
+    if config and hasattr(config, "scoring_file"):
+        scoring_file = getattr(config, "scoring_file", None)
+    elif additional_data and "config" in additional_data:
+        cfg = additional_data["config"]
+        scoring_file = getattr(cfg, "scoring_file", None)
+
+    if scoring_file:
+        try:
+            import yaml
+
+            path = Path(scoring_file)
+            if path.exists():
+                with open(path) as f:
+                    file_weights = yaml.safe_load(f) or {}
+                if isinstance(file_weights, dict):
+                    # Support both flat and nested (scoring_weights: {...}) formats
+                    if "scoring_weights" in file_weights:
+                        file_weights = file_weights["scoring_weights"]
+                    for k, v in file_weights.items():
+                        if k in weights:
+                            weights[k] = v
+                    logger.info(f"Applied scoring weights from {scoring_file}")
+                else:
+                    logger.warning(
+                        f"Scoring file {scoring_file} is not a valid YAML dict"
+                    )
+            else:
+                logger.warning(f"Scoring file not found: {scoring_file}")
+        except Exception as e:
+            logger.warning(f"Failed to load scoring file {scoring_file}: {e}")
+
+    return weights
 
 
 # =============================================================================
@@ -92,14 +171,17 @@ def triage_prioritization_transform(
     df = _normalize_columns(df)
     logger.debug(f"After normalization: {df.shape}, columns: {list(df.columns)}")
 
+    # Load scoring weights (--scoring-file > recipe parameters > defaults)
+    weights = _load_weights(config, additional_data)
+
     # Apply tiered gates scoring
-    df = apply_tiered_gates(df)
+    df = apply_tiered_gates(df, weights=weights)
 
     # Apply additive scoring for findings that didn't hit any gate
-    df = calculate_additive_score(df)
+    df = calculate_additive_score(df, weights=weights)
 
     # Assign risk bands
-    df = assign_risk_bands(df)
+    df = assign_risk_bands(df, weights=weights)
 
     # Sort by band priority then score (descending)
     band_priority = {b: i for i, b in enumerate(BAND_ORDER)}
@@ -118,7 +200,13 @@ def triage_prioritization_transform(
     factor_radar = build_factor_radar_data(df)
 
     # Build VEX triage recommendations
-    vex_recommendations = build_vex_recommendations(df)
+    vex_override = False
+    if config and hasattr(config, "vex_override"):
+        vex_override = bool(config.vex_override)
+    elif additional_data and "config" in additional_data:
+        cfg = additional_data["config"]
+        vex_override = bool(getattr(cfg, "vex_override", False))
+    vex_recommendations = build_vex_recommendations(df, vex_override=vex_override)
 
     logger.info(
         f"Triage complete: {len(df)} findings scored — "
@@ -128,6 +216,50 @@ def triage_prioritization_transform(
         f"LOW={portfolio_summary.get('LOW', 0)}, "
         f"INFO={portfolio_summary.get('INFO', 0)}"
     )
+
+    # AI prompt generation (optional, --ai-prompts flag)
+    ai_triage_prompts: list[dict[str, str]] = []
+    want_prompts = False
+    if config and hasattr(config, "ai_prompts"):
+        want_prompts = bool(config.ai_prompts)
+    elif additional_data and "config" in additional_data:
+        cfg = additional_data["config"]
+        want_prompts = bool(getattr(cfg, "ai_prompts", False))
+
+    if want_prompts:
+        # Determine which bands to generate prompts for (from recipe parameters)
+        recipe_params = (additional_data or {}).get("recipe_parameters", {}) or {}
+        prompt_bands = recipe_params.get("ai_prompt_bands", ["CRITICAL"])
+        if not isinstance(prompt_bands, list):
+            prompt_bands = ["CRITICAL"]
+        prompt_bands_upper = [b.upper() for b in prompt_bands]
+
+        prompt_df = df[df["priority_band"].isin(prompt_bands_upper)]
+        logger.info(
+            f"Generating AI prompts for {len(prompt_df)} findings "
+            f"in bands: {prompt_bands_upper}"
+        )
+
+        prompts_for_file: list[tuple[str, str, str, str]] = []
+        for _, row in prompt_df.iterrows():
+            prompt_text = _build_triage_prompt(row)
+            finding_id = row.get("finding_id", "Unknown")
+            component = f"{row.get('component_name', '')} {row.get('component_version', '')}".strip()
+            band = row.get("priority_band", "")
+
+            ai_triage_prompts.append(
+                {
+                    "finding_id": finding_id,
+                    "component": component,
+                    "priority_band": band,
+                    "prompt": prompt_text,
+                }
+            )
+            prompts_for_file.append((finding_id, component, band, prompt_text))
+
+        # Write prompts markdown file
+        if prompts_for_file and config:
+            _write_triage_prompts_file(prompts_for_file, config)
 
     # AI remediation guidance (optional, --ai flag)
     ai_portfolio_summary = ""
@@ -153,7 +285,7 @@ def triage_prioritization_transform(
     # Defensive recompute of reachability_label from reachability_score
     # (ensures label is consistent with score after all transformations)
     df["reachability_label"] = df["reachability_score"].apply(
-        lambda x: "REACHABLE" if x > 0 else ("UNREACHABLE" if x < 0 else "UNKNOWN")
+        lambda x: "REACHABLE" if x > 0 else ("UNREACHABLE" if x < 0 else "INCONCLUSIVE")
     )
 
     # Debug: log label vs score consistency for top findings
@@ -217,6 +349,7 @@ def triage_prioritization_transform(
         "ai_portfolio_summary": ai_portfolio_summary,
         "ai_project_summaries": ai_project_summaries,
         "ai_component_guidance": ai_component_guidance,
+        "ai_triage_prompts": ai_triage_prompts,
     }
 
 
@@ -367,9 +500,9 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     # Three-tier reachability label:
     #   positive score → REACHABLE (vulnerable function found in binary)
     #   negative score → UNREACHABLE
-    #   zero / null    → UNKNOWN (inconclusive or not analyzed)
+    #   zero / null    → INCONCLUSIVE (reachability analysis inconclusive or not analyzed)
     df["reachability_label"] = df["reachability_score"].apply(
-        lambda x: "REACHABLE" if x > 0 else ("UNREACHABLE" if x < 0 else "UNKNOWN")
+        lambda x: "REACHABLE" if x > 0 else ("UNREACHABLE" if x < 0 else "INCONCLUSIVE")
     )
 
     # Reachability factors (array of evidence explaining the score)
@@ -409,7 +542,7 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         f"Reachability distribution: "
         f"REACHABLE={reach_counts.get('REACHABLE', 0)}, "
         f"UNREACHABLE={reach_counts.get('UNREACHABLE', 0)}, "
-        f"UNKNOWN={reach_counts.get('UNKNOWN', 0)}"
+        f"INCONCLUSIVE={reach_counts.get('INCONCLUSIVE', 0)}"
     )
     if (
         reach_counts.get("REACHABLE", 0) == 0
@@ -425,7 +558,7 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
             non_null = df[score_col].notna().sum()
             non_zero = (df[score_col] != 0).sum() if non_null > 0 else 0
             logger.warning(
-                f"All reachability labels are UNKNOWN. "
+                f"All reachability labels are INCONCLUSIVE. "
                 f"Column '{score_col}' has {non_null} non-null values, {non_zero} non-zero values. "
                 f"Sample values: {df[score_col].head(5).tolist()}"
             )
@@ -484,12 +617,15 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 
 
-def apply_tiered_gates(df: pd.DataFrame) -> pd.DataFrame:
+def apply_tiered_gates(
+    df: pd.DataFrame,
+    weights: dict[str, int | float] | None = None,
+) -> pd.DataFrame:
     """
     Apply Gate 1 and Gate 2 classification.
 
     Gate 1 (CRITICAL): Reachable (score > 0) AND (has exploit OR in KEV)
-    Gate 2 (HIGH): (Reachable OR has exploit/KEV) AND (NETWORK vector OR EPSS >= 0.9 OR CVSS >= 9.0)
+    Gate 2 (HIGH): (Reachable or inconclusive) AND NETWORK vector AND EPSS >= 50%
     """
     df = df.copy()
     df["gate_assignment"] = "NONE"
@@ -499,22 +635,14 @@ def apply_tiered_gates(df: pd.DataFrame) -> pd.DataFrame:
     df.loc[gate1_mask, "gate_assignment"] = "GATE_1"
     logger.debug(f"Gate 1 (CRITICAL): {gate1_mask.sum()} findings")
 
-    # Gate 2: NOT unreachable AND (Reachable OR exploit/KEV) AND amplifier
-    # Unreachable findings (score < 0) are excluded — they should never be HIGH.
-    # Inconclusive (score == 0) CAN qualify if they have exploit/KEV + amplifier.
+    # Gate 2: (Reachable or inconclusive) AND NETWORK AND EPSS >= 50%
     not_unreachable = df["reachability_score"] >= 0  # reachable or inconclusive
-    has_strong_signal = (
-        (df["reachability_score"] > 0) | df["has_exploit"] | df["in_kev"]
-    )
-    has_amplifier = (
-        (df["attack_vector"] == "NETWORK")
-        | (df["epss_percentile"] >= 0.9)
-        | (df["risk"] >= 9.0)
-    )
+    is_network = df["attack_vector"] == "NETWORK"
+    has_epss_signal = df["epss_percentile"] >= 0.5
     gate2_mask = (
         not_unreachable
-        & has_strong_signal
-        & has_amplifier
+        & is_network
+        & has_epss_signal
         & (df["gate_assignment"] == "NONE")
     )
     df.loc[gate2_mask, "gate_assignment"] = "GATE_2"
@@ -528,40 +656,56 @@ def apply_tiered_gates(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 
 
-def calculate_additive_score(df: pd.DataFrame) -> pd.DataFrame:
+def calculate_additive_score(
+    df: pd.DataFrame,
+    weights: dict[str, int | float] | None = None,
+) -> pd.DataFrame:
     """
     Calculate additive triage score for findings that didn't hit a gate.
     Gate-assigned findings get a fixed high score to ensure proper ordering.
     """
+    w = weights or DEFAULT_WEIGHTS
     df = df.copy()
     df["triage_score"] = 0.0
 
+    pts_reachable = w.get("reachable", POINTS_REACHABLE)
+    pts_unknown = w.get("unknown", POINTS_UNKNOWN)
+    pts_unreachable = w.get("unreachable", POINTS_UNREACHABLE)
+    pts_exploit = w.get("exploit", POINTS_EXPLOIT)
+    pts_kev_only = w.get("kev_only", POINTS_KEV_ONLY)
+    pts_vector_network = w.get("vector_network", POINTS_VECTOR_NETWORK)
+    pts_vector_adjacent = w.get("vector_adjacent", POINTS_VECTOR_ADJACENT)
+    pts_vector_local = w.get("vector_local", POINTS_VECTOR_LOCAL)
+    pts_vector_physical = w.get("vector_physical", POINTS_VECTOR_PHYSICAL)
+    epss_max = w.get("epss_max", EPSS_MAX_POINTS)
+    cvss_max = w.get("cvss_max", CVSS_MAX_POINTS)
+
     # Reachability points
     df["_pts_reachability"] = df["reachability_score"].apply(
-        lambda x: POINTS_REACHABLE
+        lambda x: pts_reachable
         if x > 0
-        else (POINTS_UNREACHABLE if x < 0 else POINTS_UNKNOWN)
+        else (pts_unreachable if x < 0 else pts_unknown)
     )
 
     # Exploit/KEV points
     df["_pts_exploit"] = 0
-    df.loc[df["has_exploit"], "_pts_exploit"] = POINTS_EXPLOIT
-    df.loc[(~df["has_exploit"]) & df["in_kev"], "_pts_exploit"] = POINTS_KEV_ONLY
+    df.loc[df["has_exploit"], "_pts_exploit"] = pts_exploit
+    df.loc[(~df["has_exploit"]) & df["in_kev"], "_pts_exploit"] = pts_kev_only
 
     # Attack vector points
     vector_points = {
-        "NETWORK": POINTS_VECTOR_NETWORK,
-        "ADJACENT": POINTS_VECTOR_ADJACENT,
-        "LOCAL": POINTS_VECTOR_LOCAL,
-        "PHYSICAL": POINTS_VECTOR_PHYSICAL,
+        "NETWORK": pts_vector_network,
+        "ADJACENT": pts_vector_adjacent,
+        "LOCAL": pts_vector_local,
+        "PHYSICAL": pts_vector_physical,
     }
     df["_pts_vector"] = df["attack_vector"].map(vector_points).fillna(0)
 
-    # EPSS points (0–20 scaled by percentile)
-    df["_pts_epss"] = (df["epss_percentile"] * EPSS_MAX_POINTS).clip(0, EPSS_MAX_POINTS)
+    # EPSS points (0–max scaled by percentile)
+    df["_pts_epss"] = (df["epss_percentile"] * epss_max).clip(0, epss_max)
 
-    # CVSS points (0–10 scaled by risk/10)
-    df["_pts_cvss"] = (df["risk"] / 10.0 * CVSS_MAX_POINTS).clip(0, CVSS_MAX_POINTS)
+    # CVSS points (0–max scaled by risk/10)
+    df["_pts_cvss"] = (df["risk"] / 10.0 * cvss_max).clip(0, cvss_max)
 
     # Sum additive score
     df["triage_score"] = (
@@ -588,8 +732,15 @@ def calculate_additive_score(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 
 
-def assign_risk_bands(df: pd.DataFrame) -> pd.DataFrame:
+def assign_risk_bands(
+    df: pd.DataFrame,
+    weights: dict[str, int | float] | None = None,
+) -> pd.DataFrame:
     """Map gate assignments and additive scores to priority bands."""
+    w = weights or DEFAULT_WEIGHTS
+    high_threshold = w.get("band_high_threshold", BAND_HIGH_THRESHOLD)
+    medium_threshold = w.get("band_medium_threshold", BAND_MEDIUM_THRESHOLD)
+    low_threshold = w.get("band_low_threshold", BAND_LOW_THRESHOLD)
     df = df.copy()
 
     def _band(row: pd.Series) -> str:
@@ -598,11 +749,11 @@ def assign_risk_bands(df: pd.DataFrame) -> pd.DataFrame:
         if row["gate_assignment"] == "GATE_2":
             return "HIGH"
         score = row["triage_score"]
-        if score >= BAND_HIGH_THRESHOLD:
+        if score >= high_threshold:
             return "HIGH"
-        if score >= BAND_MEDIUM_THRESHOLD:
+        if score >= medium_threshold:
             return "MEDIUM"
-        if score >= BAND_LOW_THRESHOLD:
+        if score >= low_threshold:
             return "LOW"
         return "INFO"
 
@@ -857,15 +1008,20 @@ def build_factor_radar_data(df: pd.DataFrame, top_n: int = 5) -> dict[str, Any]:
 # =============================================================================
 
 
-def build_vex_recommendations(df: pd.DataFrame) -> list[dict[str, Any]]:
+def build_vex_recommendations(
+    df: pd.DataFrame,
+    vex_override: bool = False,
+) -> list[dict[str, Any]]:
     """
     Build VEX triage status recommendations based on priority bands.
 
     Maps priority bands to VEX statuses:
-      CRITICAL/HIGH → EXPLOITABLE (requires immediate action)
-      MEDIUM → IN_TRIAGE (needs investigation)
-      LOW/INFO with reachability < 0 → NOT_AFFECTED (unreachable)
-      LOW/INFO otherwise → IN_TRIAGE (needs investigation)
+      Unreachable (any band) → NOT_AFFECTED (with full reachability factor evidence)
+      CRITICAL (not unreachable) → IN_TRIAGE
+      All other bands (not unreachable) → skipped (no recommendation emitted)
+
+    If a finding already has a VEX status (current_vex_status is set),
+    it is skipped unless vex_override=True.
 
     Includes reachability evidence (score, label, vulnerable functions,
     factor summaries) in the reason field when available.
@@ -880,10 +1036,20 @@ def build_vex_recommendations(df: pd.DataFrame) -> list[dict[str, Any]]:
         reach_label = (
             "REACHABLE"
             if reach_score > 0
-            else ("UNREACHABLE" if reach_score < 0 else "UNKNOWN")
+            else ("UNREACHABLE" if reach_score < 0 else "INCONCLUSIVE")
         )
         vuln_funcs = row.get("vuln_functions", "")
         factors = row.get("reachability_factors", [])
+
+        # Resolve current VEX status
+        current_vex_status: str | None = None
+        raw_status = row.get("status")
+        if raw_status and str(raw_status) not in ("", "nan", "None"):
+            current_vex_status = str(raw_status)
+
+        # Skip findings that already have a VEX status (unless --vex-override)
+        if current_vex_status and not vex_override:
+            continue
 
         # Build reachability detail string
         reach_detail = f"Reachability={reach_label} (score={reach_score})"
@@ -896,37 +1062,31 @@ def build_vex_recommendations(df: pd.DataFrame) -> list[dict[str, Any]]:
                 if isinstance(f, dict) and f.get("summary")
             ]
             if summaries:
-                reach_detail += ". Evidence: " + "; ".join(summaries[:3])
+                # Include ALL factor summaries (no cap)
+                reach_detail += ". Evidence: " + "; ".join(summaries)
 
-        if band in ("CRITICAL", "HIGH"):
-            vex_status = "EXPLOITABLE"
-            reason = (
-                f"Triage band={band} (score={row.get('triage_score', 0)}, "
-                f"gate={row.get('gate_assignment', 'NONE')}). "
-                f"{reach_detail}. "
-                f"Exploit={row.get('has_exploit', False)}, "
-                f"KEV={row.get('in_kev', False)}."
-            )
-        elif band == "MEDIUM":
-            vex_status = "IN_TRIAGE"
-            reason = (
-                f"Triage band=MEDIUM (score={row.get('triage_score', 0)}). "
-                f"{reach_detail}. "
-                f"Requires further investigation."
-            )
-        elif reach_label == "UNREACHABLE":
+        # Determine VEX recommendation
+        if reach_score < 0:
+            # Unreachable findings (any band) → NOT_AFFECTED
             vex_status = "NOT_AFFECTED"
             reason = (
                 f"Triage band={band}. {reach_detail}. "
                 f"Binary analysis confirms code path is not reachable in deployed firmware."
             )
-        else:
+        elif band == "CRITICAL":
+            # CRITICAL (not unreachable) → IN_TRIAGE
             vex_status = "IN_TRIAGE"
             reason = (
-                f"Triage band={band} (score={row.get('triage_score', 0)}). "
+                f"Triage band=CRITICAL (score={row.get('triage_score', 0)}, "
+                f"gate={row.get('gate_assignment', 'NONE')}). "
                 f"{reach_detail}. "
-                f"Low priority, reachability inconclusive."
+                f"Exploit={row.get('has_exploit', False)}, "
+                f"KEV={row.get('in_kev', False)}. "
+                f"Requires immediate triage."
             )
+        else:
+            # HIGH/MEDIUM/LOW/INFO (not unreachable) → skip
+            continue
 
         # Safely coerce values that may be NaN to their defaults
         severity_val = row.get("severity", "")
@@ -946,10 +1106,7 @@ def build_vex_recommendations(df: pd.DataFrame) -> list[dict[str, Any]]:
                 "project_version_id": row.get("project_version_id", ""),
                 "version_name": str(row.get("version_name", "")),
                 "folder_name": row.get("folder_name", ""),
-                "current_vex_status": str(row["status"])
-                if row.get("status")
-                and str(row.get("status", "")) not in ("", "nan", "None")
-                else None,
+                "current_vex_status": current_vex_status,
                 "priority_band": band,
                 "triage_score": row.get("triage_score", 0),
                 "recommended_vex_status": vex_status,
@@ -963,6 +1120,113 @@ def build_vex_recommendations(df: pd.DataFrame) -> list[dict[str, Any]]:
         )
 
     return recommendations
+
+
+# =============================================================================
+# AI Prompt Generation (--ai-prompts)
+# =============================================================================
+
+
+def _build_triage_prompt(row: pd.Series) -> str:
+    """Build an LLM prompt for triage guidance for one finding.
+
+    This is a standalone function that does NOT require an API key.
+    It produces a structured prompt users can paste into any LLM.
+    """
+    finding_id = row.get("finding_id", "Unknown")
+    severity = row.get("severity", "Unknown")
+    cvss = row.get("risk", 0)
+    attack_vector = row.get("attack_vector", "Unknown")
+    epss = row.get("epss_percentile", 0)
+    reach_score = row.get("reachability_score", 0)
+    reach_label = row.get("reachability_label", "INCONCLUSIVE")
+    vuln_funcs = row.get("vuln_functions", "")
+    has_exploit = row.get("has_exploit", False)
+    in_kev = row.get("in_kev", False)
+    component = row.get("component_name", "Unknown")
+    component_ver = row.get("component_version", "Unknown")
+    project = row.get("project_name", "Unknown")
+    band = row.get("priority_band", "Unknown")
+    score = row.get("triage_score", 0)
+    gate = row.get("gate_assignment", "NONE")
+
+    # Build factors summary
+    factors = row.get("reachability_factors", [])
+    factor_lines: list[str] = []
+    if isinstance(factors, list):
+        for f in factors:
+            if isinstance(f, dict) and f.get("summary"):
+                factor_lines.append(
+                    f"- {f.get('entity_type', 'unknown')}: {f['summary']}"
+                )
+
+    prompt = f"""You are a security triage advisor. Provide specific triage and remediation guidance for the following vulnerability finding.
+
+## Finding: {finding_id}
+- Severity: {severity} (CVSS {cvss})
+- Attack Vector: {attack_vector}
+- EPSS: {epss * 100:.1f}th percentile
+- In CISA KEV: {'Yes' if in_kev else 'No'}
+- Known Exploit: {'Yes' if has_exploit else 'No'}
+
+## Triage Classification
+- Priority Band: {band}
+- Triage Score: {score}
+- Gate: {gate}
+
+## Affected Component
+{component} {component_ver} (in project: {project})
+
+## Reachability Analysis
+- Status: {reach_label} (score={reach_score})
+- Vulnerable Functions: {vuln_funcs or 'None identified'}
+{chr(10).join(factor_lines) if factor_lines else '- No reachability factors available'}
+
+Respond in this exact format:
+PRIORITY: <confirm or adjust the priority band with rationale>
+ACTION: <specific recommended action: upgrade component, apply patch, configure mitigation, or accept risk>
+FIX_VERSION: <recommended version to upgrade to, or "N/A">
+WORKAROUND: <workaround if upgrade isn't immediately possible, or "None">
+CODE_SEARCH: <grep/search patterns to find affected code in firmware — use specific vulnerable function names if known>
+CONFIDENCE: <high|medium|low>"""
+
+    return prompt
+
+
+def _write_triage_prompts_file(
+    prompts: list[tuple[str, str, str, str]],
+    config: Any,
+) -> None:
+    """Write a markdown file with all AI prompts for copy-paste use.
+
+    Args:
+        prompts: List of (finding_id, component, band, prompt_text) tuples.
+        config: Config object with output_dir.
+    """
+    from datetime import datetime
+
+    output_dir = Path(getattr(config, "output_dir", "./output"))
+    recipe_dir = output_dir / "Triage Prioritization"
+    recipe_dir.mkdir(parents=True, exist_ok=True)
+
+    prompts_path = recipe_dir / "Triage Prioritization_prompts.md"
+    lines: list[str] = [
+        "# Triage Prioritization - AI Triage Prompts\n",
+        f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} "
+        f"| Findings: {len(prompts)}\n",
+        "\nPaste each prompt into your preferred LLM for triage guidance.\n",
+    ]
+
+    for finding_id, component, band, prompt_text in prompts:
+        label = f"{finding_id}"
+        if component:
+            label += f" ({component})"
+        label += f" [{band}]"
+        lines.append(f"\n---\n\n## {label}\n\n")
+        lines.append(f"```\n{prompt_text}\n```\n")
+
+    prompts_path.write_text("\n".join(lines), encoding="utf-8")
+    logger.info(f"AI triage prompts written to {prompts_path}")
 
 
 # =============================================================================
@@ -1127,7 +1391,7 @@ def _generate_ai_guidance(
                         ri = {"finding_id": fid}
                         ri["reachability_score"] = row.get("reachability_score", 0)
                         ri["reachability_label"] = row.get(
-                            "reachability_label", "UNKNOWN"
+                            "reachability_label", "INCONCLUSIVE"
                         )
                         ri["vuln_functions"] = row.get("vuln_functions", "")
                         if "reachability_factors" in row.index:
@@ -1178,4 +1442,5 @@ def _empty_result() -> dict[str, Any]:
         "ai_portfolio_summary": "",
         "ai_project_summaries": {},
         "ai_component_guidance": {},
+        "ai_triage_prompts": [],
     }

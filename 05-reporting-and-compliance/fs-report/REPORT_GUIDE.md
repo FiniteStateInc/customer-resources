@@ -16,6 +16,7 @@ This guide explains each report available in the Finite State Reporting Kit, wha
    - [Findings by Project](#findings-by-project) *(Assessment)*
    - [Component List](#component-list) *(Assessment)*
    - [Triage Prioritization](#triage-prioritization) *(Assessment)*
+   - [CVE Impact](#cve-impact) *(Assessment, on-demand: CVE dossier with affected projects)*
    - [Version Comparison](#version-comparison) *(Assessment, on-demand: full version & component changelog)*
 4. [Output Formats](#output-formats)
 5. [Filtering Options](#filtering-options)
@@ -387,21 +388,104 @@ poetry run fs-report --recipe "Triage Prioritization" --period 30d
 
 **Scoring Model:**
 
+The triage prioritization engine uses a two-tier system: fast-track gates for the highest-risk findings, then additive scoring for everything else.
+
+**Tiered Gates (short-circuit classification):**
+
 | Gate | Criteria | Result |
 |------|----------|--------|
-| **Gate 1** | Reachable + (Exploit OR KEV) | → CRITICAL |
-| **Gate 2** | (Reachable OR Exploit/KEV) + (NETWORK OR EPSS≥90th OR CVSS≥9) | → HIGH |
-| **Additive** | Points-based: Reachability (±30), Exploit/KEV (+25/+20), Vector (+15→0), EPSS (0-20), CVSS (0-10) | → Score-based band |
+| **Gate 1** | Reachable (score > 0) AND (has exploit OR in KEV) | → CRITICAL (score=100) |
+| **Gate 2** | Not unreachable (score >= 0) AND NETWORK vector AND EPSS >= 50th percentile | → HIGH (score=85) |
+
+**Additive Scoring (findings that don't hit a gate):**
+
+Each finding accumulates points from five factors:
+
+| Factor | Condition | Points |
+|--------|-----------|--------|
+| **Reachability** | Reachable (score > 0) | +30 |
+| | Inconclusive (score = 0) | 0 |
+| | Unreachable (score < 0) | -15 |
+| **Exploit/KEV** | Has known exploit | +25 |
+| | In CISA KEV (no exploit info) | +20 |
+| **Attack Vector** | NETWORK | +15 |
+| | ADJACENT | +10 |
+| | LOCAL | +5 |
+| | PHYSICAL | 0 |
+| **EPSS** | Scaled by percentile (0-1) | 0-20 |
+| **CVSS** | Scaled by score/10 | 0-10 |
+
+**Band Thresholds:**
 
 | Band | Score Range | Action |
 |------|-------------|--------|
-| CRITICAL | Gate 1 | Fix immediately |
-| HIGH | Gate 2 or ≥70 | Fix this week |
+| CRITICAL | Gate 1 (fixed 100) | Fix immediately |
+| HIGH | Gate 2 (fixed 85) or additive >= 70 | Fix this week |
 | MEDIUM | 40-69 | Fix this month |
 | LOW | 25-39 | Plan remediation |
-| INFO | <25 | Track only |
+| INFO | < 25 | Track only |
 
-**AI Remediation Guidance (optional):**
+**VEX Recommendation Mapping:**
+
+| Condition | Recommended Status |
+|-----------|--------------------|
+| Unreachable (any band) | NOT_AFFECTED |
+| CRITICAL (not unreachable) | IN_TRIAGE |
+| All other bands (not unreachable) | No recommendation (skipped) |
+
+Findings that already have a VEX status are skipped by default. Use `--vex-override` to include them.
+
+**Customizing Scoring Weights:**
+
+All scoring weights are defined in `recipes/triage_prioritization.yaml` under `parameters.scoring_weights`. Edit the recipe directly to change defaults:
+
+```yaml
+parameters:
+  scoring_weights:
+    reachable: 30
+    unreachable: -15
+    exploit: 25
+    kev_only: 20
+    vector_network: 15
+    epss_max: 20
+    cvss_max: 10
+    band_high_threshold: 70
+    band_medium_threshold: 40
+    band_low_threshold: 25
+```
+
+To override at runtime without editing the recipe, create a YAML file with your custom weights and pass it via `--scoring-file`:
+
+```bash
+poetry run fs-report --recipe "Triage Prioritization" --scoring-file my_weights.yaml --period 30d
+```
+
+The scoring file can contain just the weights you want to change (others keep their defaults):
+
+```yaml
+scoring_weights:
+  reachable: 40
+  band_high_threshold: 60
+```
+
+**AI Prompts (offline, no API key required):**
+
+Export structured LLM prompts for triage guidance with `--ai-prompts`:
+
+```bash
+poetry run fs-report --recipe "Triage Prioritization" --ai-prompts --period 30d
+```
+
+This generates a `Triage Prioritization_prompts.md` file you can paste into any LLM. By default, prompts are generated only for CRITICAL findings. To expand scope, edit `ai_prompt_bands` in the recipe:
+
+```yaml
+parameters:
+  ai_prompt_bands:
+    - CRITICAL
+    - HIGH
+```
+
+**AI Remediation Guidance (optional, requires API key):**
 
 Enable AI-powered remediation guidance with the `--ai` flag:
 
@@ -424,6 +508,7 @@ python scripts/apply_vex_triage.py output/triage_prioritization/vex_recommendati
 ```
 
 **Example commands:**
+
 ```bash
 # Basic triage report
 poetry run fs-report --recipe "Triage Prioritization" --period 30d
@@ -436,6 +521,53 @@ poetry run fs-report --recipe "Triage Prioritization" --ai --period 30d
 
 # Full AI depth (includes component-level fix guidance)
 poetry run fs-report --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
+
+# Export AI prompts (no API key needed)
+poetry run fs-report --recipe "Triage Prioritization" --ai-prompts --period 30d
+
+# Custom scoring weights
+poetry run fs-report --recipe "Triage Prioritization" --scoring-file custom.yaml --period 30d
+
+# Override existing VEX statuses
+poetry run fs-report --recipe "Triage Prioritization" --vex-override --period 30d
+```
+
+---
+
+### CVE Impact
+
+**Category:** Assessment (on-demand) — CVE-centric dossier showing affected projects, reachability, and exploit details.
+
+**Purpose:** Answer "which projects does this CVE affect and where is it reachable?" Useful for incident response and vulnerability triage across a portfolio.
+
+**Requires `--cve`** to specify which CVE(s) to analyse. Running against an entire project is not supported because a single project can contain thousands of CVEs (e.g. 4 000 CVEs → ~12 000 API calls for dossier enrichment).
+
+Produces a detailed dossier for each specified CVE — description, CWE, known exploits, EPSS, KEV status, and a per-project table with reachability status. Enriches with per-finding reachability data from `/findings`. Optionally combine with `--project` to narrow results to a single project.
+
+**Key outputs:**
+
+| Section | Details |
+|---------|---------|
+| **CVE header** | CVE ID (NVD link), severity badge, CVSS score |
+| **Description** | Finding title (dossier mode only, from findings enrichment) |
+| **Vulnerability details** | CWE (MITRE link), EPSS percentile, KEV status |
+| **Known exploits** | Source, URL, description from exploit data |
+| **Reachability summary** | "Reachable in N of M projects" (dossier mode only) |
+| **Affected projects** | Per-project reachability (REACHABLE/UNREACHABLE/INCONCLUSIVE), component, detected date |
+
+**Formats:** HTML, CSV, XLSX
+
+**Examples:**
+
+```bash
+# Dossier for a specific CVE (across all projects)
+poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234
+
+# Dossiers for multiple CVEs
+poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234,CVE-2024-5678
+
+# Narrow to a specific project
+poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234 --project "MyFirmware"
 ```
 
 ---
@@ -531,6 +663,7 @@ All reports generate three output formats:
 | `--version` | Filter by version ID | All reports | `--version "1234567890"` |
 | `--recipe` | Run specific report only | N/A | `--recipe "Scan Analysis"` |
 | `--finding-types` | Finding types to include | Findings reports | `--finding-types cve,credentials` |
+| `--cve` | CVE(s) to analyse (required for CVE Impact), comma-separated | CVE Impact | `--cve CVE-2024-1234` |
 | `--baseline-version` | Baseline version ID | Version Comparison | `--baseline-version 12345` |
 | `--current-version` | Current version ID | Version Comparison | `--current-version 67890` |
 

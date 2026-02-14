@@ -271,7 +271,7 @@ class APIClient:
         if self.sqlite_cache.is_cache_valid(endpoint, params, self.cache_ttl):
             cached_data = self.sqlite_cache.get_cached_data(endpoint, params)
             if cached_data:
-                self.logger.debug(
+                self.logger.info(
                     f"[BETA] Using SQLite cached data for {endpoint} ({len(cached_data)} records)"
                 )
                 return cached_data

@@ -1,5 +1,43 @@
 # Release Notes
 
+## Version 1.1.4 (February 2026)
+
+### New Features
+
+- **CVE Impact Report** - Investigate specific CVEs across your portfolio with detailed dossiers
+  - See which projects are affected, with per-project reachability status, known exploits, EPSS scores, and CWE details
+  - Single CVE analysis: `--cve CVE-2024-1234`
+  - Multi-CVE analysis: `--cve CVE-2024-1234,CVE-2024-5678`
+  - Narrow to one project: `--cve CVE-2024-1234 --project myproject`
+  - AI prompt export: Use `--ai-prompts` to generate structured LLM prompts alongside the report (no API key required)
+  - AI remediation guidance: Use `--ai` for live AI-powered remediation advice (requires `ANTHROPIC_AUTH_TOKEN`)
+
+### Improvements
+
+- **Faster CVE queries** - Portfolio-level CVE data is now fetched via a single optimized query instead of per-version batching
+- **Finding titles in cache** - The `title` field is now persisted in the SQLite cache (existing caches auto-migrate)
+
+---
+
+## Version 1.1.2 (February 2026)
+
+### Improvements
+
+- **Large instance stability** - Reports with 1M+ findings no longer crash due to memory exhaustion
+- **Improved API throttling** - Smarter batch cooldowns prevent server overload (500/502/503 errors) on large instances
+- **Dramatically reduced cache size** - Cache files are ~97% smaller, improving disk usage and startup time
+- **Faster version resolution** - Project version lookup now uses a single batch call instead of per-project requests
+
+### New Features
+
+- `--batch-size` flag (1-25, default 5) to control how many project versions are fetched per API batch. Lower values reduce server load on large instances.
+
+### Bug Fixes
+
+- `--clear-cache` now properly reclaims disk space (previously the database file remained large after clearing)
+
+---
+
 ## Version 1.1.0 (February 2026)
 
 ### New Features

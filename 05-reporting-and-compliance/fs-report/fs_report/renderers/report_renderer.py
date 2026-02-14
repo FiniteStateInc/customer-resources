@@ -35,16 +35,29 @@ from fs_report.renderers.xlsx_renderer import XLSXRenderer
 class ReportRenderer:
     """Main renderer that coordinates all output formats."""
 
-    def __init__(self, output_dir: str, config: Any = None) -> None:
+    def __init__(
+        self, output_dir: str, config: Any = None, overwrite: bool = False
+    ) -> None:
         """Initialize the report renderer."""
         self.output_dir = Path(output_dir)
         self.logger = logging.getLogger(__name__)
         self.config = config
+        self.overwrite = overwrite
 
         # Initialize individual renderers
         self.csv_renderer = CSVRenderer()
         self.xlsx_renderer = XLSXRenderer()
         self.html_renderer = HTMLRenderer()
+
+    def check_output_guard(self, recipe: Recipe) -> None:
+        """Raise FileExistsError if the recipe output dir already has files and overwrite is off."""
+        recipe_output_dir = self.output_dir / self._sanitize_filename(recipe.name)
+        if recipe_output_dir.exists() and any(recipe_output_dir.iterdir()):
+            if not self.overwrite:
+                raise FileExistsError(
+                    f"Output directory '{recipe_output_dir}' already contains files. "
+                    "Use --overwrite to replace existing reports."
+                )
 
     def render(self, recipe: Recipe, report_data: ReportData) -> list[str]:
         """Render reports in all configured formats. Returns a list of generated file paths."""

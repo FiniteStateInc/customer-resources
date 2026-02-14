@@ -32,6 +32,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Findings by Project | Complete findings inventory per project |
 | Component List | Software inventory (SBOM) for compliance |
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
+| CVE Impact | CVE-centric dossier with affected projects, reachability, and exploit intelligence *(on-demand)* |
 | Version Comparison | Full version and component changelog (every version pair); fixed/new findings and component churn per step; CSV/XLSX include summary plus detail *(on-demand)* |
 
 ## Quick Start
@@ -98,6 +99,13 @@ poetry run fs-report --project "MyProject" --version "v1.2.3"  # Version name (p
 poetry run fs-report --period 1w                      # Default: latest version per project (fast)
 poetry run fs-report --period 1w --all-versions       # Include all historical versions (slower)
 
+# CVE Impact report — investigate specific CVEs across your portfolio
+poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234
+poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234,CVE-2024-5678
+poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234 --project myproject
+poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234 --ai-prompts  # Export LLM prompts
+poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234 --ai          # Live AI guidance
+
 # [BETA] Persistent cache with TTL for crash recovery and faster reruns
 poetry run fs-report --cache-ttl 1h                   # Cache data for 1 hour
 poetry run fs-report --cache-ttl 30m                  # Cache data for 30 minutes
@@ -128,6 +136,13 @@ poetry run fs-report --recipes ./my-recipes --output ./my-reports
 
 # Enable verbose logging
 poetry run fs-report --verbose
+
+# Performance tuning for large instances
+poetry run fs-report --batch-size 3                  # Reduce API batch size (default 5, range 1-25)
+poetry run fs-report --request-delay 1.0             # Increase delay between API requests (default 0.5s)
+
+# Show help for period format specifications
+poetry run fs-report show-periods
 ```
 
 ## Performance and Caching

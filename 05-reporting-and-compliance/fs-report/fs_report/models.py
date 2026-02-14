@@ -364,6 +364,10 @@ class Config(BaseModel):
         "summary",
         description="AI depth: 'summary' (portfolio/project) or 'full' (+ Critical/High components)",
     )
+    ai_prompts: bool = Field(
+        False,
+        description="Export AI prompts to file and HTML for use with any LLM (no API key required)",
+    )
     # Version comparison / progress options
     baseline_date: str | None = Field(
         None,
@@ -391,6 +395,26 @@ class Config(BaseModel):
         description="Number of project versions to fetch per API batch. "
         "Lower values reduce server load (use 3 for very large instances). "
         "Higher values are faster but may overload smaller servers (max 25).",
+    )
+    cve_filter: str | None = Field(
+        None,
+        description="Comma-separated CVE IDs to filter (e.g. CVE-2024-1234,CVE-2024-5678). "
+        "Used by the CVE Impact report to produce dossiers for specific CVEs.",
+    )
+    scoring_file: str | None = Field(
+        None,
+        description="Path to a YAML file with custom scoring weights for Triage Prioritization. "
+        "Overrides weights defined in the recipe parameters.",
+    )
+    vex_override: bool = Field(
+        False,
+        description="Overwrite existing VEX statuses when generating triage recommendations. "
+        "By default, findings with an existing VEX status are skipped.",
+    )
+    overwrite: bool = Field(
+        False,
+        description="Overwrite existing report files. Without this flag, the CLI refuses "
+        "to write into a recipe output directory that already has files.",
     )
 
     @field_validator("domain")
