@@ -89,8 +89,10 @@ def create_config(
     cache_dir: Union[str, None] = None,
     detected_after: Union[str, None] = None,
     ai: bool = False,
+    ai_provider: Union[str, None] = None,
     ai_depth: str = "summary",
     ai_prompts: bool = False,
+    nvd_api_key: Union[str, None] = None,
     baseline_date: Union[str, None] = None,
     baseline_version: Union[str, None] = None,
     current_version: Union[str, None] = None,
@@ -160,12 +162,20 @@ def create_config(
 
     # Validate AI options
     if ai:
-        anthropic_token = os.getenv("ANTHROPIC_AUTH_TOKEN")
-        if not anthropic_token:
+        _ai_env_vars = ["ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN"]
+        has_any_key = any(os.getenv(v) for v in _ai_env_vars)
+        if not has_any_key:
             console.print(
-                "[red]Error: --ai requires ANTHROPIC_AUTH_TOKEN environment variable to be set.[/red]"
+                "[red]Error: --ai requires one of these environment variables: "
+                + ", ".join(_ai_env_vars)
+                + "[/red]"
             )
             raise typer.Exit(2)
+        if ai_provider and ai_provider not in ("anthropic", "openai", "copilot"):
+            console.print(
+                f"[red]Error: --ai-provider must be 'anthropic', 'openai', or 'copilot', got '{ai_provider}'[/red]"
+            )
+            raise typer.Exit(1)
         if ai_depth not in ("summary", "full"):
             console.print(
                 f"[red]Error: --ai-depth must be 'summary' or 'full', got '{ai_depth}'[/red]"
@@ -200,8 +210,10 @@ def create_config(
         cache_dir=cache_dir,
         detected_after=detected_after,
         ai=ai,
+        ai_provider=ai_provider,
         ai_depth=ai_depth,
         ai_prompts=ai_prompts,
+        nvd_api_key=nvd_api_key,
         baseline_date=baseline_date,
         baseline_version=baseline_version,
         current_version=current_version,
@@ -944,8 +956,10 @@ def run_reports(
     cache_dir: Union[str, None] = None,
     detected_after: Union[str, None] = None,
     ai: bool = False,
+    ai_provider: Union[str, None] = None,
     ai_depth: str = "summary",
     ai_prompts: bool = False,
+    nvd_api_key: Union[str, None] = None,
     baseline_date: Union[str, None] = None,
     baseline_version: Union[str, None] = None,
     current_version: Union[str, None] = None,
@@ -984,8 +998,10 @@ def run_reports(
             cache_dir=cache_dir,
             detected_after=detected_after,
             ai=ai,
+            ai_provider=ai_provider,
             ai_depth=ai_depth,
             ai_prompts=ai_prompts,
+            nvd_api_key=nvd_api_key,
             baseline_date=baseline_date,
             baseline_version=baseline_version,
             current_version=current_version,
@@ -1013,7 +1029,12 @@ def run_reports(
         if config.cve_filter:
             logger.info(f"  CVE filter: {config.cve_filter}")
         if config.ai:
-            logger.info(f"  AI remediation: Enabled (depth: {config.ai_depth})")
+            provider_info = (
+                f", provider: {config.ai_provider}" if config.ai_provider else ""
+            )
+            logger.info(
+                f"  AI remediation: Enabled (depth: {config.ai_depth}{provider_info})"
+            )
         output_path = Path(config.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         engine = ReportEngine(config, data_override=data_override)
@@ -1197,7 +1218,13 @@ def main(
     ai: bool = typer.Option(
         False,
         "--ai",
-        help="Enable AI remediation guidance for Triage Prioritization and CVE Impact (requires ANTHROPIC_AUTH_TOKEN)",
+        help="Enable AI remediation guidance for Triage Prioritization and CVE Impact "
+        "(requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, or GITHUB_TOKEN)",
+    ),
+    ai_provider: Union[str, None] = typer.Option(
+        None,
+        "--ai-provider",
+        help="LLM provider: 'anthropic', 'openai', or 'copilot'. Auto-detected from env vars if not set.",
     ),
     ai_depth: str = typer.Option(
         "summary",
@@ -1208,6 +1235,15 @@ def main(
         False,
         "--ai-prompts",
         help="Export AI prompts to file and HTML for use with any LLM. No API key required. Can be combined with --ai.",
+    ),
+    nvd_api_key: Union[str, None] = typer.Option(
+        None,
+        "--nvd-api-key",
+        envvar="NVD_API_KEY",
+        help="NVD API key for faster fix-version lookups (10x rate limit). "
+        "Free from https://nvd.nist.gov/developers/request-an-api-key. "
+        "Also reads NVD_API_KEY env var. "
+        "Per NVD terms, keys must not be shared with other individuals or organisations.",
     ),
     baseline_date: Union[str, None] = typer.Option(
         None,
@@ -1271,6 +1307,18 @@ def main(
         help="Overwrite existing report files. Without this flag, the CLI refuses "
         "to write into a recipe output directory that already has files.",
     ),
+    serve: bool = typer.Option(
+        False,
+        "--serve",
+        help="After generating reports, start a local HTTP server on the output directory. "
+        "This is needed when using interactive Jira/triage buttons if CORS blocks file:// requests. "
+        "Opens http://localhost:8080 in your browser.",
+    ),
+    serve_port: int = typer.Option(
+        8080,
+        "--serve-port",
+        help="Port for the local HTTP server (used with --serve).",
+    ),
 ) -> None:
     if ctx.invoked_subcommand is not None:
         return
@@ -1332,11 +1380,13 @@ def main(
         finding_types=finding_types,
         current_version_only=current_version_only,
         cache_ttl=cache_ttl_seconds,
-        cache_dir=None,
+        cache_dir=str(Path.home() / ".fs-report") if cache_ttl_seconds > 0 else None,
         detected_after=detected_after,
         ai=ai,
+        ai_provider=ai_provider,
         ai_depth=ai_depth,
         ai_prompts=ai_prompts,
+        nvd_api_key=nvd_api_key,
         baseline_date=baseline_date,
         baseline_version=baseline_version,
         current_version=current_version,
@@ -1348,6 +1398,179 @@ def main(
         vex_override=vex_override,
         overwrite=overwrite,
     )
+
+    # Launch local HTTP server if requested (helps with CORS for interactive buttons)
+    if serve:
+        _serve_reports(output or Path("output"), serve_port)
+
+
+def _serve_reports(output_dir: Path, port: int) -> None:
+    """Start a local HTTP server that serves reports and proxies API calls.
+
+    Static files are served from *output_dir*.  Requests to ``/fsapi/``
+    are proxied to the Finite State API (the target domain is read from
+    the ``X-FS-Domain`` request header).  This avoids CORS issues because
+    the browser only talks to ``localhost`` and the server-to-server
+    forwarding isn't subject to browser same-origin policy.
+    """
+    import http.server
+    import socketserver
+    import threading
+    import urllib.error
+    import urllib.request
+    import webbrowser
+
+    output_dir = Path(output_dir).expanduser().resolve()
+    if not output_dir.exists():
+        console.print(f"[red]Output directory not found: {output_dir}[/red]")
+        raise typer.Exit(1)
+
+    serve_dir = str(output_dir)
+
+    class ProxyHandler(http.server.SimpleHTTPRequestHandler):
+        """Serves static files and proxies /fsapi/ requests."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, directory=serve_dir, **kwargs)
+
+        # --- API proxy ------------------------------------------------
+
+        def _is_proxy(self) -> bool:
+            return self.path.startswith("/fsapi/")
+
+        def _proxy(self) -> None:
+            domain = self.headers.get("X-FS-Domain", "")
+            if not domain:
+                self._send_json(400, {"error": "Missing X-FS-Domain header"})
+                return
+
+            # Build upstream URL: /fsapi/public/v0/... -> https://domain/api/public/v0/...
+            upstream_path = self.path[len("/fsapi") :]  # strip /fsapi prefix
+            upstream_url = f"https://{domain}/api{upstream_path}"
+
+            # Read request body (for POST/PUT)
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length) if content_length > 0 else None
+
+            # Forward headers (auth token, content type)
+            fwd_headers: dict[str, str] = {}
+            for h in ("X-Authorization", "Content-Type", "Accept"):
+                val = self.headers.get(h)
+                if val:
+                    fwd_headers[h] = val
+
+            try:
+                req = urllib.request.Request(
+                    upstream_url,
+                    data=body,
+                    headers=fwd_headers,
+                    method=self.command,
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    resp_body = resp.read()
+                    self.send_response(resp.status)
+                    self.send_header(
+                        "Content-Type",
+                        resp.headers.get("Content-Type", "application/json"),
+                    )
+                    self.send_header("Content-Length", str(len(resp_body)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp_body)
+            except urllib.error.HTTPError as e:
+                error_body = e.read()
+                self.send_response(e.code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(error_body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(error_body)
+            except Exception as e:
+                msg = json.dumps({"error": str(e)}).encode()
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(msg)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(msg)
+
+        def _send_json(self, code: int, obj: dict) -> None:
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+
+        # --- HTTP method overrides ------------------------------------
+
+        def do_GET(self) -> None:  # noqa: N802
+            if self._is_proxy():
+                self._proxy()
+            else:
+                super().do_GET()
+
+        def do_POST(self) -> None:  # noqa: N802
+            if self._is_proxy():
+                self._proxy()
+            else:
+                self.send_error(405, "POST not supported for static files")
+
+        def do_PUT(self) -> None:  # noqa: N802
+            if self._is_proxy():
+                self._proxy()
+            else:
+                self.send_error(405, "PUT not supported for static files")
+
+        def do_OPTIONS(self) -> None:  # noqa: N802
+            """Handle CORS preflight requests."""
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "X-Authorization, X-FS-Domain, Content-Type, Accept",
+            )
+            self.send_header("Access-Control-Max-Age", "86400")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: Any) -> None:
+            """Suppress noisy per-request logs; only log proxy calls."""
+            if self._is_proxy():
+                console.print(f"[dim]  PROXY {self.command} {self.path}[/dim]")
+
+    console.print(f"\n[cyan]Starting local server on http://localhost:{port}[/cyan]")
+    console.print(f"[dim]Serving: {output_dir}[/dim]")
+    console.print("[dim]API proxy: /fsapi/* → Finite State API[/dim]")
+    console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
+
+    # Find the first HTML report to open directly
+    html_files = sorted(
+        output_dir.rglob("*.html"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
+    if html_files:
+        # Use the most recently modified HTML file, build a relative URL
+        open_path = html_files[0].relative_to(output_dir)
+        open_url = f"http://localhost:{port}/{open_path}"
+    else:
+        open_url = f"http://localhost:{port}"
+    console.print(f"[cyan]Opening: {open_url}[/cyan]")
+
+    # Open browser after a short delay
+    def _open_browser() -> None:
+        import time as _time
+
+        _time.sleep(0.5)
+        webbrowser.open(open_url)
+
+    threading.Thread(target=_open_browser, daemon=True).start()
+
+    with socketserver.TCPServer(("", port), ProxyHandler) as httpd:
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Server stopped.[/yellow]")
 
 
 if __name__ == "__main__":

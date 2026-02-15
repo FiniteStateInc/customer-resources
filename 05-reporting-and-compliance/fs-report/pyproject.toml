@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "fs-report"
-version = "1.1.4"
+version = "1.2.0"
 description = "Finite State Stand-Alone Reporting Kit"
 authors = ["Finite State <support@finitestate.io>"]
 license = "MIT"
@@ -37,6 +37,7 @@ matplotlib = "^3.10.3"
 requests = "^2.32.4"
 tqdm = "^4.67.1"
 anthropic = ">=0.39.0"
+openai = ">=1.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

@@ -26,9 +26,13 @@ Provides LLM-generated remediation summaries at three scopes:
 - Project: Recommended remediation order per project
 - Finding: Fix version, workaround, code search hints (full depth only)
 
-Uses Anthropic Claude with model tiering:
-- Sonnet: Portfolio/project summaries (rich analysis)
-- Haiku: Bulk component-level guidance (fast, cheap)
+Supports multiple LLM providers:
+- Anthropic Claude (default): Sonnet for summaries, Haiku for bulk guidance
+- OpenAI: GPT-4o for summaries, GPT-4o-mini for bulk guidance
+- GitHub Copilot: Uses OpenAI SDK with Copilot endpoint
+
+Provider is auto-detected from environment variables or set explicitly
+via the ``provider`` parameter.
 
 Results are cached in SQLite to avoid redundant API calls.
 """
@@ -44,28 +48,74 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Model configuration
-SONNET_MODEL = "claude-sonnet-4-20250514"
-HAIKU_MODEL = "claude-3-5-haiku-20241022"
-
 # Token limits
 MAX_PORTFOLIO_TOKENS = 2000
 MAX_PROJECT_TOKENS = 1500
 MAX_COMPONENT_TOKENS = 800
+
+# Provider -> (summary_model, component_model)
+MODEL_MAP: dict[str, tuple[str, str]] = {
+    "anthropic": ("claude-4-opus-20250514", "claude-3-5-haiku-20241022"),
+    "openai": ("gpt-4o", "gpt-4o-mini"),
+    "copilot": ("gpt-4o", "gpt-4o-mini"),
+}
+
+# Env var detection order
+_PROVIDER_ENV_VARS: list[tuple[str, str]] = [
+    ("anthropic", "ANTHROPIC_AUTH_TOKEN"),
+    ("openai", "OPENAI_API_KEY"),
+    ("copilot", "GITHUB_TOKEN"),
+]
+
+COPILOT_BASE_URL = "https://api.githubcopilot.com"
+
+# System message for all LLM calls — establishes persona, constraints, and
+# the fix-version guardrail to reduce hallucinated version numbers.
+SYSTEM_MESSAGE = (
+    "You are a firmware security analyst specializing in embedded device remediation. "
+    "Always ground your advice in the provided data — do not speculate beyond what the "
+    "evidence supports. "
+    "When NVD fix version data is provided, USE IT: cross-reference the installed "
+    "component version against the NVD affected ranges and state the exact minimum "
+    "fixed version. CRITICAL RULE: when the data says a version is 'FIXED in >= X', "
+    "then X is safe to recommend. But when it says a version is 'STILL VULNERABLE' "
+    "or 'affects up to and including X', then X is NOT a fix — the fix must be a "
+    "version AFTER X. Never recommend a version that is marked as vulnerable. "
+    "When NVD data is absent, draw on your knowledge of well-known open-source "
+    "libraries (e.g. OpenSSL, busybox, curl, zlib, Linux kernel) to recall specific "
+    "patch versions from security advisories. "
+    "Only fall back to 'verify latest stable release' if you have no version data at all. "
+    "Cite the source of your version recommendation (NVD, vendor advisory, or general "
+    "knowledge) to help the reader calibrate trust. "
+    "Format responses exactly as instructed."
+)
+
+# Scoring methodology block — appended to portfolio/project prompts so the
+# LLM can reason about (and validate) the pre-computed priority bands.
+SCORING_METHODOLOGY = """\
+## Scoring Methodology
+Findings are prioritized using a tiered-gates model:
+- GATE 1 (CRITICAL): Reachable + has known exploit or is in CISA KEV
+- GATE 2 (HIGH): Not unreachable + NETWORK attack vector + EPSS >= 50th percentile
+- Remaining findings scored additively: reachability (+30), exploit (+25), KEV (+20), \
+attack vector (up to +15), EPSS (up to +20), CVSS (up to +10)
+- Bands: HIGH >= 70, MEDIUM >= 40, LOW >= 25, INFO < 25"""
 
 
 class LLMClient:
     """
     LLM client for generating remediation guidance.
 
-    Uses Anthropic Claude API with SQLite-backed result caching.
-    Model tiering: Sonnet for summaries, Haiku for bulk component guidance.
+    Supports Anthropic, OpenAI, and GitHub Copilot providers with
+    SQLite-backed result caching. Model tiering: a rich model for
+    summaries and a fast model for bulk component guidance.
     """
 
     def __init__(
         self,
         cache_dir: str | None = None,
         cache_ttl: int = 0,
+        provider: str | None = None,
     ) -> None:
         """
         Initialize the LLM client.
@@ -73,23 +123,19 @@ class LLMClient:
         Args:
             cache_dir: Directory for SQLite cache. Defaults to ~/.fs-report/
             cache_ttl: Cache TTL in seconds. 0 = no caching (always regenerate).
+            provider: LLM provider override ("anthropic", "openai", "copilot").
+                      Auto-detected from env vars if not set.
         """
-        self.api_key = os.getenv("ANTHROPIC_AUTH_TOKEN", "")
-        if not self.api_key:
-            raise ValueError(
-                "ANTHROPIC_AUTH_TOKEN environment variable is required for AI features"
-            )
+        # Resolve provider and API key
+        self._provider, self.api_key = self._detect_provider(provider)
+        self._summary_model, self._component_model = MODEL_MAP[self._provider]
 
-        # Lazy import to avoid requiring anthropic when --ai is not used
-        try:
-            import anthropic
+        logger.info(
+            f"LLM provider: {self._provider} (models: {self._summary_model}, {self._component_model})"
+        )
 
-            self.client = anthropic.Anthropic(api_key=self.api_key)
-        except ImportError:
-            raise ImportError(
-                "The 'anthropic' package is required for AI features. "
-                "Install it with: pip install anthropic"
-            )
+        # Create the appropriate client
+        self.client: Any = self._create_client()
 
         # Set up cache
         self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".fs-report"
@@ -144,6 +190,106 @@ class LLMClient:
             """
             )
 
+    # =========================================================================
+    # Provider helpers
+    # =========================================================================
+
+    @staticmethod
+    def _detect_provider(override: str | None) -> tuple[str, str]:
+        """Return (provider_name, api_key) based on override or env vars."""
+        if override:
+            override = override.lower()
+            if override not in MODEL_MAP:
+                raise ValueError(
+                    f"Unknown AI provider '{override}'. "
+                    f"Choose from: {', '.join(MODEL_MAP)}"
+                )
+            env_map = dict(_PROVIDER_ENV_VARS)
+            env_var = env_map[override]
+            api_key = os.getenv(env_var, "")
+            if not api_key:
+                raise ValueError(
+                    f"AI provider '{override}' requires the {env_var} "
+                    "environment variable to be set."
+                )
+            return override, api_key
+
+        # Auto-detect: first env var found wins
+        for provider, env_var in _PROVIDER_ENV_VARS:
+            api_key = os.getenv(env_var, "")
+            if api_key:
+                return provider, api_key
+
+        raise ValueError(
+            "No AI provider credentials found. Set one of: "
+            + ", ".join(ev for _, ev in _PROVIDER_ENV_VARS)
+        )
+
+    def _create_client(self) -> Any:
+        """Create the appropriate SDK client for the resolved provider."""
+        if self._provider == "anthropic":
+            try:
+                import anthropic
+
+                return anthropic.Anthropic(api_key=self.api_key)
+            except ImportError:
+                raise ImportError(
+                    "The 'anthropic' package is required for Anthropic AI features. "
+                    "Install it with: pip install anthropic"
+                )
+        elif self._provider in ("openai", "copilot"):
+            try:
+                import openai
+
+                kwargs: dict[str, Any] = {"api_key": self.api_key}
+                if self._provider == "copilot":
+                    kwargs["base_url"] = COPILOT_BASE_URL
+                return openai.OpenAI(**kwargs)
+            except ImportError:
+                raise ImportError(
+                    "The 'openai' package is required for OpenAI/Copilot AI features. "
+                    "Install it with: pip install openai"
+                )
+        raise ValueError(f"Unsupported provider: {self._provider}")
+
+    def _call_llm(self, prompt: str, model_tier: str, max_tokens: int) -> str:
+        """
+        Send a prompt to the configured LLM and return the response text.
+
+        Args:
+            prompt: The user message content.
+            model_tier: ``"summary"`` (rich model) or ``"component"`` (fast model).
+            max_tokens: Maximum tokens in the response.
+
+        Returns:
+            The assistant's response text.
+        """
+        model = (
+            self._summary_model if model_tier == "summary" else self._component_model
+        )
+
+        if self._provider == "anthropic":
+            response = self.client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                system=SYSTEM_MESSAGE,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            self._call_count += 1
+            return response.content[0].text  # type: ignore[no-any-return]
+        else:
+            # OpenAI / Copilot
+            response = self.client.chat.completions.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "system", "content": SYSTEM_MESSAGE},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            self._call_count += 1
+            return response.choices[0].message.content or ""
+
     def _is_fresh(self, generated_at: str | None) -> bool:
         """Check if a cached entry is still within the TTL window."""
         if self.cache_ttl <= 0 or not generated_at:
@@ -188,7 +334,7 @@ class LLMClient:
                     remediation.get("guidance", ""),
                     remediation.get("workaround", ""),
                     remediation.get("code_search_hints", ""),
-                    remediation.get("generated_by", HAIKU_MODEL),
+                    remediation.get("generated_by", self._component_model),
                     datetime.utcnow().isoformat(),
                     remediation.get("confidence", "medium"),
                 ),
@@ -274,6 +420,81 @@ class LLMClient:
             )
 
     # =========================================================================
+    # Bullet-point formatters (replace verbose JSON dumps in prompts)
+    # =========================================================================
+
+    @staticmethod
+    def _format_projects_bullet(projects: list[dict[str, Any]]) -> str:
+        """Format project summaries as compact bullet points."""
+        lines = []
+        for p in projects:
+            name = p.get("project_name", "Unknown")
+            total = p.get("total_findings", 0)
+            bands = []
+            for band in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+                count = p.get(band, 0)
+                if count:
+                    bands.append(f"{count} {band}")
+            band_str = ", ".join(bands) if bands else "no findings"
+            avg = p.get("avg_score", 0)
+            lines.append(
+                f"- **{name}** -- {total} findings ({band_str}), avg score: {avg}"
+            )
+        return "\n".join(lines) if lines else "No project data available."
+
+    @staticmethod
+    def _format_components_bullet(components: list[dict[str, Any]]) -> str:
+        """Format component summaries as compact bullet points."""
+        lines = []
+        for c in components:
+            name = c.get("component_name", c.get("component", "Unknown"))
+            version = c.get("component_version", "")
+            label = (
+                f"{name}:{version}" if version and ":" not in str(name) else str(name)
+            )
+            total = c.get("total_findings", c.get("findings_count", 0))
+            bands = []
+            for band in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+                count = c.get(band, 0)
+                if count:
+                    bands.append(f"{count} {band}")
+            band_str = ", ".join(bands) if bands else "no findings"
+            avg = c.get("avg_score", "")
+            line = f"- **{label}** -- {total} findings ({band_str})"
+            if avg:
+                line += f", avg score: {avg}"
+            lines.append(line)
+        return "\n".join(lines) if lines else "No component data available."
+
+    @staticmethod
+    def _format_project_components_bullet(
+        components: list[dict[str, Any]],
+    ) -> str:
+        """Format project-level component summaries as compact bullet points."""
+        lines = []
+        for c in components:
+            comp = c.get("component", "Unknown")
+            count = c.get("findings_count", 0)
+            bands_list = c.get("bands", [])
+            band_counts: dict[str, int] = {}
+            for b in bands_list:
+                band_counts[b] = band_counts.get(b, 0) + 1
+            band_parts = []
+            for band in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+                if band_counts.get(band, 0):
+                    band_parts.append(f"{band_counts[band]} {band}")
+            band_str = ", ".join(band_parts) if band_parts else "no findings"
+            reach_cves = c.get("reachable_cves", [])
+            vuln_fns = c.get("vuln_functions", [])
+            line = f"- **{comp}** -- {count} findings ({band_str})"
+            if reach_cves:
+                line += f", {len(reach_cves)} reachable"
+            if vuln_fns:
+                line += f", vuln functions: {', '.join(str(f) for f in vuln_fns)}"
+            lines.append(line)
+        return "\n".join(lines) if lines else "No component data available."
+
+    # =========================================================================
     # Portfolio Summary (Sonnet)
     # =========================================================================
 
@@ -314,14 +535,8 @@ class LLMClient:
         )
 
         try:
-            response = self.client.messages.create(
-                model=SONNET_MODEL,
-                max_tokens=MAX_PORTFOLIO_TOKENS,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            self._call_count += 1
-            result_text = response.content[0].text  # type: ignore[union-attr]
-            self.cache_summary(cache_key, "portfolio", result_text, SONNET_MODEL)
+            result_text = self._call_llm(prompt, "summary", MAX_PORTFOLIO_TOKENS)
+            self.cache_summary(cache_key, "portfolio", result_text, self._summary_model)
             return result_text
         except Exception as e:
             logger.error(f"Portfolio summary generation failed: {e}")
@@ -351,7 +566,7 @@ class LLMClient:
 Note: "Reachable" means static/binary analysis confirmed the vulnerable function exists in and is callable from the deployed firmware. This is the strongest signal for real-world exploitability.
 """
 
-        return f"""You are a firmware security analyst. Analyze this vulnerability triage data and provide strategic remediation guidance.
+        return f"""Analyze this vulnerability triage data and provide strategic remediation guidance.
 
 ## Portfolio Overview
 - Total findings: {portfolio_summary.get('total', 0)}
@@ -360,12 +575,14 @@ Note: "Reachable" means static/binary analysis confirmed the vulnerable function
 - MEDIUM: {portfolio_summary.get('MEDIUM', 0)}
 - LOW: {portfolio_summary.get('LOW', 0)}
 - INFO: {portfolio_summary.get('INFO', 0)}
+
+{SCORING_METHODOLOGY}
 {reach_section}
 ## Top Projects by Risk
-{json.dumps(top_projects, indent=2, default=str)}
+{self._format_projects_bullet(top_projects)}
 
 ## Top Risky Components
-{json.dumps(top_comps, indent=2, default=str)}
+{self._format_components_bullet(top_comps)}
 
 Provide a concise strategic summary (3-5 paragraphs):
 1. Overall risk posture assessment — highlight the reachability findings as the most urgent
@@ -408,14 +625,8 @@ Be specific with component names and versions. When vulnerable functions are ide
         prompt = self._build_project_prompt(project_name, findings, band_counts)
 
         try:
-            response = self.client.messages.create(
-                model=SONNET_MODEL,
-                max_tokens=MAX_PROJECT_TOKENS,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            self._call_count += 1
-            result_text = response.content[0].text  # type: ignore[union-attr]
-            self.cache_summary(cache_key, "project", result_text, SONNET_MODEL)
+            result_text = self._call_llm(prompt, "summary", MAX_PROJECT_TOKENS)
+            self.cache_summary(cache_key, "project", result_text, self._summary_model)
             return result_text
         except Exception as e:
             logger.error(f"Project summary generation failed for {project_name}: {e}")
@@ -474,10 +685,12 @@ Be specific with component names and versions. When vulnerable functions are ide
         )
         unknown_total = sum(1 for f in findings if f.get("reachability_score", 0) == 0)
 
-        return f"""You are a firmware security analyst. Provide remediation guidance for project "{project_name}".
+        return f"""Provide remediation guidance for project "{project_name}".
 
 ## Risk Band Distribution
 {json.dumps(band_counts, indent=2)}
+
+{SCORING_METHODOLOGY}
 
 ## Reachability Summary
 - Reachable: {reachable_total} (vulnerable code confirmed present and callable in firmware)
@@ -485,9 +698,9 @@ Be specific with component names and versions. When vulnerable functions are ide
 - Inconclusive: {unknown_total} (reachability not determined)
 
 ## Top Components by Risk
-{json.dumps(component_summary, indent=2, default=str)}
+{self._format_project_components_bullet(component_summary)}
 
-Note: "reachable_cves" lists CVEs where binary analysis confirmed the vulnerable code path is callable. "vuln_functions" are the specific functions identified as vulnerable in the deployed binaries — developers should search for and audit these.
+Note: "reachable" indicates CVEs where binary analysis confirmed the vulnerable code path is callable. Vulnerable functions listed are specific functions identified in the deployed binaries — developers should search for and audit these.
 
 Provide a concise project remediation plan (2-3 paragraphs):
 1. Which components to upgrade first — prioritize those with reachable vulnerabilities and known exploits
@@ -508,6 +721,7 @@ Be specific with component names and versions."""
         cve_details: list[dict[str, Any]] | None = None,
         exploit_details: list[dict[str, Any]] | None = None,
         reachability_info: list[dict[str, Any]] | None = None,
+        nvd_fix_snippet: str = "",
     ) -> dict[str, Any]:
         """
         Generate component-level remediation guidance.
@@ -518,6 +732,8 @@ Be specific with component names and versions."""
         Args:
             reachability_info: List of dicts with reachability_score,
                 reachability_label, vuln_functions, factors for each CVE.
+            nvd_fix_snippet: Pre-formatted NVD fix version data to inject
+                into the prompt (from NVDClient.format_batch_for_prompt).
 
         Returns:
             Dict with fix_version, guidance, workaround, code_search_hints
@@ -537,16 +753,11 @@ Be specific with component names and versions."""
             cve_details,
             exploit_details,
             reachability_info,
+            nvd_fix_snippet,
         )
 
         try:
-            response = self.client.messages.create(
-                model=HAIKU_MODEL,
-                max_tokens=MAX_COMPONENT_TOKENS,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            self._call_count += 1
-            result_text = response.content[0].text  # type: ignore[union-attr]
+            result_text = self._call_llm(prompt, "component", MAX_COMPONENT_TOKENS)
 
             # Parse structured response
             remediation = self._parse_component_response(
@@ -581,6 +792,7 @@ Be specific with component names and versions."""
         cve_details: list[dict[str, Any]] | None = None,
         exploit_details: list[dict[str, Any]] | None = None,
         reachability_info: list[dict[str, Any]] | None = None,
+        nvd_fix_snippet: str = "",
     ) -> str:
         """Build the prompt for component-level guidance."""
         cve_section = "\n".join(f"- {cve}" for cve in cve_ids[:10])
@@ -609,7 +821,6 @@ Be specific with component names and versions."""
         if reachability_info:
             reach_items = []
             all_vuln_funcs: set[str] = set()
-            all_binary_paths = set()
             for ri in reachability_info:
                 score = ri.get("reachability_score", 0)
                 label = (
@@ -626,7 +837,7 @@ Be specific with component names and versions."""
                     + (f", vulnerable functions: {vuln_funcs}" if vuln_funcs else "")
                 )
 
-                # Collect all vulnerable functions and binary paths from factors
+                # Collect all vulnerable functions from factors
                 if vuln_funcs:
                     all_vuln_funcs.update(
                         fn.strip() for fn in vuln_funcs.split(",") if fn.strip()
@@ -637,11 +848,6 @@ Be specific with component names and versions."""
                             entity_name = factor.get("entity_name", "")
                             if factor.get("entity_type") == "vuln_func" and entity_name:
                                 all_vuln_funcs.add(entity_name)
-                            # Extract binary paths for context
-                            details = factor.get("details", {})
-                            if isinstance(details, dict):
-                                for path in details.get("comp_files", [])[:3]:
-                                    all_binary_paths.add(path)
 
             reach_section = "\n## Reachability Analysis (from binary analysis)\n"
             reach_section += "\n".join(reach_items[:10])
@@ -650,17 +856,17 @@ Be specific with component names and versions."""
                     f"\n\nVulnerable functions confirmed in firmware binaries: "
                     f"{', '.join(sorted(all_vuln_funcs)[:10])}"
                 )
-            if all_binary_paths:
-                reach_section += (
-                    f"\nBinary locations: " f"{', '.join(sorted(all_binary_paths)[:5])}"
-                )
             reach_section += (
                 "\n\nNote: REACHABLE means binary analysis confirmed these "
                 "functions exist in deployed firmware and can be reached. "
                 "Include these function names in CODE_SEARCH guidance."
             )
 
-        return f"""You are a security remediation advisor. Provide specific fix guidance for:
+        nvd_section = ""
+        if nvd_fix_snippet:
+            nvd_section = f"\n{nvd_fix_snippet}\n"
+
+        return f"""Provide specific fix guidance for:
 
 Component: {component_name} version {component_version}
 
@@ -672,13 +878,60 @@ CVEs:
 {f"## Exploit Information{exploit_section}" if exploit_section else ""}
 
 {reach_section}
-
+{nvd_section}
 Respond in this exact format:
-FIX_VERSION: <recommended version to upgrade to>
+FIX_VERSION: <specific version number. If NVD data says "FIXED in >= X", recommend X. If NVD data says a version is "STILL VULNERABLE", the fix must be AFTER that version — do NOT recommend the vulnerable version. Cross-reference the component version ({component_version}) against the NVD affected ranges. Only state "verify latest stable release" if no version data is available.>
+RATIONALE: <1 sentence explaining why this fix or version is recommended, citing the NVD data or advisory if available>
 GUIDANCE: <1-2 sentence upgrade guidance>
-WORKAROUND: <workaround if upgrade isn't immediately possible, or "None">
+WORKAROUND: <1-3 sentences: if no straightforward upgrade is available, suggest firmware-specific mitigations such as disabling affected services, network segmentation, restricting exposed interfaces, or configuration hardening. If a direct upgrade is available, state "Upgrade recommended.">
 CODE_SEARCH: <grep/search patterns to find affected code in firmware — use specific vulnerable function names if known from reachability analysis, e.g., "grep -r 'vulnerableFunction' src/">
-CONFIDENCE: <high|medium|low>"""
+CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium (version estimated from known patterns), low (uncertain — verify independently)>"""
+
+    @staticmethod
+    def _parse_structured_response(
+        response_text: str,
+        field_map: dict[str, str],
+    ) -> dict[str, str]:
+        """Parse a structured LLM response with multi-line field support.
+
+        Lines starting with a known ``PREFIX:`` are captured into the
+        corresponding result key.  Continuation lines (that don't start
+        with any known prefix) are appended to the most-recently-matched
+        field so that multi-line WORKAROUND / GUIDANCE values aren't
+        silently truncated.
+
+        Args:
+            response_text: Raw LLM response.
+            field_map: Mapping of ``"PREFIX"`` (without colon) to result
+                dict key, e.g. ``{"FIX_VERSION": "fix_version", ...}``.
+
+        Returns:
+            Dict with one entry per *field_map* value (all strings).
+        """
+        result: dict[str, str] = {v: "" for v in field_map.values()}
+        current_key: str | None = None
+
+        for line in response_text.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            matched = False
+            for prefix, key in field_map.items():
+                if line.startswith(f"{prefix}:"):
+                    value = line.split(":", 1)[1].strip()
+                    result[key] = value
+                    current_key = key
+                    matched = True
+                    break
+            if not matched and current_key is not None:
+                # Continuation line — append to the current field
+                result[current_key] += " " + line
+
+        # Trim all values
+        for k in result:
+            result[k] = result[k].strip()
+
+        return result
 
     def _parse_component_response(
         self,
@@ -687,31 +940,25 @@ CONFIDENCE: <high|medium|low>"""
         component_version: str,
     ) -> dict[str, Any]:
         """Parse structured response from component guidance prompt."""
-        result = {
-            "component_name": component_name,
-            "fix_version": "",
-            "guidance": "",
-            "workaround": "",
-            "code_search_hints": "",
-            "generated_by": HAIKU_MODEL,
-            "confidence": "medium",
+        field_map = {
+            "FIX_VERSION": "fix_version",
+            "RATIONALE": "rationale",
+            "GUIDANCE": "guidance",
+            "WORKAROUND": "workaround",
+            "CODE_SEARCH": "code_search_hints",
+            "CONFIDENCE": "confidence",
         }
+        parsed = self._parse_structured_response(response_text, field_map)
 
-        for line in response_text.strip().split("\n"):
-            line = line.strip()
-            if line.startswith("FIX_VERSION:"):
-                result["fix_version"] = line.split(":", 1)[1].strip()
-            elif line.startswith("GUIDANCE:"):
-                result["guidance"] = line.split(":", 1)[1].strip()
-            elif line.startswith("WORKAROUND:"):
-                result["workaround"] = line.split(":", 1)[1].strip()
-            elif line.startswith("CODE_SEARCH:"):
-                result["code_search_hints"] = line.split(":", 1)[1].strip()
-            elif line.startswith("CONFIDENCE:"):
-                result["confidence"] = line.split(":", 1)[1].strip().lower()
+        result: dict[str, Any] = {
+            "component_name": component_name,
+            "generated_by": "llm",
+            **parsed,
+        }
+        result["confidence"] = result.get("confidence", "medium").lower()
 
         # If parsing didn't work well, use the raw text as guidance
-        if not result["guidance"]:
+        if not result.get("guidance"):
             result["guidance"] = response_text.strip()[:500]
 
         return result
@@ -726,6 +973,7 @@ CONFIDENCE: <high|medium|low>"""
         cve_details_map: dict[str, list[dict]] | None = None,
         exploit_details_map: dict[str, list[dict]] | None = None,
         reachability_map: dict[str, dict[str, Any]] | None = None,
+        nvd_snippets_map: dict[str, str] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """
         Generate guidance for multiple components (grouped by component+version).
@@ -736,6 +984,8 @@ CONFIDENCE: <high|medium|low>"""
             exploit_details_map: Optional map of finding_id -> exploit detail list
             reachability_map: Optional map of finding_id -> reachability info dict
                 (reachability_score, reachability_label, vuln_functions, factors)
+            nvd_snippets_map: Optional map of "component:version" -> formatted
+                NVD fix snippet (from NVDClient.format_batch_for_prompt).
 
         Returns:
             Dict mapping "component:version" to remediation guidance
@@ -769,6 +1019,12 @@ CONFIDENCE: <high|medium|low>"""
                         if ri:
                             reach_info_list.append(ri)
 
+                # NVD fix data for this component
+                nvd_snippet = ""
+                if nvd_snippets_map:
+                    nvd_snippet = nvd_snippets_map.get(comp_key, "")
+
+                prev_cached = self._cached_count
                 guidance = self.generate_component_guidance(
                     component_name=comp["component_name"],
                     component_version=comp["component_version"],
@@ -778,16 +1034,148 @@ CONFIDENCE: <high|medium|low>"""
                     if exploit_details_list
                     else None,
                     reachability_info=reach_info_list if reach_info_list else None,
+                    nvd_fix_snippet=nvd_snippet,
                 )
                 results[comp_key] = guidance
 
-                # Rate limiting — 0.5s between calls to avoid hitting limits
-                time.sleep(0.5)
+                # Only rate-limit when we actually hit the API
+                if self._cached_count == prev_cached:
+                    time.sleep(0.5)
 
         logger.info(
             f"AI guidance complete: {self._call_count} API calls, "
             f"{self._cached_count} cache hits"
         )
+        return results
+
+    # =========================================================================
+    # Finding-Level Triage Guidance (Haiku — full depth only)
+    # =========================================================================
+
+    def generate_finding_guidance(
+        self,
+        finding_id: str,
+        prompt: str,
+    ) -> dict[str, str]:
+        """
+        Generate finding-level triage guidance from a pre-built prompt.
+
+        Uses the fast (component) model. Caches by finding_id.
+
+        Args:
+            finding_id: The CVE/finding identifier.
+            prompt: The complete triage prompt text (built by _build_triage_prompt).
+
+        Returns:
+            Dict with priority, action, rationale, fix_version, workaround,
+            code_search_hints, confidence.
+        """
+        # Check cache — use ai_summary_cache with "finding:" prefix to avoid
+        # collision with component-level cve_remediations cache.
+        cache_key = f"finding:{finding_id}"
+        cached_json = self.get_cached_summary(cache_key)
+        if cached_json is not None:
+            self._cached_count += 1
+            try:
+                result: dict[str, str] = json.loads(cached_json)
+                return result
+            except (json.JSONDecodeError, TypeError):
+                pass  # stale/corrupt entry — regenerate
+
+        try:
+            result_text = self._call_llm(prompt, "component", MAX_COMPONENT_TOKENS)
+            guidance = self._parse_finding_response(result_text, finding_id)
+            self.cache_summary(
+                cache_key,
+                "finding",
+                json.dumps(guidance, default=str),
+                self._component_model,
+            )
+            return guidance
+        except Exception as e:
+            logger.error(f"Finding guidance failed for {finding_id}: {e}")
+            return {
+                "finding_id": finding_id,
+                "component_name": "",
+                "priority": "",
+                "action": "",
+                "rationale": "",
+                "fix_version": "Unknown",
+                "guidance": f"AI guidance unavailable: {e}",
+                "workaround": "",
+                "code_search_hints": "",
+                "generated_by": "error",
+                "confidence": "none",
+            }
+
+    def _parse_finding_response(
+        self, response_text: str, finding_id: str
+    ) -> dict[str, str]:
+        """Parse structured response from finding triage prompt."""
+        field_map = {
+            "PRIORITY": "priority",
+            "ACTION": "action",
+            "RATIONALE": "rationale",
+            "FIX_VERSION": "fix_version",
+            "WORKAROUND": "workaround",
+            "CODE_SEARCH": "code_search_hints",
+            "CONFIDENCE": "confidence",
+        }
+        parsed = self._parse_structured_response(response_text, field_map)
+
+        result: dict[str, str] = {
+            "finding_id": finding_id,
+            "component_name": "",
+            "guidance": "",
+            "generated_by": "llm",
+            **parsed,
+        }
+        result["confidence"] = result.get("confidence", "medium").lower()
+
+        # If parsing didn't work well, use the raw text as action
+        if not result.get("action") and not result.get("priority"):
+            result["action"] = response_text.strip()[:500]
+
+        return result
+
+    def generate_batch_finding_guidance(
+        self,
+        findings: list[tuple[str, str]],
+    ) -> dict[str, dict[str, str]]:
+        """
+        Generate triage guidance for multiple findings.
+
+        Args:
+            findings: List of (finding_id, prompt_text) tuples.
+
+        Returns:
+            Dict mapping finding_id to guidance dict.
+        """
+        results: dict[str, dict[str, str]] = {}
+
+        from tqdm import tqdm
+
+        cached_before = self._cached_count
+        with tqdm(
+            findings, desc="Generating AI finding guidance", unit=" findings"
+        ) as pbar:
+            for finding_id, prompt in pbar:
+                pbar.set_postfix_str(finding_id[:40])
+                prev_cached = self._cached_count
+                guidance = self.generate_finding_guidance(finding_id, prompt)
+                results[finding_id] = guidance
+                was_cached = self._cached_count > prev_cached
+                # Only rate-limit when we actually hit the API
+                if not was_cached:
+                    time.sleep(0.5)
+
+        cached_this_batch = self._cached_count - cached_before
+        if cached_this_batch > 0:
+            logger.info(
+                f"Finding guidance: {cached_this_batch}/{len(findings)} from cache, "
+                f"{len(findings) - cached_this_batch} from API"
+            )
+
         return results
 
     # =========================================================================

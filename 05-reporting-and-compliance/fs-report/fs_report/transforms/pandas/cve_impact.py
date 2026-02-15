@@ -320,9 +320,14 @@ def cve_impact_pandas_transform(
                 }
             )
 
+    # Track extra output files (prompts) for user-visible listing
+    extra_generated_files: list[str] = []
+
     # AI guidance and prompt export (dossier mode only) ------------------
     if mode == "dossier" and dossiers:
-        _enrich_dossiers_with_ai(dossiers, rows, config)
+        _prompts_path = _enrich_dossiers_with_ai(dossiers, rows, config)
+        if _prompts_path:
+            extra_generated_files.append(_prompts_path)
 
     # Build summary statistics ------------------------------------------
     summary = _build_summary(rows)
@@ -337,6 +342,7 @@ def cve_impact_pandas_transform(
         "dossiers": dossiers,
         "mode": mode,
         "summary": summary,
+        "_extra_generated_files": extra_generated_files,
     }
 
 
@@ -782,12 +788,20 @@ def _build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _build_cve_prompt(dossier: dict[str, Any], row: dict[str, Any]) -> str:
+def _build_cve_prompt(
+    dossier: dict[str, Any], row: dict[str, Any], nvd_snippet: str = ""
+) -> str:
     """Build an LLM prompt for remediation guidance for one CVE.
 
     This is a standalone function that does NOT require an API key or
     LLMClient instantiation.  It produces the same prompt that ``--ai``
     would send to Claude, so users can paste it into any LLM.
+
+    Args:
+        dossier: CVE dossier dict with severity, cvss, description, etc.
+        row: Corresponding row dict from the output table.
+        nvd_snippet: Optional pre-formatted NVD fix version data
+            (from NVDClient.format_for_prompt).
     """
     cve_id = dossier["cve_id"]
     severity = dossier["severity"]
@@ -799,6 +813,19 @@ def _build_cve_prompt(dossier: dict[str, Any], row: dict[str, Any]) -> str:
     vuln_functions = dossier.get("vuln_functions", "")
     components_str = row.get("Components", "")
     kev = dossier.get("kev", False)
+    first_detected = dossier.get("first_detected", "")
+
+    # Calculate finding age if first_detected is available
+    age_str = ""
+    if first_detected:
+        try:
+            from datetime import datetime
+
+            detected_dt = datetime.fromisoformat(first_detected.replace("Z", "+00:00"))
+            age_days = (datetime.now(detected_dt.tzinfo) - detected_dt).days
+            age_str = f" ({age_days} days ago)"
+        except (ValueError, TypeError):
+            pass
 
     # Affected projects with reachability
     project_lines: list[str] = []
@@ -819,6 +846,10 @@ def _build_cve_prompt(dossier: dict[str, Any], row: dict[str, Any]) -> str:
             f"URL: {exp.get('url', 'N/A')}"
         )
 
+    nvd_section = ""
+    if nvd_snippet:
+        nvd_section = f"\n{nvd_snippet}\n"
+
     prompt = f"""You are a security remediation advisor. Provide specific remediation guidance for the following CVE.
 
 ## CVE: {cve_id}
@@ -827,6 +858,7 @@ def _build_cve_prompt(dossier: dict[str, Any], row: dict[str, Any]) -> str:
 - EPSS: {epss * 100:.1f}th percentile
 - Attack Vector: {attack_vector or 'N/A'}
 - In CISA KEV: {'Yes' if kev else 'No'}
+- First Detected: {first_detected or 'Unknown'}{age_str}
 
 ## Description
 {description or 'No description available.'}
@@ -842,13 +874,14 @@ def _build_cve_prompt(dossier: dict[str, Any], row: dict[str, Any]) -> str:
 
 ## Known Exploits
 {chr(10).join(exploit_lines) if exploit_lines else 'None known'}
-
+{nvd_section}
 Respond in this exact format:
-FIX_VERSION: <recommended version to upgrade to for the primary component>
+FIX_VERSION: <specific version number. If NVD data says "FIXED in >= X", recommend X. If NVD data says a version is "STILL VULNERABLE", the fix must be AFTER that version — do NOT recommend the vulnerable version. Cross-reference the installed component version against the NVD affected ranges. For well-known libraries (OpenSSL, curl, busybox, zlib, etc.), recall the specific patch version from security advisories. Only state "verify latest stable release" if no version data is available.>
+RATIONALE: <1 sentence explaining why this fix or version is recommended, citing NVD data or advisory if available>
 GUIDANCE: <1-3 sentence upgrade/remediation guidance>
-WORKAROUND: <workaround if upgrade isn't immediately possible, or "None">
+WORKAROUND: <1-3 sentences: if no straightforward upgrade is available, suggest firmware-specific mitigations such as disabling affected services, network segmentation, restricting exposed interfaces, or configuration hardening. If a direct upgrade is available, state "Upgrade recommended.">
 CODE_SEARCH: <grep/search patterns to find affected code in firmware — use specific vulnerable function names if known>
-CONFIDENCE: <high|medium|low>"""
+CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium (version estimated from known patterns), low (uncertain — verify independently)>"""
 
     return prompt
 
@@ -857,7 +890,7 @@ def _enrich_dossiers_with_ai(
     dossiers: list[dict[str, Any]],
     rows: list[dict[str, Any]],
     config: Config,
-) -> None:
+) -> str | None:
     """Enrich dossier dicts with AI guidance and/or exportable prompts.
 
     Modifies dossiers in-place, adding:
@@ -865,12 +898,38 @@ def _enrich_dossiers_with_ai(
     - ``ai_prompt``: raw prompt string (when ``--ai-prompts``)
 
     Also writes a prompts markdown file when ``--ai-prompts`` is set.
+
+    Returns:
+        Path to the prompts file if written, else None.
     """
     want_live_ai = getattr(config, "ai", False)
     want_prompts = getattr(config, "ai_prompts", False)
 
     if not want_live_ai and not want_prompts:
-        return
+        return None
+
+    # --- Initialise NVD client for fix-version enrichment ---
+    nvd = None
+    try:
+        from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
+
+        cache_dir = getattr(config, "cache_dir", None)
+        cache_ttl = getattr(config, "cache_ttl", 0) or 0
+        nvd_api_key = getattr(config, "nvd_api_key", None)
+        nvd = NVDClient(
+            api_key=nvd_api_key,
+            cache_dir=cache_dir,
+            cache_ttl=max(cache_ttl, 86400),
+        )
+        logger.info(NVD_ATTRIBUTION)
+
+        # Batch-fetch NVD data for all dossier CVEs upfront
+        cve_ids = [d["cve_id"] for d in dossiers if d.get("cve_id")]
+        if cve_ids:
+            logger.info(f"Fetching NVD fix data for {len(cve_ids)} CVEs...")
+            nvd.get_batch(cve_ids, progress=True)
+    except Exception as e:
+        logger.info(f"NVD client unavailable (fix-version enrichment disabled): {e}")
 
     # Build row lookup by CVE ID for prompt construction
     row_by_cve: dict[str, dict[str, Any]] = {}
@@ -882,7 +941,13 @@ def _enrich_dossiers_with_ai(
     for d in dossiers:
         cve_id = d["cve_id"]
         row = row_by_cve.get(cve_id, {})
-        prompt = _build_cve_prompt(d, row)
+
+        # Get NVD fix snippet for this CVE
+        nvd_snippet = ""
+        if nvd:
+            nvd_snippet = nvd.format_for_prompt(cve_id)
+
+        prompt = _build_cve_prompt(d, row, nvd_snippet=nvd_snippet)
 
         if want_prompts:
             d["ai_prompt"] = prompt
@@ -896,7 +961,8 @@ def _enrich_dossiers_with_ai(
 
     # Write prompts file
     if want_prompts and prompts:
-        _write_prompts_file(prompts, config)
+        return _write_prompts_file(prompts, config)
+    return None
 
 
 def _call_llm_for_cve(
@@ -908,25 +974,24 @@ def _call_llm_for_cve(
     try:
         from fs_report.llm_client import LLMClient
     except ImportError:
-        logger.warning("anthropic package not available; skipping AI guidance")
+        logger.warning("LLM package not available; skipping AI guidance")
         return None
 
     cache_dir = getattr(config, "cache_dir", None)
     cache_ttl = getattr(config, "cache_ttl", 0) or 0
+    provider = getattr(config, "ai_provider", None)
+
+    # AI remediation data is stable — enforce minimum 7-day cache TTL
+    cache_ttl = max(cache_ttl, 7 * 24 * 3600)
 
     try:
-        llm = LLMClient(cache_dir=cache_dir, cache_ttl=cache_ttl)
+        llm = LLMClient(cache_dir=cache_dir, cache_ttl=cache_ttl, provider=provider)
     except (ValueError, ImportError) as e:
         logger.warning(f"LLM client init failed: {e}")
         return None
 
     try:
-        response = llm.client.messages.create(
-            model="claude-3-5-haiku-latest",
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = response.content[0].text  # type: ignore[union-attr]
+        text = llm._call_llm(prompt, "component", 500)
         return _parse_ai_response(text)
     except Exception as e:
         logger.warning(f"AI guidance failed for {cve_id}: {e}")
@@ -934,34 +999,53 @@ def _call_llm_for_cve(
 
 
 def _parse_ai_response(text: str) -> dict[str, str]:
-    """Parse structured LLM response into a guidance dict."""
-    result: dict[str, str] = {
-        "fix_version": "",
-        "guidance": "",
-        "workaround": "",
-        "code_search_hints": "",
-        "confidence": "medium",
+    """Parse structured LLM response into a guidance dict.
+
+    Supports multi-line field values — continuation lines that don't
+    start with a recognized prefix are appended to the previous field.
+    """
+    field_map = {
+        "FIX_VERSION": "fix_version",
+        "RATIONALE": "rationale",
+        "GUIDANCE": "guidance",
+        "WORKAROUND": "workaround",
+        "CODE_SEARCH": "code_search_hints",
+        "CONFIDENCE": "confidence",
     }
+    result: dict[str, str] = {v: "" for v in field_map.values()}
+    current_key: str | None = None
+
     for line in text.strip().split("\n"):
         line = line.strip()
-        if line.startswith("FIX_VERSION:"):
-            result["fix_version"] = line.split(":", 1)[1].strip()
-        elif line.startswith("GUIDANCE:"):
-            result["guidance"] = line.split(":", 1)[1].strip()
-        elif line.startswith("WORKAROUND:"):
-            result["workaround"] = line.split(":", 1)[1].strip()
-        elif line.startswith("CODE_SEARCH:"):
-            result["code_search_hints"] = line.split(":", 1)[1].strip()
-        elif line.startswith("CONFIDENCE:"):
-            result["confidence"] = line.split(":", 1)[1].strip().lower()
+        if not line:
+            continue
+        matched = False
+        for prefix, key in field_map.items():
+            if line.startswith(f"{prefix}:"):
+                result[key] = line.split(":", 1)[1].strip()
+                current_key = key
+                matched = True
+                break
+        if not matched and current_key is not None:
+            result[current_key] += " " + line
+
+    # Trim and normalize
+    for k in result:
+        result[k] = result[k].strip()
+    result["confidence"] = result.get("confidence", "medium").lower()
+
     return result
 
 
 def _write_prompts_file(
     prompts: list[tuple[str, str, str]],
     config: Config,
-) -> None:
-    """Write a markdown file with all AI prompts for copy-paste use."""
+) -> str:
+    """Write a markdown file with all AI prompts for copy-paste use.
+
+    Returns:
+        Path to the written prompts file.
+    """
     from datetime import datetime
     from pathlib import Path
 
@@ -986,3 +1070,4 @@ def _write_prompts_file(
 
     prompts_path.write_text("\n".join(lines), encoding="utf-8")
     logger.info(f"AI prompts written to {prompts_path}")
+    return str(prompts_path)

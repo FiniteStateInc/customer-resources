@@ -217,8 +217,14 @@ def triage_prioritization_transform(
         f"INFO={portfolio_summary.get('INFO', 0)}"
     )
 
+    # Track extra output files (prompts, VEX JSON) for user-visible listing
+    extra_generated_files: list[str] = []
+
     # AI prompt generation (optional, --ai-prompts flag)
     ai_triage_prompts: list[dict[str, str]] = []
+    ai_portfolio_prompt: str = ""
+    ai_project_prompts: dict[str, str] = {}
+    ai_component_prompts: dict[str, str] = {}
     want_prompts = False
     if config and hasattr(config, "ai_prompts"):
         want_prompts = bool(config.ai_prompts)
@@ -227,22 +233,58 @@ def triage_prioritization_transform(
         want_prompts = bool(getattr(cfg, "ai_prompts", False))
 
     if want_prompts:
-        # Determine which bands to generate prompts for (from recipe parameters)
-        recipe_params = (additional_data or {}).get("recipe_parameters", {}) or {}
-        prompt_bands = recipe_params.get("ai_prompt_bands", ["CRITICAL"])
-        if not isinstance(prompt_bands, list):
-            prompt_bands = ["CRITICAL"]
-        prompt_bands_upper = [b.upper() for b in prompt_bands]
+        # --- Initialise NVD client for fix-version enrichment in prompts ---
+        _prompt_nvd = None
+        try:
+            from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
 
-        prompt_df = df[df["priority_band"].isin(prompt_bands_upper)]
+            _prompt_cache_dir = None
+            _prompt_cache_ttl = 0
+            _prompt_nvd_key = None
+            if config and hasattr(config, "cache_dir"):
+                _prompt_cache_dir = getattr(config, "cache_dir", None)
+                _prompt_cache_ttl = getattr(config, "cache_ttl", 0) or 0
+                _prompt_nvd_key = getattr(config, "nvd_api_key", None)
+            elif additional_data and "config" in additional_data:
+                _pcfg = additional_data["config"]
+                _prompt_cache_dir = getattr(_pcfg, "cache_dir", None)
+                _prompt_cache_ttl = getattr(_pcfg, "cache_ttl", 0) or 0
+                _prompt_nvd_key = getattr(_pcfg, "nvd_api_key", None)
+            _prompt_nvd = NVDClient(
+                api_key=_prompt_nvd_key,
+                cache_dir=_prompt_cache_dir,
+                cache_ttl=max(_prompt_cache_ttl, 86400),
+            )
+            logger.info(NVD_ATTRIBUTION)
+            # Batch-fetch NVD data for top finding CVEs
+            _prompt_cve_ids = [
+                fid
+                for fid in df.head(100)["finding_id"].dropna().unique()
+                if str(fid).startswith("CVE-")
+            ]
+            if _prompt_cve_ids:
+                logger.info(
+                    f"Fetching NVD fix data for {len(_prompt_cve_ids)} CVEs "
+                    f"(prompt enrichment)..."
+                )
+                _prompt_nvd.get_batch(list(_prompt_cve_ids), progress=True)
+        except Exception as _nvd_err:
+            logger.info(f"NVD unavailable for prompt enrichment: {_nvd_err}")
+
+        # --- Per-finding prompts (top 100 by priority, matching findings table) ---
+        prompt_df = df.head(100)
         logger.info(
-            f"Generating AI prompts for {len(prompt_df)} findings "
-            f"in bands: {prompt_bands_upper}"
+            f"Generating AI prompts for top {len(prompt_df)} findings by priority"
         )
 
         prompts_for_file: list[tuple[str, str, str, str]] = []
         for _, row in prompt_df.iterrows():
-            prompt_text = _build_triage_prompt(row)
+            _nvd_snip = ""
+            if _prompt_nvd:
+                fid = row.get("finding_id", "")
+                if str(fid).startswith("CVE-"):
+                    _nvd_snip = _prompt_nvd.format_for_prompt(str(fid))
+            prompt_text = _build_triage_prompt(row, nvd_snippet=_nvd_snip)
             finding_id = row.get("finding_id", "Unknown")
             component = f"{row.get('component_name', '')} {row.get('component_version', '')}".strip()
             band = row.get("priority_band", "")
@@ -257,14 +299,148 @@ def triage_prioritization_transform(
             )
             prompts_for_file.append((finding_id, component, band, prompt_text))
 
-        # Write prompts markdown file
-        if prompts_for_file and config:
-            _write_triage_prompts_file(prompts_for_file, config)
+        # --- Portfolio prompt (multi-project only) ---
+        project_names = df["project_name"].unique()
+        is_multi = len(project_names) > 1
+
+        reachability_summary: dict[str, Any] | None = None
+        if "reachability_score" in df.columns:
+            reachable_count = int((df["reachability_score"] > 0).sum())
+            unreachable_count = int((df["reachability_score"] < 0).sum())
+            unknown_count = int((df["reachability_score"] == 0).sum())
+            top_vuln_funcs: list[str] = []
+            if "vuln_functions" in df.columns:
+                all_funcs = (
+                    df.loc[df["reachability_score"] > 0, "vuln_functions"]
+                    .dropna()
+                    .str.split(",")
+                    .explode()
+                    .str.strip()
+                )
+                top_vuln_funcs = (
+                    all_funcs[all_funcs != ""].value_counts().head(10).index.tolist()
+                )
+            reachability_summary = {
+                "reachable": reachable_count,
+                "unreachable": unreachable_count,
+                "unknown": unknown_count,
+                "top_vuln_functions": top_vuln_funcs,
+            }
+
+        if is_multi:
+            proj_records: list[dict[str, Any]] = (
+                project_summary_df.to_dict("records")  # type: ignore[assignment]
+                if not project_summary_df.empty
+                else []
+            )
+            comp_records: list[dict[str, Any]] = (
+                top_components.to_dict("records")  # type: ignore[assignment]
+                if not top_components.empty
+                else []
+            )
+            ai_portfolio_prompt = _build_portfolio_prompt(
+                portfolio_summary,
+                proj_records,
+                comp_records,
+                reachability_summary,
+            )
+            logger.info("Generated portfolio-level AI prompt")
+
+        # --- Per-project prompts ---
+        for pname in project_names:
+            proj_df = df[df["project_name"] == pname]
+            band_counts = proj_df["priority_band"].value_counts().to_dict()
+            proj_findings = proj_df.head(50).to_dict("records")
+            ai_project_prompts[str(pname)] = _build_project_prompt(
+                str(pname), proj_findings, band_counts
+            )
+        logger.info(f"Generated {len(ai_project_prompts)} project-level AI prompts")
+
+        # --- Per-component prompts (all listed components with findings) ---
+        if not top_components.empty:
+            # Build reachability map across all findings for component prompts
+            reach_map: dict[str, dict[str, Any]] = {}
+            reach_cols = ["finding_id", "reachability_score", "vuln_functions"]
+            available_cols = [c for c in reach_cols if c in df.columns]
+            if "finding_id" in available_cols:
+                for _, row in df[available_cols].iterrows():
+                    fid = row.get("finding_id", "")
+                    if fid:
+                        reach_map[fid] = {
+                            "finding_id": fid,
+                            "reachability_score": row.get("reachability_score", 0),
+                            "vuln_functions": row.get("vuln_functions", ""),
+                        }
+
+            # Group findings by component to get CVE lists
+            comp_groups = (
+                df.groupby(["component_name", "component_version"])
+                .agg(cve_ids=("finding_id", list), count=("finding_id", "count"))
+                .reset_index()
+            )
+            # Only generate prompts for components in the top_components table
+            listed_comps = set()
+            for _, tc_row in top_components.iterrows():
+                listed_comps.add(
+                    (tc_row["component_name"], tc_row["component_version"])
+                )
+
+            # Batch-fetch NVD data for component CVEs (many already cached)
+            if _prompt_nvd:
+                _comp_cves: list[str] = []
+                for _, crow in comp_groups.iterrows():
+                    ct = (crow["component_name"], crow["component_version"])
+                    if ct in listed_comps:
+                        _comp_cves.extend(
+                            c for c in crow["cve_ids"][:10] if str(c).startswith("CVE-")
+                        )
+                _comp_cves_unique = list(dict.fromkeys(_comp_cves))
+                if _comp_cves_unique:
+                    logger.info(
+                        f"Fetching NVD fix data for {len(_comp_cves_unique)} "
+                        f"component CVEs (prompt enrichment)..."
+                    )
+                    _prompt_nvd.get_batch(_comp_cves_unique, progress=True)
+
+            for _, crow in comp_groups.iterrows():
+                comp_tuple = (crow["component_name"], crow["component_version"])
+                if comp_tuple not in listed_comps:
+                    continue
+                comp_key = f"{crow['component_name']}:{crow['component_version']}"
+                cve_ids = crow["cve_ids"][:10]
+                reach_info = [reach_map[c] for c in cve_ids if c in reach_map] or None
+                # NVD fix snippet for this component's CVEs
+                _comp_nvd_snip = ""
+                if _prompt_nvd:
+                    _comp_nvd_snip = _prompt_nvd.format_batch_for_prompt(cve_ids)
+                ai_component_prompts[comp_key] = _build_component_prompt(
+                    crow["component_name"],
+                    crow["component_version"],
+                    cve_ids,
+                    reach_info,
+                    nvd_fix_snippet=_comp_nvd_snip,
+                )
+            logger.info(
+                f"Generated {len(ai_component_prompts)} component-level AI prompts"
+            )
+
+        # Write prompts markdown file (all scopes)
+        if config:
+            _prompts_path = _write_triage_prompts_file(
+                prompts_for_file,
+                config,
+                portfolio_prompt=ai_portfolio_prompt,
+                project_prompts=ai_project_prompts,
+                component_prompts=ai_component_prompts,
+            )
+            if _prompts_path:
+                extra_generated_files.append(_prompts_path)
 
     # AI remediation guidance (optional, --ai flag)
     ai_portfolio_summary = ""
     ai_project_summaries: dict[str, str] = {}
     ai_component_guidance: dict[str, dict[str, Any]] = {}
+    ai_finding_guidance: dict[str, dict[str, str]] = {}
 
     ai_config = _get_ai_config(config, additional_data)
     if ai_config.get("enabled"):
@@ -272,6 +448,7 @@ def triage_prioritization_transform(
             ai_portfolio_summary,
             ai_project_summaries,
             ai_component_guidance,
+            ai_finding_guidance,
         ) = _generate_ai_guidance(
             df=df,
             portfolio_summary=portfolio_summary,
@@ -280,6 +457,8 @@ def triage_prioritization_transform(
             ai_depth=ai_config.get("depth", "summary"),
             cache_dir=ai_config.get("cache_dir"),
             cache_ttl=ai_config.get("cache_ttl", 0),
+            provider=ai_config.get("provider"),
+            nvd_api_key=ai_config.get("nvd_api_key"),
         )
 
     # Defensive recompute of reachability_label from reachability_score
@@ -334,6 +513,11 @@ def triage_prioritization_transform(
         else None
     )
 
+    # Build finding prompt lookup dict (finding_id -> prompt text) for template use
+    ai_finding_prompts: dict[str, str] = {
+        p["finding_id"]: p["prompt"] for p in ai_triage_prompts
+    }
+
     return {
         "findings_df": findings_df,
         "project_summary_df": project_summary_df,
@@ -349,7 +533,13 @@ def triage_prioritization_transform(
         "ai_portfolio_summary": ai_portfolio_summary,
         "ai_project_summaries": ai_project_summaries,
         "ai_component_guidance": ai_component_guidance,
+        "ai_finding_guidance": ai_finding_guidance,
         "ai_triage_prompts": ai_triage_prompts,
+        "ai_portfolio_prompt": ai_portfolio_prompt,
+        "ai_project_prompts": ai_project_prompts,
+        "ai_component_prompts": ai_component_prompts,
+        "ai_finding_prompts": ai_finding_prompts,
+        "_extra_generated_files": extra_generated_files,
     }
 
 
@@ -608,6 +798,30 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["risk"] = pd.to_numeric(df["risk"], errors="coerce").fillna(0)
     else:
         df["risk"] = 0.0
+
+    # --- CWE (weakness type, e.g. CWE-787) ---
+    if "cwes" in df.columns:
+        import re as _re
+
+        def _extract_cwe(cwes: Any) -> str:
+            if isinstance(cwes, list) and cwes:
+                cwe = str(cwes[0]).replace("CWE-CWE-", "CWE-")
+                return cwe
+            if isinstance(cwes, str):
+                match = _re.search(r"CWE-\d+", cwes)
+                if match:
+                    return match.group(0)
+            return ""
+
+        df["cwe"] = df["cwes"].apply(_extract_cwe)
+    elif "cwe" not in df.columns:
+        df["cwe"] = ""
+
+    # --- First detected date (for age-based prioritization) ---
+    if "firstDetected" in df.columns:
+        df["first_detected"] = df["firstDetected"].fillna("").astype(str)
+    elif "first_detected" not in df.columns:
+        df["first_detected"] = ""
 
     return df
 
@@ -920,6 +1134,20 @@ def build_top_components(df: pd.DataFrame, top_n: int = 15) -> pd.DataFrame:
         else:
             component_agg[col_name] = ""
 
+    # Add finding_ids list per component (for Jira ticket creation)
+    if "finding_id" in df.columns:
+        fid_map = (
+            df.groupby(["component_name", "component_version"])["finding_id"]
+            .apply(list)
+            .reset_index()
+        )
+        fid_map.columns = ["component_name", "component_version", "finding_ids"]
+        component_agg = component_agg.merge(
+            fid_map, on=["component_name", "component_version"], how="left"
+        )
+    else:
+        component_agg["finding_ids"] = [[] for _ in range(len(component_agg))]
+
     # Get band counts per component
     band_ct = (
         pd.crosstab(
@@ -1127,11 +1355,16 @@ def build_vex_recommendations(
 # =============================================================================
 
 
-def _build_triage_prompt(row: pd.Series) -> str:
+def _build_triage_prompt(row: pd.Series, nvd_snippet: str = "") -> str:
     """Build an LLM prompt for triage guidance for one finding.
 
     This is a standalone function that does NOT require an API key.
     It produces a structured prompt users can paste into any LLM.
+
+    Args:
+        row: A pandas Series with finding data.
+        nvd_snippet: Optional pre-formatted NVD fix version data
+            (from NVDClient.format_for_prompt).
     """
     finding_id = row.get("finding_id", "Unknown")
     severity = row.get("severity", "Unknown")
@@ -1149,6 +1382,8 @@ def _build_triage_prompt(row: pd.Series) -> str:
     band = row.get("priority_band", "Unknown")
     score = row.get("triage_score", 0)
     gate = row.get("gate_assignment", "NONE")
+    cwe = row.get("cwe", "")
+    first_detected = row.get("first_detected", "")
 
     # Build factors summary
     factors = row.get("reachability_factors", [])
@@ -1160,19 +1395,42 @@ def _build_triage_prompt(row: pd.Series) -> str:
                     f"- {f.get('entity_type', 'unknown')}: {f['summary']}"
                 )
 
+    # Calculate finding age if first_detected is available
+    age_str = ""
+    if first_detected:
+        try:
+            from datetime import datetime
+
+            detected_dt = datetime.fromisoformat(first_detected.replace("Z", "+00:00"))
+            age_days = (datetime.now(detected_dt.tzinfo) - detected_dt).days
+            age_str = f" ({age_days} days ago)"
+        except (ValueError, TypeError):
+            pass
+
+    nvd_section = ""
+    if nvd_snippet:
+        nvd_section = f"\n{nvd_snippet}\n"
+
     prompt = f"""You are a security triage advisor. Provide specific triage and remediation guidance for the following vulnerability finding.
 
 ## Finding: {finding_id}
 - Severity: {severity} (CVSS {cvss})
+- CWE: {cwe or 'N/A'}
 - Attack Vector: {attack_vector}
 - EPSS: {epss * 100:.1f}th percentile
 - In CISA KEV: {'Yes' if in_kev else 'No'}
 - Known Exploit: {'Yes' if has_exploit else 'No'}
+- First Detected: {first_detected or 'Unknown'}{age_str}
 
 ## Triage Classification
 - Priority Band: {band}
 - Triage Score: {score}
 - Gate: {gate}
+
+## Scoring Methodology
+- GATE 1 (CRITICAL): Reachable + known exploit or CISA KEV
+- GATE 2 (HIGH): Not unreachable + NETWORK + EPSS >= 50th percentile
+- Additive scoring for remaining: reachability (+30), exploit (+25), KEV (+20), vector (up to +15), EPSS (up to +20), CVSS (up to +10)
 
 ## Affected Component
 {component} {component_ver} (in project: {project})
@@ -1181,27 +1439,359 @@ def _build_triage_prompt(row: pd.Series) -> str:
 - Status: {reach_label} (score={reach_score})
 - Vulnerable Functions: {vuln_funcs or 'None identified'}
 {chr(10).join(factor_lines) if factor_lines else '- No reachability factors available'}
-
+{nvd_section}
 Respond in this exact format:
 PRIORITY: <confirm or adjust the priority band with rationale>
 ACTION: <specific recommended action: upgrade component, apply patch, configure mitigation, or accept risk>
-FIX_VERSION: <recommended version to upgrade to, or "N/A">
-WORKAROUND: <workaround if upgrade isn't immediately possible, or "None">
+RATIONALE: <1 sentence explaining why this action is recommended, citing NVD data or advisory if available>
+FIX_VERSION: <specific version number. If NVD data says "FIXED in >= X", recommend X. If NVD data says a version is "STILL VULNERABLE", the fix must be AFTER that version — do NOT recommend the vulnerable version. Cross-reference the installed version ({component_ver}) against the NVD affected ranges. Only state "verify latest stable release" if no version data is available.>
+WORKAROUND: <1-3 sentences: if no straightforward upgrade is available, suggest firmware-specific mitigations such as disabling affected services, network segmentation, restricting exposed interfaces, or configuration hardening. If a direct upgrade is available, state "Upgrade recommended.">
 CODE_SEARCH: <grep/search patterns to find affected code in firmware — use specific vulnerable function names if known>
-CONFIDENCE: <high|medium|low>"""
+CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium (version estimated from known patterns), low (uncertain — verify independently)>"""
 
     return prompt
+
+
+# =============================================================================
+# Offline Prompt Builders (portfolio / project / component — no LLM needed)
+# =============================================================================
+
+
+def _format_projects_bullet(projects: list[dict[str, Any]]) -> str:
+    """Format project summaries as compact bullet points instead of JSON."""
+    lines = []
+    for p in projects:
+        name = p.get("project_name", "Unknown")
+        total = p.get("total_findings", 0)
+        bands = []
+        for band in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+            count = p.get(band, 0)
+            if count:
+                bands.append(f"{count} {band}")
+        band_str = ", ".join(bands) if bands else "no findings"
+        avg = p.get("avg_score", 0)
+        lines.append(f"- **{name}** -- {total} findings ({band_str}), avg score: {avg}")
+    return "\n".join(lines) if lines else "No project data available."
+
+
+def _format_components_bullet(components: list[dict[str, Any]]) -> str:
+    """Format component summaries as compact bullet points instead of JSON."""
+    lines = []
+    for c in components:
+        name = c.get("component_name", c.get("component", "Unknown"))
+        version = c.get("component_version", "")
+        label = f"{name}:{version}" if version and ":" not in str(name) else str(name)
+        total = c.get("total_findings", c.get("findings_count", 0))
+        bands = []
+        for band in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+            count = c.get(band, 0)
+            if count:
+                bands.append(f"{count} {band}")
+        band_str = ", ".join(bands) if bands else "no findings"
+        avg = c.get("avg_score", "")
+        line = f"- **{label}** -- {total} findings ({band_str})"
+        if avg:
+            line += f", avg score: {avg}"
+        lines.append(line)
+    return "\n".join(lines) if lines else "No component data available."
+
+
+def _format_project_components_bullet(
+    components: list[dict[str, Any]],
+) -> str:
+    """Format project-level component summaries as compact bullet points."""
+    lines = []
+    for c in components:
+        comp = c.get("component", "Unknown")
+        count = c.get("findings_count", 0)
+        bands_list = c.get("bands", [])
+        band_counts: dict[str, int] = {}
+        for b in bands_list:
+            band_counts[b] = band_counts.get(b, 0) + 1
+        band_parts = []
+        for band in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+            if band_counts.get(band, 0):
+                band_parts.append(f"{band_counts[band]} {band}")
+        band_str = ", ".join(band_parts) if band_parts else "no findings"
+        reach_cves = c.get("reachable_cves", [])
+        vuln_fns = c.get("vuln_functions", [])
+        line = f"- **{comp}** -- {count} findings ({band_str})"
+        if reach_cves:
+            line += f", {len(reach_cves)} reachable"
+        if vuln_fns:
+            line += f", vuln functions: {', '.join(str(f) for f in vuln_fns)}"
+        lines.append(line)
+    return "\n".join(lines) if lines else "No component data available."
+
+
+_SCORING_METHODOLOGY = """\
+## Scoring Methodology
+Findings are prioritized using a tiered-gates model:
+- GATE 1 (CRITICAL): Reachable + has known exploit or is in CISA KEV
+- GATE 2 (HIGH): Not unreachable + NETWORK attack vector + EPSS >= 50th percentile
+- Remaining findings scored additively: reachability (+30), exploit (+25), KEV (+20), \
+attack vector (up to +15), EPSS (up to +20), CVSS (up to +10)
+- Bands: HIGH >= 70, MEDIUM >= 40, LOW >= 25, INFO < 25"""
+
+
+def _build_portfolio_prompt(
+    portfolio_summary: dict[str, Any],
+    project_summaries: list[dict[str, Any]],
+    top_components: list[dict[str, Any]],
+    reachability_summary: dict[str, Any] | None = None,
+) -> str:
+    """Build a portfolio-level remediation prompt (offline, no API key needed).
+
+    Mirrors the prompt structure in LLMClient._build_portfolio_prompt so that
+    ``--ai-prompts`` produces the same prompt ``--ai`` would send.
+    """
+    top_projects = project_summaries[:10]
+    top_comps = top_components[:10]
+
+    reach_section = ""
+    if reachability_summary:
+        reach_section = f"""
+## Reachability Analysis
+- Reachable (confirmed exploitable code paths): {reachability_summary.get('reachable', 0)}
+- Unreachable (code not reachable in deployed binaries): {reachability_summary.get('unreachable', 0)}
+- Inconclusive (reachability unknown): {reachability_summary.get('unknown', 0)}
+- Key vulnerable functions found: {', '.join(reachability_summary.get('top_vuln_functions', [])[:10]) or 'None identified'}
+
+Note: "Reachable" means static/binary analysis confirmed the vulnerable function exists in and is callable from the deployed firmware. This is the strongest signal for real-world exploitability.
+"""
+
+    return f"""You are a firmware security analyst. Analyze this vulnerability triage data and provide strategic remediation guidance.
+
+## Portfolio Overview
+- Total findings: {portfolio_summary.get('total', 0)}
+- CRITICAL: {portfolio_summary.get('CRITICAL', 0)}
+- HIGH: {portfolio_summary.get('HIGH', 0)}
+- MEDIUM: {portfolio_summary.get('MEDIUM', 0)}
+- LOW: {portfolio_summary.get('LOW', 0)}
+- INFO: {portfolio_summary.get('INFO', 0)}
+
+{_SCORING_METHODOLOGY}
+{reach_section}
+## Top Projects by Risk
+{_format_projects_bullet(top_projects)}
+
+## Top Risky Components
+{_format_components_bullet(top_comps)}
+
+Provide a concise strategic summary (3-5 paragraphs):
+1. Overall risk posture assessment — highlight the reachability findings as the most urgent
+2. Top 3 remediation priorities (specific components/projects), prioritizing reachable+exploitable findings
+3. Quick wins (high-impact, low-effort fixes), especially where specific vulnerable functions are identified
+4. Recommended remediation order
+
+Be specific with component names and versions. When vulnerable functions are identified, mention them as they guide developers to the exact code that needs attention. Focus on actionable guidance."""
+
+
+def _build_project_prompt(
+    project_name: str,
+    findings: list[dict[str, Any]],
+    band_counts: dict[str, int],
+) -> str:
+    """Build a project-level remediation prompt (offline, no API key needed).
+
+    Mirrors the prompt structure in LLMClient._build_project_prompt.
+    """
+    import json as _json
+
+    # Group findings by component for conciseness
+    component_groups: dict[str, list[dict[str, Any]]] = {}
+    for f in findings[:50]:
+        comp_key = (
+            f"{f.get('component_name', 'Unknown')}:{f.get('component_version', '?')}"
+        )
+        component_groups.setdefault(comp_key, []).append(f)
+
+    component_summary = []
+    for comp_key, comp_findings in sorted(
+        component_groups.items(),
+        key=lambda x: max(f.get("triage_score", 0) for f in x[1]),
+        reverse=True,
+    )[:10]:
+        reachable_cves = [
+            f.get("finding_id", "")
+            for f in comp_findings
+            if f.get("reachability_score", 0) > 0
+        ]
+        unreachable_count = sum(
+            1 for f in comp_findings if f.get("reachability_score", 0) < 0
+        )
+        vuln_funcs: set[str] = set()
+        for f in comp_findings:
+            vf = f.get("vuln_functions", "")
+            if vf:
+                vuln_funcs.update(fn.strip() for fn in vf.split(",") if fn.strip())
+
+        component_summary.append(
+            {
+                "component": comp_key,
+                "findings_count": len(comp_findings),
+                "bands": [f.get("priority_band", "INFO") for f in comp_findings],
+                "cves": [f.get("finding_id", "") for f in comp_findings[:5]],
+                "reachable_cves": reachable_cves[:5],
+                "unreachable_count": unreachable_count,
+                "vuln_functions": list(vuln_funcs)[:5],
+            }
+        )
+
+    reachable_total = sum(1 for f in findings if f.get("reachability_score", 0) > 0)
+    unreachable_total = sum(1 for f in findings if f.get("reachability_score", 0) < 0)
+    unknown_total = sum(1 for f in findings if f.get("reachability_score", 0) == 0)
+
+    return f"""You are a firmware security analyst. Provide remediation guidance for project "{project_name}".
+
+## Risk Band Distribution
+{_json.dumps(band_counts, indent=2)}
+
+{_SCORING_METHODOLOGY}
+
+## Reachability Summary
+- Reachable: {reachable_total} (vulnerable code confirmed present and callable in firmware)
+- Unreachable: {unreachable_total} (vulnerable code not reachable — lower risk)
+- Inconclusive: {unknown_total} (reachability not determined)
+
+## Top Components by Risk
+{_format_project_components_bullet(component_summary)}
+
+Note: "reachable" indicates CVEs where binary analysis confirmed the vulnerable code path is callable. Vulnerable functions listed are specific functions identified in the deployed binaries — developers should search for and audit these.
+
+Provide a concise project remediation plan (2-3 paragraphs):
+1. Which components to upgrade first — prioritize those with reachable vulnerabilities and known exploits
+2. Recommended upgrade order considering dependencies. Mention specific vulnerable functions when known.
+3. Any quick wins or workarounds, especially for reachable findings where specific functions are identified
+
+Be specific with component names and versions."""
+
+
+def _build_component_prompt(
+    component_name: str,
+    component_version: str,
+    cve_ids: list[str],
+    reachability_info: list[dict[str, Any]] | None = None,
+    cve_details: list[dict[str, Any]] | None = None,
+    exploit_details: list[dict[str, Any]] | None = None,
+    nvd_fix_snippet: str = "",
+) -> str:
+    """Build a component-level remediation prompt (offline, no API key needed).
+
+    Mirrors the prompt structure in LLMClient._build_component_prompt.
+    """
+    cve_section = "\n".join(f"- {cve}" for cve in cve_ids[:10])
+
+    # CVE detail section (parity with live LLMClient prompt)
+    cve_detail_section = ""
+    if cve_details:
+        for detail in cve_details[:5]:
+            desc = detail.get("description", "No description available")
+            affected = detail.get("affectedFunctions", [])
+            cwe = detail.get("cwe", detail.get("cwes", ""))
+            if isinstance(cwe, list) and cwe:
+                cwe = str(cwe[0])
+            cve_detail_section += (
+                f"\n### {detail.get('cveId', detail.get('finding_id', 'Unknown'))}\n"
+            )
+            cve_detail_section += f"Description: {str(desc)[:500]}\n"
+            if cwe:
+                cve_detail_section += f"CWE: {cwe}\n"
+            if affected:
+                cve_detail_section += (
+                    f"Affected functions: {', '.join(str(f) for f in affected[:10])}\n"
+                )
+
+    # Exploit section (parity with live LLMClient prompt)
+    exploit_section = ""
+    if exploit_details:
+        for exploit in exploit_details[:5]:
+            exploit_section += f"\n- Source: {exploit.get('source', 'Unknown')}"
+            exploit_section += f"\n  URL: {exploit.get('url', 'N/A')}"
+            exploit_section += (
+                f"\n  Description: {str(exploit.get('description', ''))[:200]}"
+            )
+
+    reach_section = ""
+    if reachability_info:
+        reach_items = []
+        all_vuln_funcs: set[str] = set()
+        for ri in reachability_info:
+            score = ri.get("reachability_score", 0)
+            label = (
+                "REACHABLE"
+                if score > 0
+                else ("UNREACHABLE" if score < 0 else "INCONCLUSIVE")
+            )
+            cve_id = ri.get("finding_id", "Unknown")
+            vuln_funcs = ri.get("vuln_functions", "")
+            reach_items.append(
+                f"- {cve_id}: {label} (score={score})"
+                + (f", vulnerable functions: {vuln_funcs}" if vuln_funcs else "")
+            )
+            if vuln_funcs:
+                all_vuln_funcs.update(
+                    fn.strip() for fn in vuln_funcs.split(",") if fn.strip()
+                )
+
+        reach_section = "\n## Reachability Analysis (from binary analysis)\n"
+        reach_section += "\n".join(reach_items[:10])
+        if all_vuln_funcs:
+            reach_section += (
+                f"\n\nVulnerable functions confirmed in firmware binaries: "
+                f"{', '.join(sorted(all_vuln_funcs)[:10])}"
+            )
+        reach_section += (
+            "\n\nNote: REACHABLE means binary analysis confirmed these "
+            "functions exist in deployed firmware and can be reached. "
+            "Include these function names in CODE_SEARCH guidance."
+        )
+
+    nvd_section = ""
+    if nvd_fix_snippet:
+        nvd_section = f"\n{nvd_fix_snippet}\n"
+
+    return f"""You are a security remediation advisor. Provide specific fix guidance for:
+
+Component: {component_name} version {component_version}
+
+CVEs:
+{cve_section}
+
+{f"## CVE Details{cve_detail_section}" if cve_detail_section else ""}
+
+{f"## Exploit Information{exploit_section}" if exploit_section else ""}
+
+{reach_section}
+{nvd_section}
+Respond in this exact format:
+FIX_VERSION: <specific version number. If NVD data says "FIXED in >= X", recommend X. If NVD data says a version is "STILL VULNERABLE", the fix must be AFTER that version — do NOT recommend the vulnerable version. For well-known libraries (OpenSSL, curl, busybox, zlib, etc.), recall the specific patch version from security advisories. Only state "verify latest stable release" if no version data is available.>
+RATIONALE: <1 sentence explaining why this fix or version is recommended, citing advisory source if known>
+GUIDANCE: <1-2 sentence upgrade guidance>
+WORKAROUND: <1-3 sentences: if no straightforward upgrade is available, suggest firmware-specific mitigations such as disabling affected services, network segmentation, restricting exposed interfaces, or configuration hardening. If a direct upgrade is available, state "Upgrade recommended.">
+CODE_SEARCH: <grep/search patterns to find affected code in firmware — use specific vulnerable function names if known from reachability analysis>
+CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium (version estimated from known patterns), low (uncertain — verify independently)>"""
 
 
 def _write_triage_prompts_file(
     prompts: list[tuple[str, str, str, str]],
     config: Any,
-) -> None:
+    *,
+    portfolio_prompt: str = "",
+    project_prompts: dict[str, str] | None = None,
+    component_prompts: dict[str, str] | None = None,
+) -> str:
     """Write a markdown file with all AI prompts for copy-paste use.
 
     Args:
         prompts: List of (finding_id, component, band, prompt_text) tuples.
         config: Config object with output_dir.
+        portfolio_prompt: Portfolio-level prompt text (optional).
+        project_prompts: Dict of project_name -> prompt text (optional).
+        component_prompts: Dict of component_key -> prompt text (optional).
+
+    Returns:
+        Path to the written prompts file.
     """
     from datetime import datetime
 
@@ -1211,22 +1801,44 @@ def _write_triage_prompts_file(
 
     prompts_path = recipe_dir / "Triage Prioritization_prompts.md"
     lines: list[str] = [
-        "# Triage Prioritization - AI Triage Prompts\n",
-        f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} "
-        f"| Findings: {len(prompts)}\n",
-        "\nPaste each prompt into your preferred LLM for triage guidance.\n",
+        "# Triage Prioritization - AI Prompts\n",
+        f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n",
+        "\nPaste each prompt into your preferred LLM for remediation guidance.\n",
     ]
 
-    for finding_id, component, band, prompt_text in prompts:
-        label = f"{finding_id}"
-        if component:
-            label += f" ({component})"
-        label += f" [{band}]"
-        lines.append(f"\n---\n\n## {label}\n\n")
-        lines.append(f"```\n{prompt_text}\n```\n")
+    # Portfolio prompt
+    if portfolio_prompt:
+        lines.append("\n---\n\n# Portfolio Remediation\n\n")
+        lines.append(f"```\n{portfolio_prompt}\n```\n")
+
+    # Project prompts
+    if project_prompts:
+        lines.append("\n---\n\n# Project Remediation\n")
+        for pname, prompt_text in project_prompts.items():
+            lines.append(f"\n## {pname}\n\n")
+            lines.append(f"```\n{prompt_text}\n```\n")
+
+    # Component prompts
+    if component_prompts:
+        lines.append("\n---\n\n# Component Remediation\n")
+        for comp_key, prompt_text in component_prompts.items():
+            lines.append(f"\n## {comp_key}\n\n")
+            lines.append(f"```\n{prompt_text}\n```\n")
+
+    # Per-finding prompts
+    if prompts:
+        lines.append("\n---\n\n# Finding Triage\n")
+        for finding_id, component, band, prompt_text in prompts:
+            label = f"{finding_id}"
+            if component:
+                label += f" ({component})"
+            label += f" [{band}]"
+            lines.append(f"\n## {label}\n\n")
+            lines.append(f"```\n{prompt_text}\n```\n")
 
     prompts_path.write_text("\n".join(lines), encoding="utf-8")
     logger.info(f"AI triage prompts written to {prompts_path}")
+    return str(prompts_path)
 
 
 # =============================================================================
@@ -1238,7 +1850,19 @@ def _get_ai_config(
     config: Any, additional_data: dict[str, Any] | None
 ) -> dict[str, Any]:
     """Extract AI configuration from config/additional_data."""
-    result = {"enabled": False, "depth": "summary", "cache_dir": None, "cache_ttl": 0}
+    # AI remediation data is stable (CVE fix versions don't change often).
+    # Always cache AI results for at least 7 days regardless of --cache-ttl,
+    # which controls API data freshness, not LLM call caching.
+    _AI_MIN_CACHE_TTL = 7 * 24 * 3600  # 7 days in seconds
+
+    result: dict[str, Any] = {
+        "enabled": False,
+        "depth": "summary",
+        "cache_dir": None,
+        "cache_ttl": 0,
+        "provider": None,
+        "nvd_api_key": None,
+    }
 
     # Try config object first
     if config and hasattr(config, "ai"):
@@ -1246,6 +1870,8 @@ def _get_ai_config(
         result["depth"] = getattr(config, "ai_depth", "summary")
         result["cache_dir"] = getattr(config, "cache_dir", None)
         result["cache_ttl"] = getattr(config, "cache_ttl", 0) or 0
+        result["provider"] = getattr(config, "ai_provider", None)
+        result["nvd_api_key"] = getattr(config, "nvd_api_key", None)
     # Fall back to additional_data['config']
     elif additional_data and "config" in additional_data:
         cfg = additional_data["config"]
@@ -1254,6 +1880,12 @@ def _get_ai_config(
             result["depth"] = getattr(cfg, "ai_depth", "summary")
             result["cache_dir"] = getattr(cfg, "cache_dir", None)
             result["cache_ttl"] = getattr(cfg, "cache_ttl", 0) or 0
+            result["provider"] = getattr(cfg, "ai_provider", None)
+            result["nvd_api_key"] = getattr(cfg, "nvd_api_key", None)
+
+    # Enforce minimum cache TTL for AI calls — these are expensive and stable
+    if result["enabled"]:
+        result["cache_ttl"] = max(result["cache_ttl"], _AI_MIN_CACHE_TTL)
 
     return result
 
@@ -1266,27 +1898,54 @@ def _generate_ai_guidance(
     ai_depth: str = "summary",
     cache_dir: str | None = None,
     cache_ttl: int = 0,
-) -> tuple[str, dict[str, str], dict[str, dict[str, Any]]]:
+    provider: str | None = None,
+    nvd_api_key: str | None = None,
+) -> tuple[str, dict[str, str], dict[str, dict[str, Any]], dict[str, dict[str, str]]]:
     """
     Generate AI remediation guidance at all requested scopes.
 
     Args:
         cache_ttl: Cache TTL in seconds. 0 = no AI caching (regenerate every run).
+        provider: LLM provider override ("anthropic", "openai", "copilot").
+        nvd_api_key: Optional NVD API key for faster fix-version lookups.
 
     Returns:
-        Tuple of (portfolio_summary_text, project_summaries_dict, component_guidance_dict)
+        Tuple of (portfolio_summary_text, project_summaries_dict,
+                  component_guidance_dict, finding_guidance_dict)
     """
     try:
         from fs_report.llm_client import LLMClient
     except ImportError:
-        logger.warning("anthropic package not available; skipping AI guidance")
-        return "", {}, {}
+        logger.warning("LLM package not available; skipping AI guidance")
+        return "", {}, {}, {}
 
     try:
-        llm = LLMClient(cache_dir=cache_dir, cache_ttl=cache_ttl)
+        llm = LLMClient(cache_dir=cache_dir, cache_ttl=cache_ttl, provider=provider)
     except (ValueError, ImportError) as e:
         logger.warning(f"LLM client init failed: {e}")
-        return "", {}, {}
+        return "", {}, {}, {}
+
+    # --- Initialise NVD client for fix-version enrichment ---
+    nvd = None
+    try:
+        from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
+
+        nvd = NVDClient(
+            api_key=nvd_api_key,
+            cache_dir=cache_dir,
+            cache_ttl=max(cache_ttl, 86400),  # NVD data is stable; cache ≥ 24 h
+        )
+        # NVD Terms of Use: log required attribution notice
+        logger.info(NVD_ATTRIBUTION)
+        if nvd._api_key:  # noqa: SLF001
+            logger.info("NVD client initialised with API key (50 req/30s)")
+        else:
+            logger.info(
+                "NVD client initialised without API key (5 req/30s). "
+                "Set NVD_API_KEY or use --nvd-api-key for 10x throughput."
+            )
+    except Exception as e:
+        logger.info(f"NVD client unavailable (fix-version enrichment disabled): {e}")
 
     # --- Build reachability summary for portfolio prompt ---
     reachability_summary = None
@@ -1398,18 +2057,83 @@ def _generate_ai_guidance(
                             ri["factors"] = row.get("reachability_factors", [])
                         reachability_map[fid] = ri
 
+            # --- Pre-fetch NVD fix data for all component CVEs ---
+            nvd_snippets_map: dict[str, str] = {}
+            if nvd:
+                all_cve_ids: list[str] = []
+                for comp in components_list:
+                    all_cve_ids.extend(comp.get("cve_ids", []))
+                unique_cves = list(dict.fromkeys(all_cve_ids))  # dedupe, keep order
+                if unique_cves:
+                    logger.info(f"Fetching NVD fix data for {len(unique_cves)} CVEs...")
+                    nvd.get_batch(unique_cves, progress=True)
+                    # Build per-component NVD snippets
+                    for comp in components_list:
+                        comp_key = (
+                            f"{comp['component_name']}:{comp['component_version']}"
+                        )
+                        snippet = nvd.format_batch_for_prompt(comp.get("cve_ids", []))
+                        if snippet:
+                            nvd_snippets_map[comp_key] = snippet
+
             ai_components = llm.generate_batch_component_guidance(
                 components_list,
                 reachability_map=reachability_map if reachability_map else None,
+                nvd_snippets_map=nvd_snippets_map if nvd_snippets_map else None,
             )
 
+    # --- Finding-level triage guidance (full depth only) ---
+    ai_findings: dict[str, dict[str, str]] = {}
+    if ai_depth == "full":
+        critical_high = df[df["priority_band"].isin(["CRITICAL", "HIGH"])]
+        if not critical_high.empty:
+            # Limit to top 50 findings by triage score to control cost
+            top_findings = critical_high.nlargest(50, "triage_score")
+            logger.info(
+                f"Generating AI finding guidance for {len(top_findings)} "
+                f"CRITICAL/HIGH findings..."
+            )
+
+            # Pre-fetch NVD data for finding CVEs (many will already be cached
+            # from the component pass above)
+            nvd_finding_snippets: dict[str, str] = {}
+            if nvd:
+                finding_cve_ids = [
+                    fid
+                    for fid in top_findings["finding_id"].dropna().unique()
+                    if fid.startswith("CVE-")
+                ]
+                if finding_cve_ids:
+                    nvd.get_batch(list(finding_cve_ids), progress=True)
+                    for fid in finding_cve_ids:
+                        snippet = nvd.format_for_prompt(fid)
+                        if snippet:
+                            nvd_finding_snippets[fid] = snippet
+
+            finding_prompts: list[tuple[str, str]] = []
+            for _, row in top_findings.iterrows():
+                fid = row.get("finding_id", "")
+                if fid:
+                    nvd_snippet = nvd_finding_snippets.get(fid, "")
+                    prompt = _build_triage_prompt(row, nvd_snippet=nvd_snippet)
+                    finding_prompts.append((fid, prompt))
+
+            ai_findings = llm.generate_batch_finding_guidance(finding_prompts)
+
     stats = llm.get_stats()
+    nvd_info = ""
+    if nvd:
+        nvd_stats = nvd.get_stats()
+        nvd_info = (
+            f", {nvd_stats['nvd_api_requests']} NVD requests"
+            f" ({nvd_stats['nvd_cache_size']} cached)"
+        )
     logger.info(
         f"AI guidance complete: {stats['api_calls']} API calls, "
-        f"{stats['cache_hits']} cache hits"
+        f"{stats['cache_hits']} cache hits{nvd_info}"
     )
 
-    return ai_portfolio, ai_projects, ai_components
+    return ai_portfolio, ai_projects, ai_components, ai_findings
 
 
 # =============================================================================
@@ -1442,5 +2166,10 @@ def _empty_result() -> dict[str, Any]:
         "ai_portfolio_summary": "",
         "ai_project_summaries": {},
         "ai_component_guidance": {},
+        "ai_finding_guidance": {},
         "ai_triage_prompts": [],
+        "ai_portfolio_prompt": "",
+        "ai_project_prompts": {},
+        "ai_component_prompts": {},
+        "ai_finding_prompts": {},
     }

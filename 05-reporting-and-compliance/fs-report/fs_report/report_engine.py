@@ -1077,6 +1077,12 @@ class ReportEngine:
                     files = self.renderer.render(recipe, report_data)
                     if files:
                         generated_files.extend(files)
+                    # Collect extra files written by transforms (prompts, VEX JSON)
+                    extra = report_data.metadata.get("additional_data", {}).get(
+                        "_extra_generated_files", []
+                    )
+                    if extra:
+                        generated_files.extend(extra)
                 else:
                     self.logger.error(
                         f"No report data generated for recipe: {recipe.name}"
@@ -2434,6 +2440,10 @@ class ReportEngine:
                             self.logger.info(
                                 f"Wrote {len(vex_recs)} VEX recommendations to {vex_path}"
                             )
+                            # Track for output listing
+                            additional_data.setdefault(
+                                "_extra_generated_files", []
+                            ).append(str(vex_path))
 
             # When a transform returns a dict with a "main" key, extract the
             # main DataFrame as the primary report data.  The full dict is

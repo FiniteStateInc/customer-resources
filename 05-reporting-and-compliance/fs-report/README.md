@@ -183,6 +183,29 @@ Benefits:
 
 Cache location: `~/.fs-report/cache.db`
 
+## AI Features
+
+The reporting kit supports AI-powered remediation guidance via the `--ai` flag. Three LLM providers are supported — the provider is auto-detected from environment variables, or you can choose explicitly with `--ai-provider`:
+
+| Provider | Env Variable | Models |
+|----------|-------------|--------|
+| **Anthropic** (default) | `ANTHROPIC_AUTH_TOKEN` | Claude Sonnet / Haiku |
+| **OpenAI** | `OPENAI_API_KEY` | GPT-4o / GPT-4o-mini |
+| **GitHub Copilot** | `GITHUB_TOKEN` | GPT-4o / GPT-4o-mini |
+
+```bash
+# Auto-detect provider from env vars
+poetry run fs-report --recipe "Triage Prioritization" --ai --period 30d
+
+# Explicit provider
+poetry run fs-report --recipe "Triage Prioritization" --ai --ai-provider openai --period 30d
+
+# Export prompts for manual use (no API key required)
+poetry run fs-report --recipe "Triage Prioritization" --ai-prompts --period 30d
+```
+
+See `REPORT_GUIDE.md` for full AI feature details.
+
 ## Docker Usage
 
 If you prefer Docker over a local Python install, you can run reports in a container. All default recipes and templates are baked into the image.

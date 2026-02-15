@@ -1,0 +1,585 @@
+<!-- Interactive Action Buttons — Jira Ticket Creation & Triage Status Updates
+     Include this partial in report templates to enable interactive features.
+     Requires: findings/components with internal_id, component_id, project_version_id -->
+
+<style>
+/* === Action Buttons === */
+.action-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 8px; font-size: 0.75em; cursor: pointer;
+    border: 1px solid #dee2e6; border-radius: 4px;
+    background: #fff; color: #495057; transition: all 0.15s;
+    white-space: nowrap; vertical-align: middle;
+}
+.action-btn:hover { background: #f8f9fa; border-color: #adb5bd; }
+.action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.action-btn.btn-jira { border-color: #0052cc; color: #0052cc; }
+.action-btn.btn-jira:hover { background: #e6f0ff; }
+.action-btn.btn-triage { border-color: #fd7e14; color: #fd7e14; }
+.action-btn.btn-triage:hover { background: #fff3e6; }
+.action-btn.btn-success { border-color: #28a745; color: #28a745; background: #e6ffe6; cursor: default; opacity: 1; }
+.action-btn.btn-error { border-color: #dc3545; color: #dc3545; background: #ffe6e6; }
+.action-btn .spinner {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid currentColor; border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.action-cell { white-space: nowrap; }
+.action-cell .action-btn + .action-btn { margin-left: 4px; }
+
+/* === Connection Badge (top-right corner) === */
+#fsConnectionBadge {
+    position: fixed; top: 12px; right: 16px; z-index: 9000;
+}
+.fs-connected-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 12px; font-size: 0.8em; border-radius: 12px;
+    background: #e6ffe6; color: #28a745; border: 1px solid #28a745;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+}
+.fs-connect-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 12px; font-size: 0.8em; border-radius: 12px;
+    background: #fff; color: #0052cc; border: 1px solid #0052cc;
+    cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+}
+.fs-connect-btn:hover { background: #e6f0ff; }
+@media print { #fsConnectionBadge { display: none !important; } }
+
+/* === Modal Overlay === */
+.fs-modal-overlay {
+    display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.5); z-index: 9999;
+    justify-content: center; align-items: center;
+}
+.fs-modal-overlay.active { display: flex; }
+.fs-modal {
+    background: #fff; border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    max-width: 560px; width: 90%; max-height: 85vh; overflow-y: auto;
+    padding: 28px; position: relative;
+}
+.fs-modal h3 { margin: 0 0 18px; color: #2c3e50; font-size: 1.3em; }
+.fs-modal label { display: block; font-size: 0.85em; color: #495057; margin-bottom: 4px; font-weight: 600; }
+.fs-modal input, .fs-modal select, .fs-modal textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid #ced4da; border-radius: 6px;
+    font-size: 0.9em; margin-bottom: 14px; font-family: inherit;
+}
+.fs-modal textarea { min-height: 100px; resize: vertical; }
+.fs-modal input:focus, .fs-modal select:focus, .fs-modal textarea:focus {
+    border-color: #0052cc; outline: none; box-shadow: 0 0 0 2px rgba(0,82,204,0.15);
+}
+.fs-modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px; }
+.fs-modal-btn {
+    padding: 8px 20px; border-radius: 6px; font-size: 0.9em; cursor: pointer;
+    border: 1px solid #dee2e6; background: #fff; color: #495057; font-weight: 500;
+}
+.fs-modal-btn:hover { background: #f8f9fa; }
+.fs-modal-btn.primary { background: #0052cc; color: #fff; border-color: #0052cc; }
+.fs-modal-btn.primary:hover { background: #0747a6; }
+.fs-modal-btn.primary:disabled { background: #80b3ff; cursor: not-allowed; }
+.fs-modal-btn.danger { background: #dc3545; color: #fff; border-color: #dc3545; }
+.fs-modal-close {
+    position: absolute; top: 12px; right: 16px; background: none; border: none;
+    font-size: 1.4em; color: #adb5bd; cursor: pointer; line-height: 1;
+}
+.fs-modal-close:hover { color: #495057; }
+.fs-modal-error {
+    background: #fff3f3; border: 1px solid #dc3545; color: #dc3545;
+    padding: 10px 14px; border-radius: 6px; font-size: 0.85em; margin-bottom: 14px;
+    display: none; line-height: 1.5; word-break: break-word;
+}
+.fs-modal-error.visible { display: block; }
+.fs-modal-success {
+    background: #e6ffe6; border: 1px solid #28a745; color: #28a745;
+    padding: 8px 12px; border-radius: 6px; font-size: 0.85em; margin-bottom: 14px;
+    display: none;
+}
+.fs-modal-success.visible { display: block; }
+.fs-modal-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+</style>
+
+<!-- Credential Modal -->
+<div class="fs-modal-overlay" id="fsCredModal">
+    <div class="fs-modal">
+        <button class="fs-modal-close" onclick="fsCloseModal('fsCredModal')">&times;</button>
+        <h3>Connect to Finite State</h3>
+        <p style="color:#6c757d;font-size:0.85em;margin-bottom:18px;">
+            Enter your API credentials to enable Jira ticket creation and triage status updates.
+            Credentials are stored only in this browser tab and cleared when you close it.
+        </p>
+        <div class="fs-modal-error" id="fsCredError"></div>
+        <label for="fsDomain">Domain</label>
+        <input type="text" id="fsDomain" placeholder="e.g. platform.finitestate.io">
+        <label for="fsToken">API Token</label>
+        <input type="password" id="fsToken" placeholder="Paste your FINITE_STATE_AUTH_TOKEN">
+        <div class="fs-modal-actions">
+            <button class="fs-modal-btn" onclick="fsCloseModal('fsCredModal')">Cancel</button>
+            <button class="fs-modal-btn primary" id="fsCredConnectBtn" onclick="fsConnect()">Connect</button>
+        </div>
+    </div>
+</div>
+
+<!-- Jira Ticket Modal -->
+<div class="fs-modal-overlay" id="fsJiraModal">
+    <div class="fs-modal">
+        <button class="fs-modal-close" onclick="fsCloseModal('fsJiraModal')">&times;</button>
+        <h3>Create Jira Ticket</h3>
+        <div class="fs-modal-error" id="fsJiraError"></div>
+        <div class="fs-modal-success" id="fsJiraSuccess"></div>
+        <div class="fs-modal-row">
+            <div>
+                <label for="fsJiraProject">Jira Project</label>
+                <select id="fsJiraProject" onchange="fsUpdateTicketTypes()"></select>
+            </div>
+            <div>
+                <label for="fsJiraType">Ticket Type</label>
+                <select id="fsJiraType"></select>
+            </div>
+        </div>
+        <div class="fs-modal-row">
+            <div>
+                <label for="fsJiraPriority">Priority</label>
+                <select id="fsJiraPriority">
+                    <option value="Highest">Highest</option>
+                    <option value="High">High</option>
+                    <option value="Medium" selected>Medium</option>
+                    <option value="Low">Low</option>
+                    <option value="Lowest">Lowest</option>
+                </select>
+            </div>
+            <div>
+                <label for="fsJiraMode">Mode</label>
+                <select id="fsJiraMode">
+                    <option value="SINGLE_FINDING">Single finding</option>
+                    <option value="SINGLE_COMPONENT">Single component</option>
+                    <option value="ONE_PER_FINDING">One ticket per finding</option>
+                    <option value="ONE_PER_COMPONENT">One ticket per component</option>
+                    <option value="ONE_FOR_ALL_FINDINGS">One ticket for all findings</option>
+                    <option value="ONE_FOR_ALL_COMPONENTS">One ticket for all components</option>
+                </select>
+            </div>
+        </div>
+        <label for="fsJiraTitle">Title</label>
+        <input type="text" id="fsJiraTitle">
+        <label for="fsJiraSummary">Summary</label>
+        <textarea id="fsJiraSummary"></textarea>
+        <div class="fs-modal-actions">
+            <button class="fs-modal-btn" onclick="fsCloseModal('fsJiraModal')">Cancel</button>
+            <button class="fs-modal-btn primary" id="fsJiraCreateBtn" onclick="fsCreateTicket()">Create Ticket</button>
+        </div>
+    </div>
+</div>
+
+<!-- Triage Confirm Modal -->
+<div class="fs-modal-overlay" id="fsTriageModal">
+    <div class="fs-modal" style="max-width:420px;">
+        <button class="fs-modal-close" onclick="fsCloseModal('fsTriageModal')">&times;</button>
+        <h3>Set Finding Status</h3>
+        <div class="fs-modal-error" id="fsTriageError"></div>
+        <p style="margin-bottom:14px;font-size:0.9em;">
+            Set <strong id="fsTriageFindingId"></strong> to <strong>IN_TRIAGE</strong>?
+        </p>
+        <p style="color:#6c757d;font-size:0.82em;margin-bottom:14px;">
+            This will update the finding status in the Finite State platform.
+        </p>
+        <div class="fs-modal-actions">
+            <button class="fs-modal-btn" onclick="fsCloseModal('fsTriageModal')">Cancel</button>
+            <button class="fs-modal-btn primary" id="fsTriageConfirmBtn" onclick="fsSetTriage()">Confirm</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    'use strict';
+
+    // =========================================================================
+    // Credential & Session Management
+    // =========================================================================
+
+    function getSession() {
+        try {
+            const s = sessionStorage.getItem('fs_session');
+            return s ? JSON.parse(s) : null;
+        } catch { return null; }
+    }
+
+    function setSession(data) {
+        sessionStorage.setItem('fs_session', JSON.stringify(data));
+        updateConnectionBadge();
+    }
+
+    function isConnected() { return !!getSession(); }
+
+    // Detect if we're served via --serve (localhost) and can use the proxy
+    function _useProxy() {
+        return window.location.protocol === 'http:' &&
+               (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    }
+
+    function apiBase() {
+        const s = getSession();
+        if (!s) return '';
+        // When served via --serve, route through the local proxy to avoid CORS
+        if (_useProxy()) return '/fsapi';
+        return 'https://' + s.domain + '/api';
+    }
+
+    function apiHeaders() {
+        const s = getSession();
+        const headers = {
+            'X-Authorization': s ? s.token : '',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+        };
+        // When using the proxy, pass the domain so the server knows where to forward
+        if (_useProxy() && s) {
+            headers['X-FS-Domain'] = s.domain;
+        }
+        return headers;
+    }
+
+    // =========================================================================
+    // Modal Helpers
+    // =========================================================================
+
+    window.fsCloseModal = function(id) {
+        document.getElementById(id).classList.remove('active');
+    };
+
+    function openModal(id) {
+        document.getElementById(id).classList.add('active');
+    }
+
+    function showError(elemId, msg) {
+        const el = document.getElementById(elemId);
+        el.textContent = msg; el.classList.add('visible');
+    }
+
+    function hideError(elemId) {
+        const el = document.getElementById(elemId);
+        el.textContent = ''; el.classList.remove('visible');
+    }
+
+    function showSuccess(elemId, msg) {
+        const el = document.getElementById(elemId);
+        el.textContent = msg; el.classList.add('visible');
+    }
+
+    function setLoading(btnId, loading) {
+        const btn = document.getElementById(btnId);
+        if (loading) {
+            btn._origText = btn.textContent;
+            btn.innerHTML = '<span class="spinner"></span> Working...';
+            btn.disabled = true;
+        } else {
+            btn.textContent = btn._origText || 'Submit';
+            btn.disabled = false;
+        }
+    }
+
+    // =========================================================================
+    // Connection Badge
+    // =========================================================================
+
+    function updateConnectionBadge() {
+        const badge = document.getElementById('fsConnectionBadge');
+        if (!badge) return;
+        const s = getSession();
+        if (s) {
+            badge.innerHTML = '<span class="fs-connected-badge">&#10003; Connected to ' +
+                s.domain.replace(/^(https?:\/\/)?/, '').split('/')[0] + '</span>';
+        } else {
+            badge.innerHTML = '<button class="fs-connect-btn" onclick="fsShowCredModal()">Connect to Finite State</button>';
+        }
+    }
+
+    // =========================================================================
+    // Connect Flow
+    // =========================================================================
+
+    window.fsShowCredModal = function() {
+        hideError('fsCredError');
+        // Pre-fill domain if available from report metadata
+        const domainInput = document.getElementById('fsDomain');
+        if (!domainInput.value) {
+            const meta = document.querySelector('meta[name="fs-domain"]');
+            if (meta) domainInput.value = meta.content;
+        }
+        openModal('fsCredModal');
+        document.getElementById('fsToken').focus();
+    };
+
+    window.fsConnect = async function() {
+        hideError('fsCredError');
+        const domain = document.getElementById('fsDomain').value.trim().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+        const token = document.getElementById('fsToken').value.trim();
+        if (!domain || !token) {
+            showError('fsCredError', 'Both domain and token are required.');
+            return;
+        }
+        setLoading('fsCredConnectBtn', true);
+        try {
+            // Build the ping URL — use local proxy if available, direct otherwise
+            const pingHeaders = { 'X-Authorization': token, 'Accept': 'application/json', 'Content-Type': 'application/json' };
+            let pingUrl;
+            if (_useProxy()) {
+                pingUrl = '/fsapi/public/v0/tracker/tickets/ping';
+                pingHeaders['X-FS-Domain'] = domain;
+            } else {
+                pingUrl = 'https://' + domain + '/api/public/v0/tracker/tickets/ping';
+            }
+            const res = await fetch(pingUrl, {
+                method: 'POST',
+                headers: pingHeaders,
+                body: '{}',
+            });
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error('HTTP ' + res.status + ': ' + (text || 'Connection failed'));
+            }
+            const data = await res.json();
+            setSession({ domain: domain, token: token, projects: data.projects || [] });
+            fsCloseModal('fsCredModal');
+            // If there was a pending action, execute it
+            if (window._fsPendingAction) {
+                const action = window._fsPendingAction;
+                window._fsPendingAction = null;
+                action();
+            }
+        } catch (err) {
+            if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
+                // CORS or network error — give actionable guidance
+                const isFile = window.location.protocol === 'file:';
+                let msg = 'Connection failed — the browser blocked the request.';
+                if (isFile) {
+                    msg += ' This report is opened as a local file (file://), which prevents API calls due to CORS. '
+                        + 'Re-run with --serve to start a local HTTP server: '
+                        + 'poetry run fs-report --recipe "Triage Prioritization" --serve';
+                } else {
+                    msg += ' Check that the domain is correct and reachable.';
+                }
+                showError('fsCredError', msg);
+            } else {
+                showError('fsCredError', 'Connection failed: ' + err.message);
+            }
+        } finally {
+            setLoading('fsCredConnectBtn', false);
+        }
+    };
+
+    // Ensure connected, then run callback
+    function ensureConnected(callback) {
+        if (isConnected()) { callback(); }
+        else {
+            window._fsPendingAction = callback;
+            fsShowCredModal();
+        }
+    }
+
+    // =========================================================================
+    // Jira Ticket Creation
+    // =========================================================================
+
+    let _jiraContext = {};  // holds current ticket data
+
+    window.fsOpenJiraModal = function(data) {
+        // Don't re-open if this button already succeeded
+        if (data.sourceBtn && data.sourceBtn.disabled) return;
+        ensureConnected(function() {
+            _jiraContext = data;
+            hideError('fsJiraError');
+            const successEl = document.getElementById('fsJiraSuccess');
+            successEl.classList.remove('visible');
+
+            // Populate projects dropdown
+            const s = getSession();
+            const projSelect = document.getElementById('fsJiraProject');
+            projSelect.innerHTML = '';
+            (s.projects || []).forEach(function(p) {
+                const opt = document.createElement('option');
+                opt.value = p.key;
+                opt.textContent = p.name + ' (' + p.key + ')';
+                if (p['default']) opt.selected = true;
+                projSelect.appendChild(opt);
+            });
+            fsUpdateTicketTypes();
+
+            // Populate fields
+            document.getElementById('fsJiraTitle').value = data.title || '';
+            document.getElementById('fsJiraSummary').value = data.summary || '';
+            // Map priority band
+            const bandMap = { 'CRITICAL': 'Highest', 'HIGH': 'High', 'MEDIUM': 'Medium', 'LOW': 'Low', 'INFO': 'Lowest' };
+            document.getElementById('fsJiraPriority').value = bandMap[data.band] || 'Medium';
+            // Mode
+            document.getElementById('fsJiraMode').value = data.mode || 'ONE_PER_FINDING';
+
+            // Reset the Create button (may have been changed to "Close" after a previous success)
+            var createBtn = document.getElementById('fsJiraCreateBtn');
+            createBtn.textContent = 'Create Ticket';
+            createBtn.disabled = false;
+            createBtn.onclick = fsCreateTicket;
+            openModal('fsJiraModal');
+        });
+    };
+
+    window.fsUpdateTicketTypes = function() {
+        const s = getSession();
+        const projKey = document.getElementById('fsJiraProject').value;
+        const proj = (s.projects || []).find(function(p) { return p.key === projKey; });
+        const typeSelect = document.getElementById('fsJiraType');
+        typeSelect.innerHTML = '';
+        (proj && proj.ticketTypes || ['Task', 'Bug', 'Story']).forEach(function(t) {
+            const opt = document.createElement('option');
+            opt.value = t; opt.textContent = t;
+            if (t === 'Bug' || t === 'Task') opt.selected = (t === 'Bug');
+            typeSelect.appendChild(opt);
+        });
+    };
+
+    window.fsCreateTicket = async function() {
+        hideError('fsJiraError');
+        setLoading('fsJiraCreateBtn', true);
+        const projKey = document.getElementById('fsJiraProject').value;
+        const s = getSession();
+        const proj = (s.projects || []).find(function(p) { return p.key === projKey; });
+
+        const endpoint = _jiraContext.endpoint || 'findings';
+        const body = {
+            components: _jiraContext.components || [],
+            findings: _jiraContext.findings || [],
+            ticket_name: document.getElementById('fsJiraTitle').value,
+            ticket_summary: document.getElementById('fsJiraSummary').value,
+            priority: document.getElementById('fsJiraPriority').value,
+            project_name: proj ? proj.name : '',
+            project_key: projKey,
+            type: document.getElementById('fsJiraType').value,
+            mode: document.getElementById('fsJiraMode').value,
+        };
+
+        try {
+            const res = await fetch(apiBase() + '/public/v0/tracker/tickets/' + endpoint, {
+                method: 'POST',
+                headers: apiHeaders(),
+                body: JSON.stringify(body),
+            });
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error('HTTP ' + res.status + ': ' + (text || 'Failed to create ticket'));
+            }
+            const result = await res.json();
+            showSuccess('fsJiraSuccess', 'Ticket created successfully.' +
+                (result.ticket_url ? ' ' + result.ticket_url : ''));
+
+            // Update the source button in the table
+            if (_jiraContext.sourceBtn) {
+                _jiraContext.sourceBtn.classList.add('btn-success');
+                _jiraContext.sourceBtn.innerHTML = '&#10003; Created';
+                _jiraContext.sourceBtn.disabled = true;
+            }
+            // Change modal button to "Close" so user can dismiss
+            const createBtn = document.getElementById('fsJiraCreateBtn');
+            createBtn.textContent = 'Close';
+            createBtn.disabled = false;
+            createBtn.onclick = function() { fsCloseModal('fsJiraModal'); };
+        } catch (err) {
+            showError('fsJiraError', err.message);
+            setLoading('fsJiraCreateBtn', false);
+        }
+    };
+
+    // =========================================================================
+    // Set Triage Status
+    // =========================================================================
+
+    let _triageContext = {};
+
+    window.fsOpenTriageModal = function(data) {
+        // Don't re-open if this button already succeeded
+        if (data.sourceBtn && data.sourceBtn.disabled) return;
+        ensureConnected(function() {
+            _triageContext = data;
+            hideError('fsTriageError');
+            document.getElementById('fsTriageFindingId').textContent = data.findingId;
+            document.getElementById('fsTriageConfirmBtn').textContent = 'Confirm';
+            document.getElementById('fsTriageConfirmBtn').disabled = false;
+            openModal('fsTriageModal');
+        });
+    };
+
+    window.fsSetTriage = async function() {
+        hideError('fsTriageError');
+        setLoading('fsTriageConfirmBtn', true);
+
+        const pvId = _triageContext.projectVersionId;
+        const intId = _triageContext.internalId;
+        const url = apiBase() + '/public/v0/findings/' + pvId + '/' + intId + '/status';
+
+        try {
+            const res = await fetch(url, {
+                method: 'PUT',
+                headers: apiHeaders(),
+                body: JSON.stringify({
+                    status: 'IN_TRIAGE',
+                    response: 'UPDATE',
+                    justification: 'REQUIRES_CONFIGURATION',
+                }),
+            });
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error('HTTP ' + res.status + ': ' + (text || 'Failed to update status'));
+            }
+            fsCloseModal('fsTriageModal');
+            // Update the source button
+            if (_triageContext.sourceBtn) {
+                _triageContext.sourceBtn.classList.add('btn-success');
+                _triageContext.sourceBtn.innerHTML = '&#10003; IN_TRIAGE';
+                _triageContext.sourceBtn.disabled = true;
+            }
+        } catch (err) {
+            showError('fsTriageError', err.message);
+        } finally {
+            setLoading('fsTriageConfirmBtn', false);
+        }
+    };
+
+    // =========================================================================
+    // Init
+    // =========================================================================
+
+    document.addEventListener('DOMContentLoaded', function() {
+        // Interactive features require --serve (local proxy for API calls).
+        // Hide all action buttons and connection UI when not served via localhost.
+        if (!_useProxy()) {
+            document.querySelectorAll('.action-btn, .action-cell, #fsConnectionBadge').forEach(function(el) {
+                el.style.display = 'none';
+            });
+            // Also hide the Actions column headers
+            document.querySelectorAll('th').forEach(function(th) {
+                if (th.textContent.trim() === 'Actions') th.style.display = 'none';
+            });
+            return; // skip remaining interactive setup
+        }
+
+        updateConnectionBadge();
+
+        // Close modals on overlay click
+        document.querySelectorAll('.fs-modal-overlay').forEach(function(overlay) {
+            overlay.addEventListener('click', function(e) {
+                if (e.target === overlay) overlay.classList.remove('active');
+            });
+        });
+
+        // Close modals on Escape
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                document.querySelectorAll('.fs-modal-overlay.active').forEach(function(m) {
+                    m.classList.remove('active');
+                });
+            }
+        });
+    });
+
+})();
+</script>

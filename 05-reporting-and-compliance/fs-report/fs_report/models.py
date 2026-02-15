@@ -358,7 +358,12 @@ class Config(BaseModel):
     # AI remediation guidance options
     ai: bool = Field(
         False,
-        description="Enable AI remediation guidance (requires ANTHROPIC_AUTH_TOKEN env var)",
+        description="Enable AI remediation guidance (requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, or GITHUB_TOKEN)",
+    )
+    ai_provider: str | None = Field(
+        None,
+        description="LLM provider override (anthropic, openai, copilot). "
+        "Auto-detected from environment variables if not set.",
     )
     ai_depth: str = Field(
         "summary",
@@ -367,6 +372,12 @@ class Config(BaseModel):
     ai_prompts: bool = Field(
         False,
         description="Export AI prompts to file and HTML for use with any LLM (no API key required)",
+    )
+    nvd_api_key: str | None = Field(
+        None,
+        description="NVD API key for faster fix-version lookups. "
+        "Free from https://nvd.nist.gov/developers/request-an-api-key. "
+        "Also reads NVD_API_KEY env var. Increases rate limit from 5 to 50 req/30s.",
     )
     # Version comparison / progress options
     baseline_date: str | None = Field(

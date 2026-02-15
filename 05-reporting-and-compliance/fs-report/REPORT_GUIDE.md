@@ -476,14 +476,14 @@ Export structured LLM prompts for triage guidance with `--ai-prompts`:
 poetry run fs-report --recipe "Triage Prioritization" --ai-prompts --period 30d
 ```
 
-This generates a `Triage Prioritization_prompts.md` file you can paste into any LLM. By default, prompts are generated only for CRITICAL findings. To expand scope, edit `ai_prompt_bands` in the recipe:
+This generates a `Triage Prioritization_prompts.md` file and adds inline AI Prompt columns to the HTML report tables. Prompts are generated at four scopes:
 
-```yaml
-parameters:
-  ai_prompt_bands:
-    - CRITICAL
-    - HIGH
-```
+- **Portfolio** — strategic remediation prompt (multi-project only), shown after Scoring Methodology
+- **Project** — per-project remediation prompt, shown in the Project Risk Summary table
+- **Component** — per-component fix guidance prompt for every listed component, shown in the Top Riskiest Components table
+- **Finding** — per-finding triage prompt for the top 100 findings by priority, shown in the Findings Detail table
+
+Each prompt includes a Copy button for pasting into any LLM. No API key required.
 
 **AI Remediation Guidance (optional, requires API key):**
 
@@ -495,9 +495,52 @@ poetry run fs-report --recipe "Triage Prioritization" --ai --period 30d
 
 # Full mode (+ component-level fix guidance for Critical/High)
 poetry run fs-report --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
+
+# Explicit provider override (default: auto-detect from env vars)
+poetry run fs-report --recipe "Triage Prioritization" --ai --ai-provider openai --period 30d
 ```
 
-Requires `ANTHROPIC_AUTH_TOKEN` environment variable. Uses Claude with model tiering (Sonnet for summaries, Haiku for bulk guidance). Results are cached in `~/.fs-report/cache.db`.
+Supports multiple LLM providers (auto-detected from environment variables):
+
+| Provider | Env Variable | Summary Model | Fast Model |
+|----------|-------------|---------------|------------|
+| **Anthropic** (default) | `ANTHROPIC_AUTH_TOKEN` | Claude Opus | Claude Haiku |
+| **OpenAI** | `OPENAI_API_KEY` | GPT-4o | GPT-4o-mini |
+| **GitHub Copilot** | `GITHUB_TOKEN` | GPT-4o | GPT-4o-mini |
+
+Set one of the environment variables above, or use `--ai-provider` to choose explicitly. Results are cached in `~/.fs-report/cache.db`.
+
+**NVD Fix Version Enrichment:**
+
+When AI remediation is enabled (`--ai`), the tool automatically queries the [NVD API](https://nvd.nist.gov/developers/vulnerabilities) to fetch known fix versions for each CVE. This data is injected into LLM prompts so the AI can recommend specific, verified upgrade targets instead of generic "upgrade to latest" advice.
+
+NVD lookups work without any configuration, but the public rate limit (5 requests per 30 seconds) can be slow for large reports. Register for a **free NVD API key** to get 10x throughput:
+
+1. Go to <https://nvd.nist.gov/developers/request-an-api-key>
+2. Enter your organisation name, email address, and organisation type
+3. Accept the Terms of Use and submit
+4. Click the activation link in the confirmation email (must activate within 7 days)
+5. Save the API key — provide it via environment variable or CLI flag:
+
+```bash
+# Option A: Environment variable (recommended)
+export NVD_API_KEY="your-key-here"
+poetry run fs-report --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
+
+# Option B: CLI flag
+poetry run fs-report --recipe "Triage Prioritization" --ai --ai-depth full --nvd-api-key "your-key-here" --period 30d
+```
+
+| | Without API Key | With API Key |
+|---|---|---|
+| **Rate limit** | 5 requests / 30 seconds | 50 requests / 30 seconds |
+| **50 CVEs** | ~5 minutes | ~30 seconds |
+| **Cost** | Free | Free |
+| **Setup** | None | 2-minute registration |
+
+NVD results are cached locally (24-hour TTL) so subsequent runs are fast regardless of rate limits.
+
+> **Note:** Per NVD Terms of Use, API keys are per-requestor and must not be shared with other individuals or organisations. This product uses the NVD API but is not endorsed or certified by the NVD.
 
 **VEX Integration:**
 
@@ -522,6 +565,9 @@ poetry run fs-report --recipe "Triage Prioritization" --ai --period 30d
 # Full AI depth (includes component-level fix guidance)
 poetry run fs-report --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
 
+# Full AI depth with NVD fix version enrichment (faster with API key)
+poetry run fs-report --recipe "Triage Prioritization" --ai --ai-depth full --nvd-api-key "$NVD_API_KEY" --period 30d
+
 # Export AI prompts (no API key needed)
 poetry run fs-report --recipe "Triage Prioritization" --ai-prompts --period 30d
 
@@ -530,7 +576,45 @@ poetry run fs-report --recipe "Triage Prioritization" --scoring-file custom.yaml
 
 # Override existing VEX statuses
 poetry run fs-report --recipe "Triage Prioritization" --vex-override --period 30d
+
+# Generate reports and serve via local HTTP server (enables interactive buttons)
+poetry run fs-report --recipe "Triage Prioritization" --ai --ai-depth full --serve
 ```
+
+**Interactive Action Buttons:**
+
+The Triage Prioritization HTML report includes interactive buttons that let you take action directly from the report:
+
+- **Create Jira Ticket** — Available on both findings and components. Pre-fills the ticket with severity, component, fix version, and AI guidance (when available). Uses your Jira integration configured in the Finite State platform.
+- **Set IN_TRIAGE** — Available on individual findings. Sets the finding status to `IN_TRIAGE` with `WILL_FIX` response in the platform, so your team knows it's being worked.
+
+**How to connect:**
+
+1. Open the HTML report in your browser.
+2. Click any action button (or the "Connect to Finite State" button in the header).
+3. Enter your Finite State domain (e.g., `platform.finitestate.io`) and API token.
+4. Click **Connect** — the report verifies connectivity and fetches your Jira projects.
+5. A green "Connected" badge appears in the header. You're ready to create tickets and update statuses.
+
+**Security model:**
+
+- Credentials are stored in `sessionStorage` — they are **never written to disk** and are cleared when you close the browser tab.
+- API calls happen directly from your browser to the Finite State API. No data passes through any intermediary.
+- The report HTML file does not contain any credentials or secrets.
+
+**CORS note:**
+
+When opening the report as a local file (`file://` protocol), some browsers may block API requests due to CORS restrictions. If you encounter this:
+
+```bash
+# Use --serve to start a local HTTP server after report generation
+poetry run fs-report --recipe "Triage Prioritization" --serve
+
+# Custom port
+poetry run fs-report --recipe "Triage Prioritization" --serve --serve-port 9090
+```
+
+The `--serve` flag starts a lightweight local server on `http://localhost:8080` (or custom port), which provides a proper HTTP origin and avoids CORS issues. Press `Ctrl+C` to stop the server.
 
 ---
 

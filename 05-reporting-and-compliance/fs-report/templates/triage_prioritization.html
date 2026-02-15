@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
     <title>Triage Prioritization - Finite State Report</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
@@ -101,6 +102,7 @@
     </style>
 </head>
 <body>
+    <span id="fsConnectionBadge"></span>
     <div class="container">
         <!-- Header -->
         <div class="header">
@@ -251,6 +253,22 @@
             </ul>
         </div>
 
+        <!-- AI Prompts — Portfolio (--ai-prompts flag) -->
+        {% if ai_portfolio_prompt %}
+        <div class="narrative-section" style="border-left: 4px solid #17a2b8;">
+            <h3>AI Prompts</h3>
+            <p style="color: #6c757d;">Copy and paste into any LLM for remediation guidance. No API key required. Project, component, and finding prompts are in the tables below.</p>
+
+            <details style="margin-bottom: 12px;">
+                <summary style="cursor:pointer;color:#007bff;font-weight:600;font-size:0.95em;">Portfolio Remediation Prompt</summary>
+                <div style="position:relative;margin-top:10px;">
+                    <button onclick="copyPrompt(this)" style="position:absolute;top:5px;right:5px;padding:4px 10px;font-size:0.8em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
+                    <pre style="background:#f8f9fa;padding:15px;border-radius:6px;font-size:0.85em;white-space:pre-wrap;word-wrap:break-word;max-height:400px;overflow-y:auto;">{{ ai_portfolio_prompt }}</pre>
+                </div>
+            </details>
+        </div>
+        {% endif %}
+
         <!-- AI Remediation Guidance (conditionally rendered) -->
         {% if ai_portfolio_summary and not is_single_project %}
         <div class="narrative-section" style="border-left: 4px solid #007bff;">
@@ -272,12 +290,13 @@
         {% if ai_component_guidance %}
         <div class="table-container" style="border-left: 4px solid #6f42c1;">
             <h2>🤖 AI Component Remediation Guidance</h2>
-            <p style="color: #6c757d; margin-bottom: 15px;">Detailed fix guidance for Critical and High priority components.</p>
+            <p style="color: #6c757d; margin-bottom: 15px;">Detailed fix guidance for Critical and High priority components. Fix version data derived from NVD API where available.</p>
             <table>
                 <thead>
                     <tr>
                         <th>Component</th>
                         <th>Fix Version</th>
+                        <th>Rationale</th>
                         <th>Guidance</th>
                         <th>Workaround</th>
                         <th>Code Search</th>
@@ -289,7 +308,43 @@
                     <tr>
                         <td><strong>{{ comp_key }}</strong></td>
                         <td>{{ guidance.fix_version|default('—') }}</td>
+                        <td>{{ guidance.rationale|default('—') }}</td>
                         <td>{{ guidance.guidance|default('—') }}</td>
+                        <td>{{ guidance.workaround|default('—') }}</td>
+                        <td><code>{{ guidance.code_search_hints|default('—') }}</code></td>
+                        <td>{{ guidance.confidence|default('—') }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        {% if ai_finding_guidance %}
+        <div class="table-container" style="border-left: 4px solid #e83e8c;">
+            <h2>🤖 AI Finding Triage Guidance</h2>
+            <p style="color: #6c757d; margin-bottom: 15px;">Per-finding triage and remediation guidance for Critical and High priority findings. Fix version data derived from NVD API where available.</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Finding</th>
+                        <th>Priority</th>
+                        <th>Action</th>
+                        <th>Rationale</th>
+                        <th>Fix Version</th>
+                        <th>Workaround</th>
+                        <th>Code Search</th>
+                        <th>Confidence</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for finding_id, guidance in ai_finding_guidance.items() %}
+                    <tr>
+                        <td><strong>{{ finding_id }}</strong></td>
+                        <td>{{ guidance.priority|default('—') }}</td>
+                        <td>{{ guidance.action|default('—') }}</td>
+                        <td>{{ guidance.rationale|default('—') }}</td>
+                        <td>{{ guidance.fix_version|default('—') }}</td>
                         <td>{{ guidance.workaround|default('—') }}</td>
                         <td><code>{{ guidance.code_search_hints|default('—') }}</code></td>
                         <td>{{ guidance.confidence|default('—') }}</td>
@@ -316,6 +371,7 @@
                         <th>INFO</th>
                         <th>Total</th>
                         <th>Avg Score</th>
+                        {% if ai_project_prompts %}<th>AI Prompt</th>{% endif %}
                     </tr>
                 </thead>
                 <tbody>
@@ -336,6 +392,19 @@
                         <td>{{ row.INFO }}</td>
                         <td><strong>{{ row.total_findings }}</strong></td>
                         <td>{{ row.avg_score }}</td>
+                        {% if ai_project_prompts %}
+                        <td>
+                            {% if row.project_name in ai_project_prompts %}
+                            <details>
+                                <summary style="cursor:pointer;color:#007bff;font-size:0.85em;">View</summary>
+                                <div style="position:relative;margin-top:6px;">
+                                    <button onclick="copyPrompt(this)" style="position:absolute;top:2px;right:2px;padding:2px 8px;font-size:0.75em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
+                                    <pre style="background:#f8f9fa;padding:10px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:300px;overflow-y:auto;max-width:400px;">{{ ai_project_prompts[row.project_name] }}</pre>
+                                </div>
+                            </details>
+                            {% else %}—{% endif %}
+                        </td>
+                        {% endif %}
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -359,6 +428,8 @@
                         <th>Total</th>
                         <th>Avg Score</th>
                         <th>Max Score</th>
+                        {% if ai_component_prompts %}<th>AI Prompt</th>{% endif %}
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -373,6 +444,33 @@
                         <td><strong>{{ row.total_findings }}</strong></td>
                         <td>{{ row.avg_score }}</td>
                         <td>{{ row.max_score }}</td>
+                        {% if ai_component_prompts %}
+                        <td>
+                            {% set comp_key = row.component_name ~ ':' ~ row.component_version %}
+                            {% if comp_key in ai_component_prompts %}
+                            <details>
+                                <summary style="cursor:pointer;color:#007bff;font-size:0.85em;">View</summary>
+                                <div style="position:relative;margin-top:6px;">
+                                    <button onclick="copyPrompt(this)" style="position:absolute;top:2px;right:2px;padding:2px 8px;font-size:0.75em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
+                                    <pre style="background:#f8f9fa;padding:10px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:300px;overflow-y:auto;max-width:400px;">{{ ai_component_prompts[comp_key] }}</pre>
+                                </div>
+                            </details>
+                            {% else %}—{% endif %}
+                        </td>
+                        {% endif %}
+                        <td class="action-cell">
+                            {% set c_key = row.component_name ~ ':' ~ row.component_version %}
+                            {% set c_guidance = ai_component_guidance.get(c_key, {}) if ai_component_guidance is defined and ai_component_guidance else {} %}
+                            {% set c_summary_parts = [] %}
+                            {% if c_guidance.get('fix_version') %}{% if c_summary_parts.append('Fix: ' + c_guidance.fix_version) %}{% endif %}{% endif %}
+                            {% if c_guidance.get('guidance') %}{% if c_summary_parts.append(c_guidance.guidance) %}{% endif %}{% endif %}
+                            {% if c_guidance.get('workaround') %}{% if c_summary_parts.append('Workaround: ' + c_guidance.workaround) %}{% endif %}{% endif %}
+                            {% set c_summary = c_summary_parts | join('\n\n') if c_summary_parts else (row.total_findings | string ~ ' findings (' ~ row.CRITICAL | string ~ ' CRITICAL, ' ~ row.HIGH | string ~ ' HIGH) in ' ~ row.component_name ~ ' ' ~ row.component_version) %}
+                            {% set c_band = 'CRITICAL' if row.CRITICAL > 0 else ('HIGH' if row.HIGH > 0 else ('MEDIUM' if row.MEDIUM > 0 else 'LOW')) %}
+                            <button class="action-btn btn-jira" title="Create Jira ticket for this component"
+                                data-action="{{ {'endpoint': 'components', 'title': 'Remediate ' ~ row.component_name ~ ' ' ~ row.component_version, 'summary': c_summary, 'band': c_band, 'findings': row.finding_ids if row.finding_ids is defined else [], 'components': [row.component_id], 'mode': 'SINGLE_COMPONENT'} | tojson | forceescape }}"
+                                onclick="fsOpenJiraModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this}))">&#x1F3AB; Jira</button>
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -403,6 +501,8 @@
                         <th>Vector</th>
                         <th>EPSS %ile</th>
                         <th>CVSS</th>
+                        {% if ai_finding_prompts %}<th>AI Prompt</th>{% endif %}
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -454,6 +554,35 @@
                         <td>{{ row.attack_vector }}</td>
                         <td>{{ "%.1f"|format(row.epss_percentile * 100) if row.epss_percentile else '—' }}%</td>
                         <td>{{ row.risk }}</td>
+                        {% if ai_finding_prompts %}
+                        <td>
+                            {% if row.finding_id in ai_finding_prompts %}
+                            <details>
+                                <summary style="cursor:pointer;color:#007bff;font-size:0.85em;">View</summary>
+                                <div style="position:relative;margin-top:6px;">
+                                    <button onclick="copyPrompt(this)" style="position:absolute;top:2px;right:2px;padding:2px 8px;font-size:0.75em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
+                                    <pre style="background:#f8f9fa;padding:10px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:300px;overflow-y:auto;max-width:400px;">{{ ai_finding_prompts[row.finding_id] }}</pre>
+                                </div>
+                            </details>
+                            {% else %}—{% endif %}
+                        </td>
+                        {% endif %}
+                        <td class="action-cell">
+                            {% set f_guidance = ai_finding_guidance.get(row.finding_id, {}) if ai_finding_guidance is defined and ai_finding_guidance else {} %}
+                            {% set f_summary_parts = [] %}
+                            {% if f_guidance.get('fix_version') %}{% if f_summary_parts.append('Fix: ' + f_guidance.fix_version) %}{% endif %}{% endif %}
+                            {% if f_guidance.get('guidance') %}{% if f_summary_parts.append(f_guidance.guidance) %}{% endif %}{% endif %}
+                            {% if f_guidance.get('workaround') %}{% if f_summary_parts.append('Workaround: ' + f_guidance.workaround) %}{% endif %}{% endif %}
+                            {% set f_summary = f_summary_parts | join('\n\n') if f_summary_parts else (row.severity ~ ' vulnerability in ' ~ row.component_name ~ ' ' ~ row.component_version ~ '. Reachability: ' ~ row.reachability_label ~ '.') %}
+                            <button class="action-btn btn-jira" title="Create Jira ticket for this finding"
+                                data-action="{{ {'endpoint': 'findings', 'title': '[' ~ row.finding_id ~ '] ' ~ row.component_name ~ ' ' ~ row.component_version ~ ' — ' ~ row.severity, 'summary': f_summary, 'band': row.priority_band, 'findings': [row.finding_id], 'components': [row.component_id], 'mode': 'SINGLE_FINDING'} | tojson | forceescape }}"
+                                onclick="fsOpenJiraModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this}))">&#x1F3AB; Jira</button>
+                            {% if row.internal_id and row.project_version_id %}
+                            <button class="action-btn btn-triage" title="Set status to IN_TRIAGE"
+                                data-action="{{ {'findingId': row.finding_id, 'internalId': row.internal_id, 'projectVersionId': row.project_version_id} | tojson | forceescape }}"
+                                onclick="fsOpenTriageModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this}))">&#x2691; Triage</button>
+                            {% endif %}
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -467,6 +596,14 @@
     </div>
 
     <script>
+        function copyPrompt(btn) {
+            const pre = btn.parentElement.querySelector('pre');
+            navigator.clipboard.writeText(pre.textContent).then(function() {
+                btn.textContent = 'Copied!';
+                setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+            });
+        }
+
         document.addEventListener('DOMContentLoaded', function() {
             const BAND_COLORS = {
                 'CRITICAL': '#dc3545',
@@ -899,5 +1036,16 @@
 
         });
     </script>
+
+    {% if ai_component_guidance or ai_finding_guidance %}
+    <!-- NVD Terms of Use: Required Attribution -->
+    <div style="margin: 30px auto; max-width: 900px; padding: 12px 20px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; font-size: 0.85em; color: #6c757d; text-align: center;">
+        This product uses the NVD API but is not endorsed or certified by the NVD.
+        Fix version data is derived from NVD CPE match criteria and may be reformatted.
+        Verify fix versions against vendor advisories before deploying updates.
+    </div>
+    {% endif %}
+
+    {% include '_action_buttons.html' %}
 </body>
 </html>
