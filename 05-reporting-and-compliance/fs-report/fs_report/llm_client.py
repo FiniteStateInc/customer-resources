@@ -96,7 +96,7 @@ SCORING_METHODOLOGY = """\
 ## Scoring Methodology
 Findings are prioritized using a tiered-gates model:
 - GATE 1 (CRITICAL): Reachable + has known exploit or is in CISA KEV
-- GATE 2 (HIGH): Not unreachable + NETWORK attack vector + EPSS >= 50th percentile
+- GATE 2 (HIGH): Not unreachable + NETWORK attack vector + EPSS > 90th percentile
 - Remaining findings scored additively: reachability (+30), exploit (+25), KEV (+20), \
 attack vector (up to +15), EPSS (up to +20), CVSS (up to +10)
 - Bands: HIGH >= 70, MEDIUM >= 40, LOW >= 25, INFO < 25"""

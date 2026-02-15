@@ -1536,9 +1536,25 @@ def _serve_reports(output_dir: Path, port: int) -> None:
             self.end_headers()
 
         def log_message(self, format: str, *args: Any) -> None:
-            """Suppress noisy per-request logs; only log proxy calls."""
+            """Suppress noisy per-request logs; show clean proxy summary."""
             if self._is_proxy():
-                console.print(f"[dim]  PROXY {self.command} {self.path}[/dim]")
+                # Show a short, readable summary instead of full URLs
+                path = self.path
+                if "/authUser" in path:
+                    label = "Authenticating..."
+                elif "/tracker/tickets/ping" in path:
+                    label = "Checking Jira integration..."
+                elif "/findings" in path and "/status/clear" in path:
+                    label = "Clearing finding status..."
+                elif "/findings" in path and "/status" in path:
+                    label = "Updating finding status..."
+                elif "/findings" in path and "filter=" in path:
+                    label = "Refreshing finding statuses..."
+                elif "/findings" in path:
+                    label = "Fetching findings..."
+                else:
+                    label = f"{self.command} ...{path.split('/')[-1][:40]}"
+                console.print(f"[dim]  {label}[/dim]")
 
     console.print(f"\n[cyan]Starting local server on http://localhost:{port}[/cyan]")
     console.print(f"[dim]Serving: {output_dir}[/dim]")

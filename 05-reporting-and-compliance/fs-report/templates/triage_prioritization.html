@@ -231,8 +231,8 @@
 
             <h4>Gate 2 — HIGH (Elevated Risk)</h4>
             <ul>
-                <li>(Reachable OR has exploit/KEV) <strong>AND</strong> (NETWORK attack vector OR EPSS ≥ 90th percentile OR CVSS ≥ 9.0)</li>
-                <li>Strong signal with amplifying factor</li>
+                <li>Not unreachable (score ≥ 0) <strong>AND</strong> NETWORK attack vector <strong>AND</strong> EPSS &gt; 90th percentile</li>
+                <li>Strong signal findings with high predicted exploitation probability</li>
             </ul>
 
             <h4>Additive Scoring (Remaining Findings)</h4>
@@ -244,6 +244,13 @@
                 <li><strong>CVSS</strong>: 0–10 points (scaled by score/10)</li>
             </ul>
             <p>Bands: HIGH ≥ 70, MEDIUM ≥ 40, LOW ≥ 25, INFO &lt; 25</p>
+
+            <h4>VEX Status Penalty</h4>
+            <ul>
+                <li>Findings with status <strong>NOT_AFFECTED</strong>, <strong>RESOLVED</strong>, or <strong>RESOLVED_WITH_PEDIGREE</strong>: <strong>−50 points</strong></li>
+                <li>Applies to both gated and additive-scored findings (e.g. Gate 1 score 100 → 50 = MEDIUM)</li>
+                <li>Allows triaged findings to drop out of critical gates without being removed from the report</li>
+            </ul>
 
             <h4>Reachability Interpretation</h4>
             <ul>
@@ -468,7 +475,7 @@
                             {% set c_summary = c_summary_parts | join('\n\n') if c_summary_parts else (row.total_findings | string ~ ' findings (' ~ row.CRITICAL | string ~ ' CRITICAL, ' ~ row.HIGH | string ~ ' HIGH) in ' ~ row.component_name ~ ' ' ~ row.component_version) %}
                             {% set c_band = 'CRITICAL' if row.CRITICAL > 0 else ('HIGH' if row.HIGH > 0 else ('MEDIUM' if row.MEDIUM > 0 else 'LOW')) %}
                             <button class="action-btn btn-jira" title="Create Jira ticket for this component"
-                                data-action="{{ {'endpoint': 'components', 'title': 'Remediate ' ~ row.component_name ~ ' ' ~ row.component_version, 'summary': c_summary, 'band': c_band, 'findings': row.finding_ids if row.finding_ids is defined else [], 'components': [row.component_id], 'mode': 'SINGLE_COMPONENT'} | tojson | forceescape }}"
+                                data-action="{{ {'endpoint': 'components', 'title': 'Remediate ' ~ row.component_name ~ ' ' ~ row.component_version, 'summary': c_summary, 'band': c_band, 'findings': row.finding_ids if row.finding_ids is defined else [], 'components': [row.component_id], 'mode': 'SINGLE_COMPONENT', 'projectId': row.project_id, 'projectVersionId': row.project_version_id, 'componentId': row.component_id} | tojson | forceescape }}"
                                 onclick="fsOpenJiraModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this}))">&#x1F3AB; Jira</button>
                         </td>
                     </tr>
@@ -575,12 +582,12 @@
                             {% if f_guidance.get('workaround') %}{% if f_summary_parts.append('Workaround: ' + f_guidance.workaround) %}{% endif %}{% endif %}
                             {% set f_summary = f_summary_parts | join('\n\n') if f_summary_parts else (row.severity ~ ' vulnerability in ' ~ row.component_name ~ ' ' ~ row.component_version ~ '. Reachability: ' ~ row.reachability_label ~ '.') %}
                             <button class="action-btn btn-jira" title="Create Jira ticket for this finding"
-                                data-action="{{ {'endpoint': 'findings', 'title': '[' ~ row.finding_id ~ '] ' ~ row.component_name ~ ' ' ~ row.component_version ~ ' — ' ~ row.severity, 'summary': f_summary, 'band': row.priority_band, 'findings': [row.finding_id], 'components': [row.component_id], 'mode': 'SINGLE_FINDING'} | tojson | forceescape }}"
+                                data-action="{{ {'endpoint': 'findings', 'title': '[' ~ row.finding_id ~ '] ' ~ row.component_name ~ ' ' ~ row.component_version ~ ' — ' ~ row.severity, 'summary': f_summary, 'band': row.priority_band, 'findings': [row.finding_id], 'components': [row.component_id], 'mode': 'SINGLE_FINDING', 'projectId': row.project_id, 'projectVersionId': row.project_version_id, 'internalId': row.internal_id, 'componentId': row.component_id} | tojson | forceescape }}"
                                 onclick="fsOpenJiraModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this}))">&#x1F3AB; Jira</button>
                             {% if row.internal_id and row.project_version_id %}
                             <button class="action-btn btn-triage" title="Set status to IN_TRIAGE"
                                 data-action="{{ {'findingId': row.finding_id, 'internalId': row.internal_id, 'projectVersionId': row.project_version_id} | tojson | forceescape }}"
-                                onclick="fsOpenTriageModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this}))">&#x2691; Triage</button>
+                                onclick="fsOpenTriageModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this, currentStatus: this.dataset.currentStatus || ''}))">&#x2691; Triage</button>
                             {% endif %}
                         </td>
                     </tr>

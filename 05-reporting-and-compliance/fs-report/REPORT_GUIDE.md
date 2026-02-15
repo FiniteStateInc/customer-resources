@@ -395,7 +395,7 @@ The triage prioritization engine uses a two-tier system: fast-track gates for th
 | Gate | Criteria | Result |
 |------|----------|--------|
 | **Gate 1** | Reachable (score > 0) AND (has exploit OR in KEV) | → CRITICAL (score=100) |
-| **Gate 2** | Not unreachable (score >= 0) AND NETWORK vector AND EPSS >= 50th percentile | → HIGH (score=85) |
+| **Gate 2** | Not unreachable (score >= 0) AND NETWORK vector AND EPSS > 90th percentile | → HIGH (score=85) |
 
 **Additive Scoring (findings that don't hit a gate):**
 
@@ -414,6 +414,11 @@ Each finding accumulates points from five factors:
 | | PHYSICAL | 0 |
 | **EPSS** | Scaled by percentile (0-1) | 0-20 |
 | **CVSS** | Scaled by score/10 | 0-10 |
+| **VEX Status** | NOT_AFFECTED, RESOLVED, or RESOLVED_WITH_PEDIGREE | -50 |
+
+**VEX Status Penalty:**
+
+Findings with a resolved VEX status (`NOT_AFFECTED`, `RESOLVED`, or `RESOLVED_WITH_PEDIGREE`) receive a **-50 point penalty** applied after gate scoring. This demotes previously triaged findings out of the critical gates (e.g. Gate 1 score 100 → 50 = MEDIUM) without removing them from the report entirely.
 
 **Band Thresholds:**
 
@@ -452,6 +457,7 @@ parameters:
     band_high_threshold: 70
     band_medium_threshold: 40
     band_low_threshold: 25
+    vex_resolved: -50
 ```
 
 To override at runtime without editing the recipe, create a YAML file with your custom weights and pass it via `--scoring-file`:

@@ -4,7 +4,7 @@ template: "triage_prioritization.html"
 description: >
   Per-project vulnerability triage prioritization using a tiered-gates scoring model.
   Prioritizes findings based on reachability, exploitability, attack vector, EPSS, and CVSS.
-  Gate 1: Reachable + Exploitable → CRITICAL. Gate 2: Not unreachable + NETWORK + EPSS >= 50% → HIGH.
+  Gate 1: Reachable + Exploitable → CRITICAL. Gate 2: Not unreachable + NETWORK + EPSS > 90% → HIGH.
   Generates VEX triage recommendations (CRITICAL → IN_TRIAGE, unreachable → NOT_AFFECTED).
 execution_order: 25  # After scans (10), alongside findings reports (20)
 auto_run: false  # Only runs when explicitly requested with --recipe
@@ -25,9 +25,13 @@ parameters:
     vector_physical: 0
     epss_max: 20
     cvss_max: 10
+    gate2_epss_threshold: 0.9
+    gate1_score: 100
+    gate2_score: 85
     band_high_threshold: 70
     band_medium_threshold: 40
     band_low_threshold: 25
+    vex_resolved: -50
 
 query:
   endpoint: "/public/v0/findings"
@@ -52,7 +56,7 @@ output:
     - name: gate_funnel
       chart: bar
       title: "Gate Classification Funnel"
-      description: "How findings flow through Gate 1 (Reachable+Exploit/KEV), Gate 2 (Not unreachable+NETWORK+EPSS>=50%), and additive scoring."
+      description: "How findings flow through Gate 1 (Reachable+Exploit/KEV), Gate 2 (Not unreachable+NETWORK+EPSS>90%), and additive scoring."
       x_column: gate
       y_column: count
     - name: cvss_vs_band_heatmap

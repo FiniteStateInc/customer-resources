@@ -17,7 +17,8 @@
 .action-btn.btn-jira:hover { background: #e6f0ff; }
 .action-btn.btn-triage { border-color: #fd7e14; color: #fd7e14; }
 .action-btn.btn-triage:hover { background: #fff3e6; }
-.action-btn.btn-success { border-color: #28a745; color: #28a745; background: #e6ffe6; cursor: default; opacity: 1; }
+.action-btn.btn-success { border-color: #28a745; color: #28a745; background: #e6ffe6; opacity: 1; }
+.action-btn.btn-intriage { border-color: #e6a817; color: #856404; background: #fff8e1; opacity: 1; }
 .action-btn.btn-error { border-color: #dc3545; color: #dc3545; background: #ffe6e6; }
 .action-btn .spinner {
     display: inline-block; width: 12px; height: 12px;
@@ -105,7 +106,7 @@
         <button class="fs-modal-close" onclick="fsCloseModal('fsCredModal')">&times;</button>
         <h3>Connect to Finite State</h3>
         <p style="color:#6c757d;font-size:0.85em;margin-bottom:18px;">
-            Enter your API credentials to enable Jira ticket creation and triage status updates.
+            Enter your API credentials to enable triage status updates and Jira ticket creation (if configured).
             Credentials are stored only in this browser tab and cleared when you close it.
         </p>
         <div class="fs-modal-error" id="fsCredError"></div>
@@ -175,17 +176,16 @@
 <div class="fs-modal-overlay" id="fsTriageModal">
     <div class="fs-modal" style="max-width:420px;">
         <button class="fs-modal-close" onclick="fsCloseModal('fsTriageModal')">&times;</button>
-        <h3>Set Finding Status</h3>
+        <h3 id="fsTriageTitle">Set Finding Status</h3>
         <div class="fs-modal-error" id="fsTriageError"></div>
-        <p style="margin-bottom:14px;font-size:0.9em;">
-            Set <strong id="fsTriageFindingId"></strong> to <strong>IN_TRIAGE</strong>?
-        </p>
+        <p id="fsTriageDesc" style="margin-bottom:14px;font-size:0.9em;"></p>
         <p style="color:#6c757d;font-size:0.82em;margin-bottom:14px;">
             This will update the finding status in the Finite State platform.
         </p>
         <div class="fs-modal-actions">
             <button class="fs-modal-btn" onclick="fsCloseModal('fsTriageModal')">Cancel</button>
-            <button class="fs-modal-btn primary" id="fsTriageConfirmBtn" onclick="fsSetTriage()">Confirm</button>
+            <button class="fs-modal-btn primary" id="fsTriageClearBtn" style="display:none;" onclick="fsClearStatus()">Clear Status</button>
+            <button class="fs-modal-btn primary" id="fsTriageConfirmBtn" onclick="fsSetTriage()">Set IN_TRIAGE</button>
         </div>
     </div>
 </div>
@@ -208,9 +208,11 @@
     function setSession(data) {
         sessionStorage.setItem('fs_session', JSON.stringify(data));
         updateConnectionBadge();
+        updateJiraVisibility();
     }
 
     function isConnected() { return !!getSession(); }
+    function hasJira() { var s = getSession(); return s && s.jiraAvailable; }
 
     // Detect if we're served via --serve (localhost) and can use the proxy
     function _useProxy() {
@@ -288,11 +290,19 @@
         if (!badge) return;
         const s = getSession();
         if (s) {
-            badge.innerHTML = '<span class="fs-connected-badge">&#10003; Connected to ' +
-                s.domain.replace(/^(https?:\/\/)?/, '').split('/')[0] + '</span>';
+            const domainLabel = s.domain.replace(/^(https?:\/\/)?/, '').split('/')[0];
+            const jiraNote = s.jiraAvailable ? '' : ' <span style="opacity:0.7;font-size:0.85em;">(Jira not configured)</span>';
+            badge.innerHTML = '<span class="fs-connected-badge">&#10003; Connected to ' + domainLabel + jiraNote + '</span>';
         } else {
             badge.innerHTML = '<button class="fs-connect-btn" onclick="fsShowCredModal()">Connect to Finite State</button>';
         }
+    }
+
+    function updateJiraVisibility() {
+        const jiraEnabled = hasJira();
+        document.querySelectorAll('.btn-jira').forEach(function(btn) {
+            btn.style.display = jiraEnabled ? '' : 'none';
+        });
     }
 
     // =========================================================================
@@ -321,27 +331,56 @@
         }
         setLoading('fsCredConnectBtn', true);
         try {
-            // Build the ping URL — use local proxy if available, direct otherwise
-            const pingHeaders = { 'X-Authorization': token, 'Accept': 'application/json', 'Content-Type': 'application/json' };
-            let pingUrl;
+            // Step 1: Validate token with authUser (works on every domain)
+            const authHeaders = { 'X-Authorization': token, 'Accept': 'application/json', 'Content-Type': 'application/json' };
+            let authUrl;
             if (_useProxy()) {
-                pingUrl = '/fsapi/public/v0/tracker/tickets/ping';
-                pingHeaders['X-FS-Domain'] = domain;
+                authUrl = '/fsapi/public/v0/authUser';
+                authHeaders['X-FS-Domain'] = domain;
             } else {
-                pingUrl = 'https://' + domain + '/api/public/v0/tracker/tickets/ping';
+                authUrl = 'https://' + domain + '/api/public/v0/authUser';
             }
-            const res = await fetch(pingUrl, {
-                method: 'POST',
-                headers: pingHeaders,
-                body: '{}',
+            const authRes = await fetch(authUrl, {
+                method: 'GET',
+                headers: authHeaders,
             });
-            if (!res.ok) {
-                const text = await res.text();
-                throw new Error('HTTP ' + res.status + ': ' + (text || 'Connection failed'));
+            if (!authRes.ok) {
+                const text = await authRes.text();
+                if (authRes.status === 401 || authRes.status === 403) {
+                    throw new Error('Authentication failed — check that your API token is valid for ' + domain);
+                }
+                throw new Error('HTTP ' + authRes.status + ': ' + (text || 'Connection failed'));
             }
-            const data = await res.json();
-            setSession({ domain: domain, token: token, projects: data.projects || [] });
+
+            // Step 2: Try Jira ping to fetch projects (optional — not all domains have Jira)
+            var jiraProjects = [];
+            var jiraAvailable = false;
+            try {
+                const pingHeaders = { 'X-Authorization': token, 'Accept': 'application/json', 'Content-Type': 'application/json' };
+                let pingUrl;
+                if (_useProxy()) {
+                    pingUrl = '/fsapi/public/v0/tracker/tickets/ping';
+                    pingHeaders['X-FS-Domain'] = domain;
+                } else {
+                    pingUrl = 'https://' + domain + '/api/public/v0/tracker/tickets/ping';
+                }
+                const pingRes = await fetch(pingUrl, {
+                    method: 'POST',
+                    headers: pingHeaders,
+                    body: '{}',
+                });
+                if (pingRes.ok) {
+                    const pingData = await pingRes.json();
+                    jiraProjects = pingData.projects || [];
+                    jiraAvailable = true;
+                }
+                // If ping fails (400, 404, etc.), silently skip — Jira just isn't configured
+            } catch (_) { /* Jira integration not available — that's fine */ }
+
+            setSession({ domain: domain, token: token, projects: jiraProjects, jiraAvailable: jiraAvailable });
             fsCloseModal('fsCredModal');
+            // Refresh triage button states from platform (non-blocking)
+            refreshTriageStatuses();
             // If there was a pending action, execute it
             if (window._fsPendingAction) {
                 const action = window._fsPendingAction;
@@ -388,6 +427,10 @@
         // Don't re-open if this button already succeeded
         if (data.sourceBtn && data.sourceBtn.disabled) return;
         ensureConnected(function() {
+            if (!hasJira()) {
+                alert('Jira integration is not configured on this domain. Contact your Finite State administrator to enable it.');
+                return;
+            }
             _jiraContext = data;
             hideError('fsJiraError');
             const successEl = document.getElementById('fsJiraSuccess');
@@ -406,9 +449,25 @@
             });
             fsUpdateTicketTypes();
 
-            // Populate fields
+            // Build Finite State deep link for the first line of the description
+            var deepLink = '';
+            var s2 = getSession();
+            if (s2 && s2.domain && data.projectId && data.projectVersionId) {
+                var base = 'https://' + s2.domain + '/projects/' + data.projectId + '/versions/' + data.projectVersionId;
+                if (data.endpoint === 'findings' && data.internalId) {
+                    deepLink = base + '/findings?findingId=' + data.internalId;
+                } else if (data.endpoint === 'components' && data.componentId) {
+                    deepLink = base + '/bill-of-materials?view=list&componentId=' + data.componentId;
+                }
+            }
+
+            // Populate fields — deep link as the first line of the summary
             document.getElementById('fsJiraTitle').value = data.title || '';
-            document.getElementById('fsJiraSummary').value = data.summary || '';
+            var summaryText = data.summary || '';
+            if (deepLink) {
+                summaryText = 'Finite State: ' + deepLink + '\n\n' + summaryText;
+            }
+            document.getElementById('fsJiraSummary').value = summaryText;
             // Map priority band
             const bandMap = { 'CRITICAL': 'Highest', 'HIGH': 'High', 'MEDIUM': 'Medium', 'LOW': 'Low', 'INFO': 'Lowest' };
             document.getElementById('fsJiraPriority').value = bandMap[data.band] || 'Medium';
@@ -496,17 +555,54 @@
     let _triageContext = {};
 
     window.fsOpenTriageModal = function(data) {
-        // Don't re-open if this button already succeeded
-        if (data.sourceBtn && data.sourceBtn.disabled) return;
         ensureConnected(function() {
             _triageContext = data;
             hideError('fsTriageError');
-            document.getElementById('fsTriageFindingId').textContent = data.findingId;
-            document.getElementById('fsTriageConfirmBtn').textContent = 'Confirm';
-            document.getElementById('fsTriageConfirmBtn').disabled = false;
+
+            var hasStatus = data.currentStatus;
+            var clearBtn = document.getElementById('fsTriageClearBtn');
+            var confirmBtn = document.getElementById('fsTriageConfirmBtn');
+
+            if (hasStatus) {
+                // Finding already has a status — offer to clear or set IN_TRIAGE
+                document.getElementById('fsTriageTitle').textContent = 'Update Finding Status';
+                document.getElementById('fsTriageDesc').innerHTML =
+                    '<strong>' + data.findingId + '</strong> is currently <strong>' + hasStatus + '</strong>.';
+                clearBtn.style.display = '';
+                clearBtn.textContent = 'Clear Status';
+                clearBtn.disabled = false;
+                confirmBtn.textContent = 'Set IN_TRIAGE';
+                confirmBtn.disabled = false;
+            } else {
+                // No status yet — simple set IN_TRIAGE
+                document.getElementById('fsTriageTitle').textContent = 'Set Finding Status';
+                document.getElementById('fsTriageDesc').innerHTML =
+                    'Set <strong>' + data.findingId + '</strong> to <strong>IN_TRIAGE</strong>?';
+                clearBtn.style.display = 'none';
+                confirmBtn.textContent = 'Set IN_TRIAGE';
+                confirmBtn.disabled = false;
+            }
             openModal('fsTriageModal');
         });
     };
+
+    // Helper: reset a triage button to default "no status" appearance
+    function _resetTriageBtn(btn) {
+        btn.className = 'action-btn btn-triage';
+        btn.innerHTML = '&#x2691; Triage';
+        btn.disabled = false;
+    }
+
+    // Helper: set a triage button to show a status
+    function _setTriageBtnStatus(btn, status) {
+        var style = _statusStyles[status] || { label: status, cls: 'btn-success' };
+        // Remove any previous status classes, keep base classes
+        btn.className = 'action-btn btn-triage ' + style.cls;
+        btn.innerHTML = '&#10003; ' + style.label;
+        btn.disabled = false; // Keep clickable so user can clear/change
+        // Store current status on the button for the modal
+        btn.dataset.currentStatus = status;
+    }
 
     window.fsSetTriage = async function() {
         hideError('fsTriageError');
@@ -531,11 +627,8 @@
                 throw new Error('HTTP ' + res.status + ': ' + (text || 'Failed to update status'));
             }
             fsCloseModal('fsTriageModal');
-            // Update the source button
             if (_triageContext.sourceBtn) {
-                _triageContext.sourceBtn.classList.add('btn-success');
-                _triageContext.sourceBtn.innerHTML = '&#10003; IN_TRIAGE';
-                _triageContext.sourceBtn.disabled = true;
+                _setTriageBtnStatus(_triageContext.sourceBtn, 'IN_TRIAGE');
             }
         } catch (err) {
             showError('fsTriageError', err.message);
@@ -543,6 +636,124 @@
             setLoading('fsTriageConfirmBtn', false);
         }
     };
+
+    window.fsClearStatus = async function() {
+        hideError('fsTriageError');
+        setLoading('fsTriageClearBtn', true);
+
+        const pvId = _triageContext.projectVersionId;
+        const intId = _triageContext.internalId;
+        const url = apiBase() + '/public/v0/findings/' + pvId + '/' + intId + '/status/clear';
+
+        try {
+            var hdrs = apiHeaders();
+            delete hdrs['Content-Type']; // clear endpoint rejects a body
+            const res = await fetch(url, {
+                method: 'PUT',
+                headers: hdrs,
+            });
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error('HTTP ' + res.status + ': ' + (text || 'Failed to clear status'));
+            }
+            fsCloseModal('fsTriageModal');
+            if (_triageContext.sourceBtn) {
+                _resetTriageBtn(_triageContext.sourceBtn);
+                delete _triageContext.sourceBtn.dataset.currentStatus;
+            }
+        } catch (err) {
+            showError('fsTriageError', err.message);
+        } finally {
+            setLoading('fsTriageClearBtn', false);
+        }
+    };
+
+    // =========================================================================
+    // Refresh Triage Statuses on Connect
+    // =========================================================================
+
+    // Status display mapping: VEX status → button label and style
+    var _statusStyles = {
+        'IN_TRIAGE':              { label: 'IN_TRIAGE',    cls: 'btn-intriage' },
+        'NOT_AFFECTED':           { label: 'NOT_AFFECTED', cls: 'btn-success' },
+        'FALSE_POSITIVE':         { label: 'FALSE_POSITIVE', cls: 'btn-success' },
+        'RESOLVED':               { label: 'RESOLVED',     cls: 'btn-success' },
+        'RESOLVED_WITH_PEDIGREE': { label: 'RESOLVED',     cls: 'btn-success' },
+        'EXPLOITABLE':            { label: 'EXPLOITABLE',  cls: 'btn-error' },
+    };
+
+    async function refreshTriageStatuses() {
+        // Collect all triage buttons that haven't already been updated
+        var buttons = document.querySelectorAll('.btn-triage');
+        if (!buttons.length) return;
+
+        var byVersion = {};
+        buttons.forEach(function(btn) {
+            if (btn.disabled) return; // Already shows a status
+            try {
+                var data = JSON.parse(btn.dataset.action);
+                var pvId = String(data.projectVersionId || '');
+                if (!pvId) return;
+                if (!byVersion[pvId]) byVersion[pvId] = { entries: [], cveIds: {} };
+                byVersion[pvId].entries.push({ btn: btn, internalId: String(data.internalId) });
+                // Collect unique CVE IDs so we can filter the API request
+                var cveId = String(data.findingId || '');
+                if (cveId) byVersion[pvId].cveIds[cveId] = true;
+            } catch (_) {}
+        });
+
+        var pvIds = Object.keys(byVersion);
+        if (!pvIds.length) return;
+
+        // For each version, fetch only the specific findings shown in the report.
+        // Uses findingId=in=(...) filter so we aren't limited by pagination.
+        // Batch CVE IDs into groups of 40 to keep URLs reasonable.
+        var allFetches = [];
+        pvIds.forEach(function(pvId) {
+            var group = byVersion[pvId];
+            var cveList = Object.keys(group.cveIds);
+            var batchSize = 40;
+            for (var i = 0; i < cveList.length; i += batchSize) {
+                var batch = cveList.slice(i, i + batchSize);
+                var cveFilter = 'findingId%3Din%3D(' + batch.map(encodeURIComponent).join(',') + ')';
+                var filter = 'projectVersion%3D%3D' + pvId + '%3B' + cveFilter;
+                var url = apiBase() + '/public/v0/findings?filter=' + filter + '&limit=100';
+                allFetches.push(
+                    fetch(url, { method: 'GET', headers: apiHeaders() })
+                        .then(function(res) { return res.ok ? res.json() : []; })
+                        .then(function(data) {
+                            var items = Array.isArray(data) ? data : (data.items || data.data || []);
+                            return { pvId: pvId, findings: items };
+                        })
+                        .catch(function() { return { pvId: pvId, findings: [] }; })
+                );
+            }
+        });
+
+        var results = await Promise.all(allFetches);
+
+        // Build id→status map per version (merge results from batched fetches)
+        var statusMaps = {};
+        results.forEach(function(result) {
+            if (!statusMaps[result.pvId]) statusMaps[result.pvId] = {};
+            result.findings.forEach(function(f) {
+                if (f && f.id && f.status) {
+                    statusMaps[result.pvId][String(f.id)] = String(f.status);
+                }
+            });
+        });
+
+        // Update matching buttons
+        pvIds.forEach(function(pvId) {
+            var map = statusMaps[pvId] || {};
+            (byVersion[pvId].entries || []).forEach(function(entry) {
+                var status = map[entry.internalId];
+                if (status) {
+                    _setTriageBtnStatus(entry.btn, status);
+                }
+            });
+        });
+    }
 
     // =========================================================================
     // Init
@@ -563,6 +774,12 @@
         }
 
         updateConnectionBadge();
+        updateJiraVisibility();
+
+        // If already connected (session persisted in tab), refresh triage statuses
+        if (isConnected()) {
+            refreshTriageStatuses();
+        }
 
         // Close modals on overlay click
         document.querySelectorAll('.fs-modal-overlay').forEach(function(overlay) {

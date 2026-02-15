@@ -5,7 +5,7 @@ Implements a tiered-gates scoring model that prioritizes findings based on
 real-world exploitability and reachability rather than CVSS alone.
 
 Gate 1 (CRITICAL): Reachable + (Exploit OR KEV) — imminent threat
-Gate 2 (HIGH): (Reachable or inconclusive) AND NETWORK AND EPSS >= 50%
+Gate 2 (HIGH): (Reachable or inconclusive) AND NETWORK AND EPSS > 90%
 Additive scoring: Points-based scoring for remaining findings
 """
 
@@ -47,6 +47,15 @@ POINTS_VECTOR_PHYSICAL = 0
 EPSS_MAX_POINTS = 20  # 20 × percentile
 CVSS_MAX_POINTS = 10  # 10 × (score/10)
 
+POINTS_VEX_RESOLVED = -50  # NOT_AFFECTED, RESOLVED, RESOLVED_WITH_PEDIGREE
+
+# Gate thresholds
+GATE2_EPSS_THRESHOLD = 0.9  # EPSS percentile must be > this value for Gate 2
+
+# Fixed scores assigned to gated findings (ensure proper sort ordering)
+GATE1_SCORE = 100
+GATE2_SCORE = 85
+
 # Band thresholds for additive scoring
 BAND_HIGH_THRESHOLD = 70
 BAND_MEDIUM_THRESHOLD = 40
@@ -65,9 +74,13 @@ DEFAULT_WEIGHTS: dict[str, int | float] = {
     "vector_physical": POINTS_VECTOR_PHYSICAL,
     "epss_max": EPSS_MAX_POINTS,
     "cvss_max": CVSS_MAX_POINTS,
+    "gate2_epss_threshold": GATE2_EPSS_THRESHOLD,
+    "gate1_score": GATE1_SCORE,
+    "gate2_score": GATE2_SCORE,
     "band_high_threshold": BAND_HIGH_THRESHOLD,
     "band_medium_threshold": BAND_MEDIUM_THRESHOLD,
     "band_low_threshold": BAND_LOW_THRESHOLD,
+    "vex_resolved": POINTS_VEX_RESOLVED,
 }
 
 
@@ -839,7 +852,7 @@ def apply_tiered_gates(
     Apply Gate 1 and Gate 2 classification.
 
     Gate 1 (CRITICAL): Reachable (score > 0) AND (has exploit OR in KEV)
-    Gate 2 (HIGH): (Reachable or inconclusive) AND NETWORK vector AND EPSS >= 50%
+    Gate 2 (HIGH): (Reachable or inconclusive) AND NETWORK vector AND EPSS > 90%
     """
     df = df.copy()
     df["gate_assignment"] = "NONE"
@@ -849,10 +862,12 @@ def apply_tiered_gates(
     df.loc[gate1_mask, "gate_assignment"] = "GATE_1"
     logger.debug(f"Gate 1 (CRITICAL): {gate1_mask.sum()} findings")
 
-    # Gate 2: (Reachable or inconclusive) AND NETWORK AND EPSS >= 50%
+    # Gate 2: (Reachable or inconclusive) AND NETWORK AND EPSS > threshold
+    w = weights or DEFAULT_WEIGHTS
+    epss_threshold = w.get("gate2_epss_threshold", GATE2_EPSS_THRESHOLD)
     not_unreachable = df["reachability_score"] >= 0  # reachable or inconclusive
     is_network = df["attack_vector"] == "NETWORK"
-    has_epss_signal = df["epss_percentile"] >= 0.5
+    has_epss_signal = df["epss_percentile"] > epss_threshold
     gate2_mask = (
         not_unreachable
         & is_network
@@ -931,8 +946,22 @@ def calculate_additive_score(
     ).round(1)
 
     # Override gated findings with high fixed scores for proper ordering
-    df.loc[df["gate_assignment"] == "GATE_1", "triage_score"] = 100.0
-    df.loc[df["gate_assignment"] == "GATE_2", "triage_score"] = 85.0
+    gate1_score = w.get("gate1_score", GATE1_SCORE)
+    gate2_score = w.get("gate2_score", GATE2_SCORE)
+    df.loc[df["gate_assignment"] == "GATE_1", "triage_score"] = float(gate1_score)
+    df.loc[df["gate_assignment"] == "GATE_2", "triage_score"] = float(gate2_score)
+
+    # VEX status penalty: demote findings already marked as resolved/not-affected
+    vex_penalty = w.get("vex_resolved", POINTS_VEX_RESOLVED)
+    if "status" in df.columns:
+        resolved_statuses = {"NOT_AFFECTED", "RESOLVED", "RESOLVED_WITH_PEDIGREE"}
+        vex_mask = df["status"].astype(str).isin(resolved_statuses)
+        df.loc[vex_mask, "triage_score"] += vex_penalty
+        if vex_mask.any():
+            logger.debug(
+                f"VEX resolved penalty ({vex_penalty}): "
+                f"applied to {vex_mask.sum()} findings"
+            )
 
     # Clean up temporary columns
     temp_cols = [c for c in df.columns if c.startswith("_pts_")]
@@ -1429,7 +1458,7 @@ def _build_triage_prompt(row: pd.Series, nvd_snippet: str = "") -> str:
 
 ## Scoring Methodology
 - GATE 1 (CRITICAL): Reachable + known exploit or CISA KEV
-- GATE 2 (HIGH): Not unreachable + NETWORK + EPSS >= 50th percentile
+- GATE 2 (HIGH): Not unreachable + NETWORK + EPSS > 90th percentile
 - Additive scoring for remaining: reachability (+30), exploit (+25), KEV (+20), vector (up to +15), EPSS (up to +20), CVSS (up to +10)
 
 ## Affected Component
@@ -1528,7 +1557,7 @@ _SCORING_METHODOLOGY = """\
 ## Scoring Methodology
 Findings are prioritized using a tiered-gates model:
 - GATE 1 (CRITICAL): Reachable + has known exploit or is in CISA KEV
-- GATE 2 (HIGH): Not unreachable + NETWORK attack vector + EPSS >= 50th percentile
+- GATE 2 (HIGH): Not unreachable + NETWORK attack vector + EPSS > 90th percentile
 - Remaining findings scored additively: reachability (+30), exploit (+25), KEV (+20), \
 attack vector (up to +15), EPSS (up to +20), CVSS (up to +10)
 - Bands: HIGH >= 70, MEDIUM >= 40, LOW >= 25, INFO < 25"""
