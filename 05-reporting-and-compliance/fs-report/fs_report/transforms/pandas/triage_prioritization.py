@@ -4,8 +4,10 @@ Pandas transform for Triage Prioritization report.
 Implements a tiered-gates scoring model that prioritizes findings based on
 real-world exploitability and reachability rather than CVSS alone.
 
-Gate 1 (CRITICAL): Reachable + (Exploit OR KEV) — imminent threat
-Gate 2 (HIGH): (Reachable or inconclusive) AND NETWORK AND EPSS > 90%
+Gates are defined using a YAML DSL (see DEFAULT_GATES) and can be fully
+customized via recipe parameters or --scoring-file.  Default gates:
+  Gate 1 (CRITICAL): Reachable + (Exploit OR KEV)
+  Gate 2 (HIGH): Not unreachable + NETWORK + EPSS > 90%
 Additive scoring: Points-based scoring for remaining findings
 """
 
@@ -49,13 +51,6 @@ CVSS_MAX_POINTS = 10  # 10 × (score/10)
 
 POINTS_VEX_RESOLVED = -50  # NOT_AFFECTED, RESOLVED, RESOLVED_WITH_PEDIGREE
 
-# Gate thresholds
-GATE2_EPSS_THRESHOLD = 0.9  # EPSS percentile must be > this value for Gate 2
-
-# Fixed scores assigned to gated findings (ensure proper sort ordering)
-GATE1_SCORE = 100
-GATE2_SCORE = 85
-
 # Band thresholds for additive scoring
 BAND_HIGH_THRESHOLD = 70
 BAND_MEDIUM_THRESHOLD = 40
@@ -74,14 +69,286 @@ DEFAULT_WEIGHTS: dict[str, int | float] = {
     "vector_physical": POINTS_VECTOR_PHYSICAL,
     "epss_max": EPSS_MAX_POINTS,
     "cvss_max": CVSS_MAX_POINTS,
-    "gate2_epss_threshold": GATE2_EPSS_THRESHOLD,
-    "gate1_score": GATE1_SCORE,
-    "gate2_score": GATE2_SCORE,
     "band_high_threshold": BAND_HIGH_THRESHOLD,
     "band_medium_threshold": BAND_MEDIUM_THRESHOLD,
     "band_low_threshold": BAND_LOW_THRESHOLD,
     "vex_resolved": POINTS_VEX_RESOLVED,
 }
+
+# Default gate definitions (DSL format).
+# Each gate is evaluated in order; once a finding matches, it is excluded
+# from subsequent gates.  Customers can override via recipe parameters.gates
+# or --scoring-file.
+DEFAULT_GATES: list[dict[str, Any]] = [
+    {
+        "name": "GATE_1",
+        "band": "CRITICAL",
+        "score": 100,
+        "conditions": {
+            "all": [
+                {"field": "reachability_score", "op": ">", "value": 0},
+                {
+                    "any": [
+                        {"field": "has_exploit", "op": "==", "value": True},
+                        {"field": "in_kev", "op": "==", "value": True},
+                    ]
+                },
+            ]
+        },
+    },
+    {
+        "name": "GATE_2",
+        "band": "HIGH",
+        "score": 85,
+        "conditions": {
+            "all": [
+                {"field": "reachability_score", "op": ">=", "value": 0},
+                {"field": "attack_vector", "op": "in", "value": ["NETWORK"]},
+                {"field": "epss_percentile", "op": ">", "value": 0.9},
+            ]
+        },
+    },
+]
+
+# Supported comparison operators for gate condition DSL
+_CONDITION_OPS = {
+    ">": lambda s, v: s > v,
+    ">=": lambda s, v: s >= v,
+    "<": lambda s, v: s < v,
+    "<=": lambda s, v: s <= v,
+    "==": lambda s, v: s == v,
+    "!=": lambda s, v: s != v,
+    "in": lambda s, v: s.isin(v) if isinstance(v, list) else s == v,
+}
+
+
+def _evaluate_condition(df: pd.DataFrame, condition: dict[str, Any]) -> pd.Series:
+    """Recursively evaluate a gate condition tree against a DataFrame.
+
+    Condition format:
+      Leaf:  {"field": "col_name", "op": ">", "value": 0}
+      AND:   {"all": [<condition>, ...]}
+      OR:    {"any": [<condition>, ...]}
+
+    Returns a boolean pd.Series (one value per row).
+    """
+    # AND combinator
+    if "all" in condition:
+        sub_conditions = condition["all"]
+        if not sub_conditions:
+            return pd.Series(True, index=df.index)
+        mask = pd.Series(True, index=df.index)
+        for sub in sub_conditions:
+            mask = mask & _evaluate_condition(df, sub)
+        return mask
+
+    # OR combinator
+    if "any" in condition:
+        sub_conditions = condition["any"]
+        if not sub_conditions:
+            return pd.Series(False, index=df.index)
+        mask = pd.Series(False, index=df.index)
+        for sub in sub_conditions:
+            mask = mask | _evaluate_condition(df, sub)
+        return mask
+
+    # Leaf condition: {field, op, value}
+    field = condition.get("field", "")
+    op = condition.get("op", "==")
+    value = condition.get("value")
+
+    if field not in df.columns:
+        logger.warning(
+            f"Gate condition references unknown column '{field}'; treating as False"
+        )
+        return pd.Series(False, index=df.index)
+
+    op_func = _CONDITION_OPS.get(op)
+    if op_func is None:
+        logger.warning(
+            f"Gate condition uses unknown operator '{op}'; treating as False"
+        )
+        return pd.Series(False, index=df.index)
+
+    try:
+        result: pd.Series[Any] = op_func(df[field], value)
+        return result
+    except Exception as e:
+        logger.warning(f"Gate condition evaluation failed ({field} {op} {value}): {e}")
+        return pd.Series(False, index=df.index)
+
+
+# Human-friendly display labels for common DataFrame column names
+_FRIENDLY_LABELS: dict[str, str] = {
+    "reachability_score": "reachability score",
+    "has_exploit": "known exploit",
+    "in_kev": "in CISA KEV",
+    "attack_vector": "attack vector",
+    "epss_percentile": "EPSS percentile",
+    "risk": "CVSS score",
+    "severity": "severity",
+}
+
+# Unicode-friendly operator symbols for display
+_FRIENDLY_OPS: dict[str, str] = {
+    ">": ">",
+    ">=": "≥",
+    "<": "<",
+    "<=": "≤",
+    "==": "=",
+    "!=": "≠",
+}
+
+
+def _humanize_condition(condition: dict[str, Any]) -> str:
+    """Convert a gate condition tree to a human-readable string.
+
+    Uses friendly field labels and operator symbols for readability.
+
+    Examples:
+        {"field": "reachability_score", "op": ">", "value": 0}
+        → "reachability score > 0"
+
+        {"all": [..., {"any": [...]}]}
+        → "reachability score > 0 AND (known exploit OR in CISA KEV)"
+
+        {"field": "epss_percentile", "op": ">", "value": 0.9}
+        → "EPSS > 90th percentile"
+    """
+    if "all" in condition:
+        parts = [_humanize_condition(sub) for sub in condition["all"]]
+        return " AND ".join(parts)
+
+    if "any" in condition:
+        parts = [_humanize_condition(sub) for sub in condition["any"]]
+        joined = " OR ".join(parts)
+        # Wrap in parens if more than one part (for clarity in AND context)
+        if len(parts) > 1:
+            return f"({joined})"
+        return joined
+
+    field = condition.get("field", "?")
+    op = condition.get("op", "==")
+    value = condition.get("value")
+
+    label = _FRIENDLY_LABELS.get(field, field.replace("_", " "))
+    friendly_op = _FRIENDLY_OPS.get(op, op)
+
+    # Boolean equality: "known exploit" / "NOT known exploit"
+    if op == "==" and value is True:
+        return str(label)
+    if op == "==" and value is False:
+        return f"NOT {label}"
+
+    # EPSS percentile: "EPSS > 90th percentile"
+    if field == "epss_percentile" and isinstance(value, int | float) and 0 < value <= 1:
+        pct = round(value * 100)
+        return f"EPSS {friendly_op} {pct}th percentile"
+
+    # 'in' with list: "NETWORK attack vector" or "NETWORK or ADJACENT attack vector"
+    if op == "in" and isinstance(value, list):
+        if len(value) == 1:
+            return f"{value[0]} {label}"
+        return f"{' or '.join(str(v) for v in value)} {label}"
+
+    return f"{label} {friendly_op} {value}"
+
+
+def _build_scoring_config(
+    gates: list[dict[str, Any]],
+    weights: dict[str, int | float],
+) -> dict[str, Any]:
+    """Build a template-friendly scoring configuration dict.
+
+    Returns a dict with:
+      - gates: list of {name, band, score, description} for each gate
+      - weights: the resolved additive scoring weights
+    """
+    gate_summaries = []
+    for gate in gates:
+        gate_summaries.append(
+            {
+                "name": gate.get("name", "UNKNOWN"),
+                "band": gate.get("band", "UNKNOWN"),
+                "score": gate.get("score", 0),
+                "description": _humanize_condition(gate.get("conditions", {})),
+            }
+        )
+    return {
+        "gates": gate_summaries,
+        "weights": dict(weights),
+    }
+
+
+def _build_scoring_methodology(scoring_config: dict[str, Any] | None = None) -> str:
+    """Build a scoring methodology text block for LLM prompts.
+
+    Generates a dynamic description from the active scoring configuration
+    so that LLM prompts always reflect the actual gates and weights in use.
+
+    Args:
+        scoring_config: The dict produced by ``_build_scoring_config()``.
+            If None, builds from DEFAULT_GATES/DEFAULT_WEIGHTS.
+    """
+    if scoring_config is None:
+        scoring_config = _build_scoring_config(DEFAULT_GATES, DEFAULT_WEIGHTS)
+
+    lines = [
+        "## Scoring Methodology",
+        "Findings are prioritized using a tiered-gates model:",
+    ]
+
+    # Gate descriptions
+    for gate in scoring_config.get("gates", []):
+        name = gate.get("name", "UNKNOWN")
+        band = gate.get("band", "UNKNOWN")
+        desc = gate.get("description", "")
+        lines.append(f"- {name} ({band}): {desc}")
+
+    # Additive scoring summary
+    w = scoring_config.get("weights", {})
+    bonus_parts = []
+    if w.get("reachable"):
+        bonus_parts.append(f"reachability (+{w['reachable']})")
+    if w.get("exploit"):
+        bonus_parts.append(f"exploit (+{w['exploit']})")
+    if w.get("kev_only"):
+        bonus_parts.append(f"KEV (+{w['kev_only']})")
+    if w.get("vector_network"):
+        bonus_parts.append(f"attack vector (up to +{w['vector_network']})")
+    if w.get("epss_max"):
+        bonus_parts.append(f"EPSS (up to +{w['epss_max']})")
+    if w.get("cvss_max"):
+        bonus_parts.append(f"CVSS (up to +{w['cvss_max']})")
+    if bonus_parts:
+        lines.append(
+            f"- Remaining findings scored additively: {', '.join(bonus_parts)}"
+        )
+
+    # Penalties (negative modifiers)
+    penalty_parts = []
+    vex_penalty = w.get("vex_resolved", 0)
+    if vex_penalty:
+        penalty_parts.append(f"VEX resolved/not-affected ({vex_penalty:+d})")
+    unreachable_penalty = w.get("unreachable", 0)
+    if unreachable_penalty:
+        penalty_parts.append(f"unreachable ({unreachable_penalty:+d})")
+    if penalty_parts:
+        lines.append(f"- Penalties: {', '.join(penalty_parts)}")
+
+    # Band thresholds
+    band_parts = []
+    if w.get("band_high_threshold"):
+        band_parts.append(f"HIGH >= {w['band_high_threshold']}")
+    if w.get("band_medium_threshold"):
+        band_parts.append(f"MEDIUM >= {w['band_medium_threshold']}")
+    if w.get("band_low_threshold"):
+        band_parts.append(f"LOW >= {w['band_low_threshold']}")
+        band_parts.append(f"INFO < {w['band_low_threshold']}")
+    if band_parts:
+        lines.append(f"- Bands: {', '.join(band_parts)}")
+
+    return "\n".join(lines)
 
 
 def _load_weights(
@@ -144,6 +411,59 @@ def _load_weights(
     return weights
 
 
+def _load_gates(
+    config: Any = None,
+    additional_data: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Load gate definitions with priority: --scoring-file > recipe parameters > defaults.
+
+    Returns a list of gate definition dicts.
+    """
+    import copy
+
+    gates: list[dict[str, Any]] | None = None
+
+    # Layer 1: recipe parameters (lowest priority override)
+    if additional_data:
+        recipe_params = additional_data.get("recipe_parameters", {})
+        recipe_gates = recipe_params.get("gates") if recipe_params else None
+        if recipe_gates and isinstance(recipe_gates, list):
+            gates = copy.deepcopy(recipe_gates)
+            logger.debug(f"Loaded {len(gates)} gates from recipe parameters")
+
+    # Layer 2: --scoring-file (highest priority override)
+    scoring_file = None
+    if config and hasattr(config, "scoring_file"):
+        scoring_file = getattr(config, "scoring_file", None)
+    elif additional_data and "config" in additional_data:
+        cfg = additional_data["config"]
+        scoring_file = getattr(cfg, "scoring_file", None)
+
+    if scoring_file:
+        try:
+            import yaml
+
+            path = Path(scoring_file)
+            if path.exists():
+                with open(path) as f:
+                    file_data = yaml.safe_load(f) or {}
+                if isinstance(file_data, dict):
+                    file_gates = file_data.get("gates")
+                    if file_gates and isinstance(file_gates, list):
+                        gates = copy.deepcopy(file_gates)
+                        logger.info(f"Applied gate definitions from {scoring_file}")
+        except Exception as e:
+            logger.warning(
+                f"Failed to load gates from scoring file {scoring_file}: {e}"
+            )
+
+    if gates is None:
+        gates = copy.deepcopy(DEFAULT_GATES)
+        logger.debug("Using default gate definitions")
+
+    return gates
+
+
 # =============================================================================
 # Main Entry Point
 # =============================================================================
@@ -184,17 +504,21 @@ def triage_prioritization_transform(
     df = _normalize_columns(df)
     logger.debug(f"After normalization: {df.shape}, columns: {list(df.columns)}")
 
-    # Load scoring weights (--scoring-file > recipe parameters > defaults)
+    # Load scoring configuration (--scoring-file > recipe parameters > defaults)
     weights = _load_weights(config, additional_data)
+    gates = _load_gates(config, additional_data)
 
-    # Apply tiered gates scoring
-    df = apply_tiered_gates(df, weights=weights)
+    # Apply tiered gates scoring (DSL-driven)
+    df = apply_tiered_gates(df, gates=gates)
 
     # Apply additive scoring for findings that didn't hit any gate
-    df = calculate_additive_score(df, weights=weights)
+    df = calculate_additive_score(df, weights=weights, gates=gates)
 
     # Assign risk bands
     df = assign_risk_bands(df, weights=weights)
+
+    # Build scoring config (used by template and prompt generation)
+    scoring_config = _build_scoring_config(gates, weights)
 
     # Sort by band priority then score (descending)
     band_priority = {b: i for i, b in enumerate(BAND_ORDER)}
@@ -297,7 +621,9 @@ def triage_prioritization_transform(
                 fid = row.get("finding_id", "")
                 if str(fid).startswith("CVE-"):
                     _nvd_snip = _prompt_nvd.format_for_prompt(str(fid))
-            prompt_text = _build_triage_prompt(row, nvd_snippet=_nvd_snip)
+            prompt_text = _build_triage_prompt(
+                row, nvd_snippet=_nvd_snip, scoring_config=scoring_config
+            )
             finding_id = row.get("finding_id", "Unknown")
             component = f"{row.get('component_name', '')} {row.get('component_version', '')}".strip()
             band = row.get("priority_band", "")
@@ -356,6 +682,7 @@ def triage_prioritization_transform(
                 proj_records,
                 comp_records,
                 reachability_summary,
+                scoring_config=scoring_config,
             )
             logger.info("Generated portfolio-level AI prompt")
 
@@ -365,7 +692,7 @@ def triage_prioritization_transform(
             band_counts = proj_df["priority_band"].value_counts().to_dict()
             proj_findings = proj_df.head(50).to_dict("records")
             ai_project_prompts[str(pname)] = _build_project_prompt(
-                str(pname), proj_findings, band_counts
+                str(pname), proj_findings, band_counts, scoring_config=scoring_config
             )
         logger.info(f"Generated {len(ai_project_prompts)} project-level AI prompts")
 
@@ -472,6 +799,7 @@ def triage_prioritization_transform(
             cache_ttl=ai_config.get("cache_ttl", 0),
             provider=ai_config.get("provider"),
             nvd_api_key=ai_config.get("nvd_api_key"),
+            scoring_config=scoring_config,
         )
 
     # Defensive recompute of reachability_label from reachability_score
@@ -552,6 +880,7 @@ def triage_prioritization_transform(
         "ai_project_prompts": ai_project_prompts,
         "ai_component_prompts": ai_component_prompts,
         "ai_finding_prompts": ai_finding_prompts,
+        "scoring_config": scoring_config,
         "_extra_generated_files": extra_generated_files,
     }
 
@@ -831,8 +1160,12 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["cwe"] = ""
 
     # --- First detected date (for age-based prioritization) ---
+    # API findings use "detected"; CVE endpoint uses "firstDetected";
+    # cache may flatten to either "detected" or "first_detected".
     if "firstDetected" in df.columns:
         df["first_detected"] = df["firstDetected"].fillna("").astype(str)
+    elif "detected" in df.columns and "first_detected" not in df.columns:
+        df["first_detected"] = df["detected"].fillna("").astype(str)
     elif "first_detected" not in df.columns:
         df["first_detected"] = ""
 
@@ -846,36 +1179,41 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def apply_tiered_gates(
     df: pd.DataFrame,
-    weights: dict[str, int | float] | None = None,
+    gates: list[dict[str, Any]] | None = None,
 ) -> pd.DataFrame:
-    """
-    Apply Gate 1 and Gate 2 classification.
+    """Apply tiered gate classification using DSL-defined gate conditions.
 
-    Gate 1 (CRITICAL): Reachable (score > 0) AND (has exploit OR in KEV)
-    Gate 2 (HIGH): (Reachable or inconclusive) AND NETWORK vector AND EPSS > 90%
+    Gates are evaluated in order.  Once a finding matches a gate it is
+    excluded from subsequent gates.
+
+    Args:
+        df: Normalized findings DataFrame.
+        gates: List of gate definition dicts (DSL format).
+               Falls back to DEFAULT_GATES if not provided.
+
+    Each gate dict must have:
+        name:       Gate identifier (e.g. "GATE_1")
+        band:       Priority band assigned (e.g. "CRITICAL")
+        score:      Fixed triage score for matched findings
+        conditions: Condition tree with ``all``/``any``/leaf nodes
     """
     df = df.copy()
     df["gate_assignment"] = "NONE"
 
-    # Gate 1: Reachable + Exploit/KEV → CRITICAL
-    gate1_mask = (df["reachability_score"] > 0) & (df["has_exploit"] | df["in_kev"])
-    df.loc[gate1_mask, "gate_assignment"] = "GATE_1"
-    logger.debug(f"Gate 1 (CRITICAL): {gate1_mask.sum()} findings")
+    gates = gates if gates is not None else DEFAULT_GATES
 
-    # Gate 2: (Reachable or inconclusive) AND NETWORK AND EPSS > threshold
-    w = weights or DEFAULT_WEIGHTS
-    epss_threshold = w.get("gate2_epss_threshold", GATE2_EPSS_THRESHOLD)
-    not_unreachable = df["reachability_score"] >= 0  # reachable or inconclusive
-    is_network = df["attack_vector"] == "NETWORK"
-    has_epss_signal = df["epss_percentile"] > epss_threshold
-    gate2_mask = (
-        not_unreachable
-        & is_network
-        & has_epss_signal
-        & (df["gate_assignment"] == "NONE")
-    )
-    df.loc[gate2_mask, "gate_assignment"] = "GATE_2"
-    logger.debug(f"Gate 2 (HIGH): {gate2_mask.sum()} findings")
+    for gate in gates:
+        name = gate.get("name", "UNKNOWN")
+        conditions = gate.get("conditions", {})
+
+        # Evaluate condition tree; only consider findings not yet assigned
+        unassigned = df["gate_assignment"] == "NONE"
+        condition_mask = _evaluate_condition(df, conditions)
+        gate_mask = unassigned & condition_mask
+
+        df.loc[gate_mask, "gate_assignment"] = name
+        band = gate.get("band", "?")
+        logger.debug(f"{name} ({band}): {gate_mask.sum()} findings")
 
     return df
 
@@ -888,12 +1226,19 @@ def apply_tiered_gates(
 def calculate_additive_score(
     df: pd.DataFrame,
     weights: dict[str, int | float] | None = None,
+    gates: list[dict[str, Any]] | None = None,
 ) -> pd.DataFrame:
     """
     Calculate additive triage score for findings that didn't hit a gate.
     Gate-assigned findings get a fixed high score to ensure proper ordering.
+
+    Args:
+        df: DataFrame with ``gate_assignment`` column already populated.
+        weights: Additive scoring weights dict.
+        gates: Gate definitions (used to read fixed scores per gate).
     """
     w = weights or DEFAULT_WEIGHTS
+    g = gates if gates is not None else DEFAULT_GATES
     df = df.copy()
     df["triage_score"] = 0.0
 
@@ -945,11 +1290,13 @@ def calculate_additive_score(
         + df["_pts_cvss"]
     ).round(1)
 
-    # Override gated findings with high fixed scores for proper ordering
-    gate1_score = w.get("gate1_score", GATE1_SCORE)
-    gate2_score = w.get("gate2_score", GATE2_SCORE)
-    df.loc[df["gate_assignment"] == "GATE_1", "triage_score"] = float(gate1_score)
-    df.loc[df["gate_assignment"] == "GATE_2", "triage_score"] = float(gate2_score)
+    # Override gated findings with fixed scores from gate definitions
+    for gate_def in g:
+        gate_name = gate_def.get("name", "")
+        gate_score = float(gate_def.get("score", 0))
+        mask = df["gate_assignment"] == gate_name
+        if mask.any():
+            df.loc[mask, "triage_score"] = gate_score
 
     # VEX status penalty: demote findings already marked as resolved/not-affected
     vex_penalty = w.get("vex_resolved", POINTS_VEX_RESOLVED)
@@ -1069,6 +1416,25 @@ def build_portfolio_summary(df: pd.DataFrame) -> dict[str, Any]:
     summary["avg_score"] = (
         round(float(df["triage_score"].mean()), 1) if not df.empty else 0.0
     )
+
+    # VEX/triage status distribution
+    if "status" in df.columns:
+        status_counts = (
+            df["status"]
+            .fillna("")
+            .astype(str)
+            .replace({"nan": "", "None": ""})
+            .value_counts()
+            .to_dict()
+        )
+        # Separate the "no status" count
+        not_triaged = status_counts.pop("", 0)
+        summary["vex_status_counts"] = status_counts
+        summary["vex_not_triaged"] = int(not_triaged)
+    else:
+        summary["vex_status_counts"] = {}
+        summary["vex_not_triaged"] = len(df)
+
     return summary
 
 
@@ -1384,7 +1750,11 @@ def build_vex_recommendations(
 # =============================================================================
 
 
-def _build_triage_prompt(row: pd.Series, nvd_snippet: str = "") -> str:
+def _build_triage_prompt(
+    row: pd.Series,
+    nvd_snippet: str = "",
+    scoring_config: dict[str, Any] | None = None,
+) -> str:
     """Build an LLM prompt for triage guidance for one finding.
 
     This is a standalone function that does NOT require an API key.
@@ -1394,6 +1764,8 @@ def _build_triage_prompt(row: pd.Series, nvd_snippet: str = "") -> str:
         row: A pandas Series with finding data.
         nvd_snippet: Optional pre-formatted NVD fix version data
             (from NVDClient.format_for_prompt).
+        scoring_config: Active scoring configuration dict.  If provided,
+            the prompt describes the actual gates/weights in use.
     """
     finding_id = row.get("finding_id", "Unknown")
     severity = row.get("severity", "Unknown")
@@ -1413,6 +1785,14 @@ def _build_triage_prompt(row: pd.Series, nvd_snippet: str = "") -> str:
     gate = row.get("gate_assignment", "NONE")
     cwe = row.get("cwe", "")
     first_detected = row.get("first_detected", "")
+
+    # Current VEX / triage status (if any)
+    raw_status = row.get("status")
+    vex_status = (
+        str(raw_status)
+        if raw_status and str(raw_status) not in ("", "nan", "None")
+        else None
+    )
 
     # Build factors summary
     factors = row.get("reachability_factors", [])
@@ -1441,6 +1821,7 @@ def _build_triage_prompt(row: pd.Series, nvd_snippet: str = "") -> str:
         nvd_section = f"\n{nvd_snippet}\n"
 
     prompt = f"""You are a security triage advisor. Provide specific triage and remediation guidance for the following vulnerability finding.
+If a current VEX status is present, factor it into your recommendations — for example, findings already marked NOT_AFFECTED or RESOLVED may only need verification rather than new remediation.
 
 ## Finding: {finding_id}
 - Severity: {severity} (CVSS {cvss})
@@ -1455,11 +1836,9 @@ def _build_triage_prompt(row: pd.Series, nvd_snippet: str = "") -> str:
 - Priority Band: {band}
 - Triage Score: {score}
 - Gate: {gate}
+- Current VEX Status: {vex_status or 'None (not yet triaged)'}
 
-## Scoring Methodology
-- GATE 1 (CRITICAL): Reachable + known exploit or CISA KEV
-- GATE 2 (HIGH): Not unreachable + NETWORK + EPSS > 90th percentile
-- Additive scoring for remaining: reachability (+30), exploit (+25), KEV (+20), vector (up to +15), EPSS (up to +20), CVSS (up to +10)
+{_build_scoring_methodology(scoring_config)}
 
 ## Affected Component
 {component} {component_ver} (in project: {project})
@@ -1553,21 +1932,12 @@ def _format_project_components_bullet(
     return "\n".join(lines) if lines else "No component data available."
 
 
-_SCORING_METHODOLOGY = """\
-## Scoring Methodology
-Findings are prioritized using a tiered-gates model:
-- GATE 1 (CRITICAL): Reachable + has known exploit or is in CISA KEV
-- GATE 2 (HIGH): Not unreachable + NETWORK attack vector + EPSS > 90th percentile
-- Remaining findings scored additively: reachability (+30), exploit (+25), KEV (+20), \
-attack vector (up to +15), EPSS (up to +20), CVSS (up to +10)
-- Bands: HIGH >= 70, MEDIUM >= 40, LOW >= 25, INFO < 25"""
-
-
 def _build_portfolio_prompt(
     portfolio_summary: dict[str, Any],
     project_summaries: list[dict[str, Any]],
     top_components: list[dict[str, Any]],
     reachability_summary: dict[str, Any] | None = None,
+    scoring_config: dict[str, Any] | None = None,
 ) -> str:
     """Build a portfolio-level remediation prompt (offline, no API key needed).
 
@@ -1589,6 +1959,18 @@ def _build_portfolio_prompt(
 Note: "Reachable" means static/binary analysis confirmed the vulnerable function exists in and is callable from the deployed firmware. This is the strongest signal for real-world exploitability.
 """
 
+    # Build VEX status summary
+    vex_section = ""
+    vex_counts = portfolio_summary.get("vex_status_counts", {})
+    vex_not_triaged = portfolio_summary.get("vex_not_triaged", 0)
+    if vex_counts or vex_not_triaged:
+        vex_lines = ["\n## VEX / Triage Status"]
+        if vex_not_triaged:
+            vex_lines.append(f"- Not yet triaged: {vex_not_triaged}")
+        for status, count in sorted(vex_counts.items(), key=lambda x: -x[1]):
+            vex_lines.append(f"- {status}: {count}")
+        vex_section = "\n".join(vex_lines) + "\n"
+
     return f"""You are a firmware security analyst. Analyze this vulnerability triage data and provide strategic remediation guidance.
 
 ## Portfolio Overview
@@ -1598,8 +1980,8 @@ Note: "Reachable" means static/binary analysis confirmed the vulnerable function
 - MEDIUM: {portfolio_summary.get('MEDIUM', 0)}
 - LOW: {portfolio_summary.get('LOW', 0)}
 - INFO: {portfolio_summary.get('INFO', 0)}
-
-{_SCORING_METHODOLOGY}
+{vex_section}
+{_build_scoring_methodology(scoring_config)}
 {reach_section}
 ## Top Projects by Risk
 {_format_projects_bullet(top_projects)}
@@ -1620,6 +2002,7 @@ def _build_project_prompt(
     project_name: str,
     findings: list[dict[str, Any]],
     band_counts: dict[str, int],
+    scoring_config: dict[str, Any] | None = None,
 ) -> str:
     """Build a project-level remediation prompt (offline, no API key needed).
 
@@ -1671,12 +2054,30 @@ def _build_project_prompt(
     unreachable_total = sum(1 for f in findings if f.get("reachability_score", 0) < 0)
     unknown_total = sum(1 for f in findings if f.get("reachability_score", 0) == 0)
 
+    # VEX status distribution for this project's findings
+    vex_dist: dict[str, int] = {}
+    vex_not_triaged = 0
+    for f in findings:
+        raw = f.get("status")
+        if raw and str(raw) not in ("", "nan", "None"):
+            vex_dist[str(raw)] = vex_dist.get(str(raw), 0) + 1
+        else:
+            vex_not_triaged += 1
+    vex_lines = []
+    if vex_not_triaged:
+        vex_lines.append(f"- Not yet triaged: {vex_not_triaged}")
+    for st, cnt in sorted(vex_dist.items(), key=lambda x: -x[1]):
+        vex_lines.append(f"- {st}: {cnt}")
+    vex_section = (
+        "\n## VEX / Triage Status\n" + "\n".join(vex_lines) + "\n" if vex_lines else ""
+    )
+
     return f"""You are a firmware security analyst. Provide remediation guidance for project "{project_name}".
 
 ## Risk Band Distribution
 {_json.dumps(band_counts, indent=2)}
-
-{_SCORING_METHODOLOGY}
+{vex_section}
+{_build_scoring_methodology(scoring_config)}
 
 ## Reachability Summary
 - Reachable: {reachable_total} (vulnerable code confirmed present and callable in firmware)
@@ -1929,6 +2330,7 @@ def _generate_ai_guidance(
     cache_ttl: int = 0,
     provider: str | None = None,
     nvd_api_key: str | None = None,
+    scoring_config: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, str], dict[str, dict[str, Any]], dict[str, dict[str, str]]]:
     """
     Generate AI remediation guidance at all requested scopes.
@@ -1937,6 +2339,7 @@ def _generate_ai_guidance(
         cache_ttl: Cache TTL in seconds. 0 = no AI caching (regenerate every run).
         provider: LLM provider override ("anthropic", "openai", "copilot").
         nvd_api_key: Optional NVD API key for faster fix-version lookups.
+        scoring_config: Active scoring configuration for dynamic prompt generation.
 
     Returns:
         Tuple of (portfolio_summary_text, project_summaries_dict,
@@ -2144,7 +2547,9 @@ def _generate_ai_guidance(
                 fid = row.get("finding_id", "")
                 if fid:
                     nvd_snippet = nvd_finding_snippets.get(fid, "")
-                    prompt = _build_triage_prompt(row, nvd_snippet=nvd_snippet)
+                    prompt = _build_triage_prompt(
+                        row, nvd_snippet=nvd_snippet, scoring_config=scoring_config
+                    )
                     finding_prompts.append((fid, prompt))
 
             ai_findings = llm.generate_batch_finding_guidance(finding_prompts)
@@ -2201,4 +2606,5 @@ def _empty_result() -> dict[str, Any]:
         "ai_project_prompts": {},
         "ai_component_prompts": {},
         "ai_finding_prompts": {},
+        "scoring_config": _build_scoring_config(DEFAULT_GATES, DEFAULT_WEIGHTS),
     }

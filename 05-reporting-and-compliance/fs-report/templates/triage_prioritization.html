@@ -223,34 +223,35 @@
             <h3>Scoring Methodology</h3>
             <p>This report uses a <strong>tiered-gates scoring model</strong> that prioritizes findings based on real-world exploitability rather than theoretical CVSS scores alone.</p>
 
-            <h4>Gate 1 — CRITICAL (Imminent Threat)</h4>
+            {% if scoring_config and scoring_config.gates %}
+            {% for gate in scoring_config.gates %}
+            <h4>{{ gate.name | replace('_', ' ') | title }} — {{ gate.band }} (score={{ gate.score }})</h4>
             <ul>
-                <li>Reachable code path (reachability score &gt; 0) <strong>AND</strong> (known exploit OR in CISA KEV)</li>
-                <li>These findings represent active, exploitable threats to your software</li>
+                <li>{{ gate.description | replace(' AND ', ' <strong>AND</strong> ') | replace(' OR ', ' <strong>OR</strong> ') | safe }}</li>
             </ul>
+            {% endfor %}
+            {% endif %}
 
-            <h4>Gate 2 — HIGH (Elevated Risk)</h4>
-            <ul>
-                <li>Not unreachable (score ≥ 0) <strong>AND</strong> NETWORK attack vector <strong>AND</strong> EPSS &gt; 90th percentile</li>
-                <li>Strong signal findings with high predicted exploitation probability</li>
-            </ul>
-
+            {% if scoring_config and scoring_config.weights %}
             <h4>Additive Scoring (Remaining Findings)</h4>
             <ul>
-                <li><strong>Reachability</strong>: +30 (reachable), 0 (inconclusive), −15 (unreachable)</li>
-                <li><strong>Exploit/KEV</strong>: +25 (exploit), +20 (KEV only)</li>
-                <li><strong>Attack Vector</strong>: +15 (NETWORK), +10 (ADJACENT), +5 (LOCAL), 0 (PHYSICAL)</li>
-                <li><strong>EPSS</strong>: 0–20 points (scaled by percentile)</li>
-                <li><strong>CVSS</strong>: 0–10 points (scaled by score/10)</li>
+                <li><strong>Reachability</strong>: +{{ scoring_config.weights.reachable }} (reachable), {{ scoring_config.weights.unknown }} (inconclusive), {{ scoring_config.weights.unreachable }} (unreachable)</li>
+                <li><strong>Exploit/KEV</strong>: +{{ scoring_config.weights.exploit }} (exploit), +{{ scoring_config.weights.kev_only }} (KEV only)</li>
+                <li><strong>Attack Vector</strong>: +{{ scoring_config.weights.vector_network }} (NETWORK), +{{ scoring_config.weights.vector_adjacent }} (ADJACENT), +{{ scoring_config.weights.vector_local }} (LOCAL), {{ scoring_config.weights.vector_physical }} (PHYSICAL)</li>
+                <li><strong>EPSS</strong>: 0–{{ scoring_config.weights.epss_max }} points (scaled by percentile)</li>
+                <li><strong>CVSS</strong>: 0–{{ scoring_config.weights.cvss_max }} points (scaled by score/10)</li>
             </ul>
-            <p>Bands: HIGH ≥ 70, MEDIUM ≥ 40, LOW ≥ 25, INFO &lt; 25</p>
+            <p>Bands: HIGH ≥ {{ scoring_config.weights.band_high_threshold }}, MEDIUM ≥ {{ scoring_config.weights.band_medium_threshold }}, LOW ≥ {{ scoring_config.weights.band_low_threshold }}, INFO &lt; {{ scoring_config.weights.band_low_threshold }}</p>
 
+            {% if scoring_config.weights.vex_resolved %}
             <h4>VEX Status Penalty</h4>
             <ul>
-                <li>Findings with status <strong>NOT_AFFECTED</strong>, <strong>RESOLVED</strong>, or <strong>RESOLVED_WITH_PEDIGREE</strong>: <strong>−50 points</strong></li>
-                <li>Applies to both gated and additive-scored findings (e.g. Gate 1 score 100 → 50 = MEDIUM)</li>
+                <li>Findings with status <strong>NOT_AFFECTED</strong>, <strong>RESOLVED</strong>, or <strong>RESOLVED_WITH_PEDIGREE</strong>: <strong>{{ scoring_config.weights.vex_resolved }} points</strong></li>
+                <li>Applies to both gated and additive-scored findings</li>
                 <li>Allows triaged findings to drop out of critical gates without being removed from the report</li>
             </ul>
+            {% endif %}
+            {% endif %}
 
             <h4>Reachability Interpretation</h4>
             <ul>

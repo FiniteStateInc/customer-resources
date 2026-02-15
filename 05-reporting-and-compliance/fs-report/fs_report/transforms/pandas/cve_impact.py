@@ -827,7 +827,7 @@ def _build_cve_prompt(
         except (ValueError, TypeError):
             pass
 
-    # Affected projects with reachability
+    # Affected projects with reachability and triage status
     project_lines: list[str] = []
     for p in dossier.get("project_details", []):
         line = (
@@ -836,6 +836,9 @@ def _build_cve_prompt(
         )
         if p.get("component"):
             line += f" — component: {p['component']}"
+        ts = p.get("triage_status", "")
+        if ts:
+            line += f" — VEX status: {ts}"
         project_lines.append(line)
 
     # Exploit info
@@ -850,7 +853,28 @@ def _build_cve_prompt(
     if nvd_snippet:
         nvd_section = f"\n{nvd_snippet}\n"
 
+    # Aggregate VEX status across affected projects
+    vex_dist: dict[str, int] = {}
+    vex_not_triaged = 0
+    for p in dossier.get("project_details", []):
+        ts = p.get("triage_status", "")
+        if ts:
+            vex_dist[ts] = vex_dist.get(ts, 0) + 1
+        else:
+            vex_not_triaged += 1
+    vex_summary_lines: list[str] = []
+    if vex_not_triaged:
+        vex_summary_lines.append(f"- Not yet triaged: {vex_not_triaged}")
+    for st, cnt in sorted(vex_dist.items(), key=lambda x: -x[1]):
+        vex_summary_lines.append(f"- {st}: {cnt}")
+    vex_section = (
+        "\n## VEX / Triage Status\n" + "\n".join(vex_summary_lines) + "\n"
+        if vex_summary_lines
+        else ""
+    )
+
     prompt = f"""You are a security remediation advisor. Provide specific remediation guidance for the following CVE.
+If any affected projects already have a VEX status (e.g. NOT_AFFECTED, RESOLVED), factor that into your guidance — they may only need verification rather than new remediation.
 
 ## CVE: {cve_id}
 - Severity: {severity} (CVSS {cvss})
@@ -871,7 +895,7 @@ def _build_cve_prompt(
 
 ## Affected Projects ({len(project_lines)})
 {chr(10).join(project_lines) if project_lines else 'N/A'}
-
+{vex_section}
 ## Known Exploits
 {chr(10).join(exploit_lines) if exploit_lines else 'None known'}
 {nvd_section}

@@ -92,14 +92,43 @@ SYSTEM_MESSAGE = (
 
 # Scoring methodology block — appended to portfolio/project prompts so the
 # LLM can reason about (and validate) the pre-computed priority bands.
-SCORING_METHODOLOGY = """\
-## Scoring Methodology
-Findings are prioritized using a tiered-gates model:
-- GATE 1 (CRITICAL): Reachable + has known exploit or is in CISA KEV
-- GATE 2 (HIGH): Not unreachable + NETWORK attack vector + EPSS > 90th percentile
-- Remaining findings scored additively: reachability (+30), exploit (+25), KEV (+20), \
-attack vector (up to +15), EPSS (up to +20), CVSS (up to +10)
-- Bands: HIGH >= 70, MEDIUM >= 40, LOW >= 25, INFO < 25"""
+# Built dynamically from the active scoring configuration.
+_SCORING_METHODOLOGY_CACHE: str | None = None
+
+
+def get_scoring_methodology(scoring_config: dict | None = None) -> str:
+    """Return a scoring methodology text block for LLM prompts.
+
+    Uses the dynamic builder from triage_prioritization when available,
+    falling back to a sensible default when the transform module is not loaded.
+
+    Args:
+        scoring_config: Active scoring configuration dict (from ``_build_scoring_config``).
+            Pass this when the actual gates/weights are known to ensure prompts
+            match the configuration in use.
+    """
+    global _SCORING_METHODOLOGY_CACHE  # noqa: PLW0603
+    try:
+        from fs_report.transforms.pandas.triage_prioritization import (
+            _build_scoring_methodology,
+        )
+
+        return _build_scoring_methodology(scoring_config)
+    except ImportError:
+        pass
+
+    # Fallback: return cached or default static text
+    if _SCORING_METHODOLOGY_CACHE is not None:
+        return _SCORING_METHODOLOGY_CACHE
+    return (
+        "## Scoring Methodology\n"
+        "Findings are prioritized using a tiered-gates model.\n"
+        "See report configuration for gate definitions and additive scoring weights."
+    )
+
+
+# Backward-compatible alias for any external callers that reference the constant
+SCORING_METHODOLOGY = get_scoring_methodology()
 
 
 class LLMClient:
@@ -566,6 +595,18 @@ class LLMClient:
 Note: "Reachable" means static/binary analysis confirmed the vulnerable function exists in and is callable from the deployed firmware. This is the strongest signal for real-world exploitability.
 """
 
+        # VEX status summary
+        vex_section = ""
+        vex_counts = portfolio_summary.get("vex_status_counts", {})
+        vex_not_triaged = portfolio_summary.get("vex_not_triaged", 0)
+        if vex_counts or vex_not_triaged:
+            vex_lines = ["\n## VEX / Triage Status"]
+            if vex_not_triaged:
+                vex_lines.append(f"- Not yet triaged: {vex_not_triaged}")
+            for status, count in sorted(vex_counts.items(), key=lambda x: -x[1]):
+                vex_lines.append(f"- {status}: {count}")
+            vex_section = "\n".join(vex_lines) + "\n"
+
         return f"""Analyze this vulnerability triage data and provide strategic remediation guidance.
 
 ## Portfolio Overview
@@ -575,8 +616,8 @@ Note: "Reachable" means static/binary analysis confirmed the vulnerable function
 - MEDIUM: {portfolio_summary.get('MEDIUM', 0)}
 - LOW: {portfolio_summary.get('LOW', 0)}
 - INFO: {portfolio_summary.get('INFO', 0)}
-
-{SCORING_METHODOLOGY}
+{vex_section}
+{get_scoring_methodology()}
 {reach_section}
 ## Top Projects by Risk
 {self._format_projects_bullet(top_projects)}
@@ -685,12 +726,32 @@ Be specific with component names and versions. When vulnerable functions are ide
         )
         unknown_total = sum(1 for f in findings if f.get("reachability_score", 0) == 0)
 
+        # VEX status distribution for this project's findings
+        vex_dist: dict[str, int] = {}
+        vex_not_triaged = 0
+        for f in findings:
+            raw = f.get("status")
+            if raw and str(raw) not in ("", "nan", "None"):
+                vex_dist[str(raw)] = vex_dist.get(str(raw), 0) + 1
+            else:
+                vex_not_triaged += 1
+        vex_lines: list[str] = []
+        if vex_not_triaged:
+            vex_lines.append(f"- Not yet triaged: {vex_not_triaged}")
+        for st, cnt in sorted(vex_dist.items(), key=lambda x: -x[1]):
+            vex_lines.append(f"- {st}: {cnt}")
+        vex_section = (
+            "\n## VEX / Triage Status\n" + "\n".join(vex_lines) + "\n"
+            if vex_lines
+            else ""
+        )
+
         return f"""Provide remediation guidance for project "{project_name}".
 
 ## Risk Band Distribution
 {json.dumps(band_counts, indent=2)}
-
-{SCORING_METHODOLOGY}
+{vex_section}
+{get_scoring_methodology()}
 
 ## Reachability Summary
 - Reachable: {reachable_total} (vulnerable code confirmed present and callable in firmware)

@@ -13,6 +13,42 @@ parameters:
   top_components_limit: 15
   ai_prompt_bands:
     - CRITICAL
+
+  # Gate definitions (DSL).  Evaluated in order; first match wins.
+  # Override via --scoring-file with a top-level "gates:" key.
+  gates:
+    - name: GATE_1
+      band: CRITICAL
+      score: 100
+      conditions:
+        all:
+          - field: reachability_score
+            op: ">"
+            value: 0
+          - any:
+              - field: has_exploit
+                op: "=="
+                value: true
+              - field: in_kev
+                op: "=="
+                value: true
+
+    - name: GATE_2
+      band: HIGH
+      score: 85
+      conditions:
+        all:
+          - field: reachability_score
+            op: ">="
+            value: 0
+          - field: attack_vector
+            op: in
+            value: ["NETWORK"]
+          - field: epss_percentile
+            op: ">"
+            value: 0.9
+
+  # Additive scoring weights (for findings that don't hit any gate)
   scoring_weights:
     reachable: 30
     unknown: 0
@@ -25,9 +61,6 @@ parameters:
     vector_physical: 0
     epss_max: 20
     cvss_max: 10
-    gate2_epss_threshold: 0.9
-    gate1_score: 100
-    gate2_score: 85
     band_high_threshold: 70
     band_medium_threshold: 40
     band_low_threshold: 25

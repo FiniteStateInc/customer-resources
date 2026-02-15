@@ -392,10 +392,14 @@ The triage prioritization engine uses a two-tier system: fast-track gates for th
 
 **Tiered Gates (short-circuit classification):**
 
+Gates are evaluated in order. Once a finding matches a gate it is excluded from subsequent gates. The default gates are:
+
 | Gate | Criteria | Result |
 |------|----------|--------|
-| **Gate 1** | Reachable (score > 0) AND (has exploit OR in KEV) | → CRITICAL (score=100) |
-| **Gate 2** | Not unreachable (score >= 0) AND NETWORK vector AND EPSS > 90th percentile | → HIGH (score=85) |
+| **GATE_1** | reachability_score > 0 AND (has_exploit OR in_kev) | → CRITICAL (score=100) |
+| **GATE_2** | reachability_score >= 0 AND attack_vector in [NETWORK] AND epss_percentile > 0.9 | → HIGH (score=85) |
+
+Gate definitions use a **DSL (domain-specific language)** with `all` (AND) and `any` (OR) combinators, plus leaf conditions with `field`, `op`, and `value`. See **Customizing Gates** below.
 
 **Additive Scoring (findings that don't hit a gate):**
 
@@ -418,14 +422,14 @@ Each finding accumulates points from five factors:
 
 **VEX Status Penalty:**
 
-Findings with a resolved VEX status (`NOT_AFFECTED`, `RESOLVED`, or `RESOLVED_WITH_PEDIGREE`) receive a **-50 point penalty** applied after gate scoring. This demotes previously triaged findings out of the critical gates (e.g. Gate 1 score 100 → 50 = MEDIUM) without removing them from the report entirely.
+Findings with a resolved VEX status (`NOT_AFFECTED`, `RESOLVED`, or `RESOLVED_WITH_PEDIGREE`) receive a **-50 point penalty** applied after gate scoring. This demotes previously triaged findings out of the critical gates (e.g. GATE_1 score 100 → 50 = MEDIUM) without removing them from the report entirely.
 
 **Band Thresholds:**
 
 | Band | Score Range | Action |
 |------|-------------|--------|
-| CRITICAL | Gate 1 (fixed 100) | Fix immediately |
-| HIGH | Gate 2 (fixed 85) or additive >= 70 | Fix this week |
+| CRITICAL | Gate-assigned (default 100) | Fix immediately |
+| HIGH | Gate-assigned (default 85) or additive >= 70 | Fix this week |
 | MEDIUM | 40-69 | Fix this month |
 | LOW | 25-39 | Plan remediation |
 | INFO | < 25 | Track only |
@@ -440,9 +444,58 @@ Findings with a resolved VEX status (`NOT_AFFECTED`, `RESOLVED`, or `RESOLVED_WI
 
 Findings that already have a VEX status are skipped by default. Use `--vex-override` to include them.
 
+**Customizing Gates:**
+
+Gate definitions live in `recipes/triage_prioritization.yaml` under `parameters.gates`. Each gate has a `name`, `band`, `score`, and a `conditions` tree using `all`/`any` combinators:
+
+```yaml
+parameters:
+  gates:
+    - name: GATE_1
+      band: CRITICAL
+      score: 100
+      conditions:
+        all:
+          - field: reachability_score
+            op: ">"
+            value: 0
+          - any:
+              - field: has_exploit
+                op: "=="
+                value: true
+              - field: in_kev
+                op: "=="
+                value: true
+
+    - name: GATE_2
+      band: HIGH
+      score: 85
+      conditions:
+        all:
+          - field: reachability_score
+            op: ">="
+            value: 0
+          - field: attack_vector
+            op: in
+            value: ["NETWORK"]
+          - field: epss_percentile
+            op: ">"
+            value: 0.9
+```
+
+Supported operators: `>`, `>=`, `<`, `<=`, `==`, `!=`, `in` (value is a list).
+
+Available fields for gate conditions include: `reachability_score`, `has_exploit`, `in_kev`, `attack_vector`, `epss_percentile`, `risk`, `severity`, and any other column present after normalization.
+
+Examples of customization:
+- **Include ADJACENT vector in Gate 2**: change `value: ["NETWORK"]` to `value: ["NETWORK", "ADJACENT"]`
+- **Lower EPSS threshold**: change `value: 0.9` to `value: 0.5`
+- **Add a third gate**: append another gate definition to the list
+- **Disable all gates**: set `gates: []` (all findings go through additive scoring)
+
 **Customizing Scoring Weights:**
 
-All scoring weights are defined in `recipes/triage_prioritization.yaml` under `parameters.scoring_weights`. Edit the recipe directly to change defaults:
+Additive scoring weights are defined under `parameters.scoring_weights`:
 
 ```yaml
 parameters:
@@ -460,18 +513,33 @@ parameters:
     vex_resolved: -50
 ```
 
-To override at runtime without editing the recipe, create a YAML file with your custom weights and pass it via `--scoring-file`:
+To override at runtime without editing the recipe, create a YAML file and pass it via `--scoring-file`:
 
 ```bash
-poetry run fs-report --recipe "Triage Prioritization" --scoring-file my_weights.yaml --period 30d
+poetry run fs-report --recipe "Triage Prioritization" --scoring-file my_scoring.yaml --period 30d
 ```
 
-The scoring file can contain just the weights you want to change (others keep their defaults):
+The scoring file can contain just the weights and/or gates you want to change:
 
 ```yaml
+# Override additive weights only
 scoring_weights:
   reachable: 40
   band_high_threshold: 60
+
+# Override gate definitions (replaces all gates)
+gates:
+  - name: GATE_1
+    band: CRITICAL
+    score: 100
+    conditions:
+      all:
+        - field: reachability_score
+          op: ">"
+          value: 0
+        - field: has_exploit
+          op: "=="
+          value: true
 ```
 
 **AI Prompts (offline, no API key required):**
