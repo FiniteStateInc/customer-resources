@@ -1,0 +1,16 @@
+<div class="workflow-card" data-recipes="{{ wf.recipes | join(',') }}">
+    <div class="workflow-icon">{{ wf.icon }}</div>
+    <div class="workflow-info">
+        <h3>{{ wf.title }}</h3>
+        <p>{{ wf.description }}</p>
+    </div>
+    <form method="post" action="/api/run/prerun"
+          hx-post="/api/run/prerun"
+          hx-target="#prerun-container"
+          hx-swap="innerHTML">
+        <input type="hidden" name="recipes" value="{{ wf.recipes | join(',') }}">
+        <input type="hidden" name="workflow_title" value="{{ wf.title }}">
+        <input type="hidden" name="_csrf" value="{{ nonce }}">
+        <button type="submit" class="btn btn-sm">Configure</button>
+    </form>
+</div>

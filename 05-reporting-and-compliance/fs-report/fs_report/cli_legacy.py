@@ -25,7 +25,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -70,37 +70,38 @@ def redact_token(token: str) -> str:
 
 
 def create_config(
-    recipes: Union[Path, None] = None,
-    output: Union[Path, None] = None,
-    start: Union[str, None] = None,
-    end: Union[str, None] = None,
-    period: Union[str, None] = None,
-    token: Union[str, None] = None,
-    domain: Union[str, None] = None,
+    recipes: Path | None = None,
+    output: Path | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    period: str | None = None,
+    token: str | None = None,
+    domain: str | None = None,
     verbose: bool = False,
-    recipe: Union[str, None] = None,
-    data_file: Union[str, None] = None,
-    project_filter: Union[str, None] = None,
-    version_filter: Union[str, None] = None,
-    folder_filter: Union[str, None] = None,
+    recipe: str | None = None,
+    data_file: str | None = None,
+    project_filter: str | None = None,
+    version_filter: str | None = None,
+    folder_filter: str | None = None,
     finding_types: str = "cve",
+    no_bundled_recipes: bool = False,
     current_version_only: bool = True,
     cache_ttl: int = 0,
-    cache_dir: Union[str, None] = None,
-    detected_after: Union[str, None] = None,
+    cache_dir: str | None = None,
+    detected_after: str | None = None,
     ai: bool = False,
-    ai_provider: Union[str, None] = None,
+    ai_provider: str | None = None,
     ai_depth: str = "summary",
     ai_prompts: bool = False,
-    nvd_api_key: Union[str, None] = None,
-    baseline_date: Union[str, None] = None,
-    baseline_version: Union[str, None] = None,
-    current_version: Union[str, None] = None,
+    nvd_api_key: str | None = None,
+    baseline_date: str | None = None,
+    baseline_version: str | None = None,
+    current_version: str | None = None,
     open_only: bool = False,
     request_delay: float = 0.5,
     batch_size: int = 5,
-    cve_filter: Union[str, None] = None,
-    scoring_file: Union[str, None] = None,
+    cve_filter: str | None = None,
+    scoring_file: str | None = None,
     vex_override: bool = False,
     overwrite: bool = False,
 ) -> Config:
@@ -195,7 +196,8 @@ def create_config(
     return Config(
         auth_token=auth_token,
         domain=domain_value,
-        recipes_dir=str(recipes or Path("./recipes")),
+        recipes_dir=str(recipes) if recipes else None,
+        use_bundled_recipes=not no_bundled_recipes,
         output_dir=str(Path(output or "./output").expanduser()),
         start_date=start,
         end_date=end,
@@ -236,13 +238,19 @@ def show_periods() -> None:
 
 @app.command()
 def list_recipes(
-    recipes: Union[Path, None] = typer.Option(
+    recipes: Path
+    | None = typer.Option(
         None,
         "--recipes",
         "-r",
         help="Path to recipes directory",
         dir_okay=True,
         file_okay=False,
+    ),
+    no_bundled_recipes: bool = typer.Option(
+        False,
+        "--no-bundled-recipes",
+        help="Disable bundled recipes shipped with the package.",
     ),
     verbose: bool = typer.Option(
         False,
@@ -255,14 +263,14 @@ def list_recipes(
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
 
-    recipes_dir = recipes or Path("./recipes")
-    loader = RecipeLoader(str(recipes_dir))
+    recipes_dir = str(recipes) if recipes else None
+    loader = RecipeLoader(recipes_dir, use_bundled=not no_bundled_recipes)
 
     try:
         recipes_list = loader.load_recipes()
 
         if not recipes_list:
-            console.print(f"[yellow]No recipes found in: {recipes_dir}[/yellow]")
+            console.print("[yellow]No recipes found[/yellow]")
             return
 
         # Create a rich table to display recipes
@@ -285,7 +293,8 @@ def list_recipes(
 
 @app.command()
 def list_projects(
-    recipes: Union[Path, None] = typer.Option(
+    recipes: Path
+    | None = typer.Option(
         None,
         "--recipes",
         "-r",
@@ -293,14 +302,16 @@ def list_projects(
         dir_okay=True,
         file_okay=False,
     ),
-    token: Union[str, None] = typer.Option(
+    token: str
+    | None = typer.Option(
         None,
         "--token",
         "-t",
         help="Finite State API token",
         hide_input=True,
     ),
-    domain: Union[str, None] = typer.Option(
+    domain: str
+    | None = typer.Option(
         None,
         "--domain",
         "-d",
@@ -335,7 +346,7 @@ def list_projects(
         config = Config(
             auth_token=auth_token,
             domain=domain_value,
-            recipes_dir=str(recipes or Path("./recipes")),
+            recipes_dir=str(recipes) if recipes else None,
             output_dir="./output",
             start_date="2025-01-01",
             end_date="2025-01-31",
@@ -389,7 +400,8 @@ def list_projects(
 
 @app.command()
 def list_folders(
-    recipes: Union[Path, None] = typer.Option(
+    recipes: Path
+    | None = typer.Option(
         None,
         "--recipes",
         "-r",
@@ -397,14 +409,16 @@ def list_folders(
         dir_okay=True,
         file_okay=False,
     ),
-    token: Union[str, None] = typer.Option(
+    token: str
+    | None = typer.Option(
         None,
         "--token",
         "-t",
         help="Finite State API token",
         hide_input=True,
     ),
-    domain: Union[str, None] = typer.Option(
+    domain: str
+    | None = typer.Option(
         None,
         "--domain",
         "-d",
@@ -439,7 +453,7 @@ def list_folders(
         config = Config(
             auth_token=auth_token,
             domain=domain_value,
-            recipes_dir=str(recipes or Path("./recipes")),
+            recipes_dir=str(recipes) if recipes else None,
             output_dir="./output",
             start_date="2025-01-01",
             end_date="2025-01-31",
@@ -502,7 +516,8 @@ def list_folders(
 
 @app.command()
 def list_versions(
-    project: Union[str, None] = typer.Argument(
+    project: str
+    | None = typer.Argument(
         None,
         help="Project name or ID to list versions for (omit to list all versions across portfolio)",
     ),
@@ -513,13 +528,15 @@ def list_versions(
         help="Only show top N projects by version count (0 = show all)",
         min=0,
     ),
-    folder_filter: Union[str, None] = typer.Option(
+    folder_filter: str
+    | None = typer.Option(
         None,
         "--folder",
         "-f",
         help="Only include projects in this folder (name or ID). Use 'fs-report list-folders' to see options. Cuts down API calls when you only need a subset.",
     ),
-    recipes: Union[Path, None] = typer.Option(
+    recipes: Path
+    | None = typer.Option(
         None,
         "--recipes",
         "-r",
@@ -527,14 +544,16 @@ def list_versions(
         dir_okay=True,
         file_okay=False,
     ),
-    token: Union[str, None] = typer.Option(
+    token: str
+    | None = typer.Option(
         None,
         "--token",
         "-t",
         help="Finite State API token",
         hide_input=True,
     ),
-    domain: Union[str, None] = typer.Option(
+    domain: str
+    | None = typer.Option(
         None,
         "--domain",
         "-d",
@@ -569,7 +588,7 @@ def list_versions(
         config = Config(
             auth_token=auth_token,
             domain=domain_value,
-            recipes_dir=str(recipes or Path("./recipes")),
+            recipes_dir=str(recipes) if recipes else None,
             output_dir="./output",
             start_date="2025-01-01",
             end_date="2025-01-31",
@@ -937,37 +956,38 @@ def list_versions(
 
 
 def run_reports(
-    recipes: Union[Path, None],
-    recipe: Union[list[str], None],
-    output: Union[Path, None],
-    start: Union[str, None],
-    end: Union[str, None],
-    period: Union[str, None],
-    token: Union[str, None],
-    domain: Union[str, None],
+    recipes: Path | None,
+    recipe: list[str] | None,
+    output: Path | None,
+    start: str | None,
+    end: str | None,
+    period: str | None,
+    token: str | None,
+    domain: str | None,
     verbose: bool,
-    data_file: Union[str, None],
-    project_filter: Union[str, None],
-    version_filter: Union[str, None],
-    folder_filter: Union[str, None] = None,
+    data_file: str | None,
+    project_filter: str | None,
+    version_filter: str | None,
+    folder_filter: str | None = None,
     finding_types: str = "cve",
     current_version_only: bool = True,
+    no_bundled_recipes: bool = False,
     cache_ttl: int = 0,
-    cache_dir: Union[str, None] = None,
-    detected_after: Union[str, None] = None,
+    cache_dir: str | None = None,
+    detected_after: str | None = None,
     ai: bool = False,
-    ai_provider: Union[str, None] = None,
+    ai_provider: str | None = None,
     ai_depth: str = "summary",
     ai_prompts: bool = False,
-    nvd_api_key: Union[str, None] = None,
-    baseline_date: Union[str, None] = None,
-    baseline_version: Union[str, None] = None,
-    current_version: Union[str, None] = None,
+    nvd_api_key: str | None = None,
+    baseline_date: str | None = None,
+    baseline_version: str | None = None,
+    current_version: str | None = None,
     open_only: bool = False,
     request_delay: float = 0.5,
     batch_size: int = 5,
-    cve_filter: Union[str, None] = None,
-    scoring_file: Union[str, None] = None,
+    cve_filter: str | None = None,
+    scoring_file: str | None = None,
     vex_override: bool = False,
     overwrite: bool = False,
 ) -> None:
@@ -993,6 +1013,7 @@ def run_reports(
             version_filter=version_filter,
             folder_filter=folder_filter,
             finding_types=finding_types,
+            no_bundled_recipes=no_bundled_recipes,
             current_version_only=current_version_only,
             cache_ttl=cache_ttl,
             cache_dir=cache_dir,
@@ -1016,7 +1037,10 @@ def run_reports(
         logger.info("Configuration:")
         logger.info(f"  Domain: {config.domain}")
         logger.info(f"  Token: {redact_token(config.auth_token)}")
-        logger.info(f"  Recipes directory: {config.recipes_dir}")
+        logger.info(
+            f"  Recipes: bundled={'yes' if config.use_bundled_recipes else 'no'}"
+            f"{', overlay=' + config.recipes_dir if config.recipes_dir else ''}"
+        )
         logger.info(f"  Output directory: {config.output_dir}")
         logger.info(f"  Date range: {config.start_date} to {config.end_date}")
         logger.info(f"  Finding types: {config.finding_types}")
@@ -1094,7 +1118,8 @@ def run_reports(
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    recipes: Union[Path, None] = typer.Option(
+    recipes: Path
+    | None = typer.Option(
         None,
         "--recipes",
         "-r",
@@ -1107,7 +1132,8 @@ def main(
         "--recipe",
         help="Name of specific recipe(s) to run (can be specified multiple times)",
     ),
-    output: Union[Path, None] = typer.Option(
+    output: Path
+    | None = typer.Option(
         None,
         "--output",
         "-o",
@@ -1115,32 +1141,37 @@ def main(
         dir_okay=True,
         file_okay=False,
     ),
-    start: Union[str, None] = typer.Option(
+    start: str
+    | None = typer.Option(
         None,
         "--start",
         "-s",
         help="Start date (ISO8601 format, e.g., 2025-01-01)",
     ),
-    end: Union[str, None] = typer.Option(
+    end: str
+    | None = typer.Option(
         None,
         "--end",
         "-e",
         help="End date (ISO8601 format, e.g., 2025-01-31)",
     ),
-    period: Union[str, None] = typer.Option(
+    period: str
+    | None = typer.Option(
         None,
         "--period",
         "-p",
         help="Time period (e.g., '7d', '1m', 'Q1', '2024', 'monday', 'january-2024')",
     ),
-    token: Union[str, None] = typer.Option(
+    token: str
+    | None = typer.Option(
         None,
         "--token",
         "-t",
         help="Finite State API token",
         hide_input=True,
     ),
-    domain: Union[str, None] = typer.Option(
+    domain: str
+    | None = typer.Option(
         None,
         "--domain",
         "-d",
@@ -1152,25 +1183,29 @@ def main(
         "-v",
         help="Enable verbose logging",
     ),
-    data_file: Union[str, None] = typer.Option(
+    data_file: str
+    | None = typer.Option(
         None,
         "--data-file",
         "-df",
         help="Path to local JSON file to use as data source",
     ),
-    project_filter: Union[str, None] = typer.Option(
+    project_filter: str
+    | None = typer.Option(
         None,
         "--project",
         "-pr",
         help="Filter by project (name or ID). Use 'fs-report list-projects' to see available projects.",
     ),
-    folder_filter: Union[str, None] = typer.Option(
+    folder_filter: str
+    | None = typer.Option(
         None,
         "--folder",
         "-fl",
         help="Scope reports to a folder (name or ID, includes subfolders). Use 'fs-report list-folders' to see available folders.",
     ),
-    version_filter: Union[str, None] = typer.Option(
+    version_filter: str
+    | None = typer.Option(
         None,
         "--version",
         "-V",
@@ -1188,7 +1223,8 @@ def main(
         "-cvo/-av",
         help="Latest version only (default, fast) or all versions (slow, includes historical data)",
     ),
-    cache_ttl: Union[str, None] = typer.Option(
+    cache_ttl: str
+    | None = typer.Option(
         None,
         "--cache-ttl",
         help="[BETA] Enable persistent SQLite cache with TTL (e.g., '4' for 4 hours, '30m', '1d'). "
@@ -1209,7 +1245,8 @@ def main(
         "--clear-ai-cache",
         help="Delete cached AI remediation guidance and exit.",
     ),
-    detected_after: Union[str, None] = typer.Option(
+    detected_after: str
+    | None = typer.Option(
         None,
         "--detected-after",
         help="Only include findings detected on or after this date (YYYY-MM-DD). "
@@ -1221,7 +1258,8 @@ def main(
         help="Enable AI remediation guidance for Triage Prioritization and CVE Impact "
         "(requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, or GITHUB_TOKEN)",
     ),
-    ai_provider: Union[str, None] = typer.Option(
+    ai_provider: str
+    | None = typer.Option(
         None,
         "--ai-provider",
         help="LLM provider: 'anthropic', 'openai', or 'copilot'. Auto-detected from env vars if not set.",
@@ -1236,7 +1274,8 @@ def main(
         "--ai-prompts",
         help="Export AI prompts to file and HTML for use with any LLM. No API key required. Can be combined with --ai.",
     ),
-    nvd_api_key: Union[str, None] = typer.Option(
+    nvd_api_key: str
+    | None = typer.Option(
         None,
         "--nvd-api-key",
         envvar="NVD_API_KEY",
@@ -1245,18 +1284,21 @@ def main(
         "Also reads NVD_API_KEY env var. "
         "Per NVD terms, keys must not be shared with other individuals or organisations.",
     ),
-    baseline_date: Union[str, None] = typer.Option(
+    baseline_date: str
+    | None = typer.Option(
         None,
         "--baseline-date",
         help="Baseline date (YYYY-MM-DD) for Security Progress report. "
         "Overrides the default of using the earliest version in the period window.",
     ),
-    baseline_version: Union[str, None] = typer.Option(
+    baseline_version: str
+    | None = typer.Option(
         None,
         "--baseline-version",
         help="Baseline version ID for Version Comparison report.",
     ),
-    current_version: Union[str, None] = typer.Option(
+    current_version: str
+    | None = typer.Option(
         None,
         "--current-version",
         help="Current version ID for Version Comparison report.",
@@ -1281,7 +1323,8 @@ def main(
         min=1,
         max=25,
     ),
-    cve_filter: Union[str, None] = typer.Option(
+    cve_filter: str
+    | None = typer.Option(
         None,
         "--cve",
         help="CVE(s) to analyse in the CVE Impact report (required). "
@@ -1289,7 +1332,8 @@ def main(
         "Produces detailed dossiers for the specified CVEs. "
         "Optionally combine with --project to narrow results to one project.",
     ),
-    scoring_file: Union[str, None] = typer.Option(
+    scoring_file: str
+    | None = typer.Option(
         None,
         "--scoring-file",
         help="Path to a YAML file with custom scoring weights for Triage Prioritization. "
@@ -1306,6 +1350,12 @@ def main(
         "--overwrite",
         help="Overwrite existing report files. Without this flag, the CLI refuses "
         "to write into a recipe output directory that already has files.",
+    ),
+    no_bundled_recipes: bool = typer.Option(
+        False,
+        "--no-bundled-recipes",
+        help="Disable bundled recipes shipped with the package. "
+        "Only recipes from --recipes directory will be used.",
     ),
     serve: bool = typer.Option(
         False,
@@ -1379,6 +1429,7 @@ def main(
         folder_filter=folder_filter,
         finding_types=finding_types,
         current_version_only=current_version_only,
+        no_bundled_recipes=no_bundled_recipes,
         cache_ttl=cache_ttl_seconds,
         cache_dir=str(Path.home() / ".fs-report") if cache_ttl_seconds > 0 else None,
         detected_after=detected_after,
@@ -1582,7 +1633,7 @@ def _serve_reports(output_dir: Path, port: int) -> None:
 
     threading.Thread(target=_open_browser, daemon=True).start()
 
-    with socketserver.TCPServer(("", port), ProxyHandler) as httpd:
+    with socketserver.TCPServer(("127.0.0.1", port), ProxyHandler) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

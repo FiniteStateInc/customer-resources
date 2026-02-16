@@ -310,8 +310,15 @@ class Config(BaseModel):
 
     auth_token: str = Field(..., description="Finite State API token")
     domain: str = Field(..., description="Finite State domain")
-    recipes_dir: str = Field(
-        "./recipes", description="Directory containing recipe files"
+    recipes_dir: str | None = Field(
+        None,
+        description="Optional external recipes directory (--recipes). "
+        "Bundled recipes are always loaded unless --no-bundled-recipes is set.",
+    )
+    use_bundled_recipes: bool = Field(
+        True,
+        description="Load bundled recipes from fs_report.recipes package. "
+        "Set to False via --no-bundled-recipes to disable.",
     )
     output_dir: str = Field("./output", description="Output directory for reports")
     start_date: str = Field(..., description="Start date in ISO8601 format")

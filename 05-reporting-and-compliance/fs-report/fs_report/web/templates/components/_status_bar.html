@@ -1,0 +1,28 @@
+<div class="status-bar">
+    <div class="status-item">
+        <span class="status-label">Domain</span>
+        <span class="status-value">{{ state.domain or '(not set)' }}</span>
+    </div>
+    <div class="status-item">
+        <span class="status-label">Token</span>
+        <span class="status-value {% if state.token %}connected{% else %}disconnected{% endif %}">
+            {% if state.token %}{{ token_display }}{% else %}(not set){% endif %}
+        </span>
+    </div>
+    <div class="status-item">
+        <span class="status-label">Project</span>
+        <span class="status-value">{{ state.get('project_filter') or 'all' }}</span>
+    </div>
+    <div class="status-item">
+        <span class="status-label">Period</span>
+        <span class="status-value">{{ state.get('period', '30d') }}</span>
+    </div>
+    <div class="status-item">
+        <span class="status-label">Cache</span>
+        <span class="status-value">{{ state.get('cache_ttl', '4') }}h</span>
+    </div>
+    <div class="status-item">
+        <span class="status-label">AI</span>
+        <span class="status-value">{{ 'on' if state.get('ai') else 'off' }}</span>
+    </div>
+</div>

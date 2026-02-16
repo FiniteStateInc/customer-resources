@@ -220,6 +220,11 @@
                (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
     }
 
+    // Server-side session nonce (populated by auto-connect)
+    var _serverNonce = null;
+    // True when the server holds the token (no browser-side token needed)
+    var _serverSideAuth = false;
+
     function apiBase() {
         const s = getSession();
         if (!s) return '';
@@ -231,15 +236,38 @@
     function apiHeaders() {
         const s = getSession();
         const headers = {
-            'X-Authorization': s ? s.token : '',
             'Content-Type': 'application/json',
             'Accept': 'application/json',
         };
-        // When using the proxy, pass the domain so the server knows where to forward
-        if (_useProxy() && s) {
-            headers['X-FS-Domain'] = s.domain;
+        // When server holds the token, include the CSRF nonce instead
+        if (_serverSideAuth && _serverNonce) {
+            headers['X-FS-Session'] = _serverNonce;
+        } else if (s && s.token) {
+            headers['X-Authorization'] = s.token;
         }
         return headers;
+    }
+
+    // Auto-connect: call /fsapi/session on load to see if the server
+    // already has a token.  If so, create a session without prompting.
+    async function _tryAutoConnect() {
+        if (!_useProxy()) return false;
+        try {
+            const resp = await fetch('/fsapi/session');
+            if (!resp.ok) return false;
+            const data = await resp.json();
+            if (data.connected && data.domain) {
+                _serverNonce = data.nonce || null;
+                _serverSideAuth = true;
+                setSession({
+                    domain: data.domain,
+                    token: '',  // server holds the token
+                    jiraAvailable: data.jiraAvailable || false,
+                });
+                return true;
+            }
+        } catch { /* server not running or unreachable */ }
+        return false;
     }
 
     // =========================================================================
@@ -759,7 +787,7 @@
     // Init
     // =========================================================================
 
-    document.addEventListener('DOMContentLoaded', function() {
+    document.addEventListener('DOMContentLoaded', async function() {
         // Interactive features require --serve (local proxy for API calls).
         // Hide all action buttons and connection UI when not served via localhost.
         if (!_useProxy()) {
@@ -773,10 +801,13 @@
             return; // skip remaining interactive setup
         }
 
+        // Try server-side auto-connect (no credential prompt needed)
+        await _tryAutoConnect();
+
         updateConnectionBadge();
         updateJiraVisibility();
 
-        // If already connected (session persisted in tab), refresh triage statuses
+        // If connected (auto or session persisted in tab), refresh triage statuses
         if (isConnected()) {
             refreshTriageStatuses();
         }

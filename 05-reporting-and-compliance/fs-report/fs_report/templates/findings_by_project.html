@@ -15,13 +15,15 @@
 <div class="table-container">
     <h2>Findings by Project</h2>
     <p>Comprehensive inventory of security findings across projects</p>
-    
+
     {% if data %}
     <table>
         <thead>
             <tr>
                 <th>CVSS</th>
+                <th>Severity</th>
                 <th>CVE ID</th>
+                <th>Description</th>
                 <th>Component</th>
                 <th>Version</th>
                 {% if folder_path %}<th>Folder</th>{% endif %}
@@ -30,6 +32,9 @@
                 <th>Exploits</th>
                 <th>Weaponization</th>
                 <th>CWE</th>
+                <th>CVSS v2 Vector</th>
+                <th>CVSS v3 Vector</th>
+                <th>FS Link</th>
             </tr>
         </thead>
         <tbody>
@@ -38,7 +43,7 @@
                 {% if row['Project Name'] != current_project.value %}
                     {% set current_project.value = row['Project Name'] %}
                     <tr style="background-color: #f8f9fa; font-weight: bold;">
-                        <td colspan="{% if folder_path %}10{% else %}9{% endif %}">{{ row['Project Name'] }}</td>
+                        <td colspan="{% if folder_path %}15{% else %}14{% endif %}">{{ row['Project Name'] }}</td>
                     </tr>
                 {% endif %}
                 <tr>
@@ -66,14 +71,42 @@
                         </span>
                     </td>
                     <td>
+                        {% set sev = row.get('Severity', '') %}
+                        {% if sev %}
+                        <span style="
+                            font-weight: bold;
+                            padding: 3px 8px;
+                            border-radius: 4px;
+                            text-align: center;
+                            display: inline-block;
+                            font-size: 0.85em;
+                            {% if sev|lower == 'critical' %}
+                                background-color: #ffebee; color: #c62828;
+                            {% elif sev|lower == 'high' %}
+                                background-color: #fff3e0; color: #ef6c00;
+                            {% elif sev|lower == 'medium' %}
+                                background-color: #fff8e1; color: #f57f17;
+                            {% elif sev|lower == 'low' %}
+                                background-color: #f1f8e9; color: #558b2f;
+                            {% else %}
+                                background-color: #e8eaf6; color: #455a64;
+                            {% endif %}
+                        ">{{ sev }}</span>
+                        {% endif %}
+                    </td>
+                    <td>
                         {% if row['CVE ID'] and row['CVE ID'] != 'N/A' %}
-                            <a href="https://nvd.nist.gov/vuln/detail/{{ row['CVE ID'] }}" 
+                            <a href="https://nvd.nist.gov/vuln/detail/{{ row['CVE ID'] }}"
                                target="_blank" style="color: #007bff; text-decoration: none;">
                                 {{ row['CVE ID'] }}
                             </a>
                         {% else %}
                             {{ row['CVE ID'] }}
                         {% endif %}
+                    </td>
+                    <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                        title="{{ row.get('Description', '') }}">
+                        {{ row.get('Description', '') }}
                     </td>
                     <td>{{ row['Component'] }}</td>
                     <td>{{ row['Component Version'] }}</td>
@@ -83,6 +116,13 @@
                     <td>{{ row['# of known exploits'] }}</td>
                     <td>{{ row['# of known weaponization'] }}</td>
                     <td>{{ row['CWE'] }}</td>
+                    <td style="font-family: monospace; font-size: 0.85em;">{{ row.get('CVSS v2 Vector', '') }}</td>
+                    <td style="font-family: monospace; font-size: 0.85em;">{{ row.get('CVSS v3 Vector', '') }}</td>
+                    <td>
+                        {% if row.get('FS Link') %}
+                            <a href="{{ row['FS Link'] }}" target="_blank" style="color: #007bff; text-decoration: none;">View</a>
+                        {% endif %}
+                    </td>
                 </tr>
             {% endfor %}
         </tbody>
@@ -94,4 +134,4 @@
     </div>
     {% endif %}
 </div>
-{% endblock %} 
+{% endblock %}

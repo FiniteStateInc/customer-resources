@@ -150,12 +150,18 @@ def filter_recommendations(
     if filter_bands:
         bands_upper = [b.upper() for b in filter_bands]
         filtered = [r for r in filtered if r.get("priority_band", "") in bands_upper]
-        logger.info(f"Filtered to {len(filtered)} recommendations for bands: {bands_upper}")
+        logger.info(
+            f"Filtered to {len(filtered)} recommendations for bands: {bands_upper}"
+        )
 
     if filter_statuses:
         statuses_upper = [s.upper() for s in filter_statuses]
-        filtered = [r for r in filtered if r.get("recommended_vex_status", "") in statuses_upper]
-        logger.info(f"Filtered to {len(filtered)} recommendations for statuses: {statuses_upper}")
+        filtered = [
+            r for r in filtered if r.get("recommended_vex_status", "") in statuses_upper
+        ]
+        logger.info(
+            f"Filtered to {len(filtered)} recommendations for statuses: {statuses_upper}"
+        )
 
     return filtered
 
@@ -253,8 +259,11 @@ def apply_vex_status(
             resp.raise_for_status()
             return {"success": True, "status_code": resp.status_code}
         except httpx.HTTPStatusError as e:
-            if e.response.status_code in RETRY_STATUS_CODES and attempt < MAX_RETRIES - 1:
-                delay = min(2 ** attempt, MAX_RETRY_DELAY) + random.uniform(0, 1)
+            if (
+                e.response.status_code in RETRY_STATUS_CODES
+                and attempt < MAX_RETRIES - 1
+            ):
+                delay = min(2**attempt, MAX_RETRY_DELAY) + random.uniform(0, 1)
                 logger.warning(
                     f"Rate limited ({e.response.status_code}) on {finding_id}, "
                     f"retry {attempt + 1}/{MAX_RETRIES} in {delay:.1f}s"
@@ -269,7 +278,7 @@ def apply_vex_status(
             }
         except httpx.RequestError as e:
             if attempt < MAX_RETRIES - 1:
-                delay = min(2 ** attempt, MAX_RETRY_DELAY) + random.uniform(0, 1)
+                delay = min(2**attempt, MAX_RETRY_DELAY) + random.uniform(0, 1)
                 logger.warning(
                     f"Connection error on {finding_id}, "
                     f"retry {attempt + 1}/{MAX_RETRIES} in {delay:.1f}s"
@@ -318,7 +327,8 @@ def main() -> None:
         epilog=__doc__,
     )
     parser.add_argument(
-        "--input", "-i",
+        "--input",
+        "-i",
         required=True,
         help="Path to vex_recommendations.json from Triage Prioritization report",
     )
@@ -343,7 +353,7 @@ def main() -> None:
         "--overwrite",
         action="store_true",
         help="Overwrite findings that already have a VEX status set. "
-             "By default, findings with an existing status are skipped.",
+        "By default, findings with an existing status are skipped.",
     )
     parser.add_argument(
         "--filter-band",
@@ -364,10 +374,11 @@ def main() -> None:
         choices=range(1, 6),
         metavar="1-5",
         help="Number of parallel API requests, 1-5 (default: 5). "
-             "Values above 5 are not supported — they overwhelm the server.",
+        "Values above 5 are not supported — they overwhelm the server.",
     )
     parser.add_argument(
-        "--yes", "-y",
+        "--yes",
+        "-y",
         action="store_true",
         help="Skip confirmation prompt",
     )
@@ -394,7 +405,8 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Enable verbose logging",
     )
@@ -439,6 +451,7 @@ def main() -> None:
 
     # Skip findings that already have a VEX status (unless --overwrite)
     if not args.overwrite:
+
         def _has_status(r: dict) -> bool:
             v = r.get("current_vex_status")
             return v is not None and v != "" and not (isinstance(v, float))
@@ -490,7 +503,11 @@ def main() -> None:
         return
 
     if not args.yes:
-        answer = input(f"\nApply {len(valid_recs)} VEX status updates? [y/N]: ").strip().lower()
+        answer = (
+            input(f"\nApply {len(valid_recs)} VEX status updates? [y/N]: ")
+            .strip()
+            .lower()
+        )
         if answer != "y":
             print("Aborted.")
             return
@@ -524,7 +541,12 @@ def main() -> None:
         )
         try:
             result = apply_vex_status(
-                client, base_url, pv_id, internal_id, vex_status, reason,
+                client,
+                base_url,
+                pv_id,
+                internal_id,
+                vex_status,
+                reason,
                 response_enum=args.response,
                 justification_enum=args.justification,
                 reachability_label=reachability_label,
@@ -539,18 +561,19 @@ def main() -> None:
         return result
 
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = {
-            executor.submit(_update_one, rec): rec
-            for rec in valid_recs
-        }
+        futures = {executor.submit(_update_one, rec): rec for rec in valid_recs}
 
         total = len(valid_recs)
-        pbar = tqdm(
-            total=total,
-            desc="Applying VEX updates",
-            unit="finding",
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]  {postfix}",
-        ) if tqdm is not None else None
+        pbar = (
+            tqdm(
+                total=total,
+                desc="Applying VEX updates",
+                unit="finding",
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]  {postfix}",
+            )
+            if tqdm is not None
+            else None
+        )
 
         for future in as_completed(futures):
             result = future.result()

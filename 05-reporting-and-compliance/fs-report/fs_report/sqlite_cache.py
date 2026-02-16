@@ -30,6 +30,7 @@ This module provides a persistent cache that:
 is unchanged unless --cache-ttl is specified.
 """
 
+import gc
 import hashlib
 import json
 import logging
@@ -672,6 +673,17 @@ class SQLiteCache:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")  # 30 second timeout
         return conn
+
+    def close(self) -> None:
+        """Release database file handles (needed on Windows before temp dir cleanup)."""
+        try:
+            with self._get_connection() as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                # Switch out of WAL so -wal/-shm are released (Windows holds locks otherwise)
+                conn.execute("PRAGMA journal_mode=DELETE")
+            gc.collect()  # Encourage release of file handles on Windows
+        except Exception:
+            pass
 
     def is_cache_valid(
         self, endpoint: str, params: dict, ttl: int | None = None

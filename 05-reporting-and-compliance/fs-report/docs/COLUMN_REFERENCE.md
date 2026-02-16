@@ -82,15 +82,22 @@ This document lists all column names produced by each transform function. Use th
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `Project Name` | string | Project name |
+| `CVSS` | float | CVSS score (0-10) |
+| `Severity` | string | Finding severity (CRITICAL, HIGH, MEDIUM, LOW) |
 | `CVE ID` | string | CVE identifier |
-| `Component` | string | Affected component |
+| `Description` | string | CVE description from NVD (English) |
+| `Component` | string | Affected component name |
 | `Component Version` | string | Component version |
+| `Folder` | string | Folder path (when folder filtering active) |
+| `Project Name` | string | Project name |
 | `Project Version` | string | Project version |
-| `CVSS` | float | CVSS score |
 | `# of known exploits` | int | Exploit count |
 | `# of known weaponization` | int | Weaponization count |
 | `CWE` | string | CWE identifier |
+| `CVSS v2 Vector` | string | CVSS v2 vector string |
+| `CVSS v3 Vector` | string | CVSS v3.1 vector string (fallback v3.0) |
+| `NVD URL` | string | Link to NVD detail page |
+| `FS Link` | string | Direct link to finding in Finite State platform |
 
 ---
 

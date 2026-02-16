@@ -20,6 +20,7 @@
 
 """HTML renderer using Jinja2 templates."""
 
+import importlib.resources
 import json
 import logging
 import math
@@ -105,10 +106,11 @@ class HTMLRenderer:
         """Initialize the HTML renderer."""
         self.logger = logging.getLogger(__name__)
 
-        # Setup Jinja2 environment
-        template_dir = Path(__file__).parent.parent.parent / "templates"
+        # Setup Jinja2 environment — discover bundled templates via
+        # importlib.resources so the package works when installed as a wheel.
+        template_dir = str(importlib.resources.files("fs_report.templates"))
         self.env = Environment(
-            loader=FileSystemLoader(str(template_dir)),
+            loader=FileSystemLoader(template_dir),
             autoescape=select_autoescape(["html", "xml"]),
         )
 

@@ -18,8 +18,24 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Recipe loader for parsing YAML recipe files."""
+"""Recipe loader for parsing YAML recipe files.
 
+Supports two recipe sources with merge behaviour:
+
+1. **Bundled recipes** – shipped inside the ``fs_report.recipes`` package and
+   discovered via :mod:`importlib.resources` (zero filesystem assumptions).
+2. **External recipes** – loaded from a user-supplied directory via the
+   ``--recipes`` CLI flag.
+
+When both sources are active the loader applies *bundled-first* semantics:
+bundled recipes are loaded, then external recipes layer on top.  An external
+recipe whose *name* (case-insensitive) matches a bundled one **overrides** it.
+
+The ``--no-bundled-recipes`` escape-hatch (``use_bundled=False``) disables
+bundled discovery entirely so only external recipes are used.
+"""
+
+import importlib.resources
 import logging
 from pathlib import Path
 
@@ -31,33 +47,116 @@ from fs_report.models import Recipe
 class RecipeLoader:
     """Loader for YAML recipe files."""
 
-    def __init__(self, recipes_dir: str) -> None:
-        """Initialize the recipe loader."""
-        self.recipes_dir = Path(recipes_dir)
+    def __init__(
+        self,
+        recipes_dir: str | None = None,
+        *,
+        use_bundled: bool = True,
+    ) -> None:
+        """Initialize the recipe loader.
+
+        Parameters
+        ----------
+        recipes_dir:
+            Optional filesystem path to an external recipes directory.  When
+            provided the loader scans this directory (recursively) for YAML
+            recipe files and layers them on top of the bundled set.
+        use_bundled:
+            If ``True`` (the default), bundled recipes shipped inside the
+            ``fs_report.recipes`` package are loaded first.  Set to ``False``
+            to disable bundled recipe discovery (``--no-bundled-recipes``).
+        """
+        self.recipes_dir: Path | None = Path(recipes_dir) if recipes_dir else None
+        self.use_bundled = use_bundled
         self.logger = logging.getLogger(__name__)
-        self.recipe_filter: list[
-            str
-        ] | None = None  # List of lower-case recipe names to include
+        self.recipe_filter: list[str] | None = None
 
     def load_recipes(self) -> list[Recipe]:
-        """Load all recipe files from the recipes directory, applying recipe_filter if set."""
-        recipes: list[Recipe] = []
+        """Load recipes with merge behaviour.
 
-        if not self.recipes_dir.exists():
-            self.logger.warning(f"Recipes directory does not exist: {self.recipes_dir}")
+        1. If ``use_bundled`` is ``True``, bundled recipes are loaded first.
+        2. If ``recipes_dir`` is set and exists, external recipes are loaded
+           and layered on top (same-name overrides bundled).
+        3. ``recipe_filter`` is applied last.
+        """
+        recipes_by_name: dict[str, Recipe] = {}
+
+        # --- 1. Bundled recipes (lowest priority) ---
+        if self.use_bundled:
+            for recipe in self._load_bundled_recipes():
+                recipes_by_name[recipe.name.lower()] = recipe
+
+        # --- 2. External / overlay recipes (highest priority) ---
+        if self.recipes_dir is not None:
+            for recipe in self._load_directory_recipes(self.recipes_dir):
+                recipes_by_name[recipe.name.lower()] = recipe
+
+        recipes = list(recipes_by_name.values())
+
+        # --- 3. Apply recipe_filter if set ---
+        if self.recipe_filter:
+            filter_set = {r.lower() for r in self.recipe_filter}
+            filtered_recipes = [r for r in recipes if r.name.lower() in filter_set]
+            self.logger.info(f"Filtered recipes: {[r.name for r in filtered_recipes]}")
+            return filtered_recipes
+
+        return recipes
+
+    # ------------------------------------------------------------------
+    # Bundled recipes (importlib.resources)
+    # ------------------------------------------------------------------
+
+    def _load_bundled_recipes(self) -> list[Recipe]:
+        """Discover and load recipes bundled inside ``fs_report.recipes``."""
+        recipes: list[Recipe] = []
+        try:
+            package = importlib.resources.files("fs_report.recipes")
+        except (ModuleNotFoundError, TypeError):
+            self.logger.warning("Bundled recipes package not found")
             return recipes
 
-        # Find all YAML files in the recipes directory and subdirectories
-        yaml_files = list(self.recipes_dir.rglob("*.yaml")) + list(
-            self.recipes_dir.rglob("*.yml")
-        )
+        for item in package.iterdir():
+            name = str(item.name)
+            if not (name.endswith(".yaml") or name.endswith(".yml")):
+                continue
+            if name.startswith("_"):
+                self.logger.debug(f"Skipping template/example file: {name}")
+                continue
+
+            try:
+                text = item.read_text(encoding="utf-8")
+                yaml_data = yaml.safe_load(text)
+                if not yaml_data:
+                    self.logger.warning(f"Empty bundled recipe file: {name}")
+                    continue
+                recipe = Recipe.model_validate(yaml_data)
+                self.logger.debug(f"Loaded bundled recipe: {recipe.name}")
+                recipes.append(recipe)
+            except Exception as e:
+                self.logger.error(f"Failed to load bundled recipe {name}: {e}")
+                continue
+
+        return recipes
+
+    # ------------------------------------------------------------------
+    # Filesystem recipes
+    # ------------------------------------------------------------------
+
+    def _load_directory_recipes(self, directory: Path) -> list[Recipe]:
+        """Load all recipe YAML files from a filesystem directory."""
+        recipes: list[Recipe] = []
+
+        if not directory.exists():
+            self.logger.warning(f"Recipes directory does not exist: {directory}")
+            return recipes
+
+        yaml_files = list(directory.rglob("*.yaml")) + list(directory.rglob("*.yml"))
 
         if not yaml_files:
-            self.logger.warning(f"No YAML recipe files found in: {self.recipes_dir}")
+            self.logger.warning(f"No YAML recipe files found in: {directory}")
             return recipes
 
         for yaml_file in yaml_files:
-            # Skip files starting with underscore (templates, examples)
             if yaml_file.name.startswith("_"):
                 self.logger.debug(f"Skipping template/example file: {yaml_file}")
                 continue
@@ -70,12 +169,6 @@ class RecipeLoader:
                 self.logger.error(f"Failed to load recipe from {yaml_file}: {e}")
                 continue
 
-        # Apply recipe_filter if set
-        if self.recipe_filter:
-            filter_set = {r.lower() for r in self.recipe_filter}
-            filtered_recipes = [r for r in recipes if r.name.lower() in filter_set]
-            self.logger.info(f"Filtered recipes: {[r.name for r in filtered_recipes]}")
-            return filtered_recipes
         return recipes
 
     def _load_recipe_file(self, file_path: Path) -> Recipe | None:

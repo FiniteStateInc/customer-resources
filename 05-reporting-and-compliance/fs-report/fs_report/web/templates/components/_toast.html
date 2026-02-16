@@ -1,0 +1,36 @@
+<div id="toast-container" x-data="toastManager()" @toast.window="addToast($event.detail)">
+    <template x-for="toast in toasts" :key="toast.id">
+        <div class="toast" :class="toast.type" x-show="toast.visible"
+             x-transition:enter="toast-enter"
+             x-transition:leave="toast-leave">
+            <span x-text="toast.message"></span>
+            <button class="toast-close" @click="removeToast(toast.id)">&times;</button>
+        </div>
+    </template>
+</div>
+
+<script>
+function toastManager() {
+    return {
+        toasts: [],
+        nextId: 0,
+        addToast(detail) {
+            const id = this.nextId++;
+            this.toasts.push({
+                id,
+                message: detail.message || 'Done',
+                type: detail.type || 'info',
+                visible: true,
+            });
+            setTimeout(() => this.removeToast(id), 4000);
+        },
+        removeToast(id) {
+            const t = this.toasts.find(t => t.id === id);
+            if (t) t.visible = false;
+            setTimeout(() => {
+                this.toasts = this.toasts.filter(t => t.id !== id);
+            }, 300);
+        },
+    };
+}
+</script>

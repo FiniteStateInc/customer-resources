@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}Setup — Finite State Report Kit{% endblock %}
+
+{% block content %}
+<div class="setup-page" x-data="setupWizard()">
+    <div class="setup-card">
+        <h2>Welcome to Finite State Report Kit</h2>
+        <p class="setup-intro">Let's configure your connection to the Finite State platform.</p>
+
+        <!-- Step 1: Domain -->
+        <div x-show="step === 1" class="setup-step">
+            <h3>Step 1: Enter your domain</h3>
+            <p class="setup-hint">Your Finite State domain (e.g., customer.finitestate.io)</p>
+            <div class="form-group">
+                <input type="text" x-model="domain" placeholder="customer.finitestate.io"
+                       @keyup.enter="nextStep()" class="setup-input">
+            </div>
+            <div class="setup-actions">
+                <button class="btn btn-primary" @click="nextStep()" :disabled="!domain.trim()">Next</button>
+            </div>
+        </div>
+
+        <!-- Step 2: Token -->
+        <div x-show="step === 2" class="setup-step">
+            <h3>Step 2: Enter your API token</h3>
+            <p class="setup-hint">Set via FINITE_STATE_AUTH_TOKEN environment variable, or enter below.
+                The token will be stored in ~/.fs-report/config.yaml.</p>
+            <div class="form-group">
+                <input type="password" x-model="token" placeholder="API token"
+                       @keyup.enter="nextStep()" class="setup-input">
+            </div>
+            <div class="setup-actions">
+                <button class="btn btn-default" @click="step = 1">Back</button>
+                <button class="btn btn-primary" @click="nextStep()" :disabled="!token.trim()">Next</button>
+            </div>
+        </div>
+
+        <!-- Step 3: Defaults -->
+        <div x-show="step === 3" class="setup-step">
+            <h3>Step 3: Configure defaults</h3>
+            <div class="form-group">
+                <label for="setup-output">Output directory</label>
+                <input type="text" id="setup-output" x-model="outputDir"
+                       placeholder="./output" class="setup-input">
+            </div>
+            <div class="setup-actions">
+                <button class="btn btn-default" @click="step = 2">Back</button>
+                <button class="btn btn-primary" @click="saveSetup()" :disabled="saving">
+                    <span x-show="!saving">Finish Setup</span>
+                    <span x-show="saving">Saving...</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Step indicators -->
+        <div class="setup-steps-indicator">
+            <span class="step-dot" :class="step >= 1 ? 'active' : ''"></span>
+            <span class="step-dot" :class="step >= 2 ? 'active' : ''"></span>
+            <span class="step-dot" :class="step >= 3 ? 'active' : ''"></span>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function setupWizard() {
+    return {
+        step: 1,
+        domain: '{{ state.domain or "" }}',
+        token: '',
+        outputDir: '{{ state.get("output_dir", "./output") }}',
+        saving: false,
+
+        nextStep() {
+            if (this.step === 1 && this.domain.trim()) {
+                this.step = 2;
+            } else if (this.step === 2 && this.token.trim()) {
+                this.step = 3;
+            }
+        },
+
+        saveSetup() {
+            this.saving = true;
+            const formData = new FormData();
+            formData.append('domain', this.domain.trim());
+            formData.append('token', this.token.trim());
+            formData.append('output_dir', this.outputDir.trim() || './output');
+            formData.append('_csrf', '{{ nonce }}');
+
+            fetch('/api/setup', {
+                method: 'POST',
+                headers: { 'X-FS-Session': '{{ nonce }}' },
+                body: formData,
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'saved') {
+                    window.location.href = '/';
+                }
+            })
+            .catch(() => {
+                this.saving = false;
+                window.dispatchEvent(new CustomEvent('toast', {
+                    detail: { message: 'Failed to save setup', type: 'error' }
+                }));
+            });
+        },
+    };
+}
+</script>
+{% endblock %}

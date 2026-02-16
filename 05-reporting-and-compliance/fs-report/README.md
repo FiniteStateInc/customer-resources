@@ -29,7 +29,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Report | Description |
 |--------|-------------|
 | Component Vulnerability Analysis | Riskiest components across the portfolio |
-| Findings by Project | Complete findings inventory per project |
+| Findings by Project | Complete findings inventory per project with CVE details, severity, and platform links |
 | Component List | Software inventory (SBOM) for compliance |
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
 | CVE Impact | CVE-centric dossier with affected projects, reachability, and exploit intelligence *(on-demand)* |
@@ -42,6 +42,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 - Python 3.11+
 - Poetry (for dependency management)
 - Finite State API access
+- FastAPI and uvicorn are included by default (powers the web UI)
 
 ### Installation
 
@@ -51,12 +52,13 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
    cd customer-resources/05-reporting-and-compliance/fs-report
    ```
 
-2. **Install dependencies**:
+2. **Install dependencies and activate the environment**:
    ```bash
    poetry install
+   poetry shell
    ```
 
-3. **Set up API credentials** (Poetry handles the Python environment automatically):
+3. **Set up API credentials**:
    ```bash
    export FINITE_STATE_AUTH_TOKEN="your-api-token"
    export FINITE_STATE_DOMAIN="customer.finitestate.io"
@@ -64,85 +66,148 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 
 4. **Verify installation**:
    ```bash
-   poetry run fs-report --help
+   fs-report --help
    ```
+
+> All examples below assume the Poetry environment is active (`poetry shell`). If you prefer not to activate the shell, prefix each command with `poetry run`.
+
+### CLI Command Structure
+
+The CLI is organized into subcommands for better discoverability:
+
+| Command | Description |
+|---------|-------------|
+| `fs-report` | Launch the web UI (default, no arguments) |
+| `fs-report run` | Generate reports (all existing flags preserved) |
+| `fs-report list {recipes,projects,folders,versions}` | Explore available resources |
+| `fs-report cache {clear,status}` | Manage cached data |
+| `fs-report config {init,show}` | Manage configuration |
+| `fs-report help periods` | Show period format help |
+| `fs-report serve [directory]` | Serve reports via local HTTP server |
+
+> **Backwards compatibility:** Old command names (`list-recipes`, `list-projects`, `show-periods`, bare `fs-report --recipe ...`) still work but emit deprecation warnings.
+
+### Config File
+
+Set defaults in `.fs-report.yaml` (searched in CWD first, then `~/.fs-report/config.yaml`):
+
+```yaml
+# .fs-report.yaml
+recipe: "Executive Summary"
+period: 30d
+output: ./reports
+verbose: true
+```
+
+Priority: CLI flags > environment variables > config file > defaults.
+
+Create one interactively: `fs-report config init`
 
 ### CLI Usage Examples
 
+**Generate reports** with `fs-report run`:
+
 ```bash
-# Run all reports with default settings
-poetry run fs-report
+fs-report run                                          # All reports, default settings
+fs-report run --recipe "Executive Summary"             # Single report
+fs-report run --recipe "Executive Summary" --period 1m # Last month
+fs-report run --start 2025-01-01 --end 2025-01-31     # Exact date range
+fs-report run --period 7d                              # Last 7 days
+```
 
-# Run only the Executive Summary report
-poetry run fs-report --recipe "Executive Summary"
+**Filter** by project, version, or finding type:
 
-# Specify a custom date range
-poetry run fs-report --start 2025-01-01 --end 2025-01-31
+```bash
+fs-report run --project "MyProject"                    # By project name or ID
+fs-report run --version "1234567890"                   # By version ID (no project needed)
+fs-report run --project "MyProject" --version "v1.2.3" # Version name (needs project)
+fs-report run --finding-types cve                      # CVE only (default)
+fs-report run --finding-types cve,credentials          # CVE + credentials
+fs-report run --finding-types all                      # All finding types
+```
 
-# Use a relative time period (e.g., last 7 days, last month)
-poetry run fs-report --period 7d
-poetry run fs-report --period 1m
+**Version scope** — by default only the latest version of each project is analysed:
 
-# Filter by project name or ID
-poetry run fs-report --project "MyProject"
+```bash
+fs-report run --period 1w                              # Latest version per project (fast)
+fs-report run --period 1w --all-versions               # All historical versions (slower)
+```
 
-# Filter by project version (version ID or name)
-poetry run fs-report --version "1234567890"  # Version ID (no project needed)
+**CVE Impact** — investigate specific CVEs across your portfolio:
 
-# Control which finding types are included (default: cve)
-poetry run fs-report --finding-types cve              # CVE only (default)
-poetry run fs-report --finding-types cve,credentials  # CVE + credentials
-poetry run fs-report --finding-types all              # All findings
-poetry run fs-report --project "MyProject" --version "v1.2.3"  # Version name (project required)
+```bash
+fs-report run --recipe "CVE Impact" --cve CVE-2024-1234
+fs-report run --recipe "CVE Impact" --cve CVE-2024-1234,CVE-2024-5678
+fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --project myproject
+fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --ai-prompts
+fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --ai
+```
 
-# Version filtering (default: latest version only for performance)
-poetry run fs-report --period 1w                      # Default: latest version per project (fast)
-poetry run fs-report --period 1w --all-versions       # Include all historical versions (slower)
+**Persistent cache** (beta) — crash recovery and faster reruns:
 
-# CVE Impact report — investigate specific CVEs across your portfolio
-poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234
-poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234,CVE-2024-5678
-poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234 --project myproject
-poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234 --ai-prompts  # Export LLM prompts
-poetry run fs-report --recipe "CVE Impact" --cve CVE-2024-1234 --ai          # Live AI guidance
+```bash
+fs-report run --cache-ttl 1h                           # Cache data for 1 hour
+fs-report run --cache-ttl 30m                          # 30 minutes
+fs-report run --no-cache                               # Force fresh data
+fs-report cache status                                 # Show cache stats
+fs-report cache clear                                  # Delete all cached data
+```
 
-# [BETA] Persistent cache with TTL for crash recovery and faster reruns
-poetry run fs-report --cache-ttl 1h                   # Cache data for 1 hour
-poetry run fs-report --cache-ttl 30m                  # Cache data for 30 minutes
-poetry run fs-report --no-cache                       # Force fresh data fetch
-poetry run fs-report --clear-cache                    # Delete all cached data and exit
+**List resources**:
 
-# List available recipes
-poetry run fs-report list-recipes
+```bash
+fs-report list recipes
+fs-report list projects
+fs-report list versions                                # All versions across portfolio
+fs-report list versions "MyProject"                    # Versions for one project
+fs-report list versions -n 10                          # Top 10 by version count
+fs-report list versions --folder "Product Line A"
+```
 
-# List available projects
-poetry run fs-report list-projects
+**Configuration**:
 
-# List available versions for a project
-poetry run fs-report list-versions "MyProject"
+```bash
+fs-report config init                                  # Interactive config wizard
+fs-report config show                                  # Show resolved config
+```
 
-# List all versions across the portfolio
-poetry run fs-report list-versions
+**Serve reports** and **web UI**:
 
-# List top 10 projects by version count
-poetry run fs-report list-versions -n 10
+```bash
+fs-report                                              # Launch web UI on localhost:8321
+fs-report serve ./output                               # Serve existing reports
+```
 
-# Only projects in a folder (fewer API calls)
-poetry run fs-report list-versions --folder "Product Line A"
-poetry run fs-report list-versions --top 20 --folder "Product Line A"
+**Performance tuning** and other options:
 
-# Specify custom recipes and output directories
-poetry run fs-report --recipes ./my-recipes --output ./my-reports
+```bash
+fs-report run --verbose                                # Verbose logging
+fs-report run --batch-size 3                           # Reduce API batch size (default 5)
+fs-report run --request-delay 1.0                      # Increase delay between requests
+fs-report run --recipes ./my-recipes --output ./reports # Custom directories
+fs-report help periods                                 # Period format help
+```
 
-# Enable verbose logging
-poetry run fs-report --verbose
+> **Backwards compatibility:** Old-style commands still work with deprecation warnings:
+> `fs-report --recipe "..." --period 1m` → `fs-report run --recipe "..." --period 1m`,
+> `fs-report list-recipes` → `fs-report list recipes`,
+> `fs-report list-projects` → `fs-report list projects`,
+> `fs-report show-periods` → `fs-report help periods`.
 
-# Performance tuning for large instances
-poetry run fs-report --batch-size 3                  # Reduce API batch size (default 5, range 1-25)
-poetry run fs-report --request-delay 1.0             # Increase delay between API requests (default 0.5s)
+### Web UI
 
-# Show help for period format specifications
-poetry run fs-report show-periods
+Running bare `fs-report` (no arguments) launches an interactive web UI at `http://localhost:8321`:
+
+- **Dashboard** with workflow cards for common report scenarios
+- **Real-time progress** streaming via Server-Sent Events (SSE) during report generation
+- **Settings management** with persistence to `~/.fs-report/config.yaml`
+- **Reports browser** with preview for previously generated reports
+- **CSRF protection** and localhost-only access for security
+
+To serve existing reports without the full UI:
+
+```bash
+fs-report serve ./output
 ```
 
 ## Performance and Caching
@@ -167,13 +232,13 @@ For long-running reports or iterative development, enable the persistent cache:
 
 ```bash
 # Cache data for 1 hour - enables crash recovery and faster reruns
-poetry run fs-report --cache-ttl 1h
+fs-report run --cache-ttl 1h
 
 # Force fresh data (ignore cache)
-poetry run fs-report --no-cache
+fs-report run --no-cache
 
 # Clear all cached data
-poetry run fs-report --clear-cache
+fs-report cache clear
 ```
 
 Benefits:
@@ -195,13 +260,13 @@ The reporting kit supports AI-powered remediation guidance via the `--ai` flag. 
 
 ```bash
 # Auto-detect provider from env vars
-poetry run fs-report --recipe "Triage Prioritization" --ai --period 30d
+fs-report run --recipe "Triage Prioritization" --ai --period 30d
 
 # Explicit provider
-poetry run fs-report --recipe "Triage Prioritization" --ai --ai-provider openai --period 30d
+fs-report run --recipe "Triage Prioritization" --ai --ai-provider openai --period 30d
 
 # Export prompts for manual use (no API key required)
-poetry run fs-report --recipe "Triage Prioritization" --ai-prompts --period 30d
+fs-report run --recipe "Triage Prioritization" --ai-prompts --period 30d
 ```
 
 See `REPORT_GUIDE.md` for full AI feature details.
@@ -227,32 +292,32 @@ If you prefer Docker over a local Python install, you can run reports in a conta
      -v $(pwd)/output:/app/output \
      -e FINITE_STATE_AUTH_TOKEN \
      -e FINITE_STATE_DOMAIN \
-     fs-report --period 1m --recipe "Executive Summary"
+     fs-report run --period 1m --recipe "Executive Summary"
    ```
 
-The same CLI flags documented above work inside Docker. Just replace `poetry run fs-report` with the `docker run ...` prefix. A few more examples:
+The same CLI flags documented above work inside Docker. Just replace `fs-report` with the `docker run ...` prefix. A few more examples:
 
 ```bash
 # Run all reports for January 2026
 docker run --rm -v $(pwd)/output:/app/output \
   -e FINITE_STATE_AUTH_TOKEN -e FINITE_STATE_DOMAIN \
-  fs-report --start 2026-01-01 --end 2026-01-31
+  fs-report run --start 2026-01-01 --end 2026-01-31
 
 # Scope to a folder
 docker run --rm -v $(pwd)/output:/app/output \
   -e FINITE_STATE_AUTH_TOKEN -e FINITE_STATE_DOMAIN \
-  fs-report --folder "Product Line A" --period 1m
+  fs-report run --folder "Product Line A" --period 1m
 
 # List projects (no output volume needed)
 docker run --rm -e FINITE_STATE_AUTH_TOKEN -e FINITE_STATE_DOMAIN \
-  fs-report list-projects
+  fs-report list projects
 
 # Use custom recipes by mounting your own recipes directory
 docker run --rm \
   -v $(pwd)/my-recipes:/app/recipes \
   -v $(pwd)/output:/app/output \
   -e FINITE_STATE_AUTH_TOKEN -e FINITE_STATE_DOMAIN \
-  fs-report
+  fs-report run
 ```
 
 ## Data Comparison Tools

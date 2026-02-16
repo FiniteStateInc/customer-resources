@@ -1,0 +1,52 @@
+<nav class="top-nav">
+    <div class="nav-brand">
+        <a href="/">Finite State Report Kit</a>
+    </div>
+    <div class="nav-links">
+        <a href="/" class="nav-link">Dashboard</a>
+        <a href="/reports" class="nav-link">Reports</a>
+        <a href="/settings" class="nav-link">Settings</a>
+        <div id="active-runs-indicator"
+             hx-get="/api/runs/active"
+             hx-trigger="load, every 5s"
+             hx-swap="innerHTML"
+             hx-target="#active-runs-list">
+            <div id="active-runs-list"></div>
+        </div>
+    </div>
+</nav>
+
+<script>
+/* Render active runs indicator from JSON response */
+document.addEventListener('htmx:beforeSwap', function(e) {
+    if (e.detail.target && e.detail.target.id === 'active-runs-list') {
+        try {
+            var runs = JSON.parse(e.detail.xhr.responseText);
+            var running = runs.filter(function(r) { return r.status === 'running'; });
+            var html = '';
+            if (running.length > 0) {
+                html = '<div class="active-runs-badge">';
+                html += '<span class="run-pulse"></span>';
+                for (var i = 0; i < running.length; i++) {
+                    var r = running[i];
+                    var label = r.recipes.length + ' recipe' + (r.recipes.length > 1 ? 's' : '');
+                    var elapsed = r.elapsed < 60 ? r.elapsed + 's' : Math.floor(r.elapsed / 60) + 'm';
+                    html += '<a href="/run/' + r.run_id + '" class="active-run-link" title="' + r.recipes.join(', ') + '">';
+                    html += label + ' (' + elapsed + ')';
+                    html += '</a>';
+                }
+                html += '</div>';
+            }
+            /* Show recently completed runs briefly */
+            var completed = runs.filter(function(r) { return r.status === 'completed' && r.elapsed < 300; });
+            for (var j = 0; j < completed.length; j++) {
+                var c = completed[j];
+                html += '<a href="/run/' + c.run_id + '" class="completed-run-link" title="' + c.recipes.join(', ') + '">Done</a>';
+            }
+            e.detail.serverResponse = html;
+        } catch (err) {
+            e.detail.serverResponse = '';
+        }
+    }
+});
+</script>

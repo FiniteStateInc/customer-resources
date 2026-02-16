@@ -61,7 +61,9 @@ def user_activity_pandas_transform(
     df = normalize_audit_fields(df)
 
     # Parse timestamps
-    df["timestamp"] = pd.to_datetime(df["time"], errors="coerce", utc=True)
+    df["timestamp"] = pd.to_datetime(
+        df["time"], format="ISO8601", errors="coerce", utc=True
+    )
     df["date"] = df["timestamp"].dt.date
 
     # Filter out rows with invalid timestamps

@@ -1,0 +1,132 @@
+<div class="prerun-panel" id="prerun-panel">
+    <div class="prerun-header">
+        <h2>{% if workflow_title %}{{ workflow_title }}{% else %}Run Recipes{% endif %}</h2>
+        <p class="prerun-recipes">{{ recipe_names | join(', ') }}</p>
+        <button class="btn-close prerun-close">&times;</button>
+    </div>
+
+    <form id="prerun-submit-form" onsubmit="return false;">
+        <input type="hidden" name="recipes" value="{{ recipe_names | join(',') }}">
+        <input type="hidden" name="_csrf" value="{{ nonce }}">
+
+        <!-- Run Settings (always shown) -->
+        <details open class="form-section">
+            <summary class="form-section-title">Run Settings</summary>
+            <div class="form-group">
+                <label for="pre-period">Period</label>
+                <input type="text" id="pre-period" name="period"
+                       value="{{ state.get('period', '30d') }}" placeholder="30d, 2m, 90d">
+            </div>
+            <div class="form-group">
+                <label for="pre-output">Output directory</label>
+                <input type="text" id="pre-output" name="output_dir"
+                       value="{{ state.get('output_dir', './output') }}" placeholder="./output">
+            </div>
+            <div class="form-group form-row">
+                <label for="pre-overwrite">Overwrite existing</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-overwrite" name="overwrite"
+                           {% if state.get('overwrite') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label for="pre-cache-ttl">Cache TTL (hours, 0=off)</label>
+                <input type="text" id="pre-cache-ttl" name="cache_ttl"
+                       value="{{ state.get('cache_ttl', '4') }}" placeholder="4">
+            </div>
+        </details>
+
+        <!-- Assessment Scope -->
+        <details open class="form-section">
+            <summary class="form-section-title">Assessment Scope</summary>
+            <div class="form-group">
+                <label for="pre-project">Project filter</label>
+                <input type="text" id="pre-project" name="project_filter"
+                       value="{{ state.get('project_filter', '') }}" placeholder="(all projects)">
+            </div>
+            <div class="form-group">
+                <label for="pre-folder">Folder filter</label>
+                <input type="text" id="pre-folder" name="folder_filter"
+                       value="{{ state.get('folder_filter', '') }}" placeholder="(all folders)">
+            </div>
+            <div class="form-group form-row">
+                <label for="pre-cvo">Current version only</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-cvo" name="current_version_only"
+                           {% if state.get('current_version_only', True) %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+
+            {% if show_cve %}
+            <div class="form-group">
+                <label for="pre-cve">CVE ID(s)</label>
+                <input type="text" id="pre-cve" name="cve_filter"
+                       value="{{ state.get('cve_filter', '') }}"
+                       placeholder="CVE-2024-1234, CVE-2024-5678">
+            </div>
+            {% endif %}
+
+            {% if show_finding_types %}
+            <div class="form-group">
+                <label for="pre-ft">Finding types</label>
+                <input type="text" id="pre-ft" name="finding_types"
+                       value="{{ state.get('finding_types', 'cve') }}"
+                       placeholder="cve, sast">
+            </div>
+            {% endif %}
+
+            {% if show_version_fields %}
+            <div class="form-group">
+                <label for="pre-bv">Baseline version</label>
+                <input type="text" id="pre-bv" name="baseline_version"
+                       value="{{ state.get('baseline_version', '') }}"
+                       placeholder="Baseline version ID">
+            </div>
+            <div class="form-group">
+                <label for="pre-cv">Current version</label>
+                <input type="text" id="pre-cv" name="current_version"
+                       value="{{ state.get('current_version', '') }}"
+                       placeholder="Current version ID">
+            </div>
+            {% endif %}
+        </details>
+
+        {% if show_ai %}
+        <!-- AI Settings -->
+        <details open class="form-section">
+            <summary class="form-section-title">AI Settings</summary>
+            <div class="form-group form-row">
+                <label for="pre-ai">Enable AI</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-ai" name="ai"
+                           {% if state.get('ai') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label for="pre-ai-depth">AI depth</label>
+                <select id="pre-ai-depth" name="ai_depth">
+                    <option value="summary" {% if state.get('ai_depth', 'summary') == 'summary' %}selected{% endif %}>Summary</option>
+                    <option value="full" {% if state.get('ai_depth') == 'full' %}selected{% endif %}>Full</option>
+                </select>
+            </div>
+            <div class="form-group form-row">
+                <label for="pre-ai-prompts">Export AI prompts</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-ai-prompts" name="ai_prompts"
+                           {% if state.get('ai_prompts') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+        </details>
+        {% endif %}
+
+        <div class="prerun-actions">
+            <button type="button" class="btn btn-primary" id="btn-run-submit">Run</button>
+            <button type="button" class="btn btn-default prerun-close">Cancel</button>
+        </div>
+    </form>
+</div>
+

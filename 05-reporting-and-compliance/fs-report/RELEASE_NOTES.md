@@ -1,5 +1,41 @@
 # Release Notes
 
+## Version 1.3.0 (February 2026)
+
+### New Features
+
+- **Web UI** — Launch with bare `fs-report` to open an interactive browser-based interface
+  - Dashboard with workflow cards for common report scenarios
+  - Real-time progress streaming during report generation
+  - Settings management and reports browser
+  - Runs on `http://localhost:8321` with CSRF protection
+
+- **CLI v2 — Organized command groups** for better discoverability
+  - `fs-report run` — generate reports (all existing flags work)
+  - `fs-report list {recipes,projects,folders,versions}` — explore resources
+  - `fs-report cache {clear,status}` — manage cached data
+  - `fs-report config {init,show}` — manage configuration
+  - `fs-report serve [directory]` — serve reports via local HTTP server
+  - Old command names (`list-recipes`, `show-periods`, bare `fs-report --recipe ...`) still work
+
+- **Config file support** — Set defaults in `.fs-report.yaml` or `~/.fs-report/config.yaml`
+  - Create interactively: `fs-report config init`
+  - View resolved config: `fs-report config show`
+  - Priority: CLI flags > environment variables > config file > defaults
+
+- **Enhanced Findings by Project report** — 7 new columns for richer vulnerability context
+  - Severity (color-coded badge), Description (from NVD), CVSS v2/v3 Vector strings
+  - NVD URL and FS Link for direct navigation to NVD and Finite State platform
+  - CVE details fetched in parallel with deduplication (1 API call per unique CVE)
+
+### Changes
+
+- Default invocation (`fs-report` with no arguments) now launches the web UI instead of the TUI
+- TUI moved to optional dependency (`poetry install --with tui`)
+- Version bumped to 1.3.0
+
+---
+
 ## Version 1.1.4 (February 2026)
 
 ### New Features

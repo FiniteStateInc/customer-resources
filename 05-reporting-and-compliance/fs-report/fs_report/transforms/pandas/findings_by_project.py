@@ -10,7 +10,9 @@ from fs_report.models import Config
 
 
 def findings_by_project_pandas_transform(
-    data: list[dict[str, Any]] | pd.DataFrame, config: Config
+    data: list[dict[str, Any]] | pd.DataFrame,
+    config: Config,
+    additional_data: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     """
     Transform findings data for the Findings by Project report with optional project filtering.
@@ -18,6 +20,7 @@ def findings_by_project_pandas_transform(
     Args:
         data: Raw findings data from API (list of dicts or DataFrame)
         config: Configuration including optional project_filter
+        additional_data: Optional dict with cve_details and domain for enrichment
 
     Returns:
         Processed DataFrame with findings organized by project
@@ -50,6 +53,7 @@ def findings_by_project_pandas_transform(
         "project.name": "Project Name",
         "project.version": "Project Version",
         "cve_id": "CVE ID",
+        "severity": "Severity",
     }
 
     # Create output DataFrame with required columns
@@ -61,8 +65,72 @@ def findings_by_project_pandas_transform(
             # Handle missing columns gracefully
             output_df[output_col] = None
 
+    # Carry over internal IDs for link construction (not displayed in table)
+    for internal_col in ("finding_numeric_id", "project.id", "projectVersion.id"):
+        if internal_col in df.columns:
+            output_df[internal_col] = df[internal_col].values
+
     # Free the large intermediate DataFrame now that we've extracted needed columns
     del df
+
+    # --- Enrich with CVE details from additional_data ---
+    cve_details: dict[str, dict[str, str]] = {}
+    domain = ""
+    if additional_data:
+        cve_details = additional_data.get("cve_details", {})
+        domain = additional_data.get("domain", "")
+
+    # Description, CVSS v2 Vector, CVSS v3 Vector from cve_details lookup
+    output_df["Description"] = output_df["CVE ID"].map(
+        lambda cve: cve_details.get(cve, {}).get("description", "")
+        if cve_details
+        else ""
+    )
+    output_df["CVSS v2 Vector"] = output_df["CVE ID"].map(
+        lambda cve: cve_details.get(cve, {}).get("cvss_v2_vector", "")
+        if cve_details
+        else ""
+    )
+    output_df["CVSS v3 Vector"] = output_df["CVE ID"].map(
+        lambda cve: cve_details.get(cve, {}).get("cvss_v3_vector", "")
+        if cve_details
+        else ""
+    )
+
+    # NVD URL — constructed from CVE ID
+    output_df["NVD URL"] = output_df["CVE ID"].apply(
+        lambda cve: f"https://nvd.nist.gov/vuln/detail/{cve}"
+        if cve and cve != "N/A"
+        else ""
+    )
+
+    # FS Link — constructed from domain + project.id + projectVersion.id + finding_numeric_id
+    if (
+        domain
+        and "project.id" in output_df.columns
+        and "projectVersion.id" in output_df.columns
+        and "finding_numeric_id" in output_df.columns
+    ):
+        output_df["FS Link"] = output_df.apply(
+            lambda row: (
+                f"https://{domain}/projects/{row.get('project.id', '')}"
+                f"/versions/{row.get('projectVersion.id', '')}"
+                f"/findings?findingId={row.get('finding_numeric_id', '')}"
+            )
+            if row.get("project.id")
+            and row.get("projectVersion.id")
+            and row.get("finding_numeric_id")
+            else "",
+            axis=1,
+        )
+    else:
+        output_df["FS Link"] = ""
+
+    # Drop internal ID columns (not needed in output)
+    output_df = output_df.drop(
+        columns=["finding_numeric_id", "project.id", "projectVersion.id"],
+        errors="ignore",
+    )
 
     # Sort by CVSS score (descending) and then by Project Name
     output_df = output_df.sort_values(["CVSS", "Project Name"], ascending=[False, True])
@@ -79,6 +147,12 @@ def findings_by_project_pandas_transform(
             "CWE": "Unknown",
             "Project Name": "Unknown",
             "Project Version": "Unknown",
+            "Severity": "",
+            "Description": "",
+            "CVSS v2 Vector": "",
+            "CVSS v3 Vector": "",
+            "NVD URL": "",
+            "FS Link": "",
         }
     )
 
@@ -221,11 +295,32 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
                     pass
             return "Unknown"
 
+        def extract_project_version_id(project_version: Any) -> Any:
+            if isinstance(project_version, dict):
+                return project_version.get("id", "")
+            if isinstance(project_version, str):
+                try:
+                    pv = ast.literal_eval(project_version)
+                    if isinstance(pv, dict):
+                        return pv.get("id", "")
+                except Exception:
+                    pass
+            return ""
+
         df["project.version"] = df["projectVersion"].apply(extract_project_version)
+        df["projectVersion.id"] = df["projectVersion"].apply(extract_project_version_id)
 
     # Handle CVE ID from findingId
     if "findingId" in df.columns:
         df["cve_id"] = df["findingId"]
+
+    # Extract finding numeric id (for FS link construction)
+    if "id" in df.columns:
+        df["finding_numeric_id"] = df["id"]
+
+    # Extract severity (already in API response)
+    if "severity" not in df.columns:
+        df["severity"] = ""
 
     # Handle CVSS score from risk field
     if "risk" in df.columns:

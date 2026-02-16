@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+
+{% block title %}Settings — Finite State Report Kit{% endblock %}
+
+{% block content %}
+<div class="settings-page" x-data="settingsForm()">
+    <h2>Settings</h2>
+
+    <form id="settings-form" @submit.prevent="saveSettings()">
+        <input type="hidden" name="_csrf" value="{{ nonce }}">
+
+        <!-- Connection (read-only) -->
+        <details open class="form-section">
+            <summary class="form-section-title">Connection</summary>
+            <div class="form-group">
+                <label>Domain</label>
+                <div class="form-static">{{ state.domain or '(not set)' }} <span class="form-hint">(from env)</span></div>
+            </div>
+            <div class="form-group">
+                <label>Token</label>
+                <div class="form-static">{{ token_display }} <span class="form-hint">(from env)</span></div>
+            </div>
+        </details>
+
+        <!-- Operational Defaults -->
+        <details open class="form-section">
+            <summary class="form-section-title">Operational Defaults</summary>
+            <div class="form-group">
+                <label for="cfg-output">Default output directory</label>
+                <input type="text" id="cfg-output" name="output_dir"
+                       value="{{ state.get('output_dir', './output') }}">
+            </div>
+            <div class="form-group">
+                <label for="cfg-period">Default period</label>
+                <input type="text" id="cfg-period" name="period"
+                       value="{{ state.get('period', '30d') }}">
+            </div>
+            <div class="form-group form-row">
+                <label for="cfg-overwrite">Default overwrite</label>
+                <label class="toggle">
+                    <input type="checkbox" id="cfg-overwrite" name="overwrite"
+                           {% if state.get('overwrite') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label for="cfg-cache-ttl">Cache TTL (hours, 0=off)</label>
+                <input type="text" id="cfg-cache-ttl" name="cache_ttl"
+                       value="{{ state.get('cache_ttl', '4') }}">
+            </div>
+            <div class="form-group form-row">
+                <label for="cfg-verbose">Verbose logging</label>
+                <label class="toggle">
+                    <input type="checkbox" id="cfg-verbose" name="verbose"
+                           {% if state.get('verbose') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+        </details>
+
+        <!-- Cache Management -->
+        <details open class="form-section">
+            <summary class="form-section-title">Cache Management</summary>
+            <div class="cache-info">
+                <div class="cache-stat">
+                    <span class="cache-label">Location</span>
+                    <span class="cache-value">{{ cache_info.location }}</span>
+                </div>
+                <div class="cache-stat">
+                    <span class="cache-label">API Cache</span>
+                    <span class="cache-value">{{ cache_info.size_mb }} MB, {{ cache_info.entries }} entries</span>
+                </div>
+                {% if cache_info.ai_size_mb > 0 %}
+                <div class="cache-stat">
+                    <span class="cache-label">AI Cache</span>
+                    <span class="cache-value">{{ cache_info.ai_size_mb }} MB</span>
+                </div>
+                {% endif %}
+            </div>
+            <div class="form-actions-row">
+                <button type="button" class="btn btn-warning btn-sm"
+                        hx-delete="/api/settings/cache/api"
+                        hx-headers='{"X-FS-Session": "{{ nonce }}"}'
+                        hx-swap="none"
+                        @htmx:after-request="$dispatch('toast', {message: 'API cache cleared', type: 'success'})">
+                    Clear API Cache
+                </button>
+                <button type="button" class="btn btn-warning btn-sm"
+                        hx-delete="/api/settings/cache/ai"
+                        hx-headers='{"X-FS-Session": "{{ nonce }}"}'
+                        hx-swap="none"
+                        @htmx:after-request="$dispatch('toast', {message: 'AI cache cleared', type: 'success'})">
+                    Clear AI Cache
+                </button>
+            </div>
+        </details>
+
+        <!-- Assessment Defaults -->
+        <details open class="form-section">
+            <summary class="form-section-title">Assessment Defaults</summary>
+            <div class="form-group">
+                <label for="cfg-project">Default project filter</label>
+                <input type="text" id="cfg-project" name="project_filter"
+                       value="{{ state.get('project_filter', '') }}" placeholder="(all projects)">
+            </div>
+            <div class="form-group">
+                <label for="cfg-folder">Default folder filter</label>
+                <input type="text" id="cfg-folder" name="folder_filter"
+                       value="{{ state.get('folder_filter', '') }}" placeholder="(all folders)">
+            </div>
+            <div class="form-group">
+                <label for="cfg-ft">Default finding types</label>
+                <input type="text" id="cfg-ft" name="finding_types"
+                       value="{{ state.get('finding_types', 'cve') }}">
+            </div>
+            <div class="form-group form-row">
+                <label for="cfg-cvo">Current version only</label>
+                <label class="toggle">
+                    <input type="checkbox" id="cfg-cvo" name="current_version_only"
+                           {% if state.get('current_version_only', True) %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <div class="form-group form-row">
+                <label for="cfg-ai">Enable AI</label>
+                <label class="toggle">
+                    <input type="checkbox" id="cfg-ai" name="ai"
+                           {% if state.get('ai') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label for="cfg-ai-depth">AI depth</label>
+                <select id="cfg-ai-depth" name="ai_depth">
+                    <option value="summary" {% if state.get('ai_depth', 'summary') == 'summary' %}selected{% endif %}>Summary</option>
+                    <option value="full" {% if state.get('ai_depth') == 'full' %}selected{% endif %}>Full</option>
+                </select>
+            </div>
+            <div class="form-group form-row">
+                <label for="cfg-ai-prompts">Export AI prompts</label>
+                <label class="toggle">
+                    <input type="checkbox" id="cfg-ai-prompts" name="ai_prompts"
+                           {% if state.get('ai_prompts') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+        </details>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+            <a href="/" class="btn btn-default">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function settingsForm() {
+    return {
+        saveSettings() {
+            const form = document.getElementById('settings-form');
+            const formData = new FormData(form);
+            fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'X-FS-Session': '{{ nonce }}' },
+                body: formData,
+            })
+            .then(r => r.json())
+            .then(data => {
+                window.dispatchEvent(new CustomEvent('toast', {
+                    detail: { message: 'Settings saved', type: 'success' }
+                }));
+            })
+            .catch(() => {
+                window.dispatchEvent(new CustomEvent('toast', {
+                    detail: { message: 'Failed to save settings', type: 'error' }
+                }));
+            });
+        },
+    };
+}
+</script>
+{% endblock %}

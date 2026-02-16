@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+
+{% block title %}Run Progress — Finite State Report Kit{% endblock %}
+
+{% block content %}
+<div class="progress-page" x-data="progressStream('{{ run_id }}')">
+    <h2>Running {{ recipes | length }} recipe(s)</h2>
+    <p class="progress-recipes">{{ recipes | join(', ') }}</p>
+
+    <!-- Progress bar -->
+    <div class="progress-bar-container">
+        <div class="progress-bar" :style="'width: ' + progressPct + '%'"></div>
+        <span class="progress-text" x-text="progressLabel"></span>
+    </div>
+
+    <!-- Log output -->
+    <div class="log-output" id="log-output">
+        <template x-for="line in logLines" :key="line.id">
+            <div class="log-line" :class="'log-' + line.level" x-text="line.message"></div>
+        </template>
+    </div>
+
+    <!-- Status banner -->
+    <div x-show="done" class="run-result" :class="resultClass">
+        <template x-if="status === 'success'">
+            <div>
+                <p class="result-message">Report generation completed successfully!</p>
+                <a href="/reports" class="btn btn-primary">View Reports</a>
+            </div>
+        </template>
+        <template x-if="status === 'error'">
+            <div>
+                <p class="result-message">Report generation failed.</p>
+                <p class="result-error" x-text="errorMsg"></p>
+            </div>
+        </template>
+    </div>
+
+    <div class="progress-actions">
+        <a href="/" class="btn btn-default">Back to Dashboard</a>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function progressStream(runId) {
+    return {
+        logLines: [],
+        nextLineId: 0,
+        completed: 0,
+        total: 0,
+        progressPct: 0,
+        progressLabel: '0 / 0',
+        done: false,
+        status: '',
+        errorMsg: '',
+        resultClass: '',
+        eventSource: null,
+
+        init() {
+            this.eventSource = new EventSource('/api/run/' + runId + '/events');
+
+            this.eventSource.addEventListener('log', (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    this.logLines.push({
+                        id: this.nextLineId++,
+                        level: data.level || 'info',
+                        message: data.message || '',
+                    });
+                    // Auto-scroll
+                    this.$nextTick(() => {
+                        const el = document.getElementById('log-output');
+                        if (el) el.scrollTop = el.scrollHeight;
+                    });
+                } catch (err) {}
+            });
+
+            this.eventSource.addEventListener('progress', (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    this.completed = data.completed || 0;
+                    this.total = data.total || 0;
+                    this.progressPct = this.total > 0 ? Math.round((this.completed / this.total) * 100) : 0;
+                    this.progressLabel = this.completed + ' / ' + this.total;
+                } catch (err) {}
+            });
+
+            this.eventSource.addEventListener('done', (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    this.done = true;
+                    this.status = data.status || 'error';
+                    this.errorMsg = data.error || '';
+                    this.resultClass = this.status === 'success' ? 'result-success' : 'result-error';
+                    if (this.status === 'success') {
+                        this.progressPct = 100;
+                    }
+                } catch (err) {}
+                this.eventSource.close();
+            });
+
+            this.eventSource.addEventListener('ping', () => {});
+
+            this.eventSource.onerror = () => {
+                if (!this.done) {
+                    this.logLines.push({
+                        id: this.nextLineId++,
+                        level: 'warning',
+                        message: 'Connection lost. Reconnecting...',
+                    });
+                }
+            };
+        },
+
+        destroy() {
+            if (this.eventSource) {
+                this.eventSource.close();
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

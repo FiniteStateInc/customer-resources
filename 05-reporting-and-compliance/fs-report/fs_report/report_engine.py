@@ -24,8 +24,12 @@ import gc
 import hashlib
 import logging
 import platform
-import resource
 import time
+
+try:
+    import resource  # Unix only; not available on Windows
+except ImportError:
+    resource = None  # type: ignore[assignment]
 from typing import Any
 
 import pandas as pd
@@ -158,7 +162,10 @@ class ReportEngine:
             cache=self.cache,
             cache_ttl=getattr(config, "cache_ttl", 0),
         )
-        self.recipe_loader = RecipeLoader(config.recipes_dir)
+        self.recipe_loader = RecipeLoader(
+            config.recipes_dir,
+            use_bundled=getattr(config, "use_bundled_recipes", True),
+        )
 
         # Initialize transformer (only pandas is used)
         self.transformer = DataTransformer()
@@ -2140,6 +2147,12 @@ class ReportEngine:
                 self.logger.warning(f"No data returned for recipe: {recipe.name}")
                 raw_data = []
 
+            # --- Enrich with CVE details for Findings by Project ---
+            if recipe.name == "Findings by Project" and raw_data:
+                self._findings_by_project_cve_details = (
+                    self._fetch_findings_cve_details(raw_data)
+                )
+
             # --- Apply flattening if needed ---
             if recipe.name == "Component Vulnerability Analysis":
                 # Flatten nested structures if needed
@@ -2260,6 +2273,18 @@ class ReportEngine:
                     additional_data[
                         "exploit_details"
                     ] = self._cve_impact_exploit_details
+
+            # Inject CVE details for Findings by Project
+            if recipe.name == "Findings by Project":
+                if (
+                    hasattr(self, "_findings_by_project_cve_details")
+                    and self._findings_by_project_cve_details
+                ):
+                    additional_data[
+                        "cve_details"
+                    ] = self._findings_by_project_cve_details
+                # Pass domain for FS platform link construction
+                additional_data["domain"] = self.config.domain
 
             # Inject Version Comparison data into additional_data
             if recipe.name == "Version Comparison" and hasattr(
@@ -2659,6 +2684,137 @@ class ReportEngine:
         # Polite delay between API calls
         time.sleep(0.3)
         return result
+
+    def _fetch_findings_cve_details(
+        self, raw_data: list[dict]
+    ) -> dict[str, dict[str, str]]:
+        """Fetch CVE details (description, CVSS vectors) for Findings by Project.
+
+        Deduplicates by CVE ID (findingId) and fetches the ``/findings/{pvId}/{findingId}/cves``
+        endpoint in parallel using a ThreadPoolExecutor.
+
+        Returns a mapping of CVE ID -> {"description": str, "cvss_v2_vector": str, "cvss_v3_vector": str}.
+        """
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # Build lookup: one representative finding per unique CVE ID
+        cve_lookup: dict[
+            str, tuple[str, str]
+        ] = {}  # cve_id -> (pv_id, finding_numeric_id)
+        for finding in raw_data:
+            cve_id = finding.get("findingId")
+            if not cve_id or cve_id in cve_lookup:
+                continue
+            # Extract projectVersion.id
+            pv_obj = finding.get("projectVersion")
+            pv_id = (
+                pv_obj.get("id")
+                if isinstance(pv_obj, dict)
+                else finding.get("project_version_id")
+            )
+            finding_numeric_id = finding.get("id")
+            if pv_id and finding_numeric_id:
+                cve_lookup[cve_id] = (str(pv_id), str(finding_numeric_id))
+
+        if not cve_lookup:
+            return {}
+
+        self.logger.info(
+            f"Fetching CVE details for {len(cve_lookup)} unique CVEs (Findings by Project)"
+        )
+
+        results: dict[str, dict[str, str]] = {}
+        rate_limit_backoff = 5.0
+        max_retries = 3
+
+        def fetch_one(cve_id: str, pv_id: str, fid: str) -> tuple[str, dict[str, str]]:
+            details: dict[str, str] = {
+                "description": "",
+                "cvss_v2_vector": "",
+                "cvss_v3_vector": "",
+            }
+            url = (
+                f"{self.api_client.base_url}/public/v0/findings" f"/{pv_id}/{fid}/cves"
+            )
+            for attempt in range(max_retries):
+                try:
+                    resp = self.api_client.client.get(url)
+                    if resp.status_code == 429 and attempt < max_retries - 1:
+                        time.sleep(rate_limit_backoff * (attempt + 1))
+                        continue
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if isinstance(data, dict):
+                        cve_entry = data.get(cve_id, {})
+                        if isinstance(cve_entry, dict):
+                            results_outer = cve_entry.get("results", {})
+                            if isinstance(results_outer, dict):
+                                results_inner = results_outer.get("results", [])
+                                if isinstance(results_inner, list) and results_inner:
+                                    entry = results_inner[0]
+                                    # Description
+                                    descriptions = entry.get("descriptions", [])
+                                    for desc in descriptions:
+                                        if (
+                                            isinstance(desc, dict)
+                                            and desc.get("lang") == "en"
+                                        ):
+                                            details["description"] = desc.get(
+                                                "value", ""
+                                            )
+                                            break
+                                    if not details["description"] and descriptions:
+                                        first = descriptions[0]
+                                        if isinstance(first, dict):
+                                            details["description"] = first.get(
+                                                "value", ""
+                                            )
+                                    # CVSS vectors
+                                    metrics = entry.get("metrics", {})
+                                    if isinstance(metrics, dict):
+                                        # v2
+                                        v2_list = metrics.get("cvssMetricV2", [])
+                                        if isinstance(v2_list, list) and v2_list:
+                                            v2_data = v2_list[0].get("cvssData", {})
+                                            if isinstance(v2_data, dict):
+                                                details["cvss_v2_vector"] = v2_data.get(
+                                                    "vectorString", ""
+                                                )
+                                        # v3: try v31 first, then v30
+                                        v3_list = metrics.get("cvssMetricV31", [])
+                                        if not v3_list or not isinstance(v3_list, list):
+                                            v3_list = metrics.get("cvssMetricV30", [])
+                                        if isinstance(v3_list, list) and v3_list:
+                                            v3_data = v3_list[0].get("cvssData", {})
+                                            if isinstance(v3_data, dict):
+                                                details["cvss_v3_vector"] = v3_data.get(
+                                                    "vectorString", ""
+                                                )
+                    break  # success
+                except Exception as exc:
+                    if attempt < max_retries - 1:
+                        time.sleep(rate_limit_backoff * (attempt + 1))
+                        continue
+                    self.logger.warning(
+                        f"Could not fetch CVE details for {cve_id} "
+                        f"(pv={pv_id}, finding={fid}): {exc}"
+                    )
+                    break
+            time.sleep(0.3)  # polite delay
+            return cve_id, details
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {
+                executor.submit(fetch_one, cve_id, pv_id, fid): cve_id
+                for cve_id, (pv_id, fid) in cve_lookup.items()
+            }
+            for future in as_completed(futures):
+                cve_id, details = future.result()
+                results[cve_id] = details
+
+        self.logger.info(f"Fetched CVE details for {len(results)} CVEs")
+        return results
 
     def _fetch_cve_exploits(
         self, project_version_id: str, finding_numeric_id: str, cve_id: str

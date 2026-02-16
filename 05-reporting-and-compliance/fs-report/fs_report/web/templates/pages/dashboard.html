@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — Finite State Report Kit{% endblock %}
+
+{% block content %}
+{% include "components/_status_bar.html" %}
+
+<div class="dashboard-layout">
+    <!-- Left column: Workflow cards -->
+    <section class="workflows-section">
+        <h2 class="section-heading">Workflows</h2>
+        <div class="workflow-grid">
+            {% for wf in workflows %}
+            <div class="workflow-card">
+                <div class="workflow-icon">{{ wf.icon }}</div>
+                <div class="workflow-info">
+                    <h3>{{ wf.title }}</h3>
+                    <p>{{ wf.description }}</p>
+                </div>
+                <form method="post" action="/api/run/prerun"
+                      hx-post="/api/run/prerun"
+                      hx-target="#prerun-container"
+                      hx-swap="innerHTML"
+                      hx-indicator="#prerun-spinner">
+                    <input type="hidden" name="recipes" value="{{ wf.recipes | join(',') }}">
+                    <input type="hidden" name="workflow_title" value="{{ wf.title }}">
+                    <input type="hidden" name="_csrf" value="{{ nonce }}">
+                    <button type="submit" class="btn btn-primary btn-sm">Configure &rarr;</button>
+                </form>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+
+    <!-- Right column: Recipe checkboxes -->
+    <section class="recipes-section">
+        <h2 class="section-heading">Recipes</h2>
+        <form id="recipe-form" x-data="recipeSelector()">
+            <div class="recipe-list">
+                {% for r in recipes %}
+                <label class="recipe-item">
+                    <input type="checkbox"
+                           name="recipe"
+                           value="{{ r.name }}"
+                           {% if r.auto_run %}checked{% endif %}
+                           @change="updateSelection()">
+                    <div class="recipe-info">
+                        <span class="recipe-name">{{ r.name }}</span>
+                        <span class="recipe-category">{{ r.category }}</span>
+                        {% if r.description %}
+                        <span class="recipe-desc">{{ r.description }}</span>
+                        {% endif %}
+                    </div>
+                </label>
+                {% endfor %}
+            </div>
+
+            <div class="recipe-actions">
+                <button type="button" class="btn btn-primary" @click="runSelected()"
+                        :disabled="selectedCount === 0">
+                    Run Selected (<span x-text="selectedCount">0</span>)
+                </button>
+                <button type="button" class="btn btn-default" @click="runAll()">
+                    Run All
+                </button>
+            </div>
+        </form>
+    </section>
+</div>
+
+<!-- Pre-run form container (populated by htmx) -->
+<div id="prerun-container" class="prerun-overlay"></div>
+<div id="prerun-spinner" class="htmx-indicator">Loading...</div>
+
+<script>
+var NONCE = '{{ nonce }}';
+
+/* ── Recipe selector (Alpine component) ────────────────────── */
+function recipeSelector() {
+    return {
+        selectedCount: document.querySelectorAll('#recipe-form input[type=checkbox]:checked').length,
+        updateSelection() {
+            this.selectedCount = document.querySelectorAll('#recipe-form input[type=checkbox]:checked').length;
+        },
+        getSelected() {
+            return Array.from(document.querySelectorAll('#recipe-form input[type=checkbox]:checked'))
+                .map(function(cb) { return cb.value; });
+        },
+        runSelected() {
+            var recipes = this.getSelected();
+            if (recipes.length === 0) return;
+            loadPrerun(recipes);
+        },
+        runAll() {
+            var recipes = Array.from(document.querySelectorAll('#recipe-form input[type=checkbox]'))
+                .map(function(cb) { return cb.value; });
+            loadPrerun(recipes);
+        },
+    };
+}
+
+/* ── Load pre-run form into side panel ─────────────────────── */
+function loadPrerun(recipes) {
+    var container = document.getElementById('prerun-container');
+    var formData = new FormData();
+    formData.append('recipes', recipes.join(','));
+    formData.append('_csrf', NONCE);
+    fetch('/api/run/prerun', {
+        method: 'POST',
+        headers: { 'X-FS-Session': NONCE },
+        body: formData,
+    })
+    .then(function(r) { return r.text(); })
+    .then(function(html) {
+        container.innerHTML = html;
+        container.classList.add('active');
+    });
+}
+
+/* ── Event delegation: handle Run / Cancel in prerun panel ── */
+document.addEventListener('click', function(e) {
+    /* Run button */
+    if (e.target && e.target.id === 'btn-run-submit') {
+        e.preventDefault();
+        var btn = e.target;
+        var form = document.getElementById('prerun-submit-form');
+        if (!form) return;
+        var formData = new FormData(form);
+        btn.disabled = true;
+        btn.textContent = 'Starting\u2026';
+        fetch('/api/run', {
+            method: 'POST',
+            headers: { 'X-FS-Session': NONCE },
+            body: formData,
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.run_id) {
+                window.location.href = '/run/' + data.run_id;
+            } else {
+                alert('Error: ' + (data.error || 'Unknown error'));
+                btn.disabled = false;
+                btn.textContent = 'Run';
+            }
+        })
+        .catch(function(err) {
+            alert('Failed to start run: ' + err);
+            btn.disabled = false;
+            btn.textContent = 'Run';
+        });
+    }
+
+    /* Cancel / close button */
+    if (e.target && e.target.classList.contains('prerun-close')) {
+        document.getElementById('prerun-container').classList.remove('active');
+        document.getElementById('prerun-container').innerHTML = '';
+    }
+});
+
+/* ── Also activate panel after htmx swaps (workflow cards) ── */
+document.addEventListener('htmx:afterSwap', function(e) {
+    if (e.detail.target && e.detail.target.id === 'prerun-container') {
+        e.detail.target.classList.add('active');
+    }
+});
+</script>
+{% endblock %}

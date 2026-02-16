@@ -310,7 +310,7 @@ class APIClient:
 
         try:
             while True:
-                page_query = query.copy(deep=True)
+                page_query = query.model_copy(deep=True)
                 page_query.params.offset = offset
 
                 self.logger.debug(f"Fetching: {endpoint} offset={offset} limit={limit}")
@@ -464,7 +464,7 @@ class APIClient:
 
         try:
             while True:
-                page_query = query.copy(deep=True)
+                page_query = query.model_copy(deep=True)
                 page_query.params.offset = offset
 
                 self.logger.debug(
