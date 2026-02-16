@@ -183,6 +183,7 @@ class NVDClient:
         resolved_dir = Path(cache_dir) if cache_dir else Path.home() / ".fs-report"
         resolved_dir.mkdir(parents=True, exist_ok=True)
         self._db_path: Path | None = resolved_dir / "nvd_cache.db"
+        self._conn: sqlite3.Connection | None = None
         self._init_db()
 
     def _init_db(self) -> None:
@@ -190,14 +191,28 @@ class NVDClient:
         if not self._db_path:
             return
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(str(self._db_path)) as conn:
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS nvd_cve_cache (
-                    cve_id TEXT PRIMARY KEY,
-                    data_json TEXT NOT NULL,
-                    fetched_at TEXT NOT NULL
-                )"""
-            )
+        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS nvd_cve_cache (
+                cve_id TEXT PRIMARY KEY,
+                data_json TEXT NOT NULL,
+                fetched_at TEXT NOT NULL
+            )"""
+        )
+        self._conn.commit()
+
+    def close(self) -> None:
+        """Close the persistent SQLite connection."""
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+    def __del__(self) -> None:
+        self.close()
 
     def _rate_limit_wait(self) -> None:
         """Sleep if necessary to respect NVD rate limits."""
@@ -209,38 +224,36 @@ class NVDClient:
 
     def _get_from_sqlite(self, cve_id: str) -> NVDCveRecord | None:
         """Retrieve a cached record from SQLite, respecting TTL."""
-        if not self._db_path:
+        if not self._conn:
             return None
         try:
-            with sqlite3.connect(str(self._db_path)) as conn:
-                conn.row_factory = sqlite3.Row
-                row = conn.execute(
-                    "SELECT data_json, fetched_at FROM nvd_cve_cache WHERE cve_id = ?",
-                    (cve_id,),
-                ).fetchone()
-                if row:
-                    fetched_at = datetime.fromisoformat(row["fetched_at"])
-                    age = (datetime.utcnow() - fetched_at).total_seconds()
-                    if age < self._cache_ttl:
-                        return self._deserialize(json.loads(row["data_json"]))
-                    logger.debug(f"NVD cache expired for {cve_id} ({age:.0f}s old)")
+            row = self._conn.execute(
+                "SELECT data_json, fetched_at FROM nvd_cve_cache WHERE cve_id = ?",
+                (cve_id,),
+            ).fetchone()
+            if row:
+                fetched_at = datetime.fromisoformat(row["fetched_at"])
+                age = (datetime.utcnow() - fetched_at).total_seconds()
+                if age < self._cache_ttl:
+                    return self._deserialize(json.loads(row["data_json"]))
+                logger.debug(f"NVD cache expired for {cve_id} ({age:.0f}s old)")
         except Exception as e:
             logger.debug(f"NVD SQLite cache read error for {cve_id}: {e}")
         return None
 
     def _save_to_sqlite(self, cve_id: str, record: NVDCveRecord) -> None:
         """Persist a record to SQLite cache."""
-        if not self._db_path:
+        if not self._conn:
             return
         try:
             data = self._serialize(record)
-            with sqlite3.connect(str(self._db_path)) as conn:
-                conn.execute(
-                    """INSERT OR REPLACE INTO nvd_cve_cache
-                       (cve_id, data_json, fetched_at)
-                       VALUES (?, ?, ?)""",
-                    (cve_id, json.dumps(data), datetime.utcnow().isoformat()),
-                )
+            self._conn.execute(
+                """INSERT OR REPLACE INTO nvd_cve_cache
+                   (cve_id, data_json, fetched_at)
+                   VALUES (?, ?, ?)""",
+                (cve_id, json.dumps(data), datetime.utcnow().isoformat()),
+            )
+            self._conn.commit()
         except Exception as e:
             logger.debug(f"NVD SQLite cache write error for {cve_id}: {e}")
 
