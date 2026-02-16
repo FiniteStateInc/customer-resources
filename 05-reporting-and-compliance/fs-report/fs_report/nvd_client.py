@@ -110,6 +110,8 @@ class NVDCveRecord:
     references: list[dict[str, Any]] = field(default_factory=list)
     patch_urls: list[str] = field(default_factory=list)
     advisory_urls: list[str] = field(default_factory=list)
+    cvss_v2_vector: str = ""
+    cvss_v3_vector: str = ""
 
     @property
     def fix_versions(self) -> list[str]:
@@ -262,6 +264,8 @@ class NVDClient:
             "references": record.references,
             "patch_urls": record.patch_urls,
             "advisory_urls": record.advisory_urls,
+            "cvss_v2_vector": record.cvss_v2_vector,
+            "cvss_v3_vector": record.cvss_v3_vector,
         }
 
     @staticmethod
@@ -275,6 +279,8 @@ class NVDClient:
             references=data.get("references", []),
             patch_urls=data.get("patch_urls", []),
             advisory_urls=data.get("advisory_urls", []),
+            cvss_v2_vector=data.get("cvss_v2_vector", ""),
+            cvss_v3_vector=data.get("cvss_v3_vector", ""),
         )
 
     def _fetch_from_api(self, cve_id: str) -> NVDCveRecord | None:
@@ -373,6 +379,24 @@ class NVDClient:
             if "Vendor Advisory" in tags or "Third Party Advisory" in tags:
                 advisory_urls.append(url)
 
+        # Extract CVSS vectors from metrics
+        cvss_v2_vector = ""
+        cvss_v3_vector = ""
+        metrics = cve_data.get("metrics", {})
+        if isinstance(metrics, dict):
+            v2_list = metrics.get("cvssMetricV2", [])
+            if isinstance(v2_list, list) and v2_list:
+                v2_data = v2_list[0].get("cvssData", {})
+                if isinstance(v2_data, dict):
+                    cvss_v2_vector = v2_data.get("vectorString", "")
+            v3_list = metrics.get("cvssMetricV31", [])
+            if not v3_list or not isinstance(v3_list, list):
+                v3_list = metrics.get("cvssMetricV30", [])
+            if isinstance(v3_list, list) and v3_list:
+                v3_data = v3_list[0].get("cvssData", {})
+                if isinstance(v3_data, dict):
+                    cvss_v3_vector = v3_data.get("vectorString", "")
+
         return NVDCveRecord(
             cve_id=cve_id,
             description=description,
@@ -380,6 +404,8 @@ class NVDClient:
             references=references,
             patch_urls=patch_urls,
             advisory_urls=advisory_urls,
+            cvss_v2_vector=cvss_v2_vector,
+            cvss_v3_vector=cvss_v3_vector,
         )
 
     def get_cve(self, cve_id: str) -> NVDCveRecord | None:

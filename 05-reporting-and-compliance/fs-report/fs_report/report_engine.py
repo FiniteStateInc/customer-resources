@@ -2705,161 +2705,48 @@ class ReportEngine:
     ) -> dict[str, dict[str, str]]:
         """Fetch CVE details (description, CVSS vectors) for Findings by Project.
 
-        Deduplicates by CVE ID (findingId) and fetches the ``/findings/{pvId}/{findingId}/cves``
-        endpoint in parallel using a ThreadPoolExecutor.
+        Uses NVDClient with SQLite caching, tqdm progress, and NVD API rate
+        limiting instead of per-finding FS API calls.
 
         Returns a mapping of CVE ID -> {"description": str, "cvss_v2_vector": str, "cvss_v3_vector": str}.
         """
-        import time
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
 
-        # Build lookup: one representative finding per unique CVE ID
-        cve_lookup: dict[
-            str, tuple[str, str]
-        ] = {}  # cve_id -> (pv_id, finding_numeric_id)
+        # Collect unique CVE IDs from findings
+        cve_ids: list[str] = []
+        seen: set[str] = set()
         for finding in raw_data:
             cve_id = finding.get("findingId")
-            if not cve_id or cve_id in cve_lookup:
-                continue
-            # Extract projectVersion.id
-            pv_obj = finding.get("projectVersion")
-            pv_id = (
-                pv_obj.get("id")
-                if isinstance(pv_obj, dict)
-                else finding.get("project_version_id")
-            )
-            finding_numeric_id = finding.get("id")
-            if pv_id and finding_numeric_id:
-                cve_lookup[cve_id] = (str(pv_id), str(finding_numeric_id))
+            if cve_id and cve_id not in seen:
+                seen.add(cve_id)
+                cve_ids.append(cve_id)
 
-        if not cve_lookup:
+        if not cve_ids:
             return {}
 
         self.logger.info(
-            f"Fetching CVE details for {len(cve_lookup)} unique CVEs (Findings by Project)"
+            f"Fetching CVE details for {len(cve_ids)} unique CVEs (Findings by Project)"
         )
 
-        results: dict[str, dict[str, str]] = {}
-        max_retries = 5
-        request_delay = max(self.api_client.request_delay, 0.5)
+        self._check_cancel()
 
-        # Shared throttle: a threading lock ensures only one request is in
-        # flight at a time, with a polite delay between requests.  On 429 /
-        # server errors the delay is escalated for *all* workers.
-        import random
-        import threading
+        nvd = NVDClient(
+            api_key=getattr(self.config, "nvd_api_key", None),
+            cache_dir=getattr(self.config, "cache_dir", None),
+            cache_ttl=max(getattr(self.config, "cache_ttl", 0) or 0, 86400),
+        )
+        self.logger.info(NVD_ATTRIBUTION)
 
-        throttle_lock = threading.Lock()
-        current_delay = [request_delay]  # mutable so workers can read updates
+        nvd_results = nvd.get_batch(cve_ids, progress=True)
 
-        def _parse_cve_entry(cve_id: str, data: dict) -> dict[str, str]:
-            """Extract description + CVSS vectors from the API response."""
-            details: dict[str, str] = {
-                "description": "",
-                "cvss_v2_vector": "",
-                "cvss_v3_vector": "",
+        results: dict[str, dict[str, str]] = {
+            cve_id: {
+                "description": rec.description,
+                "cvss_v2_vector": rec.cvss_v2_vector,
+                "cvss_v3_vector": rec.cvss_v3_vector,
             }
-            cve_entry = data.get(cve_id, {})
-            if not isinstance(cve_entry, dict):
-                return details
-            results_outer = cve_entry.get("results", {})
-            if not isinstance(results_outer, dict):
-                return details
-            results_inner = results_outer.get("results", [])
-            if not isinstance(results_inner, list) or not results_inner:
-                return details
-            entry = results_inner[0]
-            # Description
-            descriptions = entry.get("descriptions", [])
-            for desc in descriptions:
-                if isinstance(desc, dict) and desc.get("lang") == "en":
-                    details["description"] = desc.get("value", "")
-                    break
-            if not details["description"] and descriptions:
-                first = descriptions[0]
-                if isinstance(first, dict):
-                    details["description"] = first.get("value", "")
-            # CVSS vectors
-            metrics = entry.get("metrics", {})
-            if isinstance(metrics, dict):
-                v2_list = metrics.get("cvssMetricV2", [])
-                if isinstance(v2_list, list) and v2_list:
-                    v2_data = v2_list[0].get("cvssData", {})
-                    if isinstance(v2_data, dict):
-                        details["cvss_v2_vector"] = v2_data.get("vectorString", "")
-                v3_list = metrics.get("cvssMetricV31", [])
-                if not v3_list or not isinstance(v3_list, list):
-                    v3_list = metrics.get("cvssMetricV30", [])
-                if isinstance(v3_list, list) and v3_list:
-                    v3_data = v3_list[0].get("cvssData", {})
-                    if isinstance(v3_data, dict):
-                        details["cvss_v3_vector"] = v3_data.get("vectorString", "")
-            return details
-
-        def fetch_one(cve_id: str, pv_id: str, fid: str) -> tuple[str, dict[str, str]]:
-            details: dict[str, str] = {
-                "description": "",
-                "cvss_v2_vector": "",
-                "cvss_v3_vector": "",
-            }
-            url = f"{self.api_client.base_url}/public/v0/findings/{pv_id}/{fid}/cves"
-            for attempt in range(max_retries):
-                # Serialise requests through the shared lock + delay
-                with throttle_lock:
-                    self._check_cancel()
-                    time.sleep(current_delay[0])
-                try:
-                    resp = self.api_client.client.get(url)
-                    if resp.status_code in (429, 500, 502, 503):
-                        # Escalate delay for all workers
-                        retry_after = resp.headers.get("Retry-After")
-                        if retry_after:
-                            try:
-                                wait = float(retry_after)
-                            except ValueError:
-                                wait = None
-                        else:
-                            wait = None
-                        if wait is None:
-                            wait = (2 ** min(attempt, 4)) + random.uniform(0, 1)
-                        current_delay[0] = min(
-                            max(current_delay[0] * 1.5, request_delay), 10.0
-                        )
-                        if attempt < max_retries - 1:
-                            self.logger.debug(
-                                f"CVE detail {resp.status_code} for {cve_id}, "
-                                f"retry {attempt + 1}/{max_retries} after {wait:.1f}s"
-                            )
-                            time.sleep(wait)
-                            continue
-                        resp.raise_for_status()
-                    resp.raise_for_status()
-                    data = resp.json()
-                    if isinstance(data, dict):
-                        details = _parse_cve_entry(cve_id, data)
-                    # Successful request — ease off the delay gradually
-                    current_delay[0] = max(current_delay[0] * 0.9, request_delay)
-                    break  # success
-                except Exception as exc:
-                    if attempt < max_retries - 1:
-                        wait = (2 ** min(attempt, 4)) + random.uniform(0, 1)
-                        time.sleep(wait)
-                        continue
-                    self.logger.warning(
-                        f"Could not fetch CVE details for {cve_id} "
-                        f"(pv={pv_id}, finding={fid}): {exc}"
-                    )
-                    break
-            return cve_id, details
-
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {
-                executor.submit(fetch_one, cve_id, pv_id, fid): cve_id
-                for cve_id, (pv_id, fid) in cve_lookup.items()
-            }
-            for future in as_completed(futures):
-                cve_id, details = future.result()
-                results[cve_id] = details
+            for cve_id, rec in nvd_results.items()
+        }
 
         self.logger.info(f"Fetched CVE details for {len(results)} CVEs")
         return results
