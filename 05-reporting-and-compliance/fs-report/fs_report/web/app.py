@@ -53,10 +53,10 @@ def create_app(*, port: int = 8321) -> FastAPI:
 
     # Mount output directory for serving generated reports
     output_dir = Path(state.get("output_dir", "./output")).expanduser().resolve()
-    if output_dir.exists():
-        app.mount(
-            "/output", StaticFiles(directory=str(output_dir), html=True), name="output"
-        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    app.mount(
+        "/output", StaticFiles(directory=str(output_dir), html=True), name="output"
+    )
 
     # ── Templates ─────────────────────────────────────────────────
     templates_dir = Path(str(web_package.joinpath("templates")))
