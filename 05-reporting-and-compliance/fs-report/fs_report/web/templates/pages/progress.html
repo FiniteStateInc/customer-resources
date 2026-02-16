@@ -7,6 +7,12 @@
     <h2>Running {{ recipes | length }} recipe(s)</h2>
     <p class="progress-recipes">{{ recipes | join(', ') }}</p>
 
+    <!-- Cancel button -->
+    <div class="cancel-controls" x-show="!done">
+        <button x-show="!cancelling" @click="cancelRun()" class="btn btn-danger">Cancel</button>
+        <span x-show="cancelling" class="cancel-pending">Cancelling&hellip;</span>
+    </div>
+
     <!-- Progress bar -->
     <div class="progress-bar-container">
         <div class="progress-bar" :style="'width: ' + progressPct + '%'"></div>
@@ -34,6 +40,11 @@
                 <p class="result-error" x-text="errorMsg"></p>
             </div>
         </template>
+        <template x-if="status === 'cancelled'">
+            <div>
+                <p class="result-message">Report generation was cancelled.</p>
+            </div>
+        </template>
     </div>
 
     <div class="progress-actions">
@@ -53,6 +64,7 @@ function progressStream(runId) {
         progressPct: 0,
         progressLabel: '0 / 0',
         done: false,
+        cancelling: false,
         status: '',
         errorMsg: '',
         resultClass: '',
@@ -93,7 +105,7 @@ function progressStream(runId) {
                     this.done = true;
                     this.status = data.status || 'error';
                     this.errorMsg = data.error || '';
-                    this.resultClass = this.status === 'success' ? 'result-success' : 'result-error';
+                    this.resultClass = this.status === 'success' ? 'result-success' : this.status === 'cancelled' ? 'result-warning' : 'result-error';
                     if (this.status === 'success') {
                         this.progressPct = 100;
                     }
@@ -112,6 +124,11 @@ function progressStream(runId) {
                     });
                 }
             };
+        },
+
+        cancelRun() {
+            this.cancelling = true;
+            fetch('/api/run/' + runId + '/cancel', { method: 'POST' });
         },
 
         destroy() {

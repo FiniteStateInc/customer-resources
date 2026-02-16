@@ -74,10 +74,11 @@ def _execute_run(
     overrides: dict[str, Any],
     queue: asyncio.Queue[dict[str, str]],
     loop: asyncio.AbstractEventLoop,
+    cancel_event: threading.Event | None = None,
 ) -> None:
     """Worker thread: run recipes and push events to the SSE queue."""
     from fs_report.cli.run import create_config
-    from fs_report.report_engine import ReportEngine
+    from fs_report.report_engine import ReportCancelled, ReportEngine
 
     # Merge state with overrides
     effective = {**state_data, **overrides}
@@ -132,7 +133,7 @@ def _execute_run(
             verbose=bool(effective.get("verbose", False)),
         )
 
-        engine = ReportEngine(config)
+        engine = ReportEngine(config, cancel_event=cancel_event)
         engine.recipe_loader.recipe_filter = [name.lower() for name in recipe_names]
 
         total = len(recipe_names)
@@ -168,6 +169,15 @@ def _execute_run(
             {"event": "done", "data": f'{{"status":"{status}","error":"{error_msg}"}}'},
         )
 
+    except ReportCancelled:
+        sys.stderr = old_stderr
+        loop.call_soon_threadsafe(
+            queue.put_nowait,
+            {
+                "event": "done",
+                "data": '{"status":"cancelled"}',
+            },
+        )
     except SystemExit:
         sys.stderr = old_stderr
         loop.call_soon_threadsafe(
@@ -269,6 +279,7 @@ async def start_run(
     run_id = uuid.uuid4().hex[:8]
     queue: asyncio.Queue[dict[str, str]] = asyncio.Queue()
     loop = asyncio.get_event_loop()
+    cancel_event = threading.Event()
 
     _runs[run_id] = {
         "status": "running",
@@ -276,11 +287,20 @@ async def start_run(
         "recipes": recipe_names,
         "buffer": [],  # replay buffer for late-joining clients
         "started_at": time.time(),
+        "cancel_event": cancel_event,
     }
 
     thread = threading.Thread(
         target=_execute_run,
-        args=(run_id, recipe_names, state.to_dict(), overrides, queue, loop),
+        args=(
+            run_id,
+            recipe_names,
+            state.to_dict(),
+            overrides,
+            queue,
+            loop,
+            cancel_event,
+        ),
         daemon=True,
     )
     thread.start()
@@ -362,6 +382,21 @@ async def run_status(run_id: str) -> JSONResponse:
             "recipes": run["recipes"],
         }
     )
+
+
+@router.post("/api/run/{run_id}/cancel")
+async def cancel_run(run_id: str) -> JSONResponse:
+    """Signal a running report to cancel."""
+    run = _runs.get(run_id)
+    if not run or run["status"] != "running":
+        return JSONResponse(
+            {"error": "Run not found or already completed"}, status_code=404
+        )
+
+    cancel_event: threading.Event | None = run.get("cancel_event")
+    if cancel_event is not None:
+        cancel_event.set()
+    return JSONResponse({"cancelled": True})
 
 
 @router.get("/run/{run_id}")

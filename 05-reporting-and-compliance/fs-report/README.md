@@ -40,36 +40,45 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 ### Prerequisites
 
 - Python 3.11+
-- Poetry (for dependency management)
 - Finite State API access
-- FastAPI and uvicorn are included by default (powers the web UI)
 
 ### Installation
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/FiniteStateInc/customer-resources.git
-   cd customer-resources/05-reporting-and-compliance/fs-report
-   ```
+The quickest way to install is with the setup script, which handles pipx, credentials, and PATH configuration automatically:
 
-2. **Install dependencies and activate the environment**:
-   ```bash
-   poetry install
-   poetry shell
-   ```
+```bash
+# From a local clone
+./setup.sh
 
-3. **Set up API credentials**:
-   ```bash
-   export FINITE_STATE_AUTH_TOKEN="your-api-token"
-   export FINITE_STATE_DOMAIN="customer.finitestate.io"
-   ```
+# Or install from source (current directory)
+./setup.sh --from-source
 
-4. **Verify installation**:
-   ```bash
-   fs-report --help
-   ```
+# Non-interactive (uses environment variables)
+./setup.sh --from-source --yes
+```
 
-> All examples below assume the Poetry environment is active (`poetry shell`). If you prefer not to activate the shell, prefix each command with `poetry run`.
+On Windows, use `setup.ps1` instead.
+
+You can also install manually with pipx:
+
+```bash
+pipx install fs-report
+```
+
+Once installed, set up API credentials (the setup script will prompt for these, or you can export them):
+
+```bash
+export FINITE_STATE_AUTH_TOKEN="your-api-token"
+export FINITE_STATE_DOMAIN="customer.finitestate.io"
+```
+
+Verify installation:
+
+```bash
+fs-report --help
+```
+
+> **Developer workflow:** If you are contributing to fs-report, use `poetry install && poetry shell` to work inside the dev environment. All examples below assume `fs-report` is on your PATH (via pipx or an active Poetry shell).
 
 ### CLI Command Structure
 

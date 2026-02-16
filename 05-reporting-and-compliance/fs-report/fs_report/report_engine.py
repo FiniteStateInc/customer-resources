@@ -24,6 +24,7 @@ import gc
 import hashlib
 import logging
 import platform
+import threading
 import time
 
 try:
@@ -143,15 +144,23 @@ def build_findings_type_params(finding_types: str) -> dict[str, str | None]:
     return {"type": "cve", "category_filter": None}
 
 
+class ReportCancelled(Exception):
+    """Raised when a running report is cancelled via the web UI."""
+
+
 class ReportEngine:
     """Main engine for generating reports from recipes."""
 
     def __init__(
-        self, config: Config, data_override: dict[str, Any] | None = None
+        self,
+        config: Config,
+        data_override: dict[str, Any] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         """Initialize the report engine."""
         self.config = config
         self.logger = logging.getLogger(__name__)
+        self._cancel_event = cancel_event
 
         # Initialize cache
         self.cache = DataCache()
@@ -198,6 +207,11 @@ class ReportEngine:
         self._project_folder_map: dict[str, str] = {}  # project_id -> folder_name
         self._folder_name: str | None = None
         self._folder_path: str | None = None  # e.g. "Division A / Medical Products"
+
+    def _check_cancel(self) -> None:
+        """Raise ``ReportCancelled`` if the cancel event has been set."""
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            raise ReportCancelled("Report cancelled by user")
 
     def _resolve_project_name(self, project_name: str) -> int | None:
         """
@@ -1076,6 +1090,7 @@ class ReportEngine:
         total = len(recipes)
         Console()
         for idx, recipe in enumerate(recipes, 1):
+            self._check_cancel()
             try:
                 self.logger.info(f"[{idx}/{total}] Generating: {recipe.name} ...")
                 self.renderer.check_output_guard(recipe)
@@ -2725,8 +2740,61 @@ class ReportEngine:
         )
 
         results: dict[str, dict[str, str]] = {}
-        rate_limit_backoff = 5.0
-        max_retries = 3
+        max_retries = 5
+        request_delay = max(self.api_client.request_delay, 0.5)
+
+        # Shared throttle: a threading lock ensures only one request is in
+        # flight at a time, with a polite delay between requests.  On 429 /
+        # server errors the delay is escalated for *all* workers.
+        import random
+        import threading
+
+        throttle_lock = threading.Lock()
+        current_delay = [request_delay]  # mutable so workers can read updates
+
+        def _parse_cve_entry(cve_id: str, data: dict) -> dict[str, str]:
+            """Extract description + CVSS vectors from the API response."""
+            details: dict[str, str] = {
+                "description": "",
+                "cvss_v2_vector": "",
+                "cvss_v3_vector": "",
+            }
+            cve_entry = data.get(cve_id, {})
+            if not isinstance(cve_entry, dict):
+                return details
+            results_outer = cve_entry.get("results", {})
+            if not isinstance(results_outer, dict):
+                return details
+            results_inner = results_outer.get("results", [])
+            if not isinstance(results_inner, list) or not results_inner:
+                return details
+            entry = results_inner[0]
+            # Description
+            descriptions = entry.get("descriptions", [])
+            for desc in descriptions:
+                if isinstance(desc, dict) and desc.get("lang") == "en":
+                    details["description"] = desc.get("value", "")
+                    break
+            if not details["description"] and descriptions:
+                first = descriptions[0]
+                if isinstance(first, dict):
+                    details["description"] = first.get("value", "")
+            # CVSS vectors
+            metrics = entry.get("metrics", {})
+            if isinstance(metrics, dict):
+                v2_list = metrics.get("cvssMetricV2", [])
+                if isinstance(v2_list, list) and v2_list:
+                    v2_data = v2_list[0].get("cvssData", {})
+                    if isinstance(v2_data, dict):
+                        details["cvss_v2_vector"] = v2_data.get("vectorString", "")
+                v3_list = metrics.get("cvssMetricV31", [])
+                if not v3_list or not isinstance(v3_list, list):
+                    v3_list = metrics.get("cvssMetricV30", [])
+                if isinstance(v3_list, list) and v3_list:
+                    v3_data = v3_list[0].get("cvssData", {})
+                    if isinstance(v3_data, dict):
+                        details["cvss_v3_vector"] = v3_data.get("vectorString", "")
+            return details
 
         def fetch_one(cve_id: str, pv_id: str, fid: str) -> tuple[str, dict[str, str]]:
             details: dict[str, str] = {
@@ -2734,77 +2802,57 @@ class ReportEngine:
                 "cvss_v2_vector": "",
                 "cvss_v3_vector": "",
             }
-            url = (
-                f"{self.api_client.base_url}/public/v0/findings" f"/{pv_id}/{fid}/cves"
-            )
+            url = f"{self.api_client.base_url}/public/v0/findings/{pv_id}/{fid}/cves"
             for attempt in range(max_retries):
+                # Serialise requests through the shared lock + delay
+                with throttle_lock:
+                    self._check_cancel()
+                    time.sleep(current_delay[0])
                 try:
                     resp = self.api_client.client.get(url)
-                    if resp.status_code == 429 and attempt < max_retries - 1:
-                        time.sleep(rate_limit_backoff * (attempt + 1))
-                        continue
+                    if resp.status_code in (429, 500, 502, 503):
+                        # Escalate delay for all workers
+                        retry_after = resp.headers.get("Retry-After")
+                        if retry_after:
+                            try:
+                                wait = float(retry_after)
+                            except ValueError:
+                                wait = None
+                        else:
+                            wait = None
+                        if wait is None:
+                            wait = (2 ** min(attempt, 4)) + random.uniform(0, 1)
+                        current_delay[0] = min(
+                            max(current_delay[0] * 1.5, request_delay), 10.0
+                        )
+                        if attempt < max_retries - 1:
+                            self.logger.debug(
+                                f"CVE detail {resp.status_code} for {cve_id}, "
+                                f"retry {attempt + 1}/{max_retries} after {wait:.1f}s"
+                            )
+                            time.sleep(wait)
+                            continue
+                        resp.raise_for_status()
                     resp.raise_for_status()
                     data = resp.json()
                     if isinstance(data, dict):
-                        cve_entry = data.get(cve_id, {})
-                        if isinstance(cve_entry, dict):
-                            results_outer = cve_entry.get("results", {})
-                            if isinstance(results_outer, dict):
-                                results_inner = results_outer.get("results", [])
-                                if isinstance(results_inner, list) and results_inner:
-                                    entry = results_inner[0]
-                                    # Description
-                                    descriptions = entry.get("descriptions", [])
-                                    for desc in descriptions:
-                                        if (
-                                            isinstance(desc, dict)
-                                            and desc.get("lang") == "en"
-                                        ):
-                                            details["description"] = desc.get(
-                                                "value", ""
-                                            )
-                                            break
-                                    if not details["description"] and descriptions:
-                                        first = descriptions[0]
-                                        if isinstance(first, dict):
-                                            details["description"] = first.get(
-                                                "value", ""
-                                            )
-                                    # CVSS vectors
-                                    metrics = entry.get("metrics", {})
-                                    if isinstance(metrics, dict):
-                                        # v2
-                                        v2_list = metrics.get("cvssMetricV2", [])
-                                        if isinstance(v2_list, list) and v2_list:
-                                            v2_data = v2_list[0].get("cvssData", {})
-                                            if isinstance(v2_data, dict):
-                                                details["cvss_v2_vector"] = v2_data.get(
-                                                    "vectorString", ""
-                                                )
-                                        # v3: try v31 first, then v30
-                                        v3_list = metrics.get("cvssMetricV31", [])
-                                        if not v3_list or not isinstance(v3_list, list):
-                                            v3_list = metrics.get("cvssMetricV30", [])
-                                        if isinstance(v3_list, list) and v3_list:
-                                            v3_data = v3_list[0].get("cvssData", {})
-                                            if isinstance(v3_data, dict):
-                                                details["cvss_v3_vector"] = v3_data.get(
-                                                    "vectorString", ""
-                                                )
+                        details = _parse_cve_entry(cve_id, data)
+                    # Successful request — ease off the delay gradually
+                    current_delay[0] = max(current_delay[0] * 0.9, request_delay)
                     break  # success
                 except Exception as exc:
                     if attempt < max_retries - 1:
-                        time.sleep(rate_limit_backoff * (attempt + 1))
+                        wait = (2 ** min(attempt, 4)) + random.uniform(0, 1)
+                        time.sleep(wait)
                         continue
                     self.logger.warning(
                         f"Could not fetch CVE details for {cve_id} "
                         f"(pv={pv_id}, finding={fid}): {exc}"
                     )
                     break
-            time.sleep(0.3)  # polite delay
             return cve_id, details
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
                 executor.submit(fetch_one, cve_id, pv_id, fid): cve_id
                 for cve_id, (pv_id, fid) in cve_lookup.items()
