@@ -2561,8 +2561,8 @@ class ReportEngine:
         For each CVE in the records, queries the findings endpoint with
         ``findingId==<cveId>`` to retrieve reachability scores per finding.
 
-        Also fetches CVE descriptions from ``/findings/{findingId}/cves``
-        and exploit details from ``/findings/{findingId}/exploits`` for
+        Also fetches CVE descriptions via NVDClient batch lookup and
+        exploit details from ``/findings/{findingId}/exploits`` for
         each CVE (using any finding's numeric ``id``).
 
         Returns:
@@ -2572,26 +2572,43 @@ class ReportEngine:
             - exploit_details_map: cveId -> list of exploit detail dicts
         """
         from fs_report.models import QueryConfig, QueryParams
+        from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
 
         reachability_map: dict[str, list[dict]] = {}
         descriptions_map: dict[str, str] = {}
         exploit_details_map: dict[str, list[dict]] = {}
 
         # Collect unique CVE IDs from the data
-        cve_ids: set[str] = set()
+        cve_ids_ordered: list[str] = []
+        cve_ids_seen: set[str] = set()
         for rec in cve_records:
             cve_id = rec.get("cveId") or rec.get("cve_id")
-            if cve_id:
-                cve_ids.add(cve_id)
+            if cve_id and cve_id not in cve_ids_seen:
+                cve_ids_seen.add(cve_id)
+                cve_ids_ordered.append(cve_id)
 
-        if not cve_ids:
+        if not cve_ids_ordered:
             return reachability_map, descriptions_map, exploit_details_map
 
         self.logger.info(
-            f"Enriching {len(cve_ids)} CVEs with reachability data from /findings"
+            f"Enriching {len(cve_ids_ordered)} CVEs with reachability data from /findings"
         )
 
-        for cve_id in sorted(cve_ids):
+        # Batch-fetch NVD descriptions upfront
+        self._check_cancel()
+        nvd = NVDClient(
+            api_key=getattr(self.config, "nvd_api_key", None),
+            cache_dir=getattr(self.config, "cache_dir", None),
+            cache_ttl=max(getattr(self.config, "cache_ttl", 0) or 0, 86400),
+        )
+        self.logger.info(NVD_ATTRIBUTION)
+        nvd_results = nvd.get_batch(cve_ids_ordered, progress=True)
+        for nvd_cve_id, nvd_rec in nvd_results.items():
+            if nvd_rec.description:
+                descriptions_map[nvd_cve_id] = nvd_rec.description
+
+        # Fetch reachability and exploit details per CVE
+        for cve_id in sorted(cve_ids_ordered):
             finding_query = QueryConfig(
                 endpoint="/public/v0/findings",
                 params=QueryParams(
@@ -2606,12 +2623,10 @@ class ReportEngine:
                     f"  {cve_id}: {len(findings)} findings with reachability"
                 )
 
-                # Fetch CVE description and exploit details using the
-                # finding's numeric id and projectVersionId.
+                # Fetch exploit details using the finding's numeric id
                 if findings:
                     f0 = findings[0]
                     finding_numeric_id = f0.get("id")
-                    # projectVersionId: nested dict or flat cache key
                     pv_obj = f0.get("projectVersion")
                     pv_id = (
                         pv_obj.get("id")
@@ -2621,9 +2636,6 @@ class ReportEngine:
                     if finding_numeric_id and pv_id:
                         fid = str(finding_numeric_id)
                         pvid = str(pv_id)
-                        desc = self._fetch_cve_description(pvid, fid, cve_id)
-                        if desc:
-                            descriptions_map[cve_id] = desc
                         exploits = self._fetch_cve_exploits(pvid, fid, cve_id)
                         if exploits:
                             exploit_details_map[cve_id] = exploits
@@ -2632,73 +2644,6 @@ class ReportEngine:
                 reachability_map[cve_id] = []
 
         return reachability_map, descriptions_map, exploit_details_map
-
-    def _fetch_cve_description(
-        self, project_version_id: str, finding_numeric_id: str, cve_id: str
-    ) -> str:
-        """Fetch CVE description from /findings/{pvId}/{findingId}/cves.
-
-        The response is a nested dict keyed by CVE ID::
-
-            {
-              "CVE-XXXX": {
-                "results": {
-                  "results": [
-                    {
-                      "descriptions": [
-                        {"lang": "en", "value": "..."},
-                        {"lang": "es", "value": "..."}
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-
-        Returns the English NVD description string, or empty string on failure.
-        """
-        import time
-
-        url = (
-            f"{self.api_client.base_url}/public/v0/findings"
-            f"/{project_version_id}/{finding_numeric_id}/cves"
-        )
-        result = ""
-        try:
-            resp = self.api_client.client.get(url)
-            resp.raise_for_status()
-            data = resp.json()
-            # Navigate the nested structure: data[cveId].results.results[0].descriptions
-            if isinstance(data, dict):
-                cve_entry = data.get(cve_id, {})
-                if isinstance(cve_entry, dict):
-                    results_outer = cve_entry.get("results", {})
-                    if isinstance(results_outer, dict):
-                        results_inner = results_outer.get("results", [])
-                        if isinstance(results_inner, list) and results_inner:
-                            descriptions = results_inner[0].get("descriptions", [])
-                            # Prefer English description
-                            for desc in descriptions:
-                                if isinstance(desc, dict) and desc.get("lang") == "en":
-                                    result = desc.get("value", "")
-                                    break
-                            # Fall back to first available description
-                            if not result and descriptions:
-                                first = descriptions[0]
-                                if isinstance(first, dict):
-                                    result = first.get("value", "")
-            if result:
-                self.logger.debug(
-                    f"  {cve_id}: fetched description ({len(result)} chars)"
-                )
-        except Exception as exc:
-            self.logger.warning(
-                f"Could not fetch CVE description for {cve_id} "
-                f"(pv={project_version_id}, finding={finding_numeric_id}): {exc}"
-            )
-        # Polite delay between API calls
-        time.sleep(0.3)
-        return result
 
     def _fetch_findings_cve_details(
         self, raw_data: list[dict]
