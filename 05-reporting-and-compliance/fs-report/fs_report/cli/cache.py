@@ -29,6 +29,11 @@ def clear(
         "--ai",
         help="Clear AI remediation guidance cache.",
     ),
+    nvd: bool = typer.Option(
+        False,
+        "--nvd",
+        help="Clear NVD CVE description cache.",
+    ),
     domain: Union[str, None] = typer.Option(
         None,
         "--domain",
@@ -62,8 +67,20 @@ def clear(
         console.print(f"[dim]Cache location: {ai_cache_db}[/dim]")
         cleared_something = True
 
+    if nvd:
+        nvd_cache_db = Path.home() / ".fs-report" / "nvd_cache.db"
+        if nvd_cache_db.exists():
+            nvd_cache_db.unlink()
+            console.print("[green]NVD CVE cache cleared successfully.[/green]")
+        else:
+            console.print("[yellow]No NVD cache found (nothing to clear).[/yellow]")
+        console.print(f"[dim]Cache location: {nvd_cache_db}[/dim]")
+        cleared_something = True
+
     if not cleared_something:
-        console.print("[yellow]Nothing to clear. Use --api and/or --ai.[/yellow]")
+        console.print(
+            "[yellow]Nothing to clear. Use --api, --ai, and/or --nvd.[/yellow]"
+        )
 
 
 @cache_app.command()
@@ -109,6 +126,17 @@ def status(
         str(ai_path),
         ai_size,
         "Yes" if ai_exists else "No",
+    )
+
+    # NVD cache
+    nvd_path = Path.home() / ".fs-report" / "nvd_cache.db"
+    nvd_exists = nvd_path.exists()
+    nvd_size = f"{nvd_path.stat().st_size / 1024:.1f} KB" if nvd_exists else "—"
+    table.add_row(
+        "NVD CVE data",
+        str(nvd_path),
+        nvd_size,
+        "Yes" if nvd_exists else "No",
     )
 
     console.print(table)

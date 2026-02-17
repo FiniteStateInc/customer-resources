@@ -1804,6 +1804,7 @@ class ReportEngine:
                         # Whether we need to post-filter by date (set True when entity-
                         # level caching is used and date filters are NOT in the API query)
                         needs_date_postfilter = False
+                        raw_data = None
 
                         # Build filter list for non-entity-cached paths
                         # (entity-cached paths skip this and post-filter instead)
@@ -1827,24 +1828,12 @@ class ReportEngine:
                             )
 
                         if self.config.project_filter:
-                            # Single project filter - get all findings for this project
+                            # Single project filter - get findings for this project
                             try:
                                 project_id = int(self.config.project_filter)
                                 filters.append(f"project=={project_id}")
                             except ValueError:
                                 filters.append(f"project=={self.config.project_filter}")
-                            combined_filter = ";".join(filters) if filters else ""
-
-                            unified_query = QueryConfig(
-                                endpoint=recipe.query.endpoint,
-                                params=QueryParams(
-                                    limit=recipe.query.params.limit,
-                                    filter=combined_filter,
-                                    finding_type=finding_type,
-                                    archived=False,
-                                    excluded=False,
-                                ),
-                            )
 
                             if self.config.version_filter:
                                 try:
@@ -1854,6 +1843,35 @@ class ReportEngine:
                                     filters.append(
                                         f"projectVersion=={self.config.version_filter}"
                                     )
+                            elif self.config.current_version_only:
+                                # Use entity-level caching (consistent with folder/scan paths)
+                                try:
+                                    _proj_id = int(self.config.project_filter)
+                                except ValueError:
+                                    _proj_id = None
+                                if _proj_id is not None:
+                                    latest_vids = (
+                                        self._get_latest_version_ids_for_projects(
+                                            [_proj_id]
+                                        )
+                                    )
+                                    if latest_vids:
+                                        self.logger.info(
+                                            f"--current-version-only: scoping to latest version {latest_vids[0]}"
+                                        )
+                                        raw_data = self._get_findings_for_versions(
+                                            latest_vids,
+                                            finding_type,
+                                            category_filter,
+                                        )
+                                        needs_date_postfilter = True
+                                    else:
+                                        self.logger.warning(
+                                            f"Could not resolve latest version for project {self.config.project_filter}; "
+                                            "falling back to all versions"
+                                        )
+
+                            if raw_data is None:
                                 combined_filter = ";".join(filters) if filters else ""
                                 unified_query = QueryConfig(
                                     endpoint=recipe.query.endpoint,
@@ -1866,12 +1884,12 @@ class ReportEngine:
                                     ),
                                 )
 
-                            self.logger.info(
-                                f"Fetching findings for {recipe.name} with type={finding_type}, filter: {combined_filter}"
-                            )
-                            raw_data = self.api_client.fetch_all_with_resume(
-                                unified_query
-                            )
+                                self.logger.info(
+                                    f"Fetching findings for {recipe.name} with type={finding_type}, filter: {combined_filter}"
+                                )
+                                raw_data = self.api_client.fetch_all_with_resume(
+                                    unified_query
+                                )
                         elif self._folder_project_ids:
                             # Folder scoping active — use folder's project set directly
                             # Sort for deterministic batching (ensures SQLite cache hits across runs)
