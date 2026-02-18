@@ -83,6 +83,10 @@ def _enrich_history(runs: list[dict]) -> list[dict]:
                     "exists": True,
                 }
             )
+        # Sort: HTML first, then by name
+        enriched_files.sort(
+            key=lambda f: (0 if f.get("format") == "html" else 1, f.get("name", ""))
+        )
         run["files"] = enriched_files
         run["timestamp_display"] = _human_timestamp(run.get("timestamp", ""))
     return runs

@@ -30,6 +30,7 @@ async def session(
     endpoint so HTML reports can show accurate Jira availability.
     """
     jira_available = False
+    jira_projects: list[dict[str, object]] = []
     if state.token and state.domain:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -41,7 +42,13 @@ async def session(
                     },
                     content=b"{}",
                 )
-                jira_available = resp.status_code == 200
+                if resp.status_code == 200:
+                    jira_available = True
+                    try:
+                        ping_data = resp.json()
+                        jira_projects = ping_data.get("projects", [])
+                    except Exception:
+                        pass
         except Exception:
             pass  # Jira not reachable — that's fine
 
@@ -51,6 +58,7 @@ async def session(
             "domain": state.domain,
             "nonce": nonce,
             "jiraAvailable": jira_available,
+            "jiraProjects": jira_projects,
         }
     )
 
@@ -104,12 +112,17 @@ async def proxy(
                 headers=fwd_headers,
                 content=body if body else None,
             )
-            return JSONResponse(
-                content=resp.json()
-                if resp.headers.get("content-type", "").startswith("application/json")
-                else {"raw": resp.text},
-                status_code=resp.status_code,
-            )
+            ct = resp.headers.get("content-type", "")
+            if ct.startswith("application/json") and resp.text.strip():
+                try:
+                    content = resp.json()
+                except Exception:
+                    content = {"raw": resp.text}
+            elif resp.text.strip():
+                content = {"raw": resp.text}
+            else:
+                content = {"ok": True}
+            return JSONResponse(content=content, status_code=resp.status_code)
     except httpx.HTTPStatusError as e:
         return JSONResponse(
             content={"error": str(e)},

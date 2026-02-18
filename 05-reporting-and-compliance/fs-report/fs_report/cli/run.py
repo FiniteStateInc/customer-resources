@@ -393,7 +393,7 @@ def run_reports(
                     output_dir_abs = Path(config.output_dir).expanduser().resolve()
                     history_files = []
                     for gen_file in engine.generated_files:
-                        fp = Path(gen_file)
+                        fp = Path(gen_file).resolve()
                         try:
                             rel = fp.relative_to(output_dir_abs)
                         except ValueError:
@@ -412,6 +412,8 @@ def run_reports(
                         or engine.recipe_loader.recipe_filter
                         or []
                     )
+                    if not history_files:
+                        raise ValueError("No files to record")
                     append_run(
                         output_dir=str(output_dir_abs),
                         domain=config.domain,

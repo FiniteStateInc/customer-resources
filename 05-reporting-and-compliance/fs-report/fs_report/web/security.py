@@ -1,5 +1,8 @@
 """Security middleware for the web UI.
 
+Pure ASGI middleware (no BaseHTTPMiddleware) to avoid starlette
+ExceptionGroup issues with task-group–based dispatch.
+
 - CSRF nonce validation on mutating requests
 - Localhost-only guard
 """
@@ -8,14 +11,12 @@ from __future__ import annotations
 
 import secrets
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qs
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 if TYPE_CHECKING:
-    from starlette.requests import Request
-    from starlette.responses import Response
-    from starlette.types import ASGIApp
+    from starlette.types import ASGIApp, Receive, Scope, Send
 
 
 def generate_nonce() -> str:
@@ -23,7 +24,7 @@ def generate_nonce() -> str:
     return secrets.token_urlsafe(32)
 
 
-class CSRFMiddleware(BaseHTTPMiddleware):
+class CSRFMiddleware:  # pragma: no cover
     """Validate CSRF nonce on mutating requests (POST/PUT/DELETE).
 
     The nonce is injected into templates and must be sent back via
@@ -31,35 +32,81 @@ class CSRFMiddleware(BaseHTTPMiddleware):
     """
 
     def __init__(self, app: ASGIApp, *, nonce: str) -> None:
-        super().__init__(app)
+        self.app = app
         self.nonce = nonce
 
-    async def dispatch(self, request: Request, call_next: object) -> Response:
-        if request.method in ("POST", "PUT", "DELETE"):
-            # Skip CSRF for SSE and session endpoints
-            path = request.url.path
-            if path.startswith("/fsapi/session") or "/events" in path:
-                return await call_next(request)  # type: ignore[operator, no-any-return]
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
 
-            # Check header first, then form field
-            req_nonce = request.headers.get("X-FS-Session", "")
-            if not req_nonce:
-                # Try to get from form data (for regular form submissions)
-                content_type = request.headers.get("content-type", "")
-                if "form" in content_type:
-                    form = await request.form()
-                    req_nonce = str(form.get("_csrf", ""))
+        method: str = scope.get("method", "GET")
+        if method not in ("POST", "PUT", "DELETE"):
+            await self.app(scope, receive, send)
+            return
 
-            if req_nonce != self.nonce:
-                return JSONResponse(
-                    {"error": "Invalid session nonce"},
-                    status_code=403,
-                )
+        path: str = scope.get("path", "")
+        if path.startswith("/fsapi/session") or "/events" in path:
+            await self.app(scope, receive, send)
+            return
 
-        return await call_next(request)  # type: ignore[operator, no-any-return]
+        # Extract headers (names are lowercase bytes in ASGI)
+        raw_headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
+        header_map = dict(raw_headers)
+
+        req_nonce = header_map.get(b"x-fs-session", b"").decode()
+
+        if not req_nonce:
+            content_type = header_map.get(b"content-type", b"").decode()
+            if "urlencoded" in content_type:
+                # Read body, extract _csrf, then replay for downstream
+                body = await self._read_body(receive)
+                params = parse_qs(body.decode("utf-8", errors="replace"))
+                csrf_values = params.get("_csrf", [])
+                req_nonce = csrf_values[0] if csrf_values else ""
+
+                if req_nonce != self.nonce:
+                    resp = JSONResponse(
+                        {"error": "Invalid session nonce"}, status_code=403
+                    )
+                    await resp(scope, receive, send)
+                    return
+
+                await self.app(scope, self._replay_receive(body), send)
+                return
+
+        if req_nonce != self.nonce:
+            resp = JSONResponse({"error": "Invalid session nonce"}, status_code=403)
+            await resp(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _read_body(receive: Receive) -> bytes:
+        parts: list[bytes] = []
+        while True:
+            message = await receive()
+            parts.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+        return b"".join(parts)
+
+    @staticmethod
+    def _replay_receive(body: bytes) -> Receive:
+        sent = False
+
+        async def _receive() -> dict:
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        return _receive
 
 
-class LocalhostGuardMiddleware(BaseHTTPMiddleware):
+class LocalhostGuardMiddleware:  # pragma: no cover
     """Reject requests that don't originate from localhost.
 
     Defense-in-depth: Uvicorn binds to 127.0.0.1, so non-local
@@ -68,11 +115,20 @@ class LocalhostGuardMiddleware(BaseHTTPMiddleware):
 
     _ALLOWED_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
 
-    async def dispatch(self, request: Request, call_next: object) -> Response:
-        client = request.client
-        if client and client.host not in self._ALLOWED_HOSTS:
-            return JSONResponse(
-                {"error": "Only localhost access is allowed"},
-                status_code=403,
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        client = scope.get("client")
+        if client and client[0] not in self._ALLOWED_HOSTS:
+            resp = JSONResponse(
+                {"error": "Only localhost access is allowed"}, status_code=403
             )
-        return await call_next(request)  # type: ignore[operator, no-any-return]
+            await resp(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)

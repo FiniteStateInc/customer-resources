@@ -151,14 +151,7 @@
             </div>
             <div>
                 <label for="fsJiraMode">Mode</label>
-                <select id="fsJiraMode">
-                    <option value="SINGLE_FINDING">Single finding</option>
-                    <option value="SINGLE_COMPONENT">Single component</option>
-                    <option value="ONE_PER_FINDING">One ticket per finding</option>
-                    <option value="ONE_PER_COMPONENT">One ticket per component</option>
-                    <option value="ONE_FOR_ALL_FINDINGS">One ticket for all findings</option>
-                    <option value="ONE_FOR_ALL_COMPONENTS">One ticket for all components</option>
-                </select>
+                <select id="fsJiraMode"></select>
             </div>
         </div>
         <label for="fsJiraTitle">Title</label>
@@ -263,6 +256,7 @@
                     domain: data.domain,
                     token: '',  // server holds the token
                     jiraAvailable: data.jiraAvailable || false,
+                    projects: data.jiraProjects || [],
                 });
                 return true;
             }
@@ -476,6 +470,7 @@
                 projSelect.appendChild(opt);
             });
             fsUpdateTicketTypes();
+            _populateModes(data.endpoint || 'findings', data.mode);
 
             // Build Finite State deep link for the first line of the description
             var deepLink = '';
@@ -499,8 +494,14 @@
             // Map priority band
             const bandMap = { 'CRITICAL': 'Highest', 'HIGH': 'High', 'MEDIUM': 'Medium', 'LOW': 'Low', 'INFO': 'Lowest' };
             document.getElementById('fsJiraPriority').value = bandMap[data.band] || 'Medium';
-            // Mode
-            document.getElementById('fsJiraMode').value = data.mode || 'ONE_PER_FINDING';
+
+            // Save single-item context for restoring when switching modes
+            _singleContext = {
+                findings: (data.findings || []).slice(),
+                components: (data.components || []).slice(),
+                title: document.getElementById('fsJiraTitle').value,
+                summary: document.getElementById('fsJiraSummary').value,
+            };
 
             // Reset the Create button (may have been changed to "Close" after a previous success)
             var createBtn = document.getElementById('fsJiraCreateBtn');
@@ -524,6 +525,96 @@
             typeSelect.appendChild(opt);
         });
     };
+
+    var _modesByEndpoint = {
+        findings: [
+            { value: 'SINGLE_FINDING', label: 'Single finding' },
+            { value: 'ONE_PER_FINDING', label: 'One ticket per finding' },
+            { value: 'ONE_FOR_ALL_FINDINGS', label: 'One ticket for all findings' },
+        ],
+        components: [
+            { value: 'SINGLE_COMPONENT', label: 'Single component' },
+            { value: 'ONE_PER_COMPONENT', label: 'One ticket per component' },
+            { value: 'ONE_FOR_ALL_COMPONENTS', label: 'One ticket for all components' },
+        ],
+    };
+
+    function _populateModes(endpoint, defaultMode) {
+        var modeSelect = document.getElementById('fsJiraMode');
+        modeSelect.innerHTML = '';
+        var modes = _modesByEndpoint[endpoint] || _modesByEndpoint.findings;
+        modes.forEach(function(m) {
+            var opt = document.createElement('option');
+            opt.value = m.value;
+            opt.textContent = m.label;
+            if (m.value === defaultMode) opt.selected = true;
+            modeSelect.appendChild(opt);
+        });
+        modeSelect.onchange = _onModeChange;
+    }
+
+    // Store original single-item context so we can restore on mode switch
+    var _singleContext = {};
+
+    function _onModeChange() {
+        var mode = document.getElementById('fsJiraMode').value;
+        var endpoint = _jiraContext.endpoint || 'findings';
+        var isSingle = (mode === 'SINGLE_FINDING' || mode === 'SINGLE_COMPONENT');
+
+        if (isSingle) {
+            // Restore original single-item data
+            _jiraContext.findings = _singleContext.findings || [];
+            _jiraContext.components = _singleContext.components || [];
+            document.getElementById('fsJiraTitle').value = _singleContext.title || '';
+            document.getElementById('fsJiraSummary').value = _singleContext.summary || '';
+            return;
+        }
+
+        // Multi-item mode: collect all items from matching buttons on the page
+        var allFindings = [];
+        var allComponents = [];
+        var itemLabels = [];
+
+        document.querySelectorAll('.btn-jira').forEach(function(btn) {
+            if (btn.disabled) return;
+            try {
+                var data = JSON.parse(btn.dataset.action);
+                if (data.endpoint !== endpoint) return;
+                (data.findings || []).forEach(function(id) {
+                    if (id && allFindings.indexOf(id) === -1) allFindings.push(id);
+                });
+                (data.components || []).forEach(function(id) {
+                    if (id && allComponents.indexOf(id) === -1) allComponents.push(id);
+                });
+                if (data.title) itemLabels.push(data.title);
+            } catch (_) {}
+        });
+
+        _jiraContext.findings = allFindings;
+        _jiraContext.components = allComponents;
+
+        // Update title and summary for aggregate modes
+        var isAll = (mode === 'ONE_FOR_ALL_FINDINGS' || mode === 'ONE_FOR_ALL_COMPONENTS');
+        if (endpoint === 'findings') {
+            var title = allFindings.length + ' findings requiring remediation';
+            document.getElementById('fsJiraTitle').value = title;
+            if (isAll) {
+                document.getElementById('fsJiraSummary').value =
+                    allFindings.length + ' findings across ' + allComponents.length + ' components:\n\n' +
+                    itemLabels.slice(0, 50).join('\n') +
+                    (itemLabels.length > 50 ? '\n... and ' + (itemLabels.length - 50) + ' more' : '');
+            }
+        } else {
+            var title = allComponents.length + ' components requiring remediation';
+            document.getElementById('fsJiraTitle').value = title;
+            if (isAll) {
+                document.getElementById('fsJiraSummary').value =
+                    allComponents.length + ' components with ' + allFindings.length + ' total findings:\n\n' +
+                    itemLabels.slice(0, 50).join('\n') +
+                    (itemLabels.length > 50 ? '\n... and ' + (itemLabels.length - 50) + ' more' : '');
+            }
+        }
+    }
 
     window.fsCreateTicket = async function() {
         hideError('fsJiraError');

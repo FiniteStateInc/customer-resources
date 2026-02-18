@@ -478,7 +478,7 @@
                             {% set c_summary = c_summary_parts | join('\n\n') if c_summary_parts else (row.total_findings | string ~ ' findings (' ~ row.CRITICAL | string ~ ' CRITICAL, ' ~ row.HIGH | string ~ ' HIGH) in ' ~ row.component_name ~ ' ' ~ row.component_version) %}
                             {% set c_band = 'CRITICAL' if row.CRITICAL > 0 else ('HIGH' if row.HIGH > 0 else ('MEDIUM' if row.MEDIUM > 0 else 'LOW')) %}
                             <button class="action-btn btn-jira" title="Create Jira ticket for this component"
-                                data-action="{{ {'endpoint': 'components', 'title': 'Remediate ' ~ row.component_name ~ ' ' ~ row.component_version, 'summary': c_summary, 'band': c_band, 'findings': row.finding_ids if row.finding_ids is defined else [], 'components': [row.component_id], 'mode': 'SINGLE_COMPONENT', 'projectId': row.project_id, 'projectVersionId': row.project_version_id, 'componentId': row.component_id} | tojson | forceescape }}"
+                                data-action="{{ {'endpoint': 'components', 'title': 'Remediate ' ~ row.component_name ~ ' ' ~ row.component_version, 'summary': c_summary, 'band': c_band, 'findings': row.finding_internal_ids if row.finding_internal_ids is defined else [], 'components': [row.component_id], 'mode': 'SINGLE_COMPONENT', 'projectId': row.project_id, 'projectVersionId': row.project_version_id, 'componentId': row.component_id} | tojson | forceescape }}"
                                 onclick="fsOpenJiraModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this}))">&#x1F3AB; Jira</button>
                         </td>
                     </tr>
@@ -553,7 +553,7 @@
                             {% endif %}
                         </td>
                         <td>
-                            {% set rlabel = row.reachability_label|default('UNKNOWN') %}<span class="reach-badge reach-{{ rlabel }}">{{ rlabel }}</span>
+                            {% set rlabel = row.reachability_label if row.reachability_label is string else 'UNKNOWN' %}<span class="reach-badge reach-{{ rlabel }}">{{ rlabel }}</span>
                         </td>
                         <td>{{ row.reachability_score|int if row.reachability_score else '—' }}</td>
                         <td>{{ row.vuln_functions if row.vuln_functions else '—' }}</td>
@@ -581,9 +581,10 @@
                             {% if f_guidance.get('fix_version') %}{% if f_summary_parts.append('Fix: ' + f_guidance.fix_version) %}{% endif %}{% endif %}
                             {% if f_guidance.get('guidance') %}{% if f_summary_parts.append(f_guidance.guidance) %}{% endif %}{% endif %}
                             {% if f_guidance.get('workaround') %}{% if f_summary_parts.append('Workaround: ' + f_guidance.workaround) %}{% endif %}{% endif %}
-                            {% set f_summary = f_summary_parts | join('\n\n') if f_summary_parts else (row.severity ~ ' vulnerability in ' ~ row.component_name ~ ' ' ~ row.component_version ~ '. Reachability: ' ~ row.reachability_label ~ '.') %}
+                            {% set f_reach = row.reachability_label if row.reachability_label is string else 'UNKNOWN' %}
+                            {% set f_summary = f_summary_parts | join('\n\n') if f_summary_parts else (row.severity ~ ' vulnerability in ' ~ row.component_name ~ ' ' ~ row.component_version ~ '. Reachability: ' ~ f_reach ~ '.') %}
                             <button class="action-btn btn-jira" title="Create Jira ticket for this finding"
-                                data-action="{{ {'endpoint': 'findings', 'title': '[' ~ row.finding_id ~ '] ' ~ row.component_name ~ ' ' ~ row.component_version ~ ' — ' ~ row.severity, 'summary': f_summary, 'band': row.priority_band, 'findings': [row.finding_id], 'components': [row.component_id], 'mode': 'SINGLE_FINDING', 'projectId': row.project_id, 'projectVersionId': row.project_version_id, 'internalId': row.internal_id, 'componentId': row.component_id} | tojson | forceescape }}"
+                                data-action="{{ {'endpoint': 'findings', 'title': '[' ~ row.finding_id ~ '] ' ~ row.component_name ~ ' ' ~ row.component_version ~ ' — ' ~ row.severity, 'summary': f_summary, 'band': row.priority_band, 'findings': [row.internal_id], 'components': [row.component_id], 'mode': 'SINGLE_FINDING', 'projectId': row.project_id, 'projectVersionId': row.project_version_id, 'internalId': row.internal_id, 'componentId': row.component_id} | tojson | forceescape }}"
                                 onclick="fsOpenJiraModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this}))">&#x1F3AB; Jira</button>
                             {% if row.internal_id and row.project_version_id %}
                             <button class="action-btn btn-triage" title="Set status to IN_TRIAGE"

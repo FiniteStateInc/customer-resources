@@ -726,13 +726,13 @@ a:hover { text-decoration: underline; }
 .report-grid {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 4px;
 }
 
 .report-card {
     background-color: white;
     border: 1px solid #dee2e6;
-    border-radius: 8px;
+    border-radius: 6px;
     overflow: hidden;
     transition: border-color 0.15s;
 }
@@ -742,25 +742,28 @@ a:hover { text-decoration: underline; }
 }
 
 .report-info {
-    padding: 16px 20px;
+    padding: 8px 14px;
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 12px;
 }
 
 .report-name {
-    font-size: 1em;
+    font-size: 0.9em;
     color: #2c3e50;
-    margin-bottom: 4px;
+    margin-bottom: 0;
 }
 
 .report-meta {
     display: flex;
-    gap: 16px;
-    font-size: 0.8em;
+    gap: 12px;
+    font-size: 0.78em;
     color: #6c757d;
 }
 
 .report-actions {
-    padding: 0 20px 16px;
+    padding: 0 14px 8px;
 }
 
 .report-preview {
@@ -806,14 +809,14 @@ a:hover { text-decoration: underline; }
 .history-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 12px;
 }
 
 .history-item {
-    padding: 12px 16px;
+    padding: 10px 14px;
     background-color: white;
     border: 1px solid #dee2e6;
-    border-radius: 8px;
+    border-radius: 6px;
 }
 
 .history-meta {
@@ -893,6 +896,76 @@ a:hover { text-decoration: underline; }
 .current-output-section .reports-dir {
     display: block;
     margin-bottom: 16px;
+}
+
+/* ── FORMAT BADGES ────────────────────────────────────────────── */
+.format-badge {
+    display: inline-block;
+    font-size: 0.65em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    vertical-align: middle;
+    margin-right: 6px;
+}
+
+.format-html {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.format-csv {
+    background-color: #d1ecf1;
+    color: #0c5460;
+}
+
+.format-xlsx {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.format-json {
+    background-color: #fff3cd;
+    color: #856404;
+}
+
+/* ── COMPACT FILE ROW ────────────────────────────────────────── */
+.report-file-compact {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 16px;
+    background-color: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+
+.compact-name {
+    color: #495057;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.compact-meta {
+    color: #adb5bd;
+    font-size: 0.9em;
+    white-space: nowrap;
+}
+
+.compact-download {
+    color: #6c757d;
+    font-size: 0.9em;
+    white-space: nowrap;
+}
+
+.compact-download:hover {
+    color: #007bff;
 }
 
 /* ── SETUP PAGE ───────────────────────────────────────────────── */

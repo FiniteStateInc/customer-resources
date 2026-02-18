@@ -20,6 +20,6 @@
 
 """Finite State Stand-Alone Reporting Kit."""
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 __author__ = "Finite State, Inc."
 __license__ = "MIT"

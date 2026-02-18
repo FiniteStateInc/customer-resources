@@ -38,9 +38,13 @@
                     {% if run.files %}
                     <div class="report-grid">
                         {% for f in run.files %}
+                        {% if f.format == 'html' %}
                         <div class="report-card" x-data="{ showPreview: false }">
                             <div class="report-info" @click="showPreview = !showPreview">
-                                <h3 class="report-name">{{ f.name }}</h3>
+                                <h3 class="report-name">
+                                    <span class="format-badge format-html">HTML</span>
+                                    {{ f.name }}
+                                </h3>
                                 <div class="report-meta">
                                     <span class="report-path">{{ f.path }}</span>
                                     <span class="report-size">{{ f.size_kb }} KB</span>
@@ -54,10 +58,18 @@
                                 <iframe src="/reports/file/{{ run.id }}/{{ f.path }}" sandbox="allow-same-origin" loading="lazy"></iframe>
                             </div>
                         </div>
+                        {% else %}
+                        <div class="report-file-compact">
+                            <span class="format-badge format-{{ f.format }}">{{ f.format | upper }}</span>
+                            <span class="compact-name">{{ f.name }}</span>
+                            <span class="compact-meta">{{ f.size_kb }} KB</span>
+                            <a href="/reports/file/{{ run.id }}/{{ f.path }}" class="compact-download" download>Download</a>
+                        </div>
+                        {% endif %}
                         {% endfor %}
                     </div>
                     {% else %}
-                    <p class="history-no-files">Files no longer available on disk.</p>
+                    <p class="history-no-files">Report files have been removed from disk.</p>
                     {% endif %}
                 </div>
                 {% endfor %}

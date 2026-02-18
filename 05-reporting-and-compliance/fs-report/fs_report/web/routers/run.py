@@ -194,13 +194,14 @@ def _execute_run(
                     pass
 
         # Record successful run in history DB
+        history_run_id = ""
         if success and engine.generated_files:
             try:
                 from fs_report.report_history import append_run
 
                 history_files = []
                 for f in engine.generated_files:
-                    fp = Path(f)
+                    fp = Path(f).resolve()
                     try:
                         rel = fp.relative_to(output_dir_abs)
                     except ValueError:
@@ -214,7 +215,9 @@ def _execute_run(
                             "format": fp.suffix.lstrip("."),
                         }
                     )
-                append_run(
+                if not history_files:
+                    raise ValueError("No files to record")
+                history_run_id = append_run(
                     output_dir=str(output_dir_abs),
                     domain=effective.get("domain", ""),
                     recipes=recipe_names,
@@ -232,7 +235,12 @@ def _execute_run(
             except Exception:
                 logger.debug("Failed to record run in history", exc_info=True)
 
-        done_payload = {"status": status, "error": error_msg, "files": html_files}
+        done_payload = {
+            "status": status,
+            "error": error_msg,
+            "files": html_files,
+            "history_run_id": history_run_id,
+        }
         loop.call_soon_threadsafe(
             queue.put_nowait,
             {"event": "done", "data": json.dumps(done_payload)},

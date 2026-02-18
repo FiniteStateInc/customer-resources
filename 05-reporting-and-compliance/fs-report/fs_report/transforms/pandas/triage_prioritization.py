@@ -858,6 +858,12 @@ def triage_prioritization_transform(
     output_columns = [c for c in output_columns if c in df.columns]
     findings_df = df[output_columns].copy()
 
+    # Ensure reachability_label never contains NaN (renders as "nan" in templates)
+    if "reachability_label" in findings_df.columns:
+        findings_df["reachability_label"] = findings_df["reachability_label"].fillna(
+            "UNKNOWN"
+        )
+
     # Determine if this is a single-project report
     unique_projects = df["project_name"].unique()
     is_single_project = len(unique_projects) <= 1
@@ -1565,6 +1571,29 @@ def build_top_components(df: pd.DataFrame, top_n: int = 15) -> pd.DataFrame:
         )
     else:
         component_agg["finding_ids"] = [[] for _ in range(len(component_agg))]
+
+    # Add internal finding IDs per component (for Jira API calls)
+    if "internal_id" in df.columns:
+        iid_map = (
+            df[df["internal_id"] != ""]
+            .groupby(["component_name", "component_version"])["internal_id"]
+            .apply(list)
+            .reset_index()
+        )
+        iid_map.columns = [
+            "component_name",
+            "component_version",
+            "finding_internal_ids",
+        ]
+        component_agg = component_agg.merge(
+            iid_map, on=["component_name", "component_version"], how="left"
+        )
+    if "finding_internal_ids" not in component_agg.columns:
+        component_agg["finding_internal_ids"] = [[] for _ in range(len(component_agg))]
+    else:
+        component_agg["finding_internal_ids"] = component_agg[
+            "finding_internal_ids"
+        ].apply(lambda x: x if isinstance(x, list) else [])
 
     # Get band counts per component
     band_ct = (
