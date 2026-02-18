@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 
 from fs_report.cli.common import (
+    attach_file_logging,
     get_default_dates,
     load_config_file,
     merge_config,
@@ -269,8 +270,9 @@ def run_reports(
     overwrite: bool = False,
 ) -> None:
     """Execute the report generation pipeline."""
-    setup_logging(verbose)
+    run_id = setup_logging(verbose)
     logger = logging.getLogger(__name__)
+    file_handler = None
     try:
         data_override = None
         if data_file:
@@ -313,6 +315,8 @@ def run_reports(
             vex_override=vex_override,
             overwrite=overwrite,
         )
+
+        file_handler = attach_file_logging(run_id, config.auth_token)
 
         logger.info("Configuration:")
         logger.info(f"  Domain: {config.domain}")
@@ -381,6 +385,51 @@ def run_reports(
 
         success = engine.run()
         if success:
+            # Record run in history DB
+            if engine.generated_files:
+                try:
+                    from fs_report.report_history import append_run
+
+                    output_dir_abs = Path(config.output_dir).expanduser().resolve()
+                    history_files = []
+                    for gen_file in engine.generated_files:
+                        fp = Path(gen_file)
+                        try:
+                            rel = fp.relative_to(output_dir_abs)
+                        except ValueError:
+                            continue
+                        parts = rel.parts
+                        recipe_name = parts[0] if len(parts) > 1 else rel.stem
+                        history_files.append(
+                            {
+                                "recipe": recipe_name,
+                                "path": str(rel),
+                                "format": fp.suffix.lstrip("."),
+                            }
+                        )
+                    recipe_list_for_history = (
+                        [r.lower() for r in (recipe if recipe else [])]
+                        or engine.recipe_loader.recipe_filter
+                        or []
+                    )
+                    append_run(
+                        output_dir=str(output_dir_abs),
+                        domain=config.domain,
+                        recipes=recipe_list_for_history,
+                        scope={
+                            k: v
+                            for k, v in {
+                                "project_filter": config.project_filter,
+                                "folder_filter": config.folder_filter,
+                                "period": period,
+                            }.items()
+                            if v
+                        },
+                        files=history_files,
+                    )
+                except Exception:
+                    logger.debug("Failed to record run in history", exc_info=True)
+
             console.print("[green]Report generation completed successfully![/green]")
         else:
             console.print("[red]Report generation failed![/red]")
@@ -398,6 +447,10 @@ def run_reports(
         logger.exception("Unexpected error occurred")
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1) from e
+    finally:
+        if file_handler is not None:
+            logging.getLogger().removeHandler(file_handler)
+            file_handler.close()
 
 
 # ── Typer command ────────────────────────────────────────────────────

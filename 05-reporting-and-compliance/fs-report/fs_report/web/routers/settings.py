@@ -90,6 +90,7 @@ async def save_settings(
         "cache_ttl",
         "project_filter",
         "folder_filter",
+        "version_filter",
         "finding_types",
         "ai_depth",
     ):

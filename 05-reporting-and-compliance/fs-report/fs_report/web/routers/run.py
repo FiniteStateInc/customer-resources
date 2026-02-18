@@ -84,6 +84,8 @@ def _execute_run(
     # Merge state with overrides
     effective = {**state_data, **overrides}
 
+    from fs_report.logging_utils import create_file_handler
+
     # Install SSE log handler
     handler = SSELogHandler(queue, loop)
     handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
@@ -96,6 +98,7 @@ def _execute_run(
     captured_stderr = io.StringIO()
     old_stderr = sys.stderr
 
+    file_handler: logging.FileHandler | None = None
     try:
         token = effective.get("token", "")
         domain = effective.get("domain", "")
@@ -110,7 +113,20 @@ def _execute_run(
             )
             return
 
+        file_handler = create_file_handler(run_id, token)
+        root_logger.addHandler(file_handler)
+
         output_dir = effective.get("output_dir", "./output")
+
+        scope_parts = []
+        for k in ("project_filter", "folder_filter", "version_filter"):
+            v = effective.get(k)
+            if v:
+                scope_parts.append(f"{k}={v}")
+        if scope_parts:
+            logger.info("Scope: %s", ", ".join(scope_parts))
+        else:
+            logger.info("Scope: (entire portfolio)")
 
         config = create_config(
             period=effective.get("period", "30d"),
@@ -177,6 +193,45 @@ def _execute_run(
                 except ValueError:
                     pass
 
+        # Record successful run in history DB
+        if success and engine.generated_files:
+            try:
+                from fs_report.report_history import append_run
+
+                history_files = []
+                for f in engine.generated_files:
+                    fp = Path(f)
+                    try:
+                        rel = fp.relative_to(output_dir_abs)
+                    except ValueError:
+                        continue
+                    parts = rel.parts
+                    recipe = parts[0] if len(parts) > 1 else rel.stem
+                    history_files.append(
+                        {
+                            "recipe": recipe,
+                            "path": str(rel),
+                            "format": fp.suffix.lstrip("."),
+                        }
+                    )
+                append_run(
+                    output_dir=str(output_dir_abs),
+                    domain=effective.get("domain", ""),
+                    recipes=recipe_names,
+                    scope={
+                        k: effective.get(k)
+                        for k in (
+                            "project_filter",
+                            "folder_filter",
+                            "period",
+                        )
+                        if effective.get(k)
+                    },
+                    files=history_files,
+                )
+            except Exception:
+                logger.debug("Failed to record run in history", exc_info=True)
+
         done_payload = {"status": status, "error": error_msg, "files": html_files}
         loop.call_soon_threadsafe(
             queue.put_nowait,
@@ -213,6 +268,9 @@ def _execute_run(
     finally:
         sys.stderr = old_stderr
         root_logger.removeHandler(handler)
+        if file_handler is not None:
+            root_logger.removeHandler(file_handler)
+            file_handler.close()
         root_logger.setLevel(old_level)
         _runs[run_id]["status"] = "completed"
 
@@ -275,6 +333,7 @@ async def start_run(
         "cache_ttl",
         "project_filter",
         "folder_filter",
+        "version_filter",
         "finding_types",
         "cve_filter",
         "baseline_version",

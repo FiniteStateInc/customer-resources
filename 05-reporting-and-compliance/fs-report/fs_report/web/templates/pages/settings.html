@@ -109,6 +109,11 @@
                        value="{{ state.get('folder_filter', '') }}" placeholder="(all folders)">
             </div>
             <div class="form-group">
+                <label for="cfg-version">Default version filter</label>
+                <input type="text" id="cfg-version" name="version_filter"
+                       value="{{ state.get('version_filter', '') }}" placeholder="(all versions)">
+            </div>
+            <div class="form-group">
                 <label for="cfg-ft">Default finding types</label>
                 <input type="text" id="cfg-ft" name="finding_types"
                        value="{{ state.get('finding_types', 'cve') }}">

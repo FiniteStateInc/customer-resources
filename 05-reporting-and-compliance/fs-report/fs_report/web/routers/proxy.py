@@ -24,12 +24,33 @@ async def session(
     state: WebAppState = Depends(get_state),
     nonce: str = Depends(get_nonce),
 ) -> JSONResponse:
-    """Return session info (no CSRF required)."""
+    """Return session info (no CSRF required).
+
+    When the server already holds credentials, ping the Jira tracker
+    endpoint so HTML reports can show accurate Jira availability.
+    """
+    jira_available = False
+    if state.token and state.domain:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(
+                    f"https://{state.domain}/api/public/v0/tracker/tickets/ping",
+                    headers={
+                        "X-Authorization": state.token,
+                        "Content-Type": "application/json",
+                    },
+                    content=b"{}",
+                )
+                jira_available = resp.status_code == 200
+        except Exception:
+            pass  # Jira not reachable — that's fine
+
     return JSONResponse(
         {
             "connected": bool(state.token),
             "domain": state.domain,
             "nonce": nonce,
+            "jiraAvailable": jira_available,
         }
     )
 

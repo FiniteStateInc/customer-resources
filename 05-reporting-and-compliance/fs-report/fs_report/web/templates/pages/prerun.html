@@ -50,6 +50,11 @@
                 <input type="text" id="pre-folder" name="folder_filter"
                        value="{{ state.get('folder_filter', '') }}" placeholder="(all folders)">
             </div>
+            <div class="form-group">
+                <label for="pre-version">Version filter</label>
+                <input type="text" id="pre-version" name="version_filter"
+                       value="{{ state.get('version_filter', '') }}" placeholder="(all versions)">
+            </div>
             <div class="form-group form-row">
                 <label for="pre-cvo">Current version only</label>
                 <label class="toggle">

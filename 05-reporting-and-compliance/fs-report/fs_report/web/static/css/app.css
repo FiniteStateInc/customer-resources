@@ -864,6 +864,37 @@ a:hover { text-decoration: underline; }
     color: #007bff;
 }
 
+.history-dir {
+    color: #6c757d;
+    font-size: 0.85em;
+    font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 300px;
+}
+
+.history-no-files {
+    color: #adb5bd;
+    font-size: 0.9em;
+    font-style: italic;
+    margin: 4px 0 0;
+}
+
+.current-output-section {
+    margin-top: 40px;
+}
+
+.current-output-section h3 {
+    color: #2c3e50;
+    margin-bottom: 8px;
+}
+
+.current-output-section .reports-dir {
+    display: block;
+    margin-bottom: 16px;
+}
+
 /* ── SETUP PAGE ───────────────────────────────────────────────── */
 .setup-page {
     display: flex;

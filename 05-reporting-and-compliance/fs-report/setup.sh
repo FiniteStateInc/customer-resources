@@ -37,6 +37,22 @@ for arg in "$@"; do
     esac
 done
 
+# ── 0. Show the fox ───────────────────────────────────────────────
+_show_fox() {
+    local fox=""
+    # Try local file first (running from clone)
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$script_dir/fox.ans" ]; then
+        fox="$script_dir/fox.ans"
+    fi
+    if [ -n "$fox" ]; then
+        cat "$fox" 2>/dev/null || true
+        echo ""
+    fi
+}
+_show_fox
+
 echo ""
 info "=== Finite State Report Kit Setup ==="
 echo ""

@@ -19,8 +19,10 @@ _GLOBAL_CONFIG_DIR = Path.home() / ".fs-report"
 _GLOBAL_CONFIG_FILENAMES = ["config.yaml", "config.yml"]
 
 
-def setup_logging(verbose: bool) -> None:
-    """Configure logging with RichHandler."""
+def setup_logging(verbose: bool) -> str:
+    """Configure logging with RichHandler and return a unique run ID."""
+    from fs_report.logging_utils import generate_run_id
+
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
@@ -29,6 +31,24 @@ def setup_logging(verbose: bool) -> None:
         handlers=[RichHandler(console=console, rich_tracebacks=True)],
         force=True,
     )
+    return generate_run_id()
+
+
+def attach_file_logging(run_id: str, token: str) -> logging.FileHandler:
+    """Create a persistent file handler and attach it to the root logger.
+
+    Returns the handler so callers can remove it later if needed.
+    """
+    from fs_report.logging_utils import LOG_DIR, create_file_handler
+
+    handler = create_file_handler(run_id, token)
+    logging.getLogger().addHandler(handler)
+
+    logger = logging.getLogger(__name__)
+    log_path = LOG_DIR / f"{datetime.now().strftime('%Y-%m-%d')}_{run_id}.log"
+    logger.info("Run %s — log file: %s", run_id, log_path)
+
+    return handler
 
 
 def get_default_dates() -> tuple[str, str]:

@@ -136,6 +136,40 @@ def list_runs(limit: int = 50) -> list[dict[str, Any]]:
         conn.close()
 
 
+def get_run(run_id: str) -> dict[str, Any] | None:
+    """Return a single run by ID, or None if not found."""
+    conn = _ensure_db()
+    try:
+        cursor = conn.execute(
+            "SELECT id, timestamp, output_dir, domain, recipes, scope "
+            "FROM runs WHERE id = ?",
+            (run_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        rid, ts, out_dir, domain, recipes_json, scope_json = row
+        file_cursor = conn.execute(
+            "SELECT recipe, path, format FROM run_files WHERE run_id = ?",
+            (rid,),
+        )
+        files = [
+            {"recipe": r, "path": p, "format": fmt}
+            for r, p, fmt in file_cursor.fetchall()
+        ]
+        return {
+            "id": rid,
+            "timestamp": ts,
+            "output_dir": out_dir,
+            "domain": domain,
+            "recipes": json.loads(recipes_json) if recipes_json else [],
+            "scope": json.loads(scope_json) if scope_json else {},
+            "files": files,
+        }
+    finally:
+        conn.close()
+
+
 def prune(keep: int = 100) -> int:
     """Delete old runs beyond *keep* most recent. Returns count deleted."""
     conn = _ensure_db()

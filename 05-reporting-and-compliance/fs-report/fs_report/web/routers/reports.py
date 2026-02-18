@@ -1,10 +1,11 @@
 """Reports browser router."""
 
+import mimetypes
 from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from fs_report.web.dependencies import get_nonce, get_state
 from fs_report.web.state import WebAppState
@@ -53,6 +54,40 @@ def _get_report_files(output_dir: Path) -> list[dict]:
     return results
 
 
+def _human_timestamp(iso_ts: str) -> str:
+    """Format an ISO timestamp into a readable string with age."""
+    try:
+        dt = datetime.fromisoformat(iso_ts)
+        age = _human_age(dt.timestamp())
+        return f"{dt.strftime('%Y-%m-%d %H:%M')} ({age})"
+    except (ValueError, TypeError):
+        return iso_ts or ""
+
+
+def _enrich_history(runs: list[dict]) -> list[dict]:
+    """Add file-existence checks and size/age metadata to history runs."""
+    for run in runs:
+        out_dir = Path(run["output_dir"])
+        enriched_files = []
+        for f in run.get("files", []):
+            abs_path = out_dir / f["path"]
+            if not abs_path.exists():
+                continue
+            stat = abs_path.stat()
+            enriched_files.append(
+                {
+                    **f,
+                    "name": abs_path.stem.replace("_", " ").title(),
+                    "size_kb": round(stat.st_size / 1024),
+                    "age": _human_age(stat.st_mtime),
+                    "exists": True,
+                }
+            )
+        run["files"] = enriched_files
+        run["timestamp_display"] = _human_timestamp(run.get("timestamp", ""))
+    return runs
+
+
 @router.get("/reports")
 async def reports_page(
     request: Request,
@@ -63,11 +98,11 @@ async def reports_page(
     output_dir = Path(state.get("output_dir", "./output")).expanduser().resolve()
     report_files = _get_report_files(output_dir)
 
-    # Load run history
+    # Load and enrich run history
     try:
         from fs_report.report_history import list_runs
 
-        history = list_runs(limit=20)
+        history = _enrich_history(list_runs(limit=50))
     except Exception:
         history = []
 
@@ -83,6 +118,30 @@ async def reports_page(
             "history": history,
         },
     )
+
+
+@router.get("/reports/file/{run_id}/{path:path}")
+async def serve_history_file(run_id: str, path: str) -> FileResponse:
+    """Serve a report file from any historically-recorded output directory."""
+    from fs_report.report_history import get_run
+
+    # Look up run in history DB
+    run = get_run(run_id)
+    if not run:
+        return JSONResponse({"error": "Run not found"}, status_code=404)  # type: ignore[return-value]
+
+    output_dir = Path(run["output_dir"])
+    abs_path = (output_dir / path).resolve()
+
+    # Path traversal guard: must stay inside output_dir
+    if not str(abs_path).startswith(str(output_dir.resolve())):
+        return JSONResponse({"error": "Invalid path"}, status_code=400)  # type: ignore[return-value]
+
+    if not abs_path.exists() or not abs_path.is_file():
+        return JSONResponse({"error": "File not found"}, status_code=404)  # type: ignore[return-value]
+
+    media_type = mimetypes.guess_type(str(abs_path))[0] or "application/octet-stream"
+    return FileResponse(abs_path, media_type=media_type)
 
 
 @router.get("/api/reports/files")
