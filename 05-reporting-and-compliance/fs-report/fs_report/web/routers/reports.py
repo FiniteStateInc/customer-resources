@@ -140,7 +140,7 @@ async def save_setup(
     if output_dir:
         state["output_dir"] = output_dir
 
-    state.save()
+    state.save(include_token=bool(token))
     state.reload()
 
     return JSONResponse({"status": "saved"})

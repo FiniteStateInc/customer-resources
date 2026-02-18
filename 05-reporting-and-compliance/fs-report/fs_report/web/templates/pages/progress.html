@@ -31,7 +31,12 @@
         <template x-if="status === 'success'">
             <div>
                 <p class="result-message">Report generation completed successfully!</p>
-                <a href="/reports" class="btn btn-primary">View Reports</a>
+                <template x-if="reportFiles.length === 1">
+                    <a :href="'/output/' + reportFiles[0]" class="btn btn-primary" target="_blank">View Report</a>
+                </template>
+                <template x-if="reportFiles.length !== 1">
+                    <a href="/reports" class="btn btn-primary">View Reports</a>
+                </template>
             </div>
         </template>
         <template x-if="status === 'error'">
@@ -68,6 +73,7 @@ function progressStream(runId) {
         status: '',
         errorMsg: '',
         resultClass: '',
+        reportFiles: [],
         eventSource: null,
 
         init() {
@@ -105,6 +111,7 @@ function progressStream(runId) {
                     this.done = true;
                     this.status = data.status || 'error';
                     this.errorMsg = data.error || '';
+                    this.reportFiles = data.files || [];
                     this.resultClass = this.status === 'success' ? 'result-success' : this.status === 'cancelled' ? 'result-warning' : 'result-error';
                     if (this.status === 'success') {
                         this.progressPct = 100;

@@ -1,0 +1,89 @@
+releases:
+  - version: "1.3.2"
+    date: "2026-02-17"
+    changes:
+      - report: ~
+        type: fixed
+        description: "Token login in web UI setup wizard now persists token to config file"
+      - report: ~
+        type: added
+        description: "One-line curl installer for customer onboarding"
+      - report: ~
+        type: improved
+        description: "View Report button links directly to generated HTML after a run"
+      - report: ~
+        type: fixed
+        description: "Cancel button now works during NVD lookups and long API fetches"
+      - report: ~
+        type: added
+        description: "Changelog CLI command (fs-report changelog)"
+      - report: ~
+        type: added
+        description: "Upgrade notification when a newer PyPI version is available"
+
+  - version: "1.3.1"
+    date: "2026-02-16"
+    changes:
+      - report: "CVE Impact"
+        type: improved
+        description: "Entity-level NVD caching for --current-version-only + --project"
+      - report: "CVE Impact"
+        type: fixed
+        description: "Respect --current-version-only with --project filter"
+      - report: "CVE Impact"
+        type: improved
+        description: "Unified CVE description fetching via NVD batch lookup"
+      - report: ~
+        type: added
+        description: "NVD cache management CLI (fs-report cache --nvd)"
+      - report: ~
+        type: added
+        description: "Web UI cancel button for running reports"
+
+  - version: "1.3.0"
+    date: "2026-01-20"
+    changes:
+      - report: "Findings by Project"
+        type: improved
+        description: "Enriched report with CVE details (description, CVSS, references)"
+      - report: "Triage Prioritization"
+        type: improved
+        description: "VEX status and penalties added to AI prompts"
+      - report: "Triage Prioritization"
+        type: changed
+        description: "Updated scoring methodology for better prioritization"
+      - report: ~
+        type: added
+        description: "FastAPI web UI replacing the terminal TUI"
+      - report: ~
+        type: added
+        description: "Bundled recipes and templates inside the package"
+      - report: ~
+        type: improved
+        description: "Cross-platform compatibility (Windows, Linux, macOS)"
+
+  - version: "1.2.0"
+    date: "2025-12-10"
+    changes:
+      - report: "Triage Prioritization"
+        type: added
+        description: "OpenAI API support for AI-powered remediation guidance"
+      - report: ~
+        type: improved
+        description: "Connection badge and action button UI enhancements"
+      - report: ~
+        type: fixed
+        description: "Prevent reopening of modals after successful actions"
+
+  - version: "1.1.3"
+    date: "2025-11-15"
+    changes:
+      - report: "CVE Impact"
+        type: added
+        description: "Initial CVE Impact report"
+      - report: ~
+        type: improved
+        description: "Enhanced caching behaviour in ReportEngine and SQLiteCache"
+      - report: ~
+        type: fixed
+        description: "Overwrite guard false positive on intermediate files"

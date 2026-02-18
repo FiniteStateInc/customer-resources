@@ -43,6 +43,7 @@
         .reach-REACHABLE { background: #dc3545; color: white; }
         .reach-UNREACHABLE { background: #28a745; color: white; }
         .reach-INCONCLUSIVE { background: #6c757d; color: white; }
+        .reach-UNKNOWN { background: #adb5bd; color: #333; }
 
         .kev-badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; background: #dc3545; color: white; }
         .exploit-badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; background: #fd7e14; color: white; }
@@ -387,7 +388,7 @@
                     <tbody>
                         {% for p in d.project_details %}
                         <tr{% if p.reachability_label == 'REACHABLE' %} style="background:#fff5f5"{% endif %}>
-                            <td>{% if domain and p.project_id %}<a href="https://{{ domain }}/projects/{{ p.project_id }}/" target="_blank" rel="noopener" class="entity-link" title="View project in Finite State">{{ p.project_name }}</a>{% else %}{{ p.project_name }}{% endif %}</td>
+                            <td>{% if domain and p.project_id and p.project_version_id and p.finding_internal_id %}<a href="https://{{ domain }}/projects/{{ p.project_id }}/versions/{{ p.project_version_id }}/findings?findingId={{ p.finding_internal_id }}" target="_blank" rel="noopener" class="entity-link" title="View finding in Finite State">{{ p.project_name }}</a>{% elif domain and p.project_id %}<a href="https://{{ domain }}/projects/{{ p.project_id }}/" target="_blank" rel="noopener" class="entity-link" title="View project in Finite State">{{ p.project_name }}</a>{% else %}{{ p.project_name }}{% endif %}</td>
                             <td>{% if domain and p.project_id and p.project_version_id %}<a href="https://{{ domain }}/projects/{{ p.project_id }}/versions/{{ p.project_version_id }}/overview" target="_blank" rel="noopener" class="entity-link" title="View version in Finite State">{{ p.project_version }}</a>{% else %}{{ p.project_version }}{% endif %}</td>
                             <td><span class="reach-badge reach-{{ p.reachability_label }}">{{ p.reachability_label }}</span></td>
                             <td>{% if domain and p.project_id and p.project_version_id and p.component_id %}<a href="https://{{ domain }}/projects/{{ p.project_id }}/versions/{{ p.project_version_id }}/bill-of-materials?view=list&componentId={{ p.component_id }}" target="_blank" rel="noopener" class="entity-link" title="View component in Finite State">{{ p.component }}</a>{% else %}{{ p.component }}{% endif %}</td>

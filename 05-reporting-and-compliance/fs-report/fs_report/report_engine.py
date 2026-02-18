@@ -202,6 +202,9 @@ class ReportEngine:
         # In-memory cache: per-project version lists from /projects/{id}/versions
         self._project_versions_cache: dict[str, list[dict]] = {}
 
+        # Files produced by the last run() call
+        self.generated_files: list[str] = []
+
         # Folder scoping state (populated by _resolve_folder_scope in run())
         self._folder_project_ids: set[str] | None = None
         self._project_folder_map: dict[str, str] = {}  # project_id -> folder_name
@@ -1114,6 +1117,7 @@ class ReportEngine:
                 self.logger.error(f"Failed to process recipe {recipe.name}: {e}")
                 all_succeeded = False
                 continue
+        self.generated_files = generated_files
         if generated_files:
             print("\nReports generated:")
             for f in generated_files:
@@ -2618,6 +2622,7 @@ class ReportEngine:
             api_key=getattr(self.config, "nvd_api_key", None),
             cache_dir=getattr(self.config, "cache_dir", None),
             cache_ttl=max(getattr(self.config, "cache_ttl", 0) or 0, 86400),
+            cancel_event=self._cancel_event,
         )
         self.logger.info(NVD_ATTRIBUTION)
         nvd_results = nvd.get_batch(cve_ids_ordered, progress=True)
@@ -2627,6 +2632,7 @@ class ReportEngine:
 
         # Fetch reachability and exploit details per CVE
         for cve_id in sorted(cve_ids_ordered):
+            self._check_cancel()
             finding_query = QueryConfig(
                 endpoint="/public/v0/findings",
                 params=QueryParams(
@@ -2697,6 +2703,7 @@ class ReportEngine:
             api_key=getattr(self.config, "nvd_api_key", None),
             cache_dir=getattr(self.config, "cache_dir", None),
             cache_ttl=max(getattr(self.config, "cache_ttl", 0) or 0, 86400),
+            cancel_event=self._cancel_event,
         )
         self.logger.info(NVD_ATTRIBUTION)
 

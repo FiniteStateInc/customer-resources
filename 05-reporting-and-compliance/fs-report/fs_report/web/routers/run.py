@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import json
 import logging
 import sys
 import threading
@@ -164,9 +165,22 @@ def _execute_run(
 
         status = "success" if success else "error"
         error_msg = "" if success else "Report generation failed"
+
+        # Collect HTML report paths relative to the output dir for direct linking
+        output_dir_abs = Path(output_dir).expanduser().resolve()
+        html_files = []
+        for f in engine.generated_files:
+            fp = Path(f)
+            if fp.suffix == ".html":
+                try:
+                    html_files.append(str(fp.relative_to(output_dir_abs)))
+                except ValueError:
+                    pass
+
+        done_payload = {"status": status, "error": error_msg, "files": html_files}
         loop.call_soon_threadsafe(
             queue.put_nowait,
-            {"event": "done", "data": f'{{"status":"{status}","error":"{error_msg}"}}'},
+            {"event": "done", "data": json.dumps(done_payload)},
         )
 
     except ReportCancelled:

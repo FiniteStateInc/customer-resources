@@ -44,17 +44,18 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 
 ### Installation
 
-The quickest way to install is with the setup script, which handles pipx, credentials, and PATH configuration automatically:
+The quickest way to install is with a single command:
 
 ```bash
-# From a local clone
-./setup.sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/05-reporting-and-compliance/fs-report/setup.sh)"
+```
 
-# Or install from source (current directory)
-./setup.sh --from-source
+This handles Python verification, pipx installation, credential setup, and PATH configuration automatically. You can also run it from a local clone:
 
-# Non-interactive (uses environment variables)
-./setup.sh --from-source --yes
+```bash
+./setup.sh                    # Interactive setup
+./setup.sh --from-source      # Install from current directory
+./setup.sh --from-source --yes # Non-interactive (uses env vars)
 ```
 
 On Windows, use `setup.ps1` instead.
@@ -91,6 +92,7 @@ The CLI is organized into subcommands for better discoverability:
 | `fs-report list {recipes,projects,folders,versions}` | Explore available resources |
 | `fs-report cache {clear,status}` | Manage cached data |
 | `fs-report config {init,show}` | Manage configuration |
+| `fs-report changelog` | Show per-report changelog |
 | `fs-report help periods` | Show period format help |
 | `fs-report serve [directory]` | Serve reports via local HTTP server |
 
@@ -209,6 +211,8 @@ Running bare `fs-report` (no arguments) launches an interactive web UI at `http:
 
 - **Dashboard** with workflow cards for common report scenarios
 - **Real-time progress** streaming via Server-Sent Events (SSE) during report generation
+- **Direct report linking** — "View Report" opens the generated HTML immediately after a run
+- **Cancellation** — cancel button works at any point, including during NVD lookups
 - **Settings management** with persistence to `~/.fs-report/config.yaml`
 - **Reports browser** with preview for previously generated reports
 - **CSRF protection** and localhost-only access for security

@@ -158,7 +158,9 @@ def cve_impact_pandas_transform(
                 1 for p in project_details if p["reachability_label"] == "UNREACHABLE"
             )
             unknown_count = sum(
-                1 for p in project_details if p["reachability_label"] == "INCONCLUSIVE"
+                1
+                for p in project_details
+                if p["reachability_label"] in ("INCONCLUSIVE", "UNKNOWN")
             )
             # Title from first finding
             title = str(reach_findings[0].get("title", "")) if reach_findings else ""
@@ -199,6 +201,8 @@ def cve_impact_pandas_transform(
             unknown_count = project_count
             title = ""
             # Build lightweight project details from /cves data
+            # Label as UNKNOWN (not INCONCLUSIVE) because reachability
+            # was never run — there are no findings to analyse.
             for p in affected_projects:
                 if isinstance(p, dict):
                     pname = p.get("name", "Unknown")
@@ -228,7 +232,7 @@ def cve_impact_pandas_transform(
                             "project_version_id": latest_vid,
                             "component": comp_str,
                             "component_id": matched_comp,
-                            "reachability_label": "INCONCLUSIVE",
+                            "reachability_label": "UNKNOWN",
                             "reachability_score": 0.0,
                             "triage_status": "",
                             "detected": first_detected,
@@ -564,6 +568,24 @@ def _match_component_for_project(
     return first.get("vcId") or first.get("id")
 
 
+def _reachability_label(score: float, is_null: bool) -> str:
+    """Map a reachability score to a human-readable label.
+
+    * ``is_null=True`` (score was absent/null) → ``UNKNOWN`` — reachability
+      was never run for this finding.
+    * ``score > 0``  → ``REACHABLE``
+    * ``score < 0``  → ``UNREACHABLE``
+    * ``score == 0``  → ``INCONCLUSIVE`` — analysis ran but was inconclusive.
+    """
+    if is_null:
+        return "UNKNOWN"
+    if score > 0:
+        return "REACHABLE"
+    if score < 0:
+        return "UNREACHABLE"
+    return "INCONCLUSIVE"
+
+
 def _worst_attack_vector(findings: list[dict[str, Any]]) -> str:
     """Return the worst (most exposed) attack vector across findings.
 
@@ -618,16 +640,24 @@ def _build_project_details_from_findings(
     """
     project_id_map = project_id_map or {}
     component_map = component_map or {}
-    projects: dict[str, dict[str, Any]] = {}
+
+    # Group by (project_name, project_version_id) so each version gets its
+    # own row with internally-consistent IDs.  A finding is unique to its
+    # version, so mixing finding IDs across versions produces broken URLs.
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
 
     for f in findings:
         pname = _nested_get(f, "project", "name", default="Unknown")
-        reach_score = _safe_float(f.get("reachabilityScore", 0))
-        reach_label = (
-            "REACHABLE"
-            if reach_score > 0
-            else ("UNREACHABLE" if reach_score < 0 else "INCONCLUSIVE")
-        )
+        # Support both API (camelCase) and cache/normalized (snake_case) keys.
+        # Distinguish null (reachability never ran → UNKNOWN) from 0
+        # (ran but inconclusive → INCONCLUSIVE).
+        reach_val = f.get("reachabilityScore")
+        reach_is_null = reach_val is None
+        if reach_is_null:
+            reach_val = f.get("reachability_score")
+            reach_is_null = reach_val is None
+        reach_score = _safe_float(reach_val)
+        reach_label = _reachability_label(reach_score, reach_is_null)
 
         comp_name = _nested_get(f, "component", "name", default="Unknown")
         comp_version = _nested_get(f, "component", "version", default="")
@@ -644,6 +674,7 @@ def _build_project_details_from_findings(
         pv_id: Any = _nested_get(f, "projectVersion", "id") or None
         comp_vc_id: Any = _nested_get(f, "component", "vcId") or None
         comp_id: Any = _nested_get(f, "component", "id") or None
+        finding_internal_id: Any = f.get("id") or None
 
         # Fall back to /cves project map if finding didn't have IDs
         if not project_id and pname in project_id_map:
@@ -652,32 +683,39 @@ def _build_project_details_from_findings(
             if not pv_id:
                 pv_id = pinfo.get("version_id")
 
-        if pname not in projects:
-            projects[pname] = {
+        # Key on (project_name, version_id) to keep IDs consistent per row
+        row_key = (pname, str(pv_id or ""))
+
+        if row_key not in rows:
+            rows[row_key] = {
                 "project_name": pname,
                 "project_id": project_id or None,
                 "project_version": pv_version,
                 "project_version_id": pv_id or None,
                 "component": component,
                 "component_id": comp_vc_id or comp_id or None,
+                "finding_internal_id": finding_internal_id,
                 "reachability_label": reach_label,
                 "reachability_score": reach_score,
                 "triage_status": triage_status,
                 "detected": detected,
             }
         else:
-            existing = projects[pname]
+            existing = rows[row_key]
             if reach_score > existing["reachability_score"]:
                 existing["reachability_label"] = reach_label
                 existing["reachability_score"] = reach_score
+                existing["finding_internal_id"] = finding_internal_id
+                existing["component"] = component
+                existing["component_id"] = comp_vc_id or comp_id or None
             # Keep the most "actioned" triage status
             if triage_status and not existing.get("triage_status"):
                 existing["triage_status"] = triage_status
 
-    # Sort: REACHABLE first, then INCONCLUSIVE, then UNREACHABLE
-    order = {"REACHABLE": 0, "INCONCLUSIVE": 1, "UNREACHABLE": 2}
+    # Sort: REACHABLE first, then INCONCLUSIVE, then UNKNOWN, then UNREACHABLE
+    order = {"REACHABLE": 0, "INCONCLUSIVE": 1, "UNKNOWN": 2, "UNREACHABLE": 3}
     return sorted(
-        projects.values(),
+        rows.values(),
         key=lambda p: (order.get(p["reachability_label"], 9), p["project_name"]),
     )
 

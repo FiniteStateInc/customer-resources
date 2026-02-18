@@ -1,5 +1,24 @@
 # Release Notes
 
+## Version 1.3.2 (February 2026)
+
+### Bug Fixes
+
+- **Token login in web UI** — The setup wizard now correctly persists the API token to `~/.fs-report/config.yaml`. Previously the token was set in memory but never saved to disk, causing the setup to loop.
+- **Cancel button during NVD lookups** — Cancel now responds within ~0.5 seconds regardless of where the run is in the NVD fetch cycle. Previously, cancel was ignored until all NVD API calls completed (potentially 10+ minutes without an API key).
+
+### Improvements
+
+- **Direct report linking** — After a successful single-recipe run, the "View Report" button opens the generated HTML directly instead of navigating to the reports listing page.
+- **One-line curl installer** — Customers can install with a single command: `bash -c "$(curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/05-reporting-and-compliance/fs-report/setup.sh)"`
+
+### New Features
+
+- **Changelog CLI** — `fs-report changelog` shows per-report change history with optional `--report` filter.
+- **Upgrade notification** — A one-line notice appears after CLI runs when a newer PyPI version is available.
+
+---
+
 ## Version 1.3.0 (February 2026)
 
 ### New Features

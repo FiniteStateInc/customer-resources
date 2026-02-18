@@ -1,0 +1,35 @@
+name: Publish fs-report to PyPI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "05-reporting-and-compliance/fs-report/**"
+
+jobs:
+  publish:
+    if: github.repository == 'FiniteStateInc/customer-resources'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    defaults:
+      run:
+        working-directory: 05-reporting-and-compliance/fs-report
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Build package
+        run: poetry build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: 05-reporting-and-compliance/fs-report/dist/

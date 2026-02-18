@@ -17,6 +17,7 @@ from rich.console import Console
 
 # ── Sub-apps ─────────────────────────────────────────────────────────
 from fs_report.cli.cache import cache_app
+from fs_report.cli.changelog_cmd import changelog_app
 
 # ── Re-exports for backwards compatibility ───────────────────────────
 # Tests import these from ``fs_report.cli``.  Keep them importable.
@@ -69,6 +70,7 @@ app.add_typer(cache_app, name="cache", help="Manage cached data.")
 app.add_typer(config_app, name="config", help="Manage configuration.")
 app.add_typer(help_app, name="help", help="Show help topics.")
 app.add_typer(serve_app, name="serve", help="Serve reports via local HTTP server.")
+app.add_typer(changelog_app, name="changelog", help="Show per-report changelog.")
 
 
 # ── Deprecated top-level commands (backwards compat) ─────────────────
@@ -289,7 +291,7 @@ def _main() -> None:
     args = sys.argv[1:]
 
     # Check: no subcommand present but run-style flags are
-    subcommands = {"run", "list", "cache", "config", "help", "serve"}
+    subcommands = {"run", "list", "cache", "config", "help", "serve", "changelog"}
     has_subcommand = any(a in subcommands for a in args)
 
     if not has_subcommand and args:
@@ -308,7 +310,25 @@ def _main() -> None:
                 )
                 sys.argv = [sys.argv[0], "run"] + args
 
-    app(prog_name="fs-report")
+    try:
+        app(prog_name="fs-report")
+    except SystemExit as e:
+        if e.code in (None, 0):
+            _maybe_show_update_notification()
+        raise
+
+
+def _maybe_show_update_notification() -> None:
+    """Print a one-line upgrade notice when a newer PyPI version exists."""
+    try:
+        from fs_report.cli.update_check import get_update_notification
+
+        notification = get_update_notification(__version__)
+        if notification:
+            _console.print()
+            _console.print(notification)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 if __name__ == "__main__":

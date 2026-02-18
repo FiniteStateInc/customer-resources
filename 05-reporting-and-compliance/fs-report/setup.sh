@@ -4,11 +4,16 @@
 # Installs fs-report via pipx and configures domain + API token.
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/.../setup.sh | bash
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/05-reporting-and-compliance/fs-report/setup.sh)"
 #   ./setup.sh                    # from a local clone
 #   ./setup.sh --from-source      # install from current directory
 #   ./setup.sh --from-source --yes # non-interactive (uses env vars)
 set -euo pipefail
+
+# When piped from curl, stdin is the pipe — redirect interactive reads to /dev/tty
+if [ ! -t 0 ] && [ -e /dev/tty ]; then
+    exec < /dev/tty
+fi
 
 BOLD='\033[1m'
 CYAN='\033[36m'
@@ -83,7 +88,7 @@ elif [ -f "pyproject.toml" ] && grep -q 'name = "fs-report"' pyproject.toml 2>/d
     pipx install . --force
 else
     pipx install fs-report --force 2>/dev/null || \
-        pipx install git+https://github.com/FiniteStateInc/fs-report.git --force
+        pipx install git+https://github.com/FiniteStateInc/customer-resources.git#subdirectory=05-reporting-and-compliance/fs-report --force
 fi
 ok "fs-report installed"
 

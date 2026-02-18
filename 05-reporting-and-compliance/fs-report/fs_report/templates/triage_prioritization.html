@@ -75,6 +75,7 @@
         .reach-REACHABLE { background: #dc3545; color: white; }
         .reach-UNREACHABLE { background: #28a745; color: white; }
         .reach-INCONCLUSIVE { background: #6c757d; color: white; }
+        .reach-UNKNOWN { background: #adb5bd; color: #333; }
 
         /* Icons */
         .icon-exploit { color: #6f42c1; }
@@ -256,7 +257,8 @@
             <h4>Reachability Interpretation</h4>
             <ul>
                 <li><span class="reach-badge reach-REACHABLE">REACHABLE</span> (score &gt; 0): Code path is reachable — vulnerability can be triggered</li>
-                <li><span class="reach-badge reach-INCONCLUSIVE">INCONCLUSIVE</span> (score = 0): Reachability analysis inconclusive or not analyzed</li>
+                <li><span class="reach-badge reach-INCONCLUSIVE">INCONCLUSIVE</span> (score = 0): Reachability analysis ran but was inconclusive</li>
+                <li><span class="reach-badge reach-UNKNOWN">UNKNOWN</span> (no data): Reachability analysis was never run</li>
                 <li><span class="reach-badge reach-UNREACHABLE">UNREACHABLE</span> (score &lt; 0): Code path cannot be triggered</li>
             </ul>
         </div>
@@ -551,9 +553,7 @@
                             {% endif %}
                         </td>
                         <td>
-                            {% if row.reachability_score is defined and row.reachability_score > 0 %}<span class="reach-badge reach-REACHABLE">REACHABLE</span>
-                            {% elif row.reachability_score is defined and row.reachability_score < 0 %}<span class="reach-badge reach-UNREACHABLE">UNREACHABLE</span>
-                            {% else %}<span class="reach-badge reach-INCONCLUSIVE">INCONCLUSIVE</span>{% endif %}
+                            {% set rlabel = row.reachability_label|default('UNKNOWN') %}<span class="reach-badge reach-{{ rlabel }}">{{ rlabel }}</span>
                         </td>
                         <td>{{ row.reachability_score|int if row.reachability_score else '—' }}</td>
                         <td>{{ row.vuln_functions if row.vuln_functions else '—' }}</td>

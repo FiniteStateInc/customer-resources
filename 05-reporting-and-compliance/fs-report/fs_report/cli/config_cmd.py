@@ -54,6 +54,7 @@ def init() -> None:
         "current_version_only": True,
         "request_delay": 0.5,
         "batch_size": 5,
+        "update_check": True,
     }
 
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +118,7 @@ def show() -> None:
         "ai",
         "ai_depth",
         "serve_port",
+        "update_check",
     ]:
         val = cfg.get(key)
         if val is not None:

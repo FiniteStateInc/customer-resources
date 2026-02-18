@@ -644,9 +644,10 @@ def triage_prioritization_transform(
 
         reachability_summary: dict[str, Any] | None = None
         if "reachability_score" in df.columns:
-            reachable_count = int((df["reachability_score"] > 0).sum())
-            unreachable_count = int((df["reachability_score"] < 0).sum())
-            unknown_count = int((df["reachability_score"] == 0).sum())
+            reachable_count = int((df["reachability_label"] == "REACHABLE").sum())
+            unreachable_count = int((df["reachability_label"] == "UNREACHABLE").sum())
+            inconclusive_count = int((df["reachability_label"] == "INCONCLUSIVE").sum())
+            unknown_count = int((df["reachability_label"] == "UNKNOWN").sum())
             top_vuln_funcs: list[str] = []
             if "vuln_functions" in df.columns:
                 all_funcs = (
@@ -662,6 +663,7 @@ def triage_prioritization_transform(
             reachability_summary = {
                 "reachable": reachable_count,
                 "unreachable": unreachable_count,
+                "inconclusive": inconclusive_count,
                 "unknown": unknown_count,
                 "top_vuln_functions": top_vuln_funcs,
             }
@@ -803,10 +805,21 @@ def triage_prioritization_transform(
         )
 
     # Defensive recompute of reachability_label from reachability_score
-    # (ensures label is consistent with score after all transformations)
-    df["reachability_label"] = df["reachability_score"].apply(
-        lambda x: "REACHABLE" if x > 0 else ("UNREACHABLE" if x < 0 else "INCONCLUSIVE")
-    )
+    # (ensures label is consistent with score after all transformations).
+    # Preserve UNKNOWN labels — they indicate reachability was never run,
+    # which is distinct from INCONCLUSIVE (ran but score == 0).
+    df["reachability_label"] = [
+        existing
+        if existing == "UNKNOWN"
+        else (
+            "REACHABLE"
+            if score > 0
+            else ("UNREACHABLE" if score < 0 else "INCONCLUSIVE")
+        )
+        for score, existing in zip(
+            df["reachability_score"], df["reachability_label"], strict=False
+        )
+    ]
 
     # Debug: log label vs score consistency for top findings
     top_10 = df.nlargest(10, "triage_score")
@@ -1018,24 +1031,33 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["in_kev"] = False
 
     # --- Reachability ---
+    # Track which rows had null scores (reachability never ran) vs explicit 0
+    # (analysis ran but was inconclusive).
     if "reachabilityScore" in df.columns:
-        df["reachability_score"] = pd.to_numeric(
-            df["reachabilityScore"], errors="coerce"
-        ).fillna(0)
+        raw_reach = pd.to_numeric(df["reachabilityScore"], errors="coerce")
     elif "reachability_score" in df.columns:
-        df["reachability_score"] = pd.to_numeric(
-            df["reachability_score"], errors="coerce"
-        ).fillna(0)
+        raw_reach = pd.to_numeric(df["reachability_score"], errors="coerce")
     else:
-        df["reachability_score"] = 0.0
+        raw_reach = pd.Series([float("nan")] * len(df), index=df.index)
 
-    # Three-tier reachability label:
+    reach_is_null = raw_reach.isna()
+    df["reachability_score"] = raw_reach.fillna(0)
+
+    # Four-tier reachability label:
+    #   null (NaN)     → UNKNOWN (reachability was never run)
     #   positive score → REACHABLE (vulnerable function found in binary)
     #   negative score → UNREACHABLE
-    #   zero / null    → INCONCLUSIVE (reachability analysis inconclusive or not analyzed)
-    df["reachability_label"] = df["reachability_score"].apply(
-        lambda x: "REACHABLE" if x > 0 else ("UNREACHABLE" if x < 0 else "INCONCLUSIVE")
-    )
+    #   zero           → INCONCLUSIVE (analysis ran but was inconclusive)
+    df["reachability_label"] = [
+        "UNKNOWN"
+        if is_null
+        else (
+            "REACHABLE"
+            if score > 0
+            else ("UNREACHABLE" if score < 0 else "INCONCLUSIVE")
+        )
+        for score, is_null in zip(df["reachability_score"], reach_is_null, strict=False)
+    ]
 
     # Reachability factors (array of evidence explaining the score)
     if "factors" in df.columns:
@@ -1074,7 +1096,8 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         f"Reachability distribution: "
         f"REACHABLE={reach_counts.get('REACHABLE', 0)}, "
         f"UNREACHABLE={reach_counts.get('UNREACHABLE', 0)}, "
-        f"INCONCLUSIVE={reach_counts.get('INCONCLUSIVE', 0)}"
+        f"INCONCLUSIVE={reach_counts.get('INCONCLUSIVE', 0)}, "
+        f"UNKNOWN={reach_counts.get('UNKNOWN', 0)}"
     )
     if (
         reach_counts.get("REACHABLE", 0) == 0

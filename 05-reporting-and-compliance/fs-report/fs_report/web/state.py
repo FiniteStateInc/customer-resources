@@ -54,9 +54,14 @@ class WebAppState:
         self._data["token"] = token
         self._data["domain"] = domain
 
-    def save(self) -> None:
-        """Persist non-sensitive state to ``~/.fs-report/config.yaml``."""
-        skip_keys = {"token"}
+    def save(self, *, include_token: bool = False) -> None:
+        """Persist state to ``~/.fs-report/config.yaml``.
+
+        By default the token is excluded (it usually comes from an env var).
+        Pass ``include_token=True`` to persist a user-supplied token (e.g.
+        during initial setup).
+        """
+        skip_keys: set[str] = set() if include_token else {"token"}
         to_save: dict[str, Any] = {}
 
         for key, value in self._data.items():

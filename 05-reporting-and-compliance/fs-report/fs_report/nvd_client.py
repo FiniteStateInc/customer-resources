@@ -53,6 +53,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -71,9 +72,11 @@ NVD_ATTRIBUTION = (
 )
 
 # Rate-limit settings
-_RATE_LIMIT_WITH_KEY = 0.6  # seconds between requests (50 req / 30 s)
+_RATE_LIMIT_WITH_KEY = 0.8  # seconds between requests (conservative for 50 req / 30 s)
 _RATE_LIMIT_WITHOUT_KEY = 6.0  # seconds between requests (5 req / 30 s)
 _REQUEST_TIMEOUT = 30  # seconds
+_MAX_RETRIES = 3  # retry attempts on 429 rate-limit responses
+_RETRY_BACKOFF_BASE = 10.0  # base seconds for exponential backoff (10, 20, 40)
 
 
 @dataclass
@@ -167,6 +170,7 @@ class NVDClient:
         api_key: str | None = None,
         cache_dir: str | None = None,
         cache_ttl: int = 86400,  # 24 hours default
+        cancel_event: threading.Event | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("NVD_API_KEY", "")
         self._rate_limit = (
@@ -175,6 +179,7 @@ class NVDClient:
         self._last_request_time: float = 0.0
         self._cache_ttl = cache_ttl
         self._request_count = 0
+        self._cancel_event = cancel_event
 
         # In-memory cache (session-scoped)
         self._mem_cache: dict[str, NVDCveRecord] = {}
@@ -214,13 +219,27 @@ class NVDClient:
     def __del__(self) -> None:
         self.close()
 
+    def _cancellable_sleep(self, seconds: float) -> None:
+        """Sleep in short intervals, checking for cancellation."""
+        if self._cancel_event is None:
+            time.sleep(seconds)
+            return
+        # Sleep in 0.5s chunks so we can respond to cancel quickly
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if self._cancel_event.is_set():
+                from fs_report.report_engine import ReportCancelled
+
+                raise ReportCancelled("Report cancelled by user")
+            time.sleep(min(0.5, end - time.monotonic()))
+
     def _rate_limit_wait(self) -> None:
         """Sleep if necessary to respect NVD rate limits."""
         elapsed = time.monotonic() - self._last_request_time
         if elapsed < self._rate_limit:
             wait = self._rate_limit - elapsed
             logger.debug(f"NVD rate limit: waiting {wait:.1f}s")
-            time.sleep(wait)
+            self._cancellable_sleep(wait)
 
     def _get_from_sqlite(self, cve_id: str) -> NVDCveRecord | None:
         """Retrieve a cached record from SQLite, respecting TTL."""
@@ -297,32 +316,49 @@ class NVDClient:
         )
 
     def _fetch_from_api(self, cve_id: str) -> NVDCveRecord | None:
-        """Fetch a single CVE record from the NVD API."""
-        self._rate_limit_wait()
-
+        """Fetch a single CVE record from the NVD API with retry on 429."""
         headers: dict[str, str] = {}
         if self._api_key:
             headers["apiKey"] = self._api_key
 
-        try:
-            self._last_request_time = time.monotonic()
-            self._request_count += 1
-            response = requests.get(
-                NVD_CVE_API,
-                params={"cveId": cve_id},
-                headers=headers,
-                timeout=_REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except requests.exceptions.HTTPError as e:
-            if e.response is not None and e.response.status_code == 404:
-                logger.debug(f"CVE {cve_id} not found in NVD")
-            else:
+        for attempt in range(_MAX_RETRIES + 1):
+            self._rate_limit_wait()
+            try:
+                self._last_request_time = time.monotonic()
+                self._request_count += 1
+                response = requests.get(
+                    NVD_CVE_API,
+                    params={"cveId": cve_id},
+                    headers=headers,
+                    timeout=_REQUEST_TIMEOUT,
+                )
+                response.raise_for_status()
+                data = response.json()
+                break  # success
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    logger.debug(f"CVE {cve_id} not found in NVD")
+                    return None
+                if (
+                    e.response is not None
+                    and e.response.status_code == 429
+                    and attempt < _MAX_RETRIES
+                ):
+                    wait = _RETRY_BACKOFF_BASE * (2**attempt)
+                    logger.warning(
+                        f"NVD 429 rate-limited for {cve_id}, "
+                        f"retrying in {wait:.0f}s (attempt {attempt + 1}/{_MAX_RETRIES})"
+                    )
+                    self._cancellable_sleep(wait)
+                    continue
                 logger.warning(f"NVD API error for {cve_id}: {e}")
-            return None
-        except Exception as e:
-            logger.warning(f"NVD API request failed for {cve_id}: {e}")
+                return None
+            except Exception as e:
+                logger.warning(f"NVD API request failed for {cve_id}: {e}")
+                return None
+        else:
+            # All retries exhausted
+            logger.warning(f"NVD API retries exhausted for {cve_id}")
             return None
 
         vulnerabilities = data.get("vulnerabilities", [])
@@ -496,6 +532,10 @@ class NVDClient:
                 pass
 
         for cve_id in iterator:
+            if self._cancel_event is not None and self._cancel_event.is_set():
+                from fs_report.report_engine import ReportCancelled
+
+                raise ReportCancelled("Report cancelled by user")
             record = self._fetch_from_api(cve_id)
             if record:
                 self._mem_cache[cve_id] = record
