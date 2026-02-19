@@ -1020,6 +1020,17 @@ class SQLiteCache:
             # Unknown endpoint, store essential fields only
             return {"id": record.get("id"), "data": json.dumps(record)}
 
+        # The API may return reachability as a nested dict
+        # ({"score": N, "label": "...", "factors": [...]}) instead of flat
+        # "reachabilityScore" and "factors" fields.  Flatten before trimming
+        # so the normal field-extraction loop finds the values.
+        reach = record.get("reachability")
+        if isinstance(reach, dict):
+            if "reachabilityScore" not in record and "score" in reach:
+                record["reachabilityScore"] = reach["score"]
+            if "factors" not in record and "factors" in reach:
+                record["factors"] = reach["factors"]
+
         trimmed = {}
         for api_field, db_column in fields.items():
             value = get_nested_value(record, api_field)
