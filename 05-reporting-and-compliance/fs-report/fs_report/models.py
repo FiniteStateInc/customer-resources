@@ -20,13 +20,13 @@
 
 """Pydantic models for recipe validation and configuration."""
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-class ChartType(str, Enum):
+class ChartType(StrEnum):
     """Supported chart types for visualization."""
 
     LINE = "line"
@@ -39,7 +39,7 @@ class ChartType(str, Enum):
     RADAR = "radar"
 
 
-class TransformType(str, Enum):
+class TransformType(StrEnum):
     """Supported transform types."""
 
     GROUP_BY = "group_by"
@@ -49,7 +49,7 @@ class TransformType(str, Enum):
     STRING_AGG = "string_agg"
 
 
-class CalcOperation(str, Enum):
+class CalcOperation(StrEnum):
     """Supported calculation operations."""
 
     MEAN = "mean"
@@ -230,9 +230,9 @@ class ChartConfig(BaseModel):
 class OutputConfig(BaseModel):
     """Output configuration."""
 
-    chart: (
-        ChartType | dict[str, Any]
-    ) | None = None  # Legacy single chart support (string or dict)
+    chart: (ChartType | dict[str, Any]) | None = (
+        None  # Legacy single chart support (string or dict)
+    )
     charts: list[ChartConfig] | None = None  # Multiple charts support
     table: bool = Field(False, description="Include table in output")
     slide_title: str | None = None
@@ -341,7 +341,7 @@ class Config(BaseModel):
     )
     finding_types: str = Field(
         "cve",
-        description="Comma-separated finding types: cve, sast, binary_sca, source_sca, thirdparty, credentials, config_issues, crypto_material, or 'all'",
+        description="Finding types to include. Types: cve, sast, thirdparty, binary_sca, source_sca. Categories: credentials, config_issues, crypto_material. Use 'all' for everything. Comma-separated for multiple.",
     )
     current_version_only: bool = Field(
         True,
@@ -462,6 +462,16 @@ class Config(BaseModel):
             raise ValueError(
                 f"Invalid date format: {v}. Expected ISO8601 format."
             ) from e
+
+    @model_validator(mode="after")
+    def validate_version_requires_project(self) -> "Config":
+        """Ensure version_filter is only set when project_filter is also set."""
+        if self.version_filter and not self.project_filter:
+            raise ValueError(
+                "version_filter requires project_filter to be set. "
+                "Use --project to specify the project first."
+            )
+        return self
 
 
 class ReportData(BaseModel):

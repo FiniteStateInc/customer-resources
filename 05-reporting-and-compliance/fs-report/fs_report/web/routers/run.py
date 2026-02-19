@@ -420,7 +420,7 @@ async def run_events(run_id: str) -> EventSourceResponse:
                 yield event
                 if event.get("event") == "done":
                     break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Send keep-alive ping
                 yield {"event": "ping", "data": ""}
 

@@ -809,12 +809,14 @@ def triage_prioritization_transform(
     # Preserve UNKNOWN labels — they indicate reachability was never run,
     # which is distinct from INCONCLUSIVE (ran but score == 0).
     df["reachability_label"] = [
-        existing
-        if existing == "UNKNOWN"
-        else (
-            "REACHABLE"
-            if score > 0
-            else ("UNREACHABLE" if score < 0 else "INCONCLUSIVE")
+        (
+            existing
+            if existing == "UNKNOWN"
+            else (
+                "REACHABLE"
+                if score > 0
+                else ("UNREACHABLE" if score < 0 else "INCONCLUSIVE")
+            )
         )
         for score, existing in zip(
             df["reachability_score"], df["reachability_label"], strict=False
@@ -960,11 +962,9 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["project_id"] = df["project.id"].astype(str)
     elif "project" in df.columns:
         df["project_id"] = df["project"].apply(
-            lambda x: str(x.get("id", ""))
-            if isinstance(x, dict)
-            else str(x)
-            if x
-            else ""
+            lambda x: (
+                str(x.get("id", "")) if isinstance(x, dict) else str(x) if x else ""
+            )
         )
     elif "projectId" in df.columns:
         df["project_id"] = df["projectId"].astype(str)
@@ -1021,9 +1021,11 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         )
     elif "exploit_info" in df.columns:
         df["has_exploit"] = df["exploit_info"].apply(
-            lambda x: (isinstance(x, list) and len(x) > 0)
-            if not isinstance(x, str)
-            else (x not in ("", "[]", "null"))
+            lambda x: (
+                (isinstance(x, list) and len(x) > 0)
+                if not isinstance(x, str)
+                else (x not in ("", "[]", "null"))
+            )
         )
     else:
         df["has_exploit"] = False
@@ -1039,6 +1041,28 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     # --- Reachability ---
     # Track which rows had null scores (reachability never ran) vs explicit 0
     # (analysis ran but was inconclusive).
+    #
+    # The API may return reachability in three formats:
+    #   1. Flat "reachabilityScore" field (legacy or direct API response)
+    #   2. Flat "reachability_score" field (from SQLite cache, snake_case)
+    #   3. Nested "reachability" dict: {"score": N, "label": "...", "factors": [...]}
+    #      (newer API response where reachability is a sub-object on the finding)
+    #
+    # Handle nested "reachability" dict first — extract score and factors before
+    # checking for flat fields.
+    if (
+        "reachability" in df.columns
+        and df["reachability"].apply(lambda x: isinstance(x, dict)).any()
+    ):
+        df["reachabilityScore"] = df["reachability"].apply(
+            lambda x: x.get("score") if isinstance(x, dict) else None
+        )
+        # Extract factors from nested object if not already a top-level column
+        if "factors" not in df.columns:
+            df["factors"] = df["reachability"].apply(
+                lambda x: x.get("factors", []) if isinstance(x, dict) else []
+            )
+
     if "reachabilityScore" in df.columns:
         raw_reach = pd.to_numeric(df["reachabilityScore"], errors="coerce")
     elif "reachability_score" in df.columns:
@@ -1055,12 +1079,14 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     #   negative score → UNREACHABLE
     #   zero           → INCONCLUSIVE (analysis ran but was inconclusive)
     df["reachability_label"] = [
-        "UNKNOWN"
-        if is_null
-        else (
-            "REACHABLE"
-            if score > 0
-            else ("UNREACHABLE" if score < 0 else "INCONCLUSIVE")
+        (
+            "UNKNOWN"
+            if is_null
+            else (
+                "REACHABLE"
+                if score > 0
+                else ("UNREACHABLE" if score < 0 else "INCONCLUSIVE")
+            )
         )
         for score, is_null in zip(df["reachability_score"], reach_is_null, strict=False)
     ]
@@ -1285,9 +1311,9 @@ def calculate_additive_score(
 
     # Reachability points
     df["_pts_reachability"] = df["reachability_score"].apply(
-        lambda x: pts_reachable
-        if x > 0
-        else (pts_unreachable if x < 0 else pts_unknown)
+        lambda x: (
+            pts_reachable if x > 0 else (pts_unreachable if x < 0 else pts_unknown)
+        )
     )
 
     # Exploit/KEV points
@@ -2632,7 +2658,7 @@ def _empty_result() -> dict[str, Any]:
     return {
         "findings_df": pd.DataFrame(),
         "project_summary_df": pd.DataFrame(),
-        "portfolio_summary": {band: 0 for band in BAND_ORDER},
+        "portfolio_summary": dict.fromkeys(BAND_ORDER, 0),
         "cvss_band_matrix": {"rows": SEVERITY_ORDER, "cols": BAND_ORDER, "data": []},
         "gate_funnel": {
             "gate_1_critical": 0,

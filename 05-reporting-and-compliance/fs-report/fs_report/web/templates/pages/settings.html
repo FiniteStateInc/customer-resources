@@ -3,6 +3,9 @@
 {% block title %}Settings — Finite State Report Kit{% endblock %}
 
 {% block content %}
+{% include "components/_dir_browser.html" %}
+{% include "components/_scope_dropdowns.html" %}
+
 <div class="settings-page" x-data="settingsForm()">
     <h2>Settings</h2>
 
@@ -27,8 +30,11 @@
             <summary class="form-section-title">Operational Defaults</summary>
             <div class="form-group">
                 <label for="cfg-output">Default output directory</label>
-                <input type="text" id="cfg-output" name="output_dir"
-                       value="{{ state.get('output_dir', './output') }}">
+                <div class="input-with-btn">
+                    <input type="text" id="cfg-output" name="output_dir"
+                           value="{{ state.get('output_dir', './output') }}">
+                    <button type="button" id="cfg-output-browse" class="btn btn-sm btn-default">Browse</button>
+                </div>
             </div>
             <div class="form-group">
                 <label for="cfg-period">Default period</label>
@@ -61,35 +67,41 @@
         <!-- Cache Management -->
         <details open class="form-section">
             <summary class="form-section-title">Cache Management</summary>
-            <div class="cache-info">
+            <div class="cache-info" id="cache-info-display">
                 <div class="cache-stat">
                     <span class="cache-label">Location</span>
                     <span class="cache-value">{{ cache_info.location }}</span>
                 </div>
                 <div class="cache-stat">
                     <span class="cache-label">API Cache</span>
-                    <span class="cache-value">{{ cache_info.size_mb }} MB, {{ cache_info.entries }} entries</span>
+                    <span class="cache-value">{{ cache_info.api_size_mb }} MB, {{ cache_info.api_entries }} entries{% if cache_info.domain_dbs %} ({{ cache_info.domain_dbs | length }} domain{{ 's' if cache_info.domain_dbs | length != 1 }}){% endif %}</span>
                 </div>
-                {% if cache_info.ai_size_mb > 0 %}
                 <div class="cache-stat">
-                    <span class="cache-label">AI Cache</span>
-                    <span class="cache-value">{{ cache_info.ai_size_mb }} MB</span>
+                    <span class="cache-label">NVD Cache</span>
+                    <span class="cache-value">{{ cache_info.nvd_size_mb }} MB, {{ cache_info.nvd_entries }} entries</span>
                 </div>
-                {% endif %}
+                <div class="cache-stat">
+                    <span class="cache-label">AI Remediation Cache</span>
+                    <span class="cache-value">{{ cache_info.ai_size_mb }} MB, {{ cache_info.ai_entries }} entries</span>
+                </div>
             </div>
             <div class="form-actions-row">
                 <button type="button" class="btn btn-warning btn-sm"
                         hx-delete="/api/settings/cache/api"
-                        hx-headers='{"X-FS-Session": "{{ nonce }}"}'
                         hx-swap="none"
-                        @htmx:after-request="$dispatch('toast', {message: 'API cache cleared', type: 'success'})">
+                        @htmx:after-request="handleCacheClear($event, 'API cache')">
                     Clear API Cache
                 </button>
                 <button type="button" class="btn btn-warning btn-sm"
-                        hx-delete="/api/settings/cache/ai"
-                        hx-headers='{"X-FS-Session": "{{ nonce }}"}'
+                        hx-delete="/api/settings/cache/nvd"
                         hx-swap="none"
-                        @htmx:after-request="$dispatch('toast', {message: 'AI cache cleared', type: 'success'})">
+                        @htmx:after-request="handleCacheClear($event, 'NVD cache')">
+                    Clear NVD Cache
+                </button>
+                <button type="button" class="btn btn-warning btn-sm"
+                        hx-delete="/api/settings/cache/ai"
+                        hx-swap="none"
+                        @htmx:after-request="handleCacheClear($event, 'AI cache')">
                     Clear AI Cache
                 </button>
             </div>
@@ -99,24 +111,32 @@
         <details open class="form-section">
             <summary class="form-section-title">Assessment Defaults</summary>
             <div class="form-group">
-                <label for="cfg-project">Default project filter</label>
-                <input type="text" id="cfg-project" name="project_filter"
-                       value="{{ state.get('project_filter', '') }}" placeholder="(all projects)">
+                <label for="cfg-folder">&#128193; Default folder filter</label>
+                <select id="cfg-folder" name="folder_filter"
+                        data-value="{{ state.get('folder_filter', '') }}">
+                    <option value="">(all folders)</option>
+                </select>
             </div>
             <div class="form-group">
-                <label for="cfg-folder">Default folder filter</label>
-                <input type="text" id="cfg-folder" name="folder_filter"
-                       value="{{ state.get('folder_filter', '') }}" placeholder="(all folders)">
+                <label for="cfg-project">&#128196; Default project filter</label>
+                <select id="cfg-project" name="project_filter"
+                        data-value="{{ state.get('project_filter', '') }}">
+                    <option value="">(all projects)</option>
+                </select>
             </div>
             <div class="form-group">
-                <label for="cfg-version">Default version filter</label>
-                <input type="text" id="cfg-version" name="version_filter"
-                       value="{{ state.get('version_filter', '') }}" placeholder="(all versions)">
+                <label for="cfg-version">&#127991; Default version filter</label>
+                <select id="cfg-version" name="version_filter"
+                        data-value="{{ state.get('version_filter', '') }}">
+                    <option value="">(all versions)</option>
+                </select>
             </div>
             <div class="form-group">
                 <label for="cfg-ft">Default finding types</label>
                 <input type="text" id="cfg-ft" name="finding_types"
-                       value="{{ state.get('finding_types', 'cve') }}">
+                       value="{{ state.get('finding_types', 'cve') }}"
+                       placeholder="cve, sast, credentials">
+                <small class="form-hint">Types: cve, sast, thirdparty, binary_sca, source_sca. Categories: credentials, config_issues, crypto_material. Use &lsquo;all&rsquo; for everything.</small>
             </div>
             <div class="form-group form-row">
                 <label for="cfg-cvo">Current version only</label>
@@ -161,8 +181,18 @@
 
 {% block scripts %}
 <script>
+var NONCE = '{{ nonce }}';
+
 function settingsForm() {
     return {
+        handleCacheClear($event, label) {
+            if ($event.detail.successful) {
+                this.$dispatch('toast', {message: label + ' cleared', type: 'success'});
+                refreshCacheStats();
+            } else {
+                this.$dispatch('toast', {message: 'Failed to clear ' + label, type: 'error'});
+            }
+        },
         saveSettings() {
             const form = document.getElementById('settings-form');
             const formData = new FormData(form);
@@ -185,5 +215,30 @@ function settingsForm() {
         },
     };
 }
+
+function refreshCacheStats() {
+    fetch('/api/settings/cache', { headers: { 'X-FS-Session': NONCE } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        var el = document.getElementById('cache-info-display');
+        if (!el) return;
+        var domainNote = d.domain_dbs && d.domain_dbs.length
+            ? ' (' + d.domain_dbs.length + ' domain' + (d.domain_dbs.length !== 1 ? 's' : '') + ')'
+            : '';
+        el.innerHTML =
+            '<div class="cache-stat"><span class="cache-label">Location</span><span class="cache-value">' + d.location + '</span></div>' +
+            '<div class="cache-stat"><span class="cache-label">API Cache</span><span class="cache-value">' + d.api_size_mb + ' MB, ' + d.api_entries + ' entries' + domainNote + '</span></div>' +
+            '<div class="cache-stat"><span class="cache-label">NVD Cache</span><span class="cache-value">' + d.nvd_size_mb + ' MB, ' + d.nvd_entries + ' entries</span></div>' +
+            '<div class="cache-stat"><span class="cache-label">AI Remediation Cache</span><span class="cache-value">' + d.ai_size_mb + ' MB, ' + d.ai_entries + ' entries</span></div>';
+    });
+}
+
+/* Init directory browser + scope dropdowns */
+initDirBrowser('cfg-output', 'cfg-output-browse');
+initScopeDropdowns({
+    projectId: 'cfg-project',
+    folderId: 'cfg-folder',
+    versionId: 'cfg-version',
+});
 </script>
 {% endblock %}

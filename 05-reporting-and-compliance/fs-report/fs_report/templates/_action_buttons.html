@@ -313,7 +313,8 @@
         const s = getSession();
         if (s) {
             const domainLabel = s.domain.replace(/^(https?:\/\/)?/, '').split('/')[0];
-            const jiraNote = s.jiraAvailable ? '' : ' <span style="opacity:0.7;font-size:0.85em;">(Jira not configured)</span>';
+            const hasJiraBtns = document.querySelectorAll('.btn-jira').length > 0;
+            const jiraNote = (hasJiraBtns && !s.jiraAvailable) ? ' <span style="opacity:0.7;font-size:0.85em;">(Jira not configured)</span>' : '';
             badge.innerHTML = '<span class="fs-connected-badge">&#10003; Connected to ' + domainLabel + jiraNote + '</span>';
         } else {
             badge.innerHTML = '<button class="fs-connect-btn" onclick="fsShowCredModal()">Connect to Finite State</button>';

@@ -1,0 +1,320 @@
+<!-- Cascading Project / Folder / Version dropdowns.
+     Usage: include this template, then call:
+       initScopeDropdowns({ projectId, folderId, versionId })
+     where each *Id is the id of a <select> element. -->
+<script>
+function initScopeDropdowns(opts) {
+    var projectSel = document.getElementById(opts.projectId);
+    var folderSel  = document.getElementById(opts.folderId);
+    var versionSel = document.getElementById(opts.versionId);
+    if (!projectSel || !folderSel || !versionSel) return;
+
+    var allProjects = [];   // [{id, name, folder_id}, ...]
+    var allFolders  = [];   // [{id, name, parent_id}, ...]
+    var nonce = window.NONCE || '';
+
+    /* ── helpers ─────────────────────────────────────────────── */
+    function setLoading(sel, loading) {
+        var spinner = sel.parentNode.querySelector('.scope-spinner');
+        if (!spinner) {
+            spinner = document.createElement('span');
+            spinner.className = 'scope-spinner';
+            spinner.textContent = '\u23F3';
+            sel.parentNode.appendChild(spinner);
+        }
+        spinner.style.display = loading ? 'inline' : 'none';
+        sel.disabled = loading;
+    }
+
+    function apiFetch(path) {
+        return fetch('/fsapi/' + path, {
+            headers: { 'X-FS-Session': nonce }
+        }).then(function(r) {
+            if (!r.ok) throw new Error('API ' + r.status);
+            return r.json();
+        });
+    }
+
+    function populateSelect(sel, items, valueFn, labelFn, currentValue) {
+        var prevValue = currentValue || sel.value || '';
+        sel.innerHTML = '';
+        var allOpt = document.createElement('option');
+        allOpt.value = '';
+        allOpt.textContent = '(all)';
+        sel.appendChild(allOpt);
+        items.forEach(function(item) {
+            var o = document.createElement('option');
+            o.value = valueFn(item);
+            o.textContent = labelFn(item);
+            sel.appendChild(o);
+        });
+        // Restore previous value if it exists
+        if (prevValue) {
+            for (var i = 0; i < sel.options.length; i++) {
+                if (sel.options[i].value === prevValue ||
+                    sel.options[i].textContent === prevValue) {
+                    sel.selectedIndex = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    /* ── build folder tree label with indentation ────────────── */
+    function buildFolderTree(folders) {
+        var byParent = {};
+        folders.forEach(function(f) {
+            var pid = f.parent_id || '__root__';
+            if (!byParent[pid]) byParent[pid] = [];
+            byParent[pid].push(f);
+        });
+        var result = [];
+        function walk(parentId, depth) {
+            var children = byParent[parentId] || [];
+            children.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+            children.forEach(function(f) {
+                var prefix = '';
+                for (var i = 0; i < depth; i++) prefix += '\u00A0\u00A0';
+                result.push({ id: f.id, label: prefix + (f.name || f.id), raw: f });
+                walk(f.id, depth + 1);
+            });
+        }
+        walk('__root__', 0);
+        // If tree walk found nothing (flat list), just sort alphabetically
+        if (result.length === 0) {
+            folders.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+            folders.forEach(function(f) {
+                result.push({ id: f.id, label: f.name || f.id, raw: f });
+            });
+        }
+        return result;
+    }
+
+    /* ── load projects + folders ─────────────────────────────── */
+    function loadAll() {
+        setLoading(projectSel, true);
+        setLoading(folderSel, true);
+        setLoading(versionSel, true);
+
+        var savedProject = projectSel.getAttribute('data-value') || projectSel.value || '';
+        var savedFolder = folderSel.getAttribute('data-value') || folderSel.value || '';
+        var savedVersion = versionSel.getAttribute('data-value') || versionSel.value || '';
+
+        Promise.all([
+            apiFetch('public/v0/projects?limit=10000&archived=false&excluded=false'),
+            apiFetch('public/v0/folders?limit=10000'),
+        ])
+        .then(function(results) {
+            var projData = results[0];
+            var foldData = results[1];
+            allProjects = (projData.items || projData || []);
+            allFolders  = (foldData.items || foldData || []);
+
+            // Populate folders
+            var tree = buildFolderTree(allFolders);
+            populateSelect(folderSel, tree,
+                function(f) { return f.raw.name || String(f.id); },
+                function(f) { return f.label; },
+                savedFolder
+            );
+
+            // Populate projects (filtered if folder selected)
+            filterProjects(savedProject);
+
+            setLoading(folderSel, false);
+            setLoading(projectSel, false);
+
+            // If a project is already selected, load versions
+            if (projectSel.value) {
+                loadVersions(projectSel.value, savedVersion);
+            } else {
+                setLoading(versionSel, false);
+            }
+        })
+        .catch(function(err) {
+            console.warn('Failed to load scope data:', err);
+            setLoading(projectSel, false);
+            setLoading(folderSel, false);
+            setLoading(versionSel, false);
+        });
+    }
+
+    /* ── filter projects by selected folder ──────────────────── */
+    function filterProjects(restoreValue) {
+        var folderName = folderSel.value;
+        var filtered = allProjects;
+        if (folderName) {
+            // Find folder id by name
+            var folder = allFolders.find(function(f) {
+                return (f.name || String(f.id)) === folderName;
+            });
+            if (folder) {
+                filtered = allProjects.filter(function(p) {
+                    return p.folder_id === folder.id;
+                });
+            }
+        }
+        filtered.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+        populateSelect(projectSel, filtered,
+            function(p) { return p.name || String(p.id); },
+            function(p) { return p.name || String(p.id); },
+            restoreValue
+        );
+    }
+
+    /* ── load versions for a project ─────────────────────────── */
+    function loadVersions(projectValue, restoreValue) {
+        if (!projectValue) {
+            versionSel.innerHTML = '<option value="">(all)</option>';
+            setLoading(versionSel, false);
+            return;
+        }
+        // Find project by name to get its id
+        var proj = allProjects.find(function(p) {
+            return (p.name || String(p.id)) === projectValue || String(p.id) === projectValue;
+        });
+        if (!proj) {
+            setLoading(versionSel, false);
+            return;
+        }
+        setLoading(versionSel, true);
+        apiFetch('public/v0/projects/' + proj.id + '/versions')
+        .then(function(data) {
+            var versions = data.items || data || [];
+            versions.sort(function(a, b) {
+                return (b.created_at || '').localeCompare(a.created_at || '');
+            });
+            populateSelect(versionSel, versions,
+                function(v) { return v.name || v.version || String(v.id); },
+                function(v) { return v.name || v.version || String(v.id); },
+                restoreValue
+            );
+            setLoading(versionSel, false);
+        })
+        .catch(function() {
+            setLoading(versionSel, false);
+        });
+    }
+
+    /* ── events ──────────────────────────────────────────────── */
+    folderSel.addEventListener('change', function() {
+        filterProjects('');
+        versionSel.innerHTML = '<option value="">(all)</option>';
+    });
+
+    projectSel.addEventListener('change', function() {
+        loadVersions(projectSel.value, '');
+    });
+
+    /* ── kick off ────────────────────────────────────────────── */
+    loadAll();
+}
+
+/* ── Version picker: project → version cascading selects ───── */
+function initVersionPicker(opts) {
+    var projectSel = document.getElementById(opts.projectSelId);
+    var versionSel = document.getElementById(opts.versionSelId);
+    var input = document.getElementById(opts.inputId);
+    if (!projectSel || !versionSel || !input) return;
+
+    var nonce = window.NONCE || '';
+    var projects = [];
+
+    function apiFetch(path) {
+        return fetch('/fsapi/' + path, {
+            headers: { 'X-FS-Session': nonce }
+        }).then(function(r) {
+            if (!r.ok) throw new Error('API ' + r.status);
+            return r.json();
+        });
+    }
+
+    function setLoading(sel, loading) {
+        var spinner = sel.parentNode.querySelector('.scope-spinner');
+        if (!spinner) {
+            spinner = document.createElement('span');
+            spinner.className = 'scope-spinner';
+            spinner.textContent = '\u23F3';
+            sel.parentNode.appendChild(spinner);
+        }
+        spinner.style.display = loading ? 'inline' : 'none';
+        sel.disabled = loading;
+    }
+
+    function loadProjects() {
+        setLoading(projectSel, true);
+        versionSel.innerHTML = '<option value="">(select project first)</option>';
+        versionSel.disabled = true;
+        apiFetch('public/v0/projects?limit=10000&archived=false&excluded=false')
+        .then(function(data) {
+            projects = (data.items || data || []);
+            projects.sort(function(a, b) {
+                return (a.name || '').localeCompare(b.name || '');
+            });
+            projectSel.innerHTML = '<option value="">(pick a project)</option>';
+            projects.forEach(function(p) {
+                var o = document.createElement('option');
+                o.value = String(p.id);
+                o.textContent = p.name || String(p.id);
+                projectSel.appendChild(o);
+            });
+            setLoading(projectSel, false);
+        })
+        .catch(function() {
+            setLoading(projectSel, false);
+        });
+    }
+
+    function loadVersions(projectId) {
+        if (!projectId) {
+            versionSel.innerHTML = '<option value="">(select project first)</option>';
+            versionSel.disabled = true;
+            return;
+        }
+        setLoading(versionSel, true);
+        apiFetch('public/v0/projects/' + projectId + '/versions')
+        .then(function(data) {
+            var versions = data.items || data || [];
+            versions.sort(function(a, b) {
+                return (b.created_at || '').localeCompare(a.created_at || '');
+            });
+            versionSel.innerHTML = '<option value="">(pick a version)</option>';
+            versions.forEach(function(v) {
+                var o = document.createElement('option');
+                o.value = String(v.id);
+                var label = v.name || v.version || String(v.id);
+                if (v.created_at) {
+                    label += ' (' + v.created_at.substring(0, 10) + ')';
+                }
+                o.textContent = label;
+                versionSel.appendChild(o);
+            });
+            setLoading(versionSel, false);
+        })
+        .catch(function() {
+            setLoading(versionSel, false);
+        });
+    }
+
+    projectSel.addEventListener('change', function() {
+        loadVersions(projectSel.value);
+        input.value = '';
+    });
+
+    versionSel.addEventListener('change', function() {
+        input.value = versionSel.value;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    /* If user types directly into the input, clear the selects */
+    input.addEventListener('input', function() {
+        if (input.value !== versionSel.value) {
+            projectSel.selectedIndex = 0;
+            versionSel.innerHTML = '<option value="">(select project first)</option>';
+            versionSel.disabled = true;
+        }
+    });
+
+    loadProjects();
+}
+</script>

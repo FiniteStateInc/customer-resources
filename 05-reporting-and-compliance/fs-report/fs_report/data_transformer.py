@@ -849,9 +849,9 @@ class DataTransformer:
                 if base_col in right_df.columns:
                     # Extract the nested field if the base column is a dict
                     right_df[col] = right_df[base_col].apply(
-                        lambda x, nested_field=nested_field: x.get(nested_field)
-                        if isinstance(x, dict)
-                        else None
+                        lambda x, nested_field=nested_field: (
+                            x.get(nested_field) if isinstance(x, dict) else None
+                        )
                     )
                     self.logger.debug(f"Extracted {col} from {base_col}")
                     right_on_cols.append(col)

@@ -198,13 +198,11 @@ class NVDClient:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS nvd_cve_cache (
+        self._conn.execute("""CREATE TABLE IF NOT EXISTS nvd_cve_cache (
                 cve_id TEXT PRIMARY KEY,
                 data_json TEXT NOT NULL,
                 fetched_at TEXT NOT NULL
-            )"""
-        )
+            )""")
         self._conn.commit()
 
     def close(self) -> None:

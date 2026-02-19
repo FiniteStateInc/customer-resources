@@ -229,9 +229,9 @@ class HTMLRenderer:
                     chart.name for chart in recipe.output.charts
                 ]:
                     self.logger.debug("Preparing individual project risk chart")
-                    chart_data[
-                        "individual_project_risk"
-                    ] = self._prepare_bar_chart_data(df, is_stacked=False)
+                    chart_data["individual_project_risk"] = (
+                        self._prepare_bar_chart_data(df, is_stacked=False)
+                    )
 
                 # Portfolio risk chart
                 if "portfolio_risk" in [chart.name for chart in recipe.output.charts]:
@@ -315,9 +315,9 @@ class HTMLRenderer:
                             open_issues_df = open_issues_data
                         else:
                             open_issues_df = pd.DataFrame(open_issues_data)
-                        chart_data[
-                            "open_issues_distribution"
-                        ] = self._prepare_pie_chart_data(open_issues_df)
+                        chart_data["open_issues_distribution"] = (
+                            self._prepare_pie_chart_data(open_issues_df)
+                        )
                     else:
                         self.logger.debug("No open issues data found")
                         chart_data["open_issues_distribution"] = {
@@ -507,9 +507,7 @@ class HTMLRenderer:
                         k: (
                             v.to_dict("records")
                             if isinstance(v, pd.DataFrame)
-                            else v.tolist()
-                            if isinstance(v, pd.Series)
-                            else v
+                            else v.tolist() if isinstance(v, pd.Series) else v
                         )
                         for k, v in value.items()
                     }

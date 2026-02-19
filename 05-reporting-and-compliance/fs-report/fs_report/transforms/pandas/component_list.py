@@ -353,16 +353,18 @@ def _build_summary(df: pd.DataFrame) -> dict[str, Any]:
     total = len(df)
 
     # Unique licenses: combine declared + concluded, split by comma, deduplicate
-    all_licenses = set()
+    license_parts = []
     for col in ("Declared License", "Concluded License"):
         if col in df.columns:
-            for val in df[col].dropna():
-                if val:
-                    for lic in str(val).split(","):
-                        lic = lic.strip()
-                        if lic:
-                            all_licenses.add(lic)
-    unique_licenses = len(all_licenses)
+            license_parts.append(
+                df[col].dropna().astype(str).str.split(",").explode().str.strip()
+            )
+    if license_parts:
+        all_licenses_series = pd.concat(license_parts, ignore_index=True)
+        all_licenses_set = set(all_licenses_series[all_licenses_series != ""])
+    else:
+        all_licenses_set = set()
+    unique_licenses = len(all_licenses_set)
 
     # Components with no license info
     no_license = int(

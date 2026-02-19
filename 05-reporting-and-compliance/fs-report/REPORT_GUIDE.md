@@ -29,19 +29,19 @@ This guide explains each report available in the Finite State Reporting Kit, wha
 
 ```bash
 # Launch the web UI (default)
-poetry run fs-report
+fs-report
 
 # Generate all reports for the last 30 days
-poetry run fs-report run --period 30d
+fs-report run --period 30d
 
 # Generate a specific report
-poetry run fs-report run --recipe "Executive Summary" --period 30d
+fs-report run --recipe "Executive Summary" --period 30d
 
 # List available reports
-poetry run fs-report list recipes
+fs-report list recipes
 
 # Filter to a specific project
-poetry run fs-report run --project "MyProject" --period 30d
+fs-report run --project "MyProject" --period 30d
 ```
 
 Reports are saved to the `output/` directory in HTML, CSV, and XLSX formats.
@@ -113,7 +113,7 @@ Assessment reports show the current security state of the target — the latest 
 
 **Example command:**
 ```bash
-poetry run fs-report run --recipe "Executive Summary" --period 90d
+fs-report run --recipe "Executive Summary" --period 90d
 ```
 
 ---
@@ -147,7 +147,7 @@ poetry run fs-report run --recipe "Executive Summary" --period 90d
 
 **Example command:**
 ```bash
-poetry run fs-report run --recipe "Component Vulnerability Analysis" --period 30d
+fs-report run --recipe "Component Vulnerability Analysis" --period 30d
 ```
 
 ---
@@ -191,10 +191,10 @@ poetry run fs-report run --recipe "Component Vulnerability Analysis" --period 30
 **Example commands:**
 ```bash
 # All projects
-poetry run fs-report run --recipe "Findings by Project" --period 30d
+fs-report run --recipe "Findings by Project" --period 30d
 
 # Specific project
-poetry run fs-report run --recipe "Findings by Project" --project "MyProject"
+fs-report run --recipe "Findings by Project" --project "MyProject"
 ```
 
 ---
@@ -246,7 +246,7 @@ poetry run fs-report run --recipe "Findings by Project" --project "MyProject"
 
 **Example command:**
 ```bash
-poetry run fs-report run --recipe "Scan Analysis" --period 14d
+fs-report run --recipe "Scan Analysis" --period 14d
 ```
 
 ---
@@ -320,16 +320,16 @@ When exported as XLSX, the report contains multiple sheets:
 **Example commands:**
 ```bash
 # Full current component inventory
-poetry run fs-report run --recipe "Component List"
+fs-report run --recipe "Component List"
 
 # Specific project
-poetry run fs-report run --recipe "Component List" --project "MyProject"
+fs-report run --recipe "Component List" --project "MyProject"
 
 # Only components discovered since a date
-poetry run fs-report run --recipe "Component List" --detected-after 2026-01-01
+fs-report run --recipe "Component List" --detected-after 2026-01-01
 
 # Specific version
-poetry run fs-report run --recipe "Component List" --version "1234567890"
+fs-report run --recipe "Component List" --version "1234567890"
 ```
 
 ---
@@ -371,7 +371,7 @@ poetry run fs-report run --recipe "Component List" --version "1234567890"
 
 **Example command:**
 ```bash
-poetry run fs-report run --recipe "User Activity" --period 30d
+fs-report run --recipe "User Activity" --period 30d
 ```
 
 ---
@@ -387,7 +387,7 @@ poetry run fs-report run --recipe "User Activity" --period 30d
 **Important:** This report does **not** run by default. You must explicitly request it:
 
 ```bash
-poetry run fs-report run --recipe "Triage Prioritization" --period 30d
+fs-report run --recipe "Triage Prioritization" --period 30d
 ```
 
 **What it shows:**
@@ -528,7 +528,7 @@ parameters:
 To override at runtime without editing the recipe, create a YAML file and pass it via `--scoring-file`:
 
 ```bash
-poetry run fs-report run --recipe "Triage Prioritization" --scoring-file my_scoring.yaml --period 30d
+fs-report run --recipe "Triage Prioritization" --scoring-file my_scoring.yaml --period 30d
 ```
 
 The scoring file can contain just the weights and/or gates you want to change:
@@ -559,7 +559,7 @@ gates:
 Export structured LLM prompts for triage guidance with `--ai-prompts`:
 
 ```bash
-poetry run fs-report run --recipe "Triage Prioritization" --ai-prompts --period 30d
+fs-report run --recipe "Triage Prioritization" --ai-prompts --period 30d
 ```
 
 This generates a `Triage Prioritization_prompts.md` file and adds inline AI Prompt columns to the HTML report tables. Prompts are generated at four scopes:
@@ -577,13 +577,13 @@ Enable AI-powered remediation guidance with the `--ai` flag:
 
 ```bash
 # Summary mode (portfolio + project summaries)
-poetry run fs-report run --recipe "Triage Prioritization" --ai --period 30d
+fs-report run --recipe "Triage Prioritization" --ai --period 30d
 
 # Full mode (+ component-level fix guidance for Critical/High)
-poetry run fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
+fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
 
 # Explicit provider override (default: auto-detect from env vars)
-poetry run fs-report run --recipe "Triage Prioritization" --ai --ai-provider openai --period 30d
+fs-report run --recipe "Triage Prioritization" --ai --ai-provider openai --period 30d
 ```
 
 Supports multiple LLM providers (auto-detected from environment variables):
@@ -611,10 +611,10 @@ NVD lookups work without any configuration, but the public rate limit (5 request
 ```bash
 # Option A: Environment variable (recommended)
 export NVD_API_KEY="your-key-here"
-poetry run fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
+fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
 
 # Option B: CLI flag
-poetry run fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --nvd-api-key "your-key-here" --period 30d
+fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --nvd-api-key "your-key-here" --period 30d
 ```
 
 | | Without API Key | With API Key |
@@ -640,31 +640,31 @@ python scripts/apply_vex_triage.py output/triage_prioritization/vex_recommendati
 
 ```bash
 # Basic triage report
-poetry run fs-report run --recipe "Triage Prioritization" --period 30d
+fs-report run --recipe "Triage Prioritization" --period 30d
 
 # Single project
-poetry run fs-report run --recipe "Triage Prioritization" --project "MyProject"
+fs-report run --recipe "Triage Prioritization" --project "MyProject"
 
 # With AI guidance
-poetry run fs-report run --recipe "Triage Prioritization" --ai --period 30d
+fs-report run --recipe "Triage Prioritization" --ai --period 30d
 
 # Full AI depth (includes component-level fix guidance)
-poetry run fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
+fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --period 30d
 
 # Full AI depth with NVD fix version enrichment (faster with API key)
-poetry run fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --nvd-api-key "$NVD_API_KEY" --period 30d
+fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --nvd-api-key "$NVD_API_KEY" --period 30d
 
 # Export AI prompts (no API key needed)
-poetry run fs-report run --recipe "Triage Prioritization" --ai-prompts --period 30d
+fs-report run --recipe "Triage Prioritization" --ai-prompts --period 30d
 
 # Custom scoring weights
-poetry run fs-report run --recipe "Triage Prioritization" --scoring-file custom.yaml --period 30d
+fs-report run --recipe "Triage Prioritization" --scoring-file custom.yaml --period 30d
 
 # Override existing VEX statuses
-poetry run fs-report run --recipe "Triage Prioritization" --vex-override --period 30d
+fs-report run --recipe "Triage Prioritization" --vex-override --period 30d
 
 # Generate reports and serve via local HTTP server (enables interactive buttons)
-poetry run fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --serve
+fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --serve
 ```
 
 **Interactive Action Buttons:**
@@ -694,10 +694,10 @@ When opening the report as a local file (`file://` protocol), some browsers may 
 
 ```bash
 # Use --serve to start a local HTTP server after report generation
-poetry run fs-report run --recipe "Triage Prioritization" --serve
+fs-report run --recipe "Triage Prioritization" --serve
 
 # Custom port
-poetry run fs-report run --recipe "Triage Prioritization" --serve --serve-port 9090
+fs-report run --recipe "Triage Prioritization" --serve --serve-port 9090
 ```
 
 The `--serve` flag starts a lightweight local server on `http://localhost:8080` (or custom port), which provides a proper HTTP origin and avoids CORS issues. Press `Ctrl+C` to stop the server.
@@ -731,13 +731,13 @@ Produces a detailed dossier for each specified CVE — description, CWE, known e
 
 ```bash
 # Dossier for a specific CVE (across all projects)
-poetry run fs-report run --recipe "CVE Impact" --cve CVE-2024-1234
+fs-report run --recipe "CVE Impact" --cve CVE-2024-1234
 
 # Dossiers for multiple CVEs
-poetry run fs-report run --recipe "CVE Impact" --cve CVE-2024-1234,CVE-2024-5678
+fs-report run --recipe "CVE Impact" --cve CVE-2024-1234,CVE-2024-5678
 
 # Narrow to a specific project
-poetry run fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --project "MyFirmware"
+fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --project "MyFirmware"
 ```
 
 ---
@@ -793,16 +793,16 @@ In addition to the **Summary** (one row per version), the report produces detail
 **Example commands:**
 ```bash
 # Portfolio-wide: full version changelog for every active project
-poetry run fs-report run --recipe "Version Comparison" --period 90d
+fs-report run --recipe "Version Comparison" --period 90d
 
 # Scope to a single project
-poetry run fs-report run --recipe "Version Comparison" --project "Router Firmware"
+fs-report run --recipe "Version Comparison" --project "Router Firmware"
 
 # Scope to a folder (product group)
-poetry run fs-report run --recipe "Version Comparison" --folder "Toy Cars"
+fs-report run --recipe "Version Comparison" --folder "Toy Cars"
 
 # Explicit version pair (advanced)
-poetry run fs-report run --recipe "Version Comparison" \
+fs-report run --recipe "Version Comparison" \
   --baseline-version 12345 --current-version 67890
 ```
 
@@ -847,7 +847,7 @@ All reports generate three output formats:
 Use `--detected-after YYYY-MM-DD` to add a date floor to Assessment reports. For example, to see only findings detected since Q1:
 
 ```bash
-poetry run fs-report run --recipe "Findings by Project" --detected-after 2026-01-01
+fs-report run --recipe "Findings by Project" --detected-after 2026-01-01
 ```
 
 **Period shortcuts:**
@@ -874,16 +874,16 @@ poetry run fs-report run --recipe "Findings by Project" --detected-after 2026-01
 **Examples:**
 ```bash
 # Default: CVE findings only (recommended for most reports)
-poetry run fs-report run --period 30d
+fs-report run --period 30d
 
 # Include credentials along with CVEs
-poetry run fs-report run --period 30d --finding-types cve,credentials
+fs-report run --period 30d --finding-types cve,credentials
 
 # Only credentials findings
-poetry run fs-report run --period 30d --finding-types credentials
+fs-report run --period 30d --finding-types credentials
 
 # All findings (includes SAST/FILE components)
-poetry run fs-report run --period 30d --finding-types all
+fs-report run --period 30d --finding-types all
 ```
 
 **Why default to CVE only?**

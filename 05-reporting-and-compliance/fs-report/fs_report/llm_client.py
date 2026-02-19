@@ -186,8 +186,7 @@ class LLMClient:
     def _init_cache_tables(self) -> None:
         """Ensure remediation cache tables exist."""
         with sqlite3.connect(str(self.db_path)) as conn:
-            conn.executescript(
-                """
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS cve_remediations (
                     cve_id TEXT PRIMARY KEY,
                     component_name TEXT,
@@ -216,8 +215,7 @@ class LLMClient:
                     generated_by TEXT,
                     generated_at TEXT
                 );
-            """
-            )
+            """)
 
     # =========================================================================
     # Provider helpers
@@ -969,7 +967,7 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
         Returns:
             Dict with one entry per *field_map* value (all strings).
         """
-        result: dict[str, str] = {v: "" for v in field_map.values()}
+        result: dict[str, str] = dict.fromkeys(field_map.values(), "")
         current_key: str | None = None
 
         for line in response_text.strip().split("\n"):
@@ -1091,9 +1089,9 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
                     component_version=comp["component_version"],
                     cve_ids=comp.get("cve_ids", []),
                     cve_details=cve_details if cve_details else None,
-                    exploit_details=exploit_details_list
-                    if exploit_details_list
-                    else None,
+                    exploit_details=(
+                        exploit_details_list if exploit_details_list else None
+                    ),
                     reachability_info=reach_info_list if reach_info_list else None,
                     nvd_fix_snippet=nvd_snippet,
                 )

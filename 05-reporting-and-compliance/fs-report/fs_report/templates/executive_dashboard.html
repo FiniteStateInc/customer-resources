@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>Executive Dashboard - Finite State Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6; color: #333; background-color: #f8f9fa;
+        }
+        .container { margin: 0 auto; padding: 20px; background-color: white; border: 1px solid #dee2e6; min-height: 100%; }
+        .header { text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid #e9ecef; }
+        .company-logo { max-height: 50px; width: auto; margin: 0 auto; display: block; }
+        .header h1 { color: #2c3e50; font-size: 2.5em; margin-bottom: 10px; }
+        .header .subtitle { color: #6c757d; font-size: 1.1em; }
+        .metadata { background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 30px; font-size: 0.9em; color: #6c757d; }
+
+        /* KPI Cards */
+        .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .kpi-card {
+            background: white; border: 1px solid #dee2e6; border-radius: 8px;
+            padding: 20px; text-align: center;
+        }
+        .kpi-card .kpi-title { font-size: 0.85em; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .kpi-card .kpi-value { font-size: 2.2em; font-weight: 700; color: #2c3e50; line-height: 1; }
+        .kpi-card .kpi-delta { font-size: 0.85em; margin-top: 6px; font-weight: 600; }
+        .kpi-delta.delta-up { color: #d32f2f; }
+        .kpi-delta.delta-down { color: #388e3c; }
+        .kpi-delta.delta-neutral { color: #6c757d; }
+
+        /* Chart containers */
+        .chart-container { background-color: white; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #dee2e6; }
+        .chart-wrapper { position: relative; height: 400px; margin: 20px 0; }
+        .chart-wrapper-tall { position: relative; height: 500px; margin: 20px 0; }
+        .chart-title { color: #2c3e50; font-size: 1.5em; margin-bottom: 10px; }
+        .chart-description { color: #6c757d; font-size: 0.95em; margin-bottom: 20px; }
+
+        /* Two-column layout */
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; }
+        @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+        /* Tables */
+        .table-container { background-color: white; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #dee2e6; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #dee2e6; }
+        th { background-color: #f8f9fa; font-weight: 600; color: #495057; position: sticky; top: 0; z-index: 10; }
+        tr:hover { background-color: #f8f9fa; }
+        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+        /* Severity badges */
+        .sev-badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.8em; font-weight: 600; color: white; }
+        .sev-critical { background-color: #d32f2f; }
+        .sev-high { background-color: #f57c00; }
+        .sev-medium { background-color: #fbc02d; color: #333; }
+        .sev-low { background-color: #388e3c; }
+
+        .footer { text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e9ecef; color: #6c757d; font-size: 0.9em; }
+        .finite-state-logo { color: #007bff; font-weight: bold; }
+        .no-data { text-align: center; color: #6c757d; font-style: italic; padding: 40px; }
+
+        @media print {
+            body { background-color: white; }
+            .container { max-width: none; }
+            .chart-container, .table-container { border: 1px solid #dee2e6; }
+        }
+    </style>
+</head>
+<body>
+    <span id="fsConnectionBadge"></span>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="logo-container">
+                <img src="data:image/webp;base64,UklGRogLAABXRUJQVlA4WAoAAAAQAAAA/wAAMAAAQUxQSJsHAAAB8EZt/zql/v9dNDjCYPdgd7cLRnfZsdgg2N0KdmF3d7did3d3dxe1ckut7YzCmNeNeb6e8xzeMe+4ExETgP/zzTe0okPn0ieRlhm5HLcm95m+4CUTejk7ZpUOkKuLQjfWxDt/OGD5Fv7gqVqAE1BsHbmvgoPlNiiFzwOBXFVRvARQ5yy/z8vrSLV6wvShHkBw7CKEmIZ7AEEv+dcAV0ep+jFyaUGg5mlyLgLJ520Az+EZfNTcISq0nDxaDSiwjLwneJbFY1WBwivII1UdHs9hGXzUAnALS+WjX+twHgIZXvIouSgfUOM4uaSAY9PmBT8MdAOaPWJauBtqcRECOQJo9Ywf+rsArZ8wdbC7A6NL4oJ8QIX95PKCADpxuQgeQzN4vzHgHpbBev9WOLn9c8mZ/ADIPesbT9cE4LeJDEMrAVB4Fbm3HLCQDf71VNqxTXNPT8HY3dt2VBR4nWmhVWLrtl1TRXV2bdsdLojYtU12T6hV8J5tmrsDFNyH01W+CQagizDzZiOgJUfArX9RALXPMaUwFrG+GvfQyOt3zyxs6i5qvWiu7MKeMoWnOMnUXjRXdv5oN0GnRXM15xUXNaHkZsE1ko1F8T87adQh+dRJEEryqOAG5RdazaZkLyVuUUm5AYS+ZXwPQOT8Kj3cHcAJllFW5g7FN30FKyl/SWYc/WX6UD7RS3CYkkbRHzIbBOdJ/i56T44Q1fpJ3hMFk9wvuGLDPKtpMt3VvHvnipJn+XWmL9C1s+gh+aQVsIXlVPm+pOYLN8ESG85I6OO4X6anDdGiPTL+Mpb4hISEhPS5SjjfHntTExLiP5HMiE9ISI/Q+hifkJCQkBZik0+KVZQ7evNsGaDOGc4UuLz4sPInj5ZZx4qqhpH8ejry9jcuhHDOd7PZZCH51WQ2fz0oEUZ+qyHR+ZvZbMok+d1kNmc9lckymc1m86f6Mhd1Pnq93tdLDbe5q9Pp9Xr3SJJh7nq9r6fWDDe9Xq/3dbctVaMHO6DIapLT0ZJj4PLqPaoc5ZekH1WwmHVVHCI5CkD13X+IcvkZDPnGk4zMZzD45dPyek1yi4TOz2AoEELyVpFiBkNhJ4kB+Q3WHjJnIG0bz+ZSJlxHsge0rSKgWKI7wwf8zeuTOAMtORaub/4qCLR6QlbHYtZWcYxkGKydRMJ+JJdBvjtJZpbXEgaQvAhZqz8hb3XaTnzoh7pUt55kLxsW5DMYDH75Fb1/747O/MTkvqitgTNM6O0Mt8FJ9VRNJfl5YgHYOpDkCjnXR1ZcYUMjkpds6urq7e3t7Sn1NKR9+/ad66ljbJXcidnpi8lsNn89qsYjRmCZlweoKxgBeI818V4ToHBuVX6pJJm2qoK92pJZd8iPfvZLjY2Li0uZIyXepibzKUlmNPJ7k43E5+3Q8WQlAIZdXIDmfNQAQLE15IFKgCr8lkLrrAl2ukFerfGVnGM/8UYFm9WYKkWS5Jdg3wcvstkVO+gA6Cd95u3ayLuN3OgHoPZpfpvroQyG9R9pPd8uzUn2xGkypWA2iZT6YbFYLFyrJtOABbQOyznRPbscaN+tW7eejVXcEwEuPeMY280ZABrd5KcIHYDAZJZUBxSbkEryRzV7nCNjcyKY5AS77RwZERExsbnUjVJly5UrX1DN55LACCvOgTgbjIFin9RbGk3u0jzBB0BdT8CpezzfhToDO3+WsAdQOorkIDs0JJlyabzLGzI+l73aQN7qDKRVoIOFJFf80wgl1xoA1DzJ+40B+M60MALYzdJYpub3X62wnmSEHQ7T2uQ7muQQewUqOGs3/JZG8rFTdtkf2qVLly7dS6kLZxiAoqvJ2z+5rwKAFlxuVQYr1Bzn4Y4VizSOJ9lBXe0fAo7K95F8p7PT9IaNrX2zFaq8I+9lG82e6gaxLVxHpfN+U9Q6S8ssT1TnUnsUTCX51USSqQXUbSc5tOEfTWpgC8ledtIMkDmnLIrMFKHIbWUb1HVT4pUkCEZpMgzWgR9ZHbW4EtijrAUl+0BZJQv5BEJ/kk/ds4W/zHm5CzLRZFYpEbxPv5Q5ILPRhuky3ZW4XIrzwCAGoVAiLzYCUHozLeVRjauAHYJaCnL0uvtdkNAN0uEk12ptITlYhBsku2n9SvKG1EEZo8g3wN9YSa6S0T9AL3CuFeDfwFMDOUKcBXmM/sbyMqWN/sYCEgajv6Yxv0361DuAro1VK8BvA7m92kQLL9QFynENsE1QQwHgVK3vglWzQnJDvmRIUGh1DZdmbYODfDQqhgaF1tXKGxwU0lCqbkiQZnAe0b9Q77+4ohAAjOBBA4D6F0lGtQegm8MtorWsrMRhbPqQGcM8gco3+GlCTgAdH0/zBtAxinEtgS0sg8EdnRwZuA34wBeBgFP3OEZ1BOAMIOAKLdP0QEAUy8LxzbvgB0/VAvRTs3glAEDJSHJbaaDkVnJDDgcIqHSAXF0EKLWN3FxlQhavGQGfyVm8GgBHucl9/j3SCzBeIxndGUCXWMZ0ggPt0jeZr4MBdH0yxRswXmPmJG841nnmfOPZuoALUGorGVkCjnf5veS6YvCZksUrAXDM/7jDjMXvGN0JDrtzrwR+nugNRz5veFn8vy8AVlA4IMYDAAAQGgCdASoAATEAPkkgjUUioiESyu5UKASEsQQ4BkBmgLwBnkth/5WF+V/YBdQxT/QOuI4n3f8p+g27T8McrbSnnPdAf8D+ifkz2zPzT7AH6f9LvzAfx7/F+qf/mP1d9xnoAf3P0a/9V7GX7h+wx5c/7gfBZ+6H7pe0z//9aUQkk833U3/010TMZyNMJOh7BVPMaj385fqmxA57PseAo3OPAykt9bpJCWjkQopiYBocscHNNUKYIfiMw7n03MLowQrd4fwQ/M41Oz7l12lGBmcFpssA3NB7Dl8QAP7neK3fUwYp5YF+1PcER/+ufcR8oQYI6yXqgZ+T/3zLtzRKtMovH89ZN9GXVqgzBcNHzJeYGOpIi7+2dnE17hzWGcltXA9cOe//TdQCvR4RL1iBIHjF8qNyV2wnQ6OCx+IX++c1e1TBr9EkT2PvApXIL9ciPLLrFBk5WVBOd786zot/vI636pgA4rWfrPPePmbxeee2YaoxxnLiKfOVoIveCdjHuba3z/T9RSrbgBChtZy3o6VRTL9gYHas6vJL1DckHBPdUqpt/6hucimiN+4TAUeGk6Co18dNdz41fb9Xhwe7JVcG4CZ5vuyXOq1hCOX77L3meHa5gQp+8Kh1gBsRC3cHuTsPn4J4Rc/kZ+n/2vThrh//Ydy/oDH6aBMPjhx5xExdz3bIvdTdLp6nCZ278QP+HUSxdmcv3yJD1J86O2WsoYU2KhLU/t35z6VQNZMM2NkWnCAdNyW47zng1wQZYQLHY+5daCiFuhQ/xM3oVPdwEgxgAQk6owVnSSkMxe11YGvOfg/yAgwbUfvX+ggiHIbLrjZgVq+grhS9U3M3HtmKFz/kgwKRM7n8kk8LRYGK/9MYvArjTeoBsBiLk2I6tNAOI1BicVGLb008DuWG9RV0oqasjqcyxMuTd7CCLkWzXD//BS6oW/94CEbS3Pg7qi7eJwCT93iHAPhPuHcWx1dF7z+RLcx6bRqlnrqqinGaW5oYozyKstInug4w3eu9ypoHaLLwJb5D3/iADFjNPd10L2dbh9CFGP+rEjdupInLy2nUngp3wP/Z7iSiaO+SV6MF1J2ZAPsxJtXUFwVlgHcmwyqujWazTJ367dp6zib3FnY/7dHbxbZXzHEV37AnCuCiruTi/zm/9g8tnTfblrGDrDGRAl8ThBs5HWPgY8x0bDxP35ITV6015+SLai8QkDVLevEnQPXMgZadvkfPYUY22Bz1HFZj3iNRhFfL05MpXr1IKdBy07hvaFxL1IAAAAAAAAAAAAAAAAA="
+                     alt="Finite State Logo" class="company-logo">
+            </div>
+            <h1>Executive Security Dashboard</h1>
+            <div class="subtitle">
+                {{ scope_label | default('All Folders') }} — Security Posture Overview
+            </div>
+        </div>
+
+        <!-- Metadata -->
+        <div class="metadata">
+            <strong>Report:</strong> {{ recipe_name }} |
+            <strong>Generated:</strong> {{ generated_at }} |
+            {% if metadata and metadata.start_date and metadata.end_date %}
+            <strong>Period:</strong> {{ metadata.start_date }} to {{ metadata.end_date }} |
+            {% endif %}
+            <strong>Scope:</strong> {{ scope_label | default('All Folders') }} |
+            <strong>Records:</strong> {{ metadata.transformed_count if metadata and metadata.transformed_count else 'N/A' }}
+        </div>
+
+        <!-- KPI Cards -->
+        {% if sca_summary %}
+        <div class="kpi-row">
+            <div class="kpi-card">
+                <div class="kpi-title">Projects</div>
+                <div class="kpi-value">{{ sca_summary.projects | default(0) }}</div>
+            </div>
+            {% if sca_summary.components | default(0) > 0 %}
+            <div class="kpi-card">
+                <div class="kpi-title">Policy Violations</div>
+                <div class="kpi-value" {% if sca_summary.violations | default(0) > 0 %}style="color: #d32f2f;"{% endif %}>{{ sca_summary.violations | default(0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Warnings</div>
+                <div class="kpi-value" {% if sca_summary.warnings | default(0) > 0 %}style="color: #f57c00;"{% endif %}>{{ sca_summary.warnings | default(0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Components</div>
+                <div class="kpi-value">{{ sca_summary.components | default(0) }}</div>
+            </div>
+            {% endif %}
+            <div class="kpi-card">
+                <div class="kpi-title">Total Findings</div>
+                <div class="kpi-value">{{ sca_summary.findings | default(0) }}</div>
+                {% if sca_summary.findings_delta is not none and sca_summary.findings_delta is defined %}
+                <div class="kpi-delta {% if sca_summary.findings_delta > 0 %}delta-up{% elif sca_summary.findings_delta < 0 %}delta-down{% else %}delta-neutral{% endif %}">
+                    {% if sca_summary.findings_delta > 0 %}&#9650;{% elif sca_summary.findings_delta < 0 %}&#9660;{% else %}&#9644;{% endif %}
+                    {{ sca_summary.findings_delta }}%
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Stacked Bar: Findings by Folder/Project -->
+        {% if findings_by_group and findings_by_group.labels | default([]) | length > 0 %}
+        <div class="chart-container">
+            <h2 class="chart-title">Findings by {{ group_label | default('Folder') }}</h2>
+            <p class="chart-description">Distribution of security findings across {{ group_label | default('folder') | lower }}s by severity.</p>
+            <div class="chart-wrapper-tall">
+                <canvas id="findingsByGroupChart"></canvas>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Row: Severity Trends + Risk Donut -->
+        <div class="two-col">
+            <!-- Severity Trends (Line) -->
+            <div class="chart-container">
+                <h2 class="chart-title">Severity Trends (12 Months)</h2>
+                <p class="chart-description">Critical and High severity findings over the last 12 months.</p>
+                <div class="chart-wrapper">
+                    <canvas id="severityTrendsChart"></canvas>
+                </div>
+            </div>
+            <!-- Risk Donut + Top Products -->
+            <div class="chart-container">
+                <h2 class="chart-title">Highest-Risk Products</h2>
+                <p class="chart-description">Projects bucketed by risk score (critical*10 + high*5 + medium*2 + low*0.5).
+                    {% if risk_donut and risk_donut.total_artifacts %}{{ risk_donut.total_artifacts }} total projects.{% endif %}</p>
+                <div class="chart-wrapper">
+                    <canvas id="riskDonutChart"></canvas>
+                </div>
+                {% if top_risk_products and top_risk_products | length > 0 %}
+                <table style="margin-top: 10px;">
+                    <thead>
+                        <tr><th>#</th><th>Product</th><th>Risk Score</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for p in top_risk_products[:10] %}
+                        <tr>
+                            <td>{{ loop.index }}</td>
+                            <td>{{ p.project }}</td>
+                            <td class="num"><strong>{{ p.risk_score }}</strong></td>
+                            <td class="num">{% if p.critical > 0 %}<span class="sev-badge sev-critical">{{ p.critical }}</span>{% else %}0{% endif %}</td>
+                            <td class="num">{% if p.high > 0 %}<span class="sev-badge sev-high">{{ p.high }}</span>{% else %}0{% endif %}</td>
+                            <td class="num">{% if p.medium > 0 %}<span class="sev-badge sev-medium">{{ p.medium }}</span>{% else %}0{% endif %}</td>
+                            <td class="num">{{ p.low }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Row: Open Issues Pie + License Distribution -->
+        {% set has_license_data = license_bar and license_bar.labels | default([]) | length > 0 %}
+        {% if has_license_data %}
+        <div class="two-col">
+            <div class="chart-container">
+                <h2 class="chart-title">Open Issues by Severity</h2>
+                <p class="chart-description">Distribution of unresolved findings by severity (excluding resolved/triaged).</p>
+                <div class="chart-wrapper">
+                    <canvas id="openIssuesPieChart"></canvas>
+                </div>
+            </div>
+            <div class="chart-container">
+                <h2 class="chart-title">License Distribution</h2>
+                <p class="chart-description">Top 10 software licenses by component count.</p>
+                <div class="chart-wrapper">
+                    <canvas id="licenseBarChart"></canvas>
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <div class="chart-container">
+            <h2 class="chart-title">Open Issues by Severity</h2>
+            <p class="chart-description">Distribution of unresolved findings by severity (excluding resolved/triaged).</p>
+            <div class="chart-wrapper">
+                <canvas id="openIssuesPieChart"></canvas>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Project Findings Table (full width) -->
+        {% if project_table and project_table | length > 0 %}
+        <div class="table-container">
+            <h2>Project Findings Summary</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Project</th>
+                        <th>Critical</th>
+                        <th>High</th>
+                        <th>Medium</th>
+                        <th>Low</th>
+                        <th>Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in project_table %}
+                    <tr>
+                        <td>{{ row.project }}</td>
+                        <td class="num">{% if row.critical > 0 %}<span class="sev-badge sev-critical">{{ row.critical }}</span>{% else %}0{% endif %}</td>
+                        <td class="num">{% if row.high > 0 %}<span class="sev-badge sev-high">{{ row.high }}</span>{% else %}0{% endif %}</td>
+                        <td class="num">{% if row.medium > 0 %}<span class="sev-badge sev-medium">{{ row.medium }}</span>{% else %}0{% endif %}</td>
+                        <td class="num">{{ row.low }}</td>
+                        <td class="num"><strong>{{ row.total }}</strong></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        <!-- Row: Exploit Intel + Findings by Type -->
+        {% set has_exploit_data = exploit_intel and exploit_intel.data | default([]) | sum > 0 %}
+        {% if has_exploit_data %}
+        <div class="two-col">
+            <div class="chart-container">
+                <h2 class="chart-title">Exploit Intelligence</h2>
+                <p class="chart-description">Findings with exploit indicators (KEV, known exploits, ransomware, etc.).</p>
+                <div class="chart-wrapper">
+                    <canvas id="exploitIntelChart"></canvas>
+                </div>
+            </div>
+            <div class="chart-container">
+                <h2 class="chart-title">Findings by Type</h2>
+                <p class="chart-description">Finding counts categorized by type (CVEs, Crypto, Credentials, etc.).</p>
+                <div class="chart-wrapper">
+                    <canvas id="findingsByTypeChart"></canvas>
+                </div>
+            </div>
+        </div>
+        {% elif findings_by_type and findings_by_type.labels | default([]) | length > 0 %}
+        <div class="chart-container">
+            <h2 class="chart-title">Findings by Type</h2>
+            <p class="chart-description">Finding counts categorized by type (CVEs, Crypto, Credentials, etc.).</p>
+            <div class="chart-wrapper">
+                <canvas id="findingsByTypeChart"></canvas>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Finding Age Distribution (full width) -->
+        {% if finding_age and finding_age.labels | default([]) | length > 0 %}
+        <div class="chart-container">
+            <h2 class="chart-title">Finding Age Distribution</h2>
+            <p class="chart-description">Open findings bucketed by days since detection.</p>
+            <div class="chart-wrapper">
+                <canvas id="findingAgeChart"></canvas>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="footer">
+            <p>Generated by <span class="finite-state-logo">Finite State</span> | {{ generated_at }}</p>
+        </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const SEV_COLORS = {
+            'critical': '#d32f2f',
+            'high': '#f57c00',
+            'medium': '#fbc02d',
+            'low': '#388e3c'
+        };
+
+        // =============================================
+        // 1. Findings by Group (Stacked Bar)
+        // =============================================
+        {% if findings_by_group and findings_by_group.labels | default([]) | length > 0 %}
+        (function() {
+            const ctx = document.getElementById('findingsByGroupChart');
+            if (!ctx) return;
+            const chartData = {{ findings_by_group | tojson }};
+            if (!chartData.labels || chartData.labels.length === 0) return;
+
+            new Chart(ctx.getContext('2d'), {
+                type: 'bar',
+                data: chartData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            stacked: true,
+                            title: { display: true, text: '{{ group_label | default("Folder") }}' },
+                            ticks: { maxRotation: 45, font: { size: 10 } }
+                        },
+                        y: {
+                            stacked: true,
+                            beginAtZero: true,
+                            title: { display: true, text: 'Number of Findings' }
+                        }
+                    },
+                    plugins: {
+                        legend: { position: 'top' },
+                        datalabels: { display: false }
+                    }
+                }
+            });
+        })();
+        {% endif %}
+
+        // =============================================
+        // 2. Severity Trends (Multi-Line)
+        // =============================================
+        {% if severity_trends %}
+        (function() {
+            const ctx = document.getElementById('severityTrendsChart');
+            if (!ctx) return;
+            const chartData = {{ severity_trends | tojson }};
+            if (!chartData.labels || chartData.labels.length === 0) {
+                ctx.parentElement.innerHTML = '<p class="no-data">No trend data available</p>';
+                return;
+            }
+
+            new Chart(ctx.getContext('2d'), {
+                type: 'line',
+                data: chartData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { title: { display: true, text: 'Month' } },
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: 'Finding Count' }
+                        }
+                    },
+                    plugins: {
+                        legend: { position: 'top' },
+                        datalabels: { display: false }
+                    }
+                }
+            });
+        })();
+        {% endif %}
+
+        // =============================================
+        // 3. Risk Donut
+        // =============================================
+        {% if risk_donut and risk_donut.data | default([]) | length > 0 %}
+        (function() {
+            const ctx = document.getElementById('riskDonutChart');
+            if (!ctx) return;
+            const donut = {{ risk_donut | tojson }};
+            if (!donut.labels || donut.data.length === 0) return;
+
+            new Chart(ctx.getContext('2d'), {
+                type: 'doughnut',
+                data: {
+                    labels: donut.labels,
+                    datasets: [{
+                        data: donut.data,
+                        backgroundColor: donut.backgroundColor,
+                        borderWidth: 2,
+                        borderColor: '#fff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'right' },
+                        datalabels: {
+                            color: '#fff',
+                            font: { weight: 'bold', size: 14 },
+                            formatter: function(value, ctx) {
+                                if (value === 0) return '';
+                                var total = ctx.dataset.data.reduce(function(a, b) { return a + b; }, 0);
+                                var pct = ((value / total) * 100).toFixed(1);
+                                return value + '\n(' + pct + '%)';
+                            }
+                        }
+                    }
+                },
+                plugins: [ChartDataLabels]
+            });
+        })();
+        {% endif %}
+
+        // =============================================
+        // 4. Open Issues Pie
+        // =============================================
+        {% if open_issues_pie and open_issues_pie.data | default([]) | length > 0 %}
+        (function() {
+            const ctx = document.getElementById('openIssuesPieChart');
+            if (!ctx) return;
+            const pie = {{ open_issues_pie | tojson }};
+            if (!pie.labels || pie.data.length === 0) {
+                ctx.parentElement.innerHTML = '<p class="no-data">No open issues</p>';
+                return;
+            }
+
+            new Chart(ctx.getContext('2d'), {
+                type: 'pie',
+                data: {
+                    labels: pie.labels,
+                    datasets: [{
+                        data: pie.data,
+                        backgroundColor: pie.backgroundColor
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'bottom' },
+                        datalabels: {
+                            font: { weight: 'bold', size: 12 },
+                            formatter: function(value, ctx) {
+                                if (value === 0) return '';
+                                var total = ctx.dataset.data.reduce(function(a, b) { return a + b; }, 0);
+                                var pct = ((value / total) * 100).toFixed(0);
+                                return value.toLocaleString() + ' (' + pct + '%)';
+                            },
+                            color: function(ctx) {
+                                var total = ctx.dataset.data.reduce(function(a, b) { return a + b; }, 0);
+                                var pct = (ctx.dataset.data[ctx.dataIndex] / total) * 100;
+                                return pct < 10 ? '#333' : '#fff';
+                            },
+                            anchor: function(ctx) {
+                                var total = ctx.dataset.data.reduce(function(a, b) { return a + b; }, 0);
+                                var pct = (ctx.dataset.data[ctx.dataIndex] / total) * 100;
+                                return pct < 10 ? 'end' : 'center';
+                            },
+                            align: function(ctx) {
+                                var total = ctx.dataset.data.reduce(function(a, b) { return a + b; }, 0);
+                                var pct = (ctx.dataset.data[ctx.dataIndex] / total) * 100;
+                                return pct < 10 ? 'end' : 'center';
+                            }
+                        }
+                    }
+                },
+                plugins: [ChartDataLabels]
+            });
+        })();
+        {% endif %}
+
+        // =============================================
+        // 5. License Distribution (Horizontal Bar)
+        // =============================================
+        {% if license_bar and license_bar.labels | default([]) | length > 0 %}
+        (function() {
+            const ctx = document.getElementById('licenseBarChart');
+            if (!ctx) return;
+            const ld = {{ license_bar | tojson }};
+            if (!ld.labels || ld.labels.length === 0) {
+                ctx.parentElement.innerHTML = '<p class="no-data">No license data available</p>';
+                return;
+            }
+
+            new Chart(ctx.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: ld.labels,
+                    datasets: [{
+                        data: ld.data,
+                        backgroundColor: '#4e79a7',
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        datalabels: {
+                            anchor: 'end',
+                            align: 'right',
+                            font: { weight: 'bold', size: 11 },
+                            color: '#333',
+                            formatter: function(v) { return v > 0 ? v : ''; }
+                        }
+                    },
+                    scales: {
+                        x: { title: { display: true, text: 'Component Count' }, grid: { color: 'rgba(0,0,0,0.06)' } },
+                        y: { ticks: { font: { size: 11 } }, grid: { display: false } }
+                    }
+                },
+                plugins: [ChartDataLabels]
+            });
+        })();
+        {% endif %}
+
+        // =============================================
+        // 6. Exploit Intelligence (Horizontal Bar)
+        // =============================================
+        {% if exploit_intel and exploit_intel.labels | default([]) | length > 0 %}
+        (function() {
+            const ctx = document.getElementById('exploitIntelChart');
+            if (!ctx) return;
+            const ei = {{ exploit_intel | tojson }};
+            if (!ei.labels || ei.labels.length === 0) return;
+
+            const palette = ['#d32f2f', '#e65100', '#f57c00', '#ff8f00', '#6f42c1', '#c62828'];
+
+            new Chart(ctx.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: ei.labels,
+                    datasets: [{
+                        data: ei.data,
+                        backgroundColor: palette,
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        datalabels: {
+                            anchor: 'end',
+                            align: 'right',
+                            font: { weight: 'bold', size: 12 },
+                            color: '#333',
+                            formatter: function(v) { return v > 0 ? v : ''; }
+                        }
+                    },
+                    scales: {
+                        x: { title: { display: true, text: 'CVE Count' }, beginAtZero: true },
+                        y: { ticks: { font: { size: 12 } }, grid: { display: false } }
+                    }
+                },
+                plugins: [ChartDataLabels]
+            });
+        })();
+        {% endif %}
+
+        // =============================================
+        // 7. Findings by Type (Horizontal Bar)
+        // =============================================
+        {% if findings_by_type and findings_by_type.labels | default([]) | length > 0 %}
+        (function() {
+            const ctx = document.getElementById('findingsByTypeChart');
+            if (!ctx) return;
+            const ft = {{ findings_by_type | tojson }};
+            if (!ft.labels || ft.labels.length === 0) return;
+
+            const palette = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#228B22', '#6c757d', '#4e79a7'];
+
+            new Chart(ctx.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: ft.labels,
+                    datasets: [{
+                        data: ft.data,
+                        backgroundColor: ft.labels.map(function(_, i) { return palette[i % palette.length]; }),
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        datalabels: {
+                            anchor: 'end',
+                            align: 'right',
+                            font: { weight: 'bold', size: 12 },
+                            color: '#333',
+                            formatter: function(v) { return v > 0 ? v : ''; }
+                        }
+                    },
+                    scales: {
+                        x: { title: { display: true, text: 'Finding Count' }, beginAtZero: true },
+                        y: { ticks: { font: { size: 12 } }, grid: { display: false } }
+                    }
+                },
+                plugins: [ChartDataLabels]
+            });
+        })();
+        {% endif %}
+
+        // =============================================
+        // 8. Finding Age Distribution (Horizontal Bar)
+        // =============================================
+        {% if finding_age and finding_age.labels | default([]) | length > 0 %}
+        (function() {
+            const ctx = document.getElementById('findingAgeChart');
+            if (!ctx) return;
+            const fa = {{ finding_age | tojson }};
+            if (!fa.labels || fa.labels.length === 0) return;
+
+            const ageColors = ['#388e3c', '#fbc02d', '#f57c00', '#d32f2f'];
+
+            new Chart(ctx.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: fa.labels,
+                    datasets: [{
+                        data: fa.data,
+                        backgroundColor: ageColors,
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        datalabels: {
+                            anchor: 'end',
+                            align: 'right',
+                            font: { weight: 'bold', size: 12 },
+                            color: '#333',
+                            formatter: function(v) { return v > 0 ? v : ''; }
+                        }
+                    },
+                    scales: {
+                        x: { title: { display: true, text: 'Number of Findings' }, beginAtZero: true },
+                        y: { ticks: { font: { size: 12 } }, grid: { display: false } }
+                    }
+                },
+                plugins: [ChartDataLabels]
+            });
+        })();
+        {% endif %}
+
+    });
+    </script>
+
+    {% include '_action_buttons.html' %}
+</body>
+</html>

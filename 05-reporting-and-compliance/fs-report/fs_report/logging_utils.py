@@ -30,16 +30,20 @@ class TokenRedactionFilter(logging.Filter):
             args = record.args
             if isinstance(args, tuple):
                 record.args = tuple(
-                    str(a).replace(self._token, "***REDACTED***")
-                    if self._token and self._token in str(a)
-                    else a
+                    (
+                        str(a).replace(self._token, "***REDACTED***")
+                        if self._token and self._token in str(a)
+                        else a
+                    )
                     for a in args
                 )
             elif isinstance(args, dict):
                 record.args = {
-                    k: str(v).replace(self._token, "***REDACTED***")
-                    if self._token and self._token in str(v)
-                    else v
+                    k: (
+                        str(v).replace(self._token, "***REDACTED***")
+                        if self._token and self._token in str(v)
+                        else v
+                    )
                     for k, v in args.items()
                 }
         return True

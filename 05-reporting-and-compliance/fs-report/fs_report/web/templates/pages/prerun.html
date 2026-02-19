@@ -19,8 +19,11 @@
             </div>
             <div class="form-group">
                 <label for="pre-output">Output directory</label>
-                <input type="text" id="pre-output" name="output_dir"
-                       value="{{ state.get('output_dir', './output') }}" placeholder="./output">
+                <div class="input-with-btn">
+                    <input type="text" id="pre-output" name="output_dir"
+                           value="{{ state.get('output_dir', './output') }}" placeholder="./output">
+                    <button type="button" id="pre-output-browse" class="btn btn-sm btn-default">Browse</button>
+                </div>
             </div>
             <div class="form-group form-row">
                 <label for="pre-overwrite">Overwrite existing</label>
@@ -41,19 +44,25 @@
         <details open class="form-section">
             <summary class="form-section-title">Assessment Scope</summary>
             <div class="form-group">
-                <label for="pre-project">Project filter</label>
-                <input type="text" id="pre-project" name="project_filter"
-                       value="{{ state.get('project_filter', '') }}" placeholder="(all projects)">
+                <label for="pre-folder">&#128193; Folder filter</label>
+                <select id="pre-folder" name="folder_filter"
+                        data-value="{{ state.get('folder_filter', '') }}">
+                    <option value="">(all folders)</option>
+                </select>
             </div>
             <div class="form-group">
-                <label for="pre-folder">Folder filter</label>
-                <input type="text" id="pre-folder" name="folder_filter"
-                       value="{{ state.get('folder_filter', '') }}" placeholder="(all folders)">
+                <label for="pre-project">&#128196; Project filter</label>
+                <select id="pre-project" name="project_filter"
+                        data-value="{{ state.get('project_filter', '') }}">
+                    <option value="">(all projects)</option>
+                </select>
             </div>
             <div class="form-group">
-                <label for="pre-version">Version filter</label>
-                <input type="text" id="pre-version" name="version_filter"
-                       value="{{ state.get('version_filter', '') }}" placeholder="(all versions)">
+                <label for="pre-version">&#127991; Version filter</label>
+                <select id="pre-version" name="version_filter"
+                        data-value="{{ state.get('version_filter', '') }}">
+                    <option value="">(all versions)</option>
+                </select>
             </div>
             <div class="form-group form-row">
                 <label for="pre-cvo">Current version only</label>
@@ -78,22 +87,39 @@
                 <label for="pre-ft">Finding types</label>
                 <input type="text" id="pre-ft" name="finding_types"
                        value="{{ state.get('finding_types', 'cve') }}"
-                       placeholder="cve, sast">
+                       placeholder="cve, sast, credentials">
+                <small class="form-hint">Types: cve, sast, thirdparty, binary_sca, source_sca. Categories: credentials, config_issues, crypto_material. &lsquo;all&rsquo; for everything.</small>
             </div>
             {% endif %}
 
             {% if show_version_fields %}
             <div class="form-group">
                 <label for="pre-bv">Baseline version</label>
+                <div class="version-picker-row">
+                    <select id="pre-bv-project" class="version-picker-select">
+                        <option value="">(pick a project)</option>
+                    </select>
+                    <select id="pre-bv-version" class="version-picker-select" disabled>
+                        <option value="">(select project first)</option>
+                    </select>
+                </div>
                 <input type="text" id="pre-bv" name="baseline_version"
                        value="{{ state.get('baseline_version', '') }}"
-                       placeholder="Baseline version ID">
+                       placeholder="Or paste version ID directly">
             </div>
             <div class="form-group">
                 <label for="pre-cv">Current version</label>
+                <div class="version-picker-row">
+                    <select id="pre-cv-project" class="version-picker-select">
+                        <option value="">(pick a project)</option>
+                    </select>
+                    <select id="pre-cv-version" class="version-picker-select" disabled>
+                        <option value="">(select project first)</option>
+                    </select>
+                </div>
                 <input type="text" id="pre-cv" name="current_version"
                        value="{{ state.get('current_version', '') }}"
-                       placeholder="Current version ID">
+                       placeholder="Or paste version ID directly">
             </div>
             {% endif %}
         </details>
@@ -134,4 +160,3 @@
         </div>
     </form>
 </div>
-

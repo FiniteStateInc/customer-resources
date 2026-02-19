@@ -1,0 +1,57 @@
+name: "Executive Dashboard"
+category: assessment  # Current state: shows today's security posture regardless of time period
+template: "executive_dashboard.html"
+description: >
+  Executive-level security dashboard for senior leadership.
+  Provides a single-page overview with 11 visualization sections covering
+  findings distribution, severity trends, risk scoring, license analysis,
+  exploit intelligence, and finding age distribution.
+  Supports portfolio-level (grouped by folder) and folder-scoped (grouped by project) views.
+execution_order: 25
+auto_run: false  # Only runs when explicitly requested with --recipe
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+
+transform_function: executive_dashboard_transform
+
+output:
+  table: true
+  formats:
+    - html
+  charts:
+    - name: findings_by_group
+      chart: bar
+      stacked: true
+      title: "Findings by Folder/Project"
+      description: "Distribution of findings across folders or projects by severity"
+    - name: severity_trends
+      chart: line
+      title: "Severity Trends (Last 12 Months)"
+      description: "Critical and High severity findings over the last 12 months"
+    - name: risk_donut
+      chart: pie
+      title: "Risk Distribution"
+      description: "Projects bucketed by highest severity finding"
+    - name: open_issues_pie
+      chart: pie
+      title: "Open Issues by Severity"
+      description: "Distribution of unresolved findings by severity level"
+    - name: license_bar
+      chart: bar
+      title: "License Distribution"
+      description: "Top 10 licenses by component count"
+    - name: exploit_intel
+      chart: bar
+      title: "Exploit Intelligence"
+      description: "Breakdown of exploit-related indicators across CVEs"
+    - name: findings_by_type
+      chart: bar
+      title: "Findings by Type"
+      description: "Finding counts categorized by type"
+    - name: finding_age
+      chart: bar
+      title: "Finding Age Distribution"
+      description: "Open findings bucketed by age since detection"

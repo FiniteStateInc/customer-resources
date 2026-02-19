@@ -1,0 +1,97 @@
+<!-- Directory browser component.
+     Usage: include this template, then call initDirBrowser(inputId, btnId). -->
+<script>
+function initDirBrowser(inputId, btnId) {
+    var btn = document.getElementById(btnId);
+    var input = document.getElementById(inputId);
+    if (!btn || !input) return;
+
+    var dropdown = null;
+
+    function close() {
+        if (dropdown) { dropdown.remove(); dropdown = null; }
+        window.removeEventListener('scroll', reposition, true);
+        window.removeEventListener('resize', reposition);
+    }
+
+    function reposition() {
+        if (!dropdown) return;
+        var rect = input.parentNode.getBoundingClientRect();
+        dropdown.style.top = (rect.bottom + 4) + 'px';
+        dropdown.style.left = rect.left + 'px';
+        dropdown.style.width = rect.width + 'px';
+    }
+
+    function open(startPath) {
+        close();
+        dropdown = document.createElement('div');
+        dropdown.className = 'dir-browser-dropdown';
+        document.body.appendChild(dropdown);
+        reposition();
+        window.addEventListener('scroll', reposition, true);
+        window.addEventListener('resize', reposition);
+        load(startPath || input.value || '');
+    }
+
+    function load(dirPath) {
+        dropdown.innerHTML = '<div class="dir-browser-loading">Loading\u2026</div>';
+        fetch('/api/filesystem/browse?path=' + encodeURIComponent(dirPath), {
+            headers: { 'X-FS-Session': (window.NONCE || '') }
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) {
+                dropdown.innerHTML = '<div class="dir-browser-error">' + data.error + '</div>';
+                return;
+            }
+            render(data);
+        })
+        .catch(function() {
+            dropdown.innerHTML = '<div class="dir-browser-error">Failed to browse</div>';
+        });
+    }
+
+    function render(data) {
+        var html = '<div class="dir-browser-header">';
+        html += '<span class="dir-browser-path" title="' + data.current + '">' + data.current + '</span>';
+        html += '<button type="button" class="dir-browser-select-btn btn btn-primary btn-sm">Select</button>';
+        html += '</div>';
+        html += '<div class="dir-browser-list">';
+        if (data.parent) {
+            html += '<div class="dir-browser-item dir-browser-parent" data-path="' + data.parent + '">..</div>';
+        }
+        for (var i = 0; i < data.dirs.length; i++) {
+            var full = data.current + '/' + data.dirs[i];
+            html += '<div class="dir-browser-item" data-path="' + full + '">' + data.dirs[i] + '</div>';
+        }
+        if (data.dirs.length === 0 && !data.parent) {
+            html += '<div class="dir-browser-empty">No subdirectories</div>';
+        }
+        html += '</div>';
+        dropdown.innerHTML = html;
+
+        dropdown.querySelector('.dir-browser-select-btn').addEventListener('click', function() {
+            input.value = data.current;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            close();
+        });
+        dropdown.querySelectorAll('.dir-browser-item').forEach(function(el) {
+            el.addEventListener('click', function() {
+                load(el.getAttribute('data-path'));
+            });
+        });
+    }
+
+    btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        if (dropdown) { close(); } else { open(); }
+    });
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') close();
+    });
+    document.addEventListener('click', function(e) {
+        if (dropdown && !dropdown.contains(e.target) && e.target !== btn) close();
+    });
+}
+</script>

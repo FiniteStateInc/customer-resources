@@ -82,26 +82,26 @@ def findings_by_project_pandas_transform(
 
     # Description, CVSS v2 Vector, CVSS v3 Vector from cve_details lookup
     output_df["Description"] = output_df["CVE ID"].map(
-        lambda cve: cve_details.get(cve, {}).get("description", "")
-        if cve_details
-        else ""
+        lambda cve: (
+            cve_details.get(cve, {}).get("description", "") if cve_details else ""
+        )
     )
     output_df["CVSS v2 Vector"] = output_df["CVE ID"].map(
-        lambda cve: cve_details.get(cve, {}).get("cvss_v2_vector", "")
-        if cve_details
-        else ""
+        lambda cve: (
+            cve_details.get(cve, {}).get("cvss_v2_vector", "") if cve_details else ""
+        )
     )
     output_df["CVSS v3 Vector"] = output_df["CVE ID"].map(
-        lambda cve: cve_details.get(cve, {}).get("cvss_v3_vector", "")
-        if cve_details
-        else ""
+        lambda cve: (
+            cve_details.get(cve, {}).get("cvss_v3_vector", "") if cve_details else ""
+        )
     )
 
     # NVD URL — constructed from CVE ID
     output_df["NVD URL"] = output_df["CVE ID"].apply(
-        lambda cve: f"https://nvd.nist.gov/vuln/detail/{cve}"
-        if cve and cve != "N/A"
-        else ""
+        lambda cve: (
+            f"https://nvd.nist.gov/vuln/detail/{cve}" if cve and cve != "N/A" else ""
+        )
     )
 
     # FS Link — constructed from domain + project.id + projectVersion.id + finding_numeric_id
@@ -113,14 +113,16 @@ def findings_by_project_pandas_transform(
     ):
         output_df["FS Link"] = output_df.apply(
             lambda row: (
-                f"https://{domain}/projects/{row.get('project.id', '')}"
-                f"/versions/{row.get('projectVersion.id', '')}"
-                f"/findings?findingId={row.get('finding_numeric_id', '')}"
-            )
-            if row.get("project.id")
-            and row.get("projectVersion.id")
-            and row.get("finding_numeric_id")
-            else "",
+                (
+                    f"https://{domain}/projects/{row.get('project.id', '')}"
+                    f"/versions/{row.get('projectVersion.id', '')}"
+                    f"/findings?findingId={row.get('finding_numeric_id', '')}"
+                )
+                if row.get("project.id")
+                and row.get("projectVersion.id")
+                and row.get("finding_numeric_id")
+                else ""
+            ),
             axis=1,
         )
     else:

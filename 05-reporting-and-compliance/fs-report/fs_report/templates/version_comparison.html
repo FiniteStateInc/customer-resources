@@ -281,7 +281,18 @@
             </div>
             {% endif %}
             <h1>Version Comparison</h1>
-            {% if transform_result and transform_result.project_count %}
+            {% if transform_result and transform_result.is_pair_comparison and transform_result.projects %}
+            {% set _p0 = transform_result.projects[0] %}
+            {% set _bpn = _p0.latest_delta.baseline_project_name | default('') %}
+            {% set _cpn = _p0.latest_delta.current_project_name | default('') %}
+            {% if _bpn and _cpn and _bpn != _cpn %}
+            <p class="subtitle">{{ _bpn }} &harr; {{ _cpn }}</p>
+            {% elif _bpn %}
+            <p class="subtitle">{{ _bpn }}</p>
+            {% else %}
+            <p class="subtitle">Two-version comparison</p>
+            {% endif %}
+            {% elif transform_result and transform_result.project_count %}
             <p class="subtitle">Version-over-version progression across {{ transform_result.project_count }} project{{ 's' if transform_result.project_count != 1 else '' }}</p>
             {% else %}
             <p class="subtitle">Version-over-version progression</p>
@@ -291,7 +302,17 @@
         <!-- Metadata -->
         <div class="metadata">
             <strong>Report Generated:</strong> {{ metadata.start_date | default('N/A') }} |
-            {% if metadata.project_filter %}
+            {% if transform_result and transform_result.is_pair_comparison and transform_result.projects %}
+            {% set _md_p0 = transform_result.projects[0] %}
+            {% set _md_bpn = _md_p0.latest_delta.baseline_project_name | default('') %}
+            {% set _md_cpn = _md_p0.latest_delta.current_project_name | default('') %}
+            {% if _md_bpn and _md_cpn and _md_bpn != _md_cpn %}
+            <strong>Project A:</strong> {{ _md_bpn }} |
+            <strong>Project B:</strong> {{ _md_cpn }} |
+            {% elif _md_bpn %}
+            <strong>Project:</strong> {{ _md_bpn }} |
+            {% endif %}
+            {% elif metadata.project_filter %}
             <strong>Project:</strong> {{ metadata.project_filter }} |
             {% endif %}
             {% if metadata.folder_filter %}
@@ -376,11 +397,16 @@
         <!-- Per-project sections -->
         {% for proj in result.projects %}
         <div class="project-section" id="project-{{ loop.index }}">
+            {% set is_pair = proj.is_pair_comparison | default(false) %}
             <div class="project-header" onclick="toggleProject('project-body-{{ loop.index }}')">
                 <h2>{{ proj.project_name }}</h2>
                 <span class="project-meta">
+                    {% if is_pair %}
+                    {{ proj.latest_delta.baseline_label }} &rarr; {{ proj.latest_delta.current_label }}
+                    {% else %}
                     {{ proj.progression|length }} versions |
                     {{ proj.progression[0].version }} &rarr; {{ proj.progression[-1].version }}
+                    {% endif %}
                 </span>
             </div>
             <div class="project-body" id="project-body-{{ loop.index }}">
@@ -389,12 +415,12 @@
                 <!-- Mini KPI for this project -->
                 <div class="mini-kpi-row">
                     <div class="mini-kpi">
-                        <div class="label">First Version</div>
+                        <div class="label">{% if is_pair %}Baseline{% else %}First Version{% endif %}</div>
                         <div class="value">{{ proj.progression[0].total }}</div>
                         <div class="label">findings</div>
                     </div>
                     <div class="mini-kpi">
-                        <div class="label">Latest Version</div>
+                        <div class="label">{% if is_pair %}Current{% else %}Latest Version{% endif %}</div>
                         <div class="value">{{ proj.progression[-1].total }}</div>
                         <div class="label">findings</div>
                     </div>
@@ -425,11 +451,12 @@
                 <!-- Progression Table -->
                 <div class="section">
                     <div class="section-header">
-                        <h3>Version Progression</h3>
+                        <h3>{% if is_pair %}Version Comparison{% else %}Version Progression{% endif %}</h3>
                     </div>
                     <table class="data-table progression-table">
                         <thead>
                             <tr>
+                                {% if is_pair %}<th>Project</th>{% endif %}
                                 <th>Version</th>
                                 <th>Date</th>
                                 <th class="num">Total</th>
@@ -445,6 +472,7 @@
                         <tbody>
                             {% for step in proj.progression %}
                             <tr>
+                                {% if is_pair %}<td>{{ step.version_project_name }}</td>{% endif %}
                                 <td><strong>{{ step.version }}</strong></td>
                                 <td>{{ step.created }}</td>
                                 <td class="num">{{ step.total }}</td>
@@ -468,7 +496,7 @@
                 <!-- Latest Delta: Changes (Fixed | New) — always shown -->
                 <div class="section">
                     <div class="section-header">
-                        <h3>Changes ({{ proj.latest_delta.baseline_version }} &rarr; {{ proj.latest_delta.current_version }})</h3>
+                        <h3>Changes ({{ proj.latest_delta.baseline_label | default(proj.latest_delta.baseline_version) }} &rarr; {{ proj.latest_delta.current_label | default(proj.latest_delta.current_version) }})</h3>
                         <span class="badge badge-fixed">{{ proj.latest_delta.fixed_count }} fixed</span>
                         <span class="badge badge-new">{{ proj.latest_delta.new_count }} new</span>
                     </div>
@@ -478,7 +506,7 @@
                     </div>
                     <div class="changes-two-col">
                         <div class="changes-col">
-                            <h4 class="changes-col-title">Fixed in {{ proj.latest_delta.current_version }}</h4>
+                            <h4 class="changes-col-title">Fixed in {{ proj.latest_delta.current_label | default(proj.latest_delta.current_version) }}</h4>
                             {% if proj.latest_delta.fixed_findings and proj.latest_delta.fixed_findings|length > 0 %}
                             <table class="data-table" id="fixed-{{ loop.index }}">
                                 <thead>
@@ -516,7 +544,7 @@
                             {% endif %}
                         </div>
                         <div class="changes-col">
-                            <h4 class="changes-col-title">New in {{ proj.latest_delta.current_version }}</h4>
+                            <h4 class="changes-col-title">New in {{ proj.latest_delta.current_label | default(proj.latest_delta.current_version) }}</h4>
                             {% if proj.latest_delta.new_findings and proj.latest_delta.new_findings|length > 0 %}
                             <table class="data-table" id="new-{{ loop.index }}">
                                 <thead>
@@ -560,7 +588,7 @@
                 {% if proj.latest_delta.component_churn and proj.latest_delta.component_churn|length > 0 %}
                 <div class="section">
                     <div class="section-header">
-                        <h3>Component Changes ({{ proj.latest_delta.baseline_version }} &rarr; {{ proj.latest_delta.current_version }})</h3>
+                        <h3>Component Changes ({{ proj.latest_delta.baseline_label | default(proj.latest_delta.baseline_version) }} &rarr; {{ proj.latest_delta.current_label | default(proj.latest_delta.current_version) }})</h3>
                         <span class="badge badge-churn">{{ proj.latest_delta.component_churn|length }} changes</span>
                     </div>
                     <table class="data-table" id="churn-{{ loop.index }}">
@@ -568,8 +596,8 @@
                             <tr>
                                 <th>Change</th>
                                 <th>Component</th>
-                                <th>Previous Version</th>
-                                <th>Current Version</th>
+                                <th>Old Version</th>
+                                <th>New Version</th>
                                 <th>Findings Impact</th>
                             </tr>
                         </thead>
@@ -776,7 +804,7 @@
                     },
                     title: {
                         display: true,
-                        text: '{{ proj.project_name }} — Version Progression',
+                        text: '{{ proj.project_name }} — {% if proj.is_pair_comparison %}Version Comparison{% else %}Version Progression{% endif %}',
                         font: { size: 14, weight: '600' },
                         padding: { bottom: 16 }
                     },

@@ -1074,7 +1074,7 @@ def _parse_ai_response(text: str) -> dict[str, str]:
         "CODE_SEARCH": "code_search_hints",
         "CONFIDENCE": "confidence",
     }
-    result: dict[str, str] = {v: "" for v in field_map.values()}
+    result: dict[str, str] = dict.fromkeys(field_map.values(), "")
     current_key: str | None = None
 
     for line in text.strip().split("\n"):

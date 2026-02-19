@@ -88,9 +88,14 @@ class XLSXRenderer:
 
                 # Set column widths
                 for col_num, column in enumerate(df.columns):
-                    max_length = max(
-                        df[column].astype(str).map(len).max(), len(str(column))
-                    )
+                    try:
+                        col_max = df[column].fillna("").astype(str).map(len).max()
+                        max_length = max(
+                            int(col_max) if pd.notna(col_max) else 0,
+                            len(str(column)),
+                        )
+                    except (TypeError, ValueError):
+                        max_length = len(str(column))
                     worksheet.set_column(col_num, col_num, min(max_length + 2, 50))
 
             self.logger.debug(f"XLSX exported to: {output_path}")
@@ -131,10 +136,14 @@ class XLSXRenderer:
                     for col_num, value in enumerate(df.columns.values):
                         worksheet.write(0, col_num, value, header_format)
                     for col_num, column in enumerate(df.columns):
-                        max_len = max(
-                            df[column].astype(str).map(len).max(),
-                            len(str(column)),
-                        )
+                        try:
+                            col_max = df[column].fillna("").astype(str).map(len).max()
+                            max_len = max(
+                                int(col_max) if pd.notna(col_max) else 0,
+                                len(str(column)),
+                            )
+                        except (TypeError, ValueError):
+                            max_len = len(str(column))
                         worksheet.set_column(col_num, col_num, min(max_len + 2, 50))
             self.logger.debug(f"XLSX (multi-sheet) exported to: {output_path}")
         except Exception as e:

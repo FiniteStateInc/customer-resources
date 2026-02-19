@@ -238,8 +238,7 @@ def show_periods() -> None:
 
 @app.command()
 def list_recipes(
-    recipes: Path
-    | None = typer.Option(
+    recipes: Path | None = typer.Option(
         None,
         "--recipes",
         "-r",
@@ -293,8 +292,7 @@ def list_recipes(
 
 @app.command()
 def list_projects(
-    recipes: Path
-    | None = typer.Option(
+    recipes: Path | None = typer.Option(
         None,
         "--recipes",
         "-r",
@@ -302,16 +300,14 @@ def list_projects(
         dir_okay=True,
         file_okay=False,
     ),
-    token: str
-    | None = typer.Option(
+    token: str | None = typer.Option(
         None,
         "--token",
         "-t",
         help="Finite State API token",
         hide_input=True,
     ),
-    domain: str
-    | None = typer.Option(
+    domain: str | None = typer.Option(
         None,
         "--domain",
         "-d",
@@ -400,8 +396,7 @@ def list_projects(
 
 @app.command()
 def list_folders(
-    recipes: Path
-    | None = typer.Option(
+    recipes: Path | None = typer.Option(
         None,
         "--recipes",
         "-r",
@@ -409,16 +404,14 @@ def list_folders(
         dir_okay=True,
         file_okay=False,
     ),
-    token: str
-    | None = typer.Option(
+    token: str | None = typer.Option(
         None,
         "--token",
         "-t",
         help="Finite State API token",
         hide_input=True,
     ),
-    domain: str
-    | None = typer.Option(
+    domain: str | None = typer.Option(
         None,
         "--domain",
         "-d",
@@ -516,8 +509,7 @@ def list_folders(
 
 @app.command()
 def list_versions(
-    project: str
-    | None = typer.Argument(
+    project: str | None = typer.Argument(
         None,
         help="Project name or ID to list versions for (omit to list all versions across portfolio)",
     ),
@@ -528,15 +520,13 @@ def list_versions(
         help="Only show top N projects by version count (0 = show all)",
         min=0,
     ),
-    folder_filter: str
-    | None = typer.Option(
+    folder_filter: str | None = typer.Option(
         None,
         "--folder",
         "-f",
         help="Only include projects in this folder (name or ID). Use 'fs-report list-folders' to see options. Cuts down API calls when you only need a subset.",
     ),
-    recipes: Path
-    | None = typer.Option(
+    recipes: Path | None = typer.Option(
         None,
         "--recipes",
         "-r",
@@ -544,16 +534,14 @@ def list_versions(
         dir_okay=True,
         file_okay=False,
     ),
-    token: str
-    | None = typer.Option(
+    token: str | None = typer.Option(
         None,
         "--token",
         "-t",
         help="Finite State API token",
         hide_input=True,
     ),
-    domain: str
-    | None = typer.Option(
+    domain: str | None = typer.Option(
         None,
         "--domain",
         "-d",
@@ -1118,8 +1106,7 @@ def run_reports(
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    recipes: Path
-    | None = typer.Option(
+    recipes: Path | None = typer.Option(
         None,
         "--recipes",
         "-r",
@@ -1132,8 +1119,7 @@ def main(
         "--recipe",
         help="Name of specific recipe(s) to run (can be specified multiple times)",
     ),
-    output: Path
-    | None = typer.Option(
+    output: Path | None = typer.Option(
         None,
         "--output",
         "-o",
@@ -1141,37 +1127,32 @@ def main(
         dir_okay=True,
         file_okay=False,
     ),
-    start: str
-    | None = typer.Option(
+    start: str | None = typer.Option(
         None,
         "--start",
         "-s",
         help="Start date (ISO8601 format, e.g., 2025-01-01)",
     ),
-    end: str
-    | None = typer.Option(
+    end: str | None = typer.Option(
         None,
         "--end",
         "-e",
         help="End date (ISO8601 format, e.g., 2025-01-31)",
     ),
-    period: str
-    | None = typer.Option(
+    period: str | None = typer.Option(
         None,
         "--period",
         "-p",
         help="Time period (e.g., '7d', '1m', 'Q1', '2024', 'monday', 'january-2024')",
     ),
-    token: str
-    | None = typer.Option(
+    token: str | None = typer.Option(
         None,
         "--token",
         "-t",
         help="Finite State API token",
         hide_input=True,
     ),
-    domain: str
-    | None = typer.Option(
+    domain: str | None = typer.Option(
         None,
         "--domain",
         "-d",
@@ -1183,29 +1164,25 @@ def main(
         "-v",
         help="Enable verbose logging",
     ),
-    data_file: str
-    | None = typer.Option(
+    data_file: str | None = typer.Option(
         None,
         "--data-file",
         "-df",
         help="Path to local JSON file to use as data source",
     ),
-    project_filter: str
-    | None = typer.Option(
+    project_filter: str | None = typer.Option(
         None,
         "--project",
         "-pr",
         help="Filter by project (name or ID). Use 'fs-report list-projects' to see available projects.",
     ),
-    folder_filter: str
-    | None = typer.Option(
+    folder_filter: str | None = typer.Option(
         None,
         "--folder",
         "-fl",
         help="Scope reports to a folder (name or ID, includes subfolders). Use 'fs-report list-folders' to see available folders.",
     ),
-    version_filter: str
-    | None = typer.Option(
+    version_filter: str | None = typer.Option(
         None,
         "--version",
         "-V",
@@ -1215,7 +1192,7 @@ def main(
         "cve",
         "--finding-types",
         "-ft",
-        help="Finding types to include: cve (default), sast, binary_sca, source_sca, thirdparty, credentials, config_issues, crypto_material, or 'all'. Comma-separated for multiple.",
+        help="Finding types to include. Types: cve, sast, thirdparty, binary_sca, source_sca. Categories: credentials, config_issues, crypto_material. Use 'all' for everything. Comma-separated for multiple (e.g. cve,sast).",
     ),
     current_version_only: bool = typer.Option(
         True,
@@ -1223,8 +1200,7 @@ def main(
         "-cvo/-av",
         help="Latest version only (default, fast) or all versions (slow, includes historical data)",
     ),
-    cache_ttl: str
-    | None = typer.Option(
+    cache_ttl: str | None = typer.Option(
         None,
         "--cache-ttl",
         help="[BETA] Enable persistent SQLite cache with TTL (e.g., '4' for 4 hours, '30m', '1d'). "
@@ -1245,8 +1221,7 @@ def main(
         "--clear-ai-cache",
         help="Delete cached AI remediation guidance and exit.",
     ),
-    detected_after: str
-    | None = typer.Option(
+    detected_after: str | None = typer.Option(
         None,
         "--detected-after",
         help="Only include findings detected on or after this date (YYYY-MM-DD). "
@@ -1258,8 +1233,7 @@ def main(
         help="Enable AI remediation guidance for Triage Prioritization and CVE Impact "
         "(requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, or GITHUB_TOKEN)",
     ),
-    ai_provider: str
-    | None = typer.Option(
+    ai_provider: str | None = typer.Option(
         None,
         "--ai-provider",
         help="LLM provider: 'anthropic', 'openai', or 'copilot'. Auto-detected from env vars if not set.",
@@ -1274,8 +1248,7 @@ def main(
         "--ai-prompts",
         help="Export AI prompts to file and HTML for use with any LLM. No API key required. Can be combined with --ai.",
     ),
-    nvd_api_key: str
-    | None = typer.Option(
+    nvd_api_key: str | None = typer.Option(
         None,
         "--nvd-api-key",
         envvar="NVD_API_KEY",
@@ -1284,21 +1257,18 @@ def main(
         "Also reads NVD_API_KEY env var. "
         "Per NVD terms, keys must not be shared with other individuals or organisations.",
     ),
-    baseline_date: str
-    | None = typer.Option(
+    baseline_date: str | None = typer.Option(
         None,
         "--baseline-date",
         help="Baseline date (YYYY-MM-DD) for Security Progress report. "
         "Overrides the default of using the earliest version in the period window.",
     ),
-    baseline_version: str
-    | None = typer.Option(
+    baseline_version: str | None = typer.Option(
         None,
         "--baseline-version",
         help="Baseline version ID for Version Comparison report.",
     ),
-    current_version: str
-    | None = typer.Option(
+    current_version: str | None = typer.Option(
         None,
         "--current-version",
         help="Current version ID for Version Comparison report.",
@@ -1323,8 +1293,7 @@ def main(
         min=1,
         max=25,
     ),
-    cve_filter: str
-    | None = typer.Option(
+    cve_filter: str | None = typer.Option(
         None,
         "--cve",
         help="CVE(s) to analyse in the CVE Impact report (required). "
@@ -1332,8 +1301,7 @@ def main(
         "Produces detailed dossiers for the specified CVEs. "
         "Optionally combine with --project to narrow results to one project.",
     ),
-    scoring_file: str
-    | None = typer.Option(
+    scoring_file: str | None = typer.Option(
         None,
         "--scoring-file",
         help="Path to a YAML file with custom scoring weights for Triage Prioritization. "

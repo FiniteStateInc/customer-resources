@@ -1125,3 +1125,127 @@ a:hover { text-decoration: underline; }
 .htmx-request .htmx-indicator {
     display: inline-block;
 }
+
+/* ── INPUT WITH BUTTON (Browse) ──────────────────────────────── */
+.input-with-btn {
+    display: flex;
+    gap: 6px;
+    align-items: stretch;
+}
+
+.input-with-btn input[type="text"] {
+    flex: 1;
+    min-width: 0;
+}
+
+.input-with-btn .btn {
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+/* ── DIRECTORY BROWSER DROPDOWN ──────────────────────────────── */
+.dir-browser-dropdown {
+    position: fixed;
+    background-color: white;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+    z-index: 300;
+    overflow: hidden;
+}
+
+.dir-browser-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #e9ecef;
+    gap: 8px;
+}
+
+.dir-browser-path {
+    font-size: 0.8em;
+    font-family: monospace;
+    color: #495057;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+}
+
+.dir-browser-select-btn {
+    flex-shrink: 0;
+}
+
+.dir-browser-list {
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.dir-browser-item {
+    padding: 6px 12px;
+    font-size: 0.85em;
+    cursor: pointer;
+    transition: background-color 0.1s;
+}
+
+.dir-browser-item:hover {
+    background-color: #e3f2fd;
+}
+
+.dir-browser-parent {
+    font-weight: 600;
+    color: #6c757d;
+}
+
+.dir-browser-loading,
+.dir-browser-error,
+.dir-browser-empty {
+    padding: 12px;
+    text-align: center;
+    font-size: 0.85em;
+    color: #6c757d;
+}
+
+.dir-browser-error {
+    color: #dc3545;
+}
+
+/* ── VERSION PICKER ROW ──────────────────────────────────────── */
+.version-picker-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.version-picker-select {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 10px;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    font-size: 0.85em;
+    background-color: white;
+    transition: border-color 0.15s;
+}
+
+.version-picker-select:focus {
+    outline: none;
+    border-color: #007bff;
+    box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.15);
+}
+
+.version-picker-select:disabled {
+    background-color: #f8f9fa;
+    color: #adb5bd;
+}
+
+/* ── SCOPE DROPDOWN SPINNER ──────────────────────────────────── */
+.scope-spinner {
+    display: none;
+    font-size: 0.9em;
+    margin-left: 6px;
+    vertical-align: middle;
+}

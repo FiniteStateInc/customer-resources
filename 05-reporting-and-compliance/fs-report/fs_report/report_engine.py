@@ -62,6 +62,17 @@ def _log_memory(logger: logging.Logger, label: str) -> None:
 
 
 # Finding type/category mapping for --finding-types flag
+#
+# The API has two filtering mechanisms:
+#   - `type` query parameter: accepts cve, sast, thirdparty (single value only)
+#   - `category` RSQL filter: accepts CVE, SAST_ANALYSIS, CREDENTIALS,
+#     CONFIG_ISSUES, CRYPTO_MATERIAL (uppercase, per Swagger)
+#
+# For single-type requests, we use the `type` parameter (most efficient).
+# For multi-type requests where all types map to a known API category, we use
+# an RSQL `category=in=(...)` filter at the API level.  When some types lack a
+# documented category (binary_sca, source_sca, thirdparty), we fall back to
+# fetching all findings and post-filtering in Python.
 CATEGORY_VALUES = {"credentials", "config_issues", "crypto_material", "sast_analysis"}
 TYPE_VALUES = {"cve", "sast", "thirdparty", "binary_sca", "source_sca"}
 CATEGORY_MAP = {
@@ -71,19 +82,20 @@ CATEGORY_MAP = {
     "sast_analysis": "SAST_ANALYSIS",
     "cve": "CVE",
 }
-# Map simple type to API category/categories for multi-type requests (type=all + category filter).
-# API uses BINARY_SCA / SOURCE_SCA for binary vs source SCA; SAST_ANALYSIS is legacy. We request
-# both when user asks for "sast" so either API naming works.
+# Map CLI type names to API category values (uppercase, per Swagger).
+# Only includes types that have a known API category.
+# binary_sca, source_sca, thirdparty have no documented category value;
+# their findings are matched by the type's own category field at runtime.
 TYPE_TO_CATEGORY = {
     "cve": ["CVE"],
-    "sast": ["SAST_ANALYSIS", "BINARY_SCA"],
-    "thirdparty": ["THIRDPARTY"],
-    "binary_sca": ["BINARY_SCA"],
-    "source_sca": ["SOURCE_SCA"],
+    "sast": ["SAST_ANALYSIS"],
+    "thirdparty": [],
+    "binary_sca": [],
+    "source_sca": [],
 }
 
 
-def build_findings_type_params(finding_types: str) -> dict[str, str | None]:
+def build_findings_type_params(finding_types: str) -> dict[str, Any]:
     """
     Build API parameters for finding type/category filtering.
 
@@ -95,9 +107,9 @@ def build_findings_type_params(finding_types: str) -> dict[str, str | None]:
     """
     values = [v.strip().lower() for v in finding_types.split(",")]
 
-    # "all" means no filtering
+    # "all" means no filtering — don't send type= param
     if "all" in values:
-        return {"type": "all", "category_filter": None}
+        return {"type": None, "category_filter": None}
 
     # Separate into categories (need RSQL filter) and simple types (use type param)
     categories = [
@@ -123,22 +135,44 @@ def build_findings_type_params(finding_types: str) -> dict[str, str | None]:
         or len(simple_types) > 1
         or set(simple_types) & {"binary_sca", "source_sca"}
     ):
-        # Build category filter from simple_types + named categories (no duplicates)
-        all_categories = []
+        # Build category + type sets.
+        # Match on uppercase `category` field (CVE, SAST_ANALYSIS, etc.)
+        # and lowercase `type` field (cve, sast, thirdparty) as fallback
+        # for types without a documented category mapping.
+        filter_categories: set[str] = set()
+        filter_types: set[str] = set()
         for t in simple_types:
-            for cat in TYPE_TO_CATEGORY.get(t, []):
-                if cat not in all_categories:
-                    all_categories.append(cat)
+            mapped = TYPE_TO_CATEGORY.get(t, [])
+            if mapped:
+                filter_categories.update(mapped)
+            else:
+                # No category mapping — match on `type` field instead
+                filter_types.add(t)
         for c in categories:
             mapped_cat = CATEGORY_MAP.get(c)
-            if mapped_cat and mapped_cat not in all_categories:
-                all_categories.append(mapped_cat)
+            if mapped_cat:
+                filter_categories.add(mapped_cat)
 
-        if all_categories:
-            category_filter = f"category=in=({','.join(all_categories)})"
-            return {"type": "all", "category_filter": category_filter}
-        else:
-            return {"type": "all", "category_filter": None}
+        if not filter_categories and not filter_types:
+            return {"type": None, "category_filter": None}
+
+        # If ALL types map to known API categories, filter at the API level
+        # using RSQL category== or category=in=() — avoids fetching extra data.
+        if filter_categories and not filter_types:
+            cats_sorted = sorted(filter_categories)
+            if len(cats_sorted) == 1:
+                cat_filter = f"category=={cats_sorted[0]}"
+            else:
+                cat_filter = f"category=in=({','.join(cats_sorted)})"
+            return {"type": None, "category_filter": cat_filter}
+
+        # Some types lack category mapping — must post-filter in Python
+        return {
+            "type": None,
+            "category_filter": None,
+            "post_filter_categories": filter_categories or None,
+            "post_filter_types": filter_types or None,
+        }
 
     # Default to cve only
     return {"type": "cve", "category_filter": None}
@@ -202,6 +236,12 @@ class ReportEngine:
         # In-memory cache: per-project version lists from /projects/{id}/versions
         self._project_versions_cache: dict[str, list[dict]] = {}
 
+        # Cache for _fetch_all_folders() — avoids redundant API calls per run
+        self._all_folders_cache: list[dict] | None = None
+
+        # Cache for _build_project_folder_map_from_projects() — avoids re-fetching per recipe
+        self._project_map_cache: dict[str, str] | None = None
+
         # Files produced by the last run() call
         self.generated_files: list[str] = []
 
@@ -210,6 +250,16 @@ class ReportEngine:
         self._project_folder_map: dict[str, str] = {}  # project_id -> folder_name
         self._folder_name: str | None = None
         self._folder_path: str | None = None  # e.g. "Division A / Medical Products"
+
+    @staticmethod
+    def _cache_key(*parts: str | None) -> str:
+        """Build a normalized cache key from *parts*.
+
+        ``None`` values are coerced to the empty string and parts are
+        joined with ``\\x00`` so that values containing ``|`` can never
+        collide with a different combination of parts.
+        """
+        return "\x00".join(p if p is not None else "" for p in parts)
 
     def _check_cancel(self) -> None:
         """Raise ``ReportCancelled`` if the cancel event has been set."""
@@ -244,15 +294,58 @@ class ReportEngine:
 
         return None
 
+    def _resolve_version_name(self, project_id: int, version_name: str) -> int | None:
+        """Resolve a version name to its numeric API ID within a project.
+
+        Fetches the version list for *project_id* and performs a
+        case-insensitive name match.  Returns the numeric version ID,
+        or None if not found.
+        """
+        try:
+            url = (
+                f"{self.api_client.base_url}"
+                f"/public/v0/projects/{project_id}/versions"
+            )
+            resp = self.api_client.client.get(url)
+            resp.raise_for_status()
+            versions = resp.json()
+            if not isinstance(versions, list):
+                return None
+        except Exception as e:
+            self.logger.debug(f"Error fetching versions for project {project_id}: {e}")
+            return None
+
+        for v in versions:
+            name = v.get("version") or v.get("name") or ""
+            if str(name).lower() == version_name.lower():
+                vid: int | None = v.get("id")
+                return vid
+
+        # Fuzzy hint: show close matches
+        available = [
+            str(v.get("version") or v.get("name") or "")
+            for v in versions
+            if v.get("version") or v.get("name")
+        ]
+        close = [n for n in available if version_name.lower() in n.lower()]
+        if close:
+            self.logger.info(f"Did you mean one of these versions? {close[:5]}")
+
+        return None
+
     def _fetch_all_folders(self) -> list[dict]:
-        """Fetch all folders from the API."""
+        """Fetch all folders from the API (cached per run)."""
+        if self._all_folders_cache is not None:
+            return self._all_folders_cache
+
         from fs_report.models import QueryConfig, QueryParams
 
         folders_query = QueryConfig(
             endpoint="/public/v0/folders",
             params=QueryParams(limit=10000),
         )
-        return self.api_client.fetch_data(folders_query)
+        self._all_folders_cache = self.api_client.fetch_data(folders_query)
+        return self._all_folders_cache
 
     def _resolve_folder(self, folder_input: str) -> dict | None:
         """
@@ -422,8 +515,11 @@ class ReportEngine:
         """
         Build a project_id -> folder_name mapping by fetching projects.
         Used when --folder is not specified, to still populate folder_name
-        from the ProjectV0.folder field.
+        from the ProjectV0.folder field.  Cached per run.
         """
+        if self._project_map_cache is not None:
+            return self._project_map_cache
+
         from fs_report.models import QueryConfig, QueryParams
 
         projects_query = QueryConfig(
@@ -438,6 +534,7 @@ class ReportEngine:
             folder = p.get("folder")
             if pid and folder and isinstance(folder, dict):
                 pf_map[pid] = folder.get("name", "")
+        self._project_map_cache = pf_map
         return pf_map
 
     def _get_latest_version_ids(self) -> list[int]:
@@ -551,6 +648,7 @@ class ReportEngine:
         projects: list[dict], requested_ids: set[str]
     ) -> list[int]:
         """Extract defaultBranch.latestVersion.id from a list of project dicts."""
+        logger = logging.getLogger(__name__)
         version_ids: list[int] = []
         for project in projects:
             pid = str(project.get("id", ""))
@@ -567,6 +665,11 @@ class ReportEngine:
             )
             if version_id:
                 version_ids.append(version_id)
+            else:
+                pname = project.get("name", pid)
+                logger.info(
+                    f"Project '{pname}' (id={pid}) has no defaultBranch.latestVersion; skipping"
+                )
         return version_ids
 
     def _fetch_version_ids_per_project(self, project_ids: list) -> list[int]:
@@ -660,16 +763,14 @@ class ReportEngine:
                 if svid not in by_version:
                     by_version[svid] = []
 
-        if entity_type == "findings":
-            cache_prefix = "findings|"
-            cache_suffix = f"|{finding_type}|{category_filter or ''}"
-        else:
-            cache_prefix = "components|"
-            cache_suffix = ""
-
         stored_versions = 0
         for vid, version_records in by_version.items():
-            cache_key = f"{cache_prefix}{vid}{cache_suffix}"
+            if entity_type == "findings":
+                cache_key = self._cache_key(
+                    "findings", vid, finding_type, category_filter
+                )
+            else:
+                cache_key = self._cache_key("components", vid)
             if cache_key not in self._version_findings_cache:
                 self._version_findings_cache[cache_key] = version_records
                 stored_versions += 1
@@ -688,16 +789,21 @@ class ReportEngine:
                         params["archived"] = False
                         params["excluded"] = False
 
-                    if not self.api_client.sqlite_cache.is_cache_valid(
-                        endpoint, params, self.api_client.cache_ttl
-                    ):
-                        qh = self.api_client.sqlite_cache.start_fetch(
+                    try:
+                        if not self.api_client.sqlite_cache.is_cache_valid(
                             endpoint, params, self.api_client.cache_ttl
+                        ):
+                            qh = self.api_client.sqlite_cache.start_fetch(
+                                endpoint, params, self.api_client.cache_ttl
+                            )
+                            self.api_client.sqlite_cache.store_records(
+                                qh, endpoint, version_records
+                            )
+                            self.api_client.sqlite_cache.complete_fetch(qh)
+                    except Exception:
+                        self.logger.warning(
+                            f"Failed to warm SQLite cache for version {vid}; continuing without cache"
                         )
-                        self.api_client.sqlite_cache.store_records(
-                            qh, endpoint, version_records
-                        )
-                        self.api_client.sqlite_cache.complete_fetch(qh)
 
         if stored_versions:
             self.logger.debug(
@@ -717,9 +823,9 @@ class ReportEngine:
         Returns cached records or None if not found.
         """
         if entity_type == "findings":
-            cache_key = f"findings|{vid}|{finding_type}|{category_filter or ''}"
+            cache_key = self._cache_key("findings", vid, finding_type, category_filter)
         else:
-            cache_key = f"components|{vid}"
+            cache_key = self._cache_key("components", vid)
 
         # 1. In-memory cache
         if cache_key in self._version_findings_cache:
@@ -1087,6 +1193,43 @@ class ReportEngine:
                     )
                     return False
 
+        # Resolve version name to numeric ID if needed (API filters require numeric IDs)
+        if self.config.version_filter and not self.data_override:
+            if not self.config.project_filter:
+                self.logger.error(
+                    "Version filter requires a project filter. "
+                    "Use --project-filter to specify the project."
+                )
+                return False
+            try:
+                int(self.config.version_filter)
+                # Already a numeric ID — no resolution needed
+            except ValueError:
+                try:
+                    project_id = int(self.config.project_filter)
+                except ValueError:
+                    # project_filter should already be resolved above
+                    self.logger.error(
+                        f"Cannot resolve version name '{self.config.version_filter}': "
+                        f"project filter '{self.config.project_filter}' is not a numeric ID."
+                    )
+                    return False
+                resolved_id = self._resolve_version_name(
+                    project_id, self.config.version_filter
+                )
+                if resolved_id:
+                    self.logger.info(
+                        f"Resolved version '{self.config.version_filter}' to ID {resolved_id}"
+                    )
+                    self.config.version_filter = str(resolved_id)
+                else:
+                    self.logger.error(
+                        f"Could not resolve version name '{self.config.version_filter}' "
+                        f"in project {self.config.project_filter}. "
+                        "Use 'fs-report list-versions <project>' to see available versions."
+                    )
+                    return False
+
         # Process each recipe
         all_succeeded = True
         generated_files = []
@@ -1147,7 +1290,7 @@ class ReportEngine:
         from fs_report.models import QueryConfig, QueryParams
 
         type_params = build_findings_type_params(self.config.finding_types)
-        finding_type = type_params.get("type") or "cve"
+        finding_type = type_params.get("type", "cve") or ""
         category_filter = type_params.get("category_filter")
 
         def _fetch_findings(version_id: str) -> list[dict]:
@@ -1175,7 +1318,9 @@ class ReportEngine:
             )
             result = self.api_client.fetch_all_with_resume(q, show_progress=False)
             # Store per-version in both in-memory and SQLite caches
-            cache_key = f"findings|{version_id}|{finding_type}|{category_filter or ''}"
+            cache_key = self._cache_key(
+                "findings", version_id, finding_type, category_filter
+            )
             self._version_findings_cache[cache_key] = result
             # SQLite is already handled by fetch_all_with_resume when cache_ttl > 0
             return result
@@ -1193,7 +1338,7 @@ class ReportEngine:
                 ),
             )
             result = self.api_client.fetch_all_with_resume(q, show_progress=False)
-            cache_key = f"components|{version_id}"
+            cache_key = self._cache_key("components", version_id)
             self._version_findings_cache[cache_key] = result
             return result
 
@@ -1243,63 +1388,68 @@ class ReportEngine:
             pair_pbar.update(1)
             pair_pbar.close()
 
-            # Resolve version metadata if --project is set
+            # Resolve version metadata from the already-fetched findings.
+            # Each finding record contains projectVersion.version (name) and
+            # project.name, so we can extract names without extra API calls.
             baseline_name, baseline_created = bv, ""
             current_name, current_created = cv, ""
+            baseline_project_name = ""
+            current_project_name = ""
             project_name = "Version Comparison"
 
-            if self.config.project_filter:
-                pf = self.config.project_filter
-                # Fetch the project list to resolve the project name and ID
-                projects_query = QueryConfig(
-                    endpoint="/public/v0/projects",
-                    params=QueryParams(limit=10000, archived=False, excluded=False),
-                )
-                all_projects = self.api_client.fetch_all_with_resume(
-                    projects_query,
-                    show_progress=False,
-                )
-                for p in all_projects:
-                    pid = str(p.get("id", ""))
-                    pname = p.get("name", "")
-                    if pid == pf or pname.lower() == pf.lower():
-                        project_name = pname
-                        # Fetch the version list to resolve names and dates
-                        try:
-                            url = (
-                                f"{self.api_client.base_url}"
-                                f"/public/v0/projects/{pid}/versions"
-                            )
-                            resp = self.api_client.client.get(url)
-                            resp.raise_for_status()
-                            versions_list = resp.json()
-                            if isinstance(versions_list, list):
-                                for v in versions_list:
-                                    vid = str(v.get("id", ""))
-                                    vname = v.get("version", v.get("name", vid))
-                                    vcreated = v.get("created", "")
-                                    if vid == bv:
-                                        baseline_name = vname
-                                        baseline_created = vcreated
-                                    elif vid == cv:
-                                        current_name = vname
-                                        current_created = vcreated
-                        except Exception as e:
-                            self.logger.debug(
-                                "Could not fetch version metadata for %s: %s",
-                                project_name,
-                                e,
-                            )
-                        break
+            def _extract_version_meta(
+                findings: list[dict], version_id: str
+            ) -> tuple[str, str, str]:
+                """Extract (version_name, created, project_name) from findings."""
+                vname, created, pname = version_id, "", ""
+                for f in findings:
+                    pv = f.get("projectVersion")
+                    if isinstance(pv, dict):
+                        v = pv.get("version") or pv.get("name")
+                        if v:
+                            vname = str(v)
+                        c = pv.get("created", "")
+                        if c:
+                            created = c
+                    proj = f.get("project")
+                    if isinstance(proj, dict):
+                        n = proj.get("name")
+                        if n:
+                            pname = str(n)
+                    if vname != version_id and pname:
+                        break  # found both, stop early
+                return vname, created, pname
+
+            baseline_name, baseline_created, baseline_project_name = (
+                _extract_version_meta(baseline_findings, bv)
+            )
+            current_name, current_created, current_project_name = _extract_version_meta(
+                current_findings, cv
+            )
+
+            # Build display project name
+            if baseline_project_name and current_project_name:
+                if baseline_project_name == current_project_name:
+                    project_name = baseline_project_name
+                else:
+                    project_name = (
+                        baseline_project_name + " \u2194 " + current_project_name
+                    )
+            elif baseline_project_name:
+                project_name = baseline_project_name
+            elif current_project_name:
+                project_name = current_project_name
 
             projects_data: list[dict] = [
                 {
                     "project_name": project_name,
+                    "is_pair_comparison": True,
                     "versions": [
                         {
                             "id": bv,
                             "name": baseline_name,
                             "created": baseline_created,
+                            "project_name": baseline_project_name,
                             "findings": baseline_findings,
                             "components": baseline_components,
                         },
@@ -1307,6 +1457,7 @@ class ReportEngine:
                             "id": cv,
                             "name": current_name,
                             "created": current_created,
+                            "project_name": current_project_name,
                             "findings": current_findings,
                             "components": current_components,
                         },
@@ -1515,6 +1666,9 @@ class ReportEngine:
             # Track whether entity-level caching was used (needs date post-filtering)
             needs_date_postfilter = False
             is_operational = False
+            # Track whether multi-type post-filtering is needed
+            post_filter_categories: set[str] | None = None
+            post_filter_types: set[str] | None = None
 
             # Use override data if provided
             if self.data_override is not None:
@@ -1555,6 +1709,7 @@ class ReportEngine:
                     "Component Vulnerability Analysis (Pandas)",
                     "Component Vulnerability Analysis",
                     "Executive Summary",
+                    "Executive Dashboard",
                     "Scan Analysis",
                     "Findings by Project",
                     "Component List",
@@ -1654,18 +1809,12 @@ class ReportEngine:
                                         f"cveId=in=({','.join(cve_ids)})"
                                     )
 
-                            # Apply --project filter
+                            # Apply --project filter (already resolved to
+                            # numeric ID by run(), so int() will not fail)
                             if self.config.project_filter:
-                                try:
-                                    project_id = int(self.config.project_filter)
-                                    cve_filters.append(f"project=={project_id}")
-                                except ValueError:
-                                    # Resolve project name to ID
-                                    resolved_id = self._resolve_project_name(
-                                        self.config.project_filter
-                                    )
-                                    if resolved_id:
-                                        cve_filters.append(f"project=={resolved_id}")
+                                cve_filters.append(
+                                    f"project=={self.config.project_filter}"
+                                )
 
                             # Apply --detected-after
                             if getattr(self.config, "detected_after", None):
@@ -1677,9 +1826,9 @@ class ReportEngine:
                                 endpoint="/public/v0/cves",
                                 params=QueryParams(
                                     limit=10000,
-                                    filter=";".join(cve_filters)
-                                    if cve_filters
-                                    else None,
+                                    filter=(
+                                        ";".join(cve_filters) if cve_filters else None
+                                    ),
                                 ),
                             )
                             self.logger.info(
@@ -1729,13 +1878,9 @@ class ReportEngine:
                             )
 
                         if self.config.version_filter:
-                            try:
-                                version_id = int(self.config.version_filter)
-                                filters.append(f"projectVersion=={version_id}")
-                            except ValueError:
-                                filters.append(
-                                    f"projectVersion=={self.config.version_filter}"
-                                )
+                            filters.append(
+                                f"projectVersion=={self.config.version_filter}"
+                            )
 
                         combined_filter = ";".join(filters)
 
@@ -1790,6 +1935,7 @@ class ReportEngine:
                         "Component Vulnerability Analysis (Pandas)",
                         "Component Vulnerability Analysis",
                         "Executive Summary",
+                        "Executive Dashboard",
                         "Findings by Project",
                         "Triage Prioritization",
                     ]:
@@ -1799,11 +1945,19 @@ class ReportEngine:
                         is_operational = recipe.name == "Executive Summary"
 
                         # Build finding type parameters based on --finding-types flag
-                        type_params = build_findings_type_params(
-                            self.config.finding_types
-                        )
-                        finding_type = type_params.get("type") or "cve"
+                        # Executive Dashboard needs all finding types regardless of CLI flag
+                        if recipe.name == "Executive Dashboard":
+                            type_params = build_findings_type_params("all")
+                        else:
+                            type_params = build_findings_type_params(
+                                self.config.finding_types
+                            )
+                        finding_type = type_params.get("type", "cve") or ""
                         category_filter = type_params.get("category_filter")
+                        post_filter_categories = type_params.get(
+                            "post_filter_categories"
+                        )
+                        post_filter_types = type_params.get("post_filter_types")
 
                         # Whether we need to post-filter by date (set True when entity-
                         # level caching is used and date filters are NOT in the API query)
@@ -1840,13 +1994,9 @@ class ReportEngine:
                                 filters.append(f"project=={self.config.project_filter}")
 
                             if self.config.version_filter:
-                                try:
-                                    version_id = int(self.config.version_filter)
-                                    filters.append(f"projectVersion=={version_id}")
-                                except ValueError:
-                                    filters.append(
-                                        f"projectVersion=={self.config.version_filter}"
-                                    )
+                                filters.append(
+                                    f"projectVersion=={self.config.version_filter}"
+                                )
                             elif self.config.current_version_only:
                                 # Use entity-level caching (consistent with folder/scan paths)
                                 try:
@@ -2180,6 +2330,27 @@ class ReportEngine:
                         f"{before_count} -> {len(raw_data)} findings"
                     )
 
+            # --- Category/type post-filtering for multi-type requests ---
+            # When --finding-types has multiple types (e.g. cve,sast), we fetch
+            # all findings (no type param) and post-filter here.
+            # Match on `category` field (uppercase: CVE, SAST_ANALYSIS, etc.)
+            # and/or `type` field (lowercase: cve, sast, thirdparty) for types
+            # without a documented category mapping.
+            if (post_filter_categories or post_filter_types) and raw_data:
+                before_count = len(raw_data)
+                _pf_cats = post_filter_categories or set()
+                _pf_types = post_filter_types or set()
+                raw_data = [
+                    f
+                    for f in raw_data
+                    if (f.get("category") or "").upper() in _pf_cats
+                    or (f.get("type") or "").lower() in _pf_types
+                ]
+                self.logger.info(
+                    f"Finding-type post-filter (categories={_pf_cats}, types={_pf_types}): "
+                    f"{before_count} -> {len(raw_data)} findings"
+                )
+
             if not raw_data:
                 self.logger.warning(f"No data returned for recipe: {recipe.name}")
                 raw_data = []
@@ -2202,11 +2373,12 @@ class ReportEngine:
                     )
             # --- Inject project_name if needed ---
             # Only do this if the recipe uses project-level grouping
+            # (via transform group_by or transform_function that needs it)
             uses_project = any(
                 (t.group_by and "project_name" in t.group_by)
                 or (t.calc and t.calc.name == "project_name")
                 for t in recipe.transform or []
-            )
+            ) or recipe.name in ("Executive Dashboard",)
             if uses_project:
                 # Fetch all projects and build mapping
                 from fs_report.models import QueryConfig, QueryParams
@@ -2307,9 +2479,9 @@ class ReportEngine:
                     hasattr(self, "_cve_impact_exploit_details")
                     and self._cve_impact_exploit_details
                 ):
-                    additional_data[
-                        "exploit_details"
-                    ] = self._cve_impact_exploit_details
+                    additional_data["exploit_details"] = (
+                        self._cve_impact_exploit_details
+                    )
 
             # Inject CVE details for Findings by Project
             if recipe.name == "Findings by Project":
@@ -2317,9 +2489,9 @@ class ReportEngine:
                     hasattr(self, "_findings_by_project_cve_details")
                     and self._findings_by_project_cve_details
                 ):
-                    additional_data[
-                        "cve_details"
-                    ] = self._findings_by_project_cve_details
+                    additional_data["cve_details"] = (
+                        self._findings_by_project_cve_details
+                    )
                 # Pass domain for FS platform link construction
                 additional_data["domain"] = self.config.domain
 
@@ -2329,21 +2501,52 @@ class ReportEngine:
             ):
                 additional_data.update(self._version_comparison_data)
 
+            # Fetch scoped components for Executive Dashboard
+            if recipe.name == "Executive Dashboard" and raw_data:
+                comp_filters = ["type!=file"]
+                if self.config.project_filter:
+                    try:
+                        _proj_id = int(self.config.project_filter)
+                        comp_filters.append(f"project=={_proj_id}")
+                    except ValueError:
+                        comp_filters.append(f"project=={self.config.project_filter}")
+                elif self._folder_project_ids:
+                    folder_pids = sorted(self._folder_project_ids)
+                    comp_filters.append(
+                        f"project=in=({','.join(str(p) for p in folder_pids)})"
+                    )
+                comp_query = QueryConfig(
+                    endpoint="/public/v0/components",
+                    params=QueryParams(
+                        limit=10000,
+                        filter=";".join(comp_filters),
+                    ),
+                )
+                self.logger.info(
+                    f"Fetching scoped components for Executive Dashboard "
+                    f"(filter: {comp_query.params.filter})"
+                )
+                try:
+                    additional_data["components"] = (
+                        self.api_client.fetch_all_with_resume(
+                            comp_query, show_progress=True
+                        )
+                    )
+                    self.logger.info(
+                        f"Fetched {len(additional_data['components'])} components"
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Could not fetch components for Executive Dashboard: {e}"
+                    )
+                    additional_data["components"] = []
+
             if recipe.additional_queries:
                 for query_name, query_config in recipe.additional_queries.items():
                     self.logger.debug(f"Fetching additional data for {query_name}")
                     self.logger.debug(f"Query config: {query_config}")
 
-                    # Special handling for Component Vulnerability Analysis findings
-                    if (
-                        recipe.name == "Component Vulnerability Analysis"
-                        and query_name == "findings"
-                    ):
-                        additional_raw_data = self._fetch_findings_with_status_workaround(  # type: ignore[attr-defined]
-                            query_config
-                        )
-                    else:
-                        additional_raw_data = self.api_client.fetch_data(query_config)
+                    additional_raw_data = self.api_client.fetch_data(query_config)
 
                     self.logger.debug(
                         f"Additional data for {query_name}: {len(additional_raw_data) if additional_raw_data else 0} records"
@@ -2548,9 +2751,11 @@ class ReportEngine:
                 data=transformed_data,
                 metadata={
                     "raw_count": raw_data_count,
-                    "transformed_count": len(transformed_data)
-                    if hasattr(transformed_data, "__len__")
-                    else 1,
+                    "transformed_count": (
+                        len(transformed_data)
+                        if hasattr(transformed_data, "__len__")
+                        else 1
+                    ),
                     "portfolio_data": portfolio_data,
                     "recipe": recipe.model_dump(),
                     "cache_stats": self.cache.get_stats(),
@@ -2853,7 +3058,7 @@ class ReportEngine:
             ),
         )
 
-        all_scans = []
+        all_scans: list[dict[str, Any]] = []
         offset = 0
         limit = sorted_query.params.limit or 100
         done = False
@@ -2896,6 +3101,13 @@ class ReportEngine:
                         )
                         time.sleep(wait)
                         if retry_count >= max_retries - 1:
+                            if all_scans:
+                                self.logger.warning(
+                                    f"Max retries exceeded at offset {offset}. "
+                                    f"Returning {len(all_scans)} partial results."
+                                )
+                                done = True
+                                break
                             self.logger.error(
                                 f"Max retries exceeded at offset {offset}. Aborting."
                             )
@@ -3027,20 +3239,10 @@ class ReportEngine:
             )
 
         if self.config.version_filter:
-            try:
-                version_id = int(self.config.version_filter)
-                additional_filters.append(f"projectVersion=={version_id}")
-                self.logger.debug(
-                    f"Added version ID filter to scans: projectVersion=={version_id}"
-                )
-            except ValueError:
-                # Not an integer, treat as version name
-                additional_filters.append(
-                    f"projectVersion=={self.config.version_filter}"
-                )
-                self.logger.debug(
-                    f"Added version name filter to scans: projectVersion=={self.config.version_filter}"
-                )
+            additional_filters.append(f"projectVersion=={self.config.version_filter}")
+            self.logger.debug(
+                f"Added version filter to scans: projectVersion=={self.config.version_filter}"
+            )
 
         # Combine filters
         if additional_filters:

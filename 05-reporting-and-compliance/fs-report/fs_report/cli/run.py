@@ -194,6 +194,19 @@ def create_config(
             )
             raise typer.Exit(1)
 
+    # Validate detected_after format
+    if detected_after:
+        try:
+            from datetime import datetime
+
+            datetime.fromisoformat(detected_after)
+        except ValueError:
+            console.print(
+                f"[red]Error: --detected-after must be YYYY-MM-DD format, "
+                f"got '{detected_after}'[/red]"
+            )
+            raise typer.Exit(1)
+
     return Config(
         auth_token=auth_token,
         domain=domain_value,
@@ -566,9 +579,9 @@ def run_command(
         "cve",
         "--finding-types",
         "-ft",
-        help="Finding types: cve, sast, binary_sca, source_sca, thirdparty, "
-        "credentials, config_issues, crypto_material, or 'all'. "
-        "Comma-separated for multiple.",
+        help="Finding types to include. Types: cve, sast, thirdparty, binary_sca, "
+        "source_sca. Categories: credentials, config_issues, crypto_material. "
+        "Use 'all' for everything. Comma-separated for multiple (e.g. cve,sast).",
         rich_help_panel=_SCOPE,
     ),
     current_version_only: bool = typer.Option(

@@ -39,6 +39,19 @@ from fs_report.data_cache import DataCache
 from fs_report.models import Config, QueryConfig, QueryParams
 from fs_report.sqlite_cache import SQLiteCache
 
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_PERMANENT_STATUS_CODES = frozenset({400, 401, 403, 404, 405, 409, 422})
+
+
+def _is_retryable(status_code: int) -> bool:
+    """Return True if the HTTP status code is transient and worth retrying."""
+    if status_code in _RETRYABLE_STATUS_CODES:
+        return True
+    if status_code in _PERMANENT_STATUS_CODES:
+        return False
+    # Unknown 5xx → retryable; unknown 4xx → permanent
+    return status_code >= 500
+
 
 class APIClient:
     """Client for interacting with the Finite State REST API."""
@@ -322,31 +335,33 @@ class APIClient:
                     )
                 except httpx.HTTPStatusError as e:
                     status = e.response.status_code
+                    if not _is_retryable(status):
+                        self.logger.error(
+                            f"Permanent HTTP {status} at offset {offset}: {str(e)[:200]}. Not retrying."
+                        )
+                        break
                     retry_count += 1
                     self.last_fetch_retries += 1
-                    if status in (429, 500, 502, 503):
-                        # Server overloaded, internal error, or rate limited: use longer backoff
-                        retry_after = e.response.headers.get("Retry-After")
-                        wait = (
-                            float(retry_after)
-                            if retry_after
-                            else min(30 * retry_count, 120)
-                        )
-                        label = (
-                            "Rate limited (429)"
-                            if status == 429
-                            else f"Server error ({status})"
-                        )
-                        self.logger.warning(
-                            f"{label} at offset {offset}. "
-                            f"Waiting {wait:.0f}s (attempt {retry_count}/{max_retries})..."
-                        )
+                    retry_after = e.response.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            wait = float(retry_after)
+                        except ValueError:
+                            wait = min(30 * retry_count, 120)
+                    elif status in (429, 500, 502, 503, 504):
+                        # Server overloaded / rate limited: use longer backoff
+                        wait = min(30 * retry_count, 120)
                     else:
                         wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
-                        self.logger.warning(
-                            f"HTTP {status} at offset {offset}: {str(e)[:200]}. "
-                            f"Retrying in {wait:.1f}s (attempt {retry_count}/{max_retries})..."
-                        )
+                    label = (
+                        "Rate limited (429)"
+                        if status == 429
+                        else f"Server error ({status})"
+                    )
+                    self.logger.warning(
+                        f"{label} at offset {offset}. "
+                        f"Waiting {wait:.0f}s (attempt {retry_count}/{max_retries})..."
+                    )
                     if retry_count > max_retries:
                         self.logger.error(
                             f"Max retries exceeded at offset {offset} (last error: HTTP {status}). Aborting."
@@ -390,16 +405,20 @@ class APIClient:
 
                 consecutive_empty_pages = 0
 
-                # Check for duplicate records
+                # Check for duplicate records — only stop when ALL are duplicates
                 page_ids: set[str] = {
                     str(rec.get("id")) for rec in page if rec.get("id")
                 }
                 duplicates = page_ids & seen_ids
-                if duplicates:
+                if page_ids and duplicates == page_ids:
                     self.logger.debug(
-                        f"Found {len(duplicates)} duplicate record IDs at offset {offset}. Stopping pagination."
+                        f"All {len(page_ids)} records at offset {offset} are duplicates. Stopping pagination."
                     )
                     break
+                if duplicates:
+                    self.logger.debug(
+                        f"Found {len(duplicates)}/{len(page_ids)} duplicate record IDs at offset {offset}; continuing."
+                    )
 
                 seen_ids.update(page_ids)
 
@@ -478,31 +497,33 @@ class APIClient:
                     )
                 except httpx.HTTPStatusError as e:
                     status = e.response.status_code
+                    if not _is_retryable(status):
+                        self.logger.error(
+                            f"Permanent HTTP {status} at offset {offset}: {str(e)[:200]}. Not retrying."
+                        )
+                        break
                     retry_count += 1
                     self.last_fetch_retries += 1
-                    if status in (429, 500, 502, 503):
-                        # Server overloaded, internal error, or rate limited: use longer backoff
-                        retry_after = e.response.headers.get("Retry-After")
-                        wait = (
-                            float(retry_after)
-                            if retry_after
-                            else min(30 * retry_count, 120)
-                        )
-                        label = (
-                            "Rate limited (429)"
-                            if status == 429
-                            else f"Server error ({status})"
-                        )
-                        self.logger.warning(
-                            f"{label} at offset {offset}. "
-                            f"Waiting {wait:.0f}s (attempt {retry_count}/{max_retries})..."
-                        )
+                    retry_after = e.response.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            wait = float(retry_after)
+                        except ValueError:
+                            wait = min(30 * retry_count, 120)
+                    elif status in (429, 500, 502, 503, 504):
+                        # Server overloaded / rate limited: use longer backoff
+                        wait = min(30 * retry_count, 120)
                     else:
                         wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
-                        self.logger.warning(
-                            f"HTTP {status} at offset {offset}: {str(e)[:200]}. "
-                            f"Retrying in {wait:.1f}s (attempt {retry_count}/{max_retries})..."
-                        )
+                    label = (
+                        "Rate limited (429)"
+                        if status == 429
+                        else f"Server error ({status})"
+                    )
+                    self.logger.warning(
+                        f"{label} at offset {offset}. "
+                        f"Waiting {wait:.0f}s (attempt {retry_count}/{max_retries})..."
+                    )
                     if retry_count > max_retries:
                         self.logger.error(
                             f"Max retries exceeded at offset {offset} (last error: HTTP {status}). Aborting."
@@ -691,7 +712,7 @@ class APIClient:
             )
 
             while True:
-                page_query = query.copy(deep=True)
+                page_query = query.model_copy(deep=True)
                 page_query.params.offset = offset
                 self.logger.debug(
                     f"Fetching: {query.endpoint} offset={offset} limit={limit}"
@@ -762,25 +783,22 @@ class APIClient:
 
                 consecutive_empty_pages = 0  # Reset on successful page
 
-                # Check for duplicate records (indicates we've reached the end)
+                # Check for duplicate records — only stop when ALL are duplicates
                 if all_results and len(page) > 0:
                     page_ids = {rec.get("id") for rec in page if rec.get("id")}
                     existing_ids = {
                         rec.get("id") for rec in all_results if rec.get("id")
                     }
                     duplicates = page_ids & existing_ids
+                    if page_ids and duplicates == page_ids:
+                        self.logger.debug(
+                            f"All {len(page_ids)} records at offset {offset} are duplicates. Stopping pagination."
+                        )
+                        break
                     if duplicates:
                         self.logger.debug(
-                            f"Found {len(duplicates)} duplicate record IDs at offset {offset}. Stopping pagination."
+                            f"Found {len(duplicates)}/{len(page_ids)} duplicate record IDs at offset {offset}; continuing."
                         )
-                        break
-
-                    # Safety check: if all records in this page are duplicates, stop
-                    if len(page_ids) > 0 and len(duplicates) == len(page_ids):
-                        self.logger.debug(
-                            f"All {len(page_ids)} records in page at offset {offset} are duplicates. Stopping pagination."
-                        )
-                        break
 
                 all_results.extend(page)
                 offset += limit

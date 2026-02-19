@@ -11,9 +11,16 @@ router = APIRouter(tags=["pages"])
 
 WORKFLOWS = [
     {
-        "id": "executive",
+        "id": "executive-dashboard",
         "title": "Executive Dashboard",
         "icon": "📊",
+        "description": "Single-page security posture overview with 11 visualizations",
+        "recipes": ["executive dashboard"],
+    },
+    {
+        "id": "operational",
+        "title": "Operational Reports",
+        "icon": "📈",
         "description": "Operational reports: summary, scan analysis, user activity",
         "recipes": ["executive summary", "scan analysis", "user activity"],
     },

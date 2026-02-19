@@ -64,6 +64,7 @@ def version_comparison_transform(
     for proj in projects_raw:
         pname = proj.get("project_name", "Unknown")
         versions = proj.get("versions", [])
+        is_pair = proj.get("is_pair_comparison", False)
 
         if len(versions) < 2:
             logger.debug("Skipping %s — only %d version(s)", pname, len(versions))
@@ -73,6 +74,7 @@ def version_comparison_transform(
         # Skip projects where all versions were filtered out (e.g. failed scans)
         if not result.get("progression"):
             continue
+        result["is_pair_comparison"] = is_pair
         project_results.append(result)
         all_summary_rows.extend(result["_summary_rows"])
 
@@ -173,12 +175,11 @@ def version_comparison_transform(
     summary_df = pd.DataFrame(all_summary_rows) if all_summary_rows else pd.DataFrame()
     if not summary_df.empty and "Severity" in summary_df.columns:
         summary_df["_sev_rank"] = summary_df["Severity"].map(SEVERITY_RANK).fillna(99)
-        summary_df.sort_values(
+        summary_df = summary_df.sort_values(
             ["Project", "Version", "_sev_rank"],
             ascending=True,
-            inplace=True,
         )
-        summary_df.drop(columns="_sev_rank", inplace=True)
+        summary_df = summary_df.drop(columns="_sev_rank")
 
     # Remove internal keys from project results before passing to template
     for pr in project_results:
@@ -198,6 +199,9 @@ def version_comparison_transform(
         "detail_findings_churn": detail_findings_churn_df,
         "detail_component_churn": detail_component_churn_df,
         "project_count": len(project_results),
+        "is_pair_comparison": any(
+            pr.get("is_pair_comparison") for pr in project_results
+        ),
     }
 
 
@@ -270,6 +274,7 @@ def _process_single_project(
 
         step: dict[str, Any] = {
             "version": vname,
+            "version_project_name": v_meta.get("project_name", ""),
             "created": created[:10] if created else "",
             "total": total,
             "critical": sev_counts.get("CRITICAL", 0),
@@ -369,12 +374,26 @@ def _process_single_project(
             }
         )
 
+    # Build display labels for baseline/current that include project name
+    # when the two versions come from different projects
+    bv_name = prev_v_meta.get("name", "")
+    cv_name = last_v_meta.get("name", "")
+    bv_proj = prev_v_meta.get("project_name", "")
+    cv_proj = last_v_meta.get("project_name", "")
+    cross_project = bv_proj and cv_proj and bv_proj != cv_proj
+    baseline_label = f"{bv_proj} / {bv_name}" if cross_project else bv_name
+    current_label = f"{cv_proj} / {cv_name}" if cross_project else cv_name
+
     return {
         "project_name": project_name,
         "progression": progression,
         "latest_delta": {
-            "baseline_version": prev_v_meta.get("name", ""),
-            "current_version": last_v_meta.get("name", ""),
+            "baseline_version": bv_name,
+            "current_version": cv_name,
+            "baseline_project_name": bv_proj,
+            "current_project_name": cv_proj,
+            "baseline_label": baseline_label,
+            "current_label": current_label,
             "fixed_findings": _df_to_records(fixed_latest),
             "new_findings": _df_to_records(new_latest),
             "fixed_by_severity": _severity_counts(fixed_latest),
@@ -613,8 +632,12 @@ def _classify_findings(
     for df in (fixed_df, new_df):
         df["_sev_rank"] = df["severity"].map(SEVERITY_RANK).fillna(99)
         df["risk"] = pd.to_numeric(df["risk"], errors="coerce").fillna(0)
-        df.sort_values(["_sev_rank", "risk"], ascending=[True, False], inplace=True)
-        df.drop(columns="_sev_rank", inplace=True)
+    fixed_df = fixed_df.sort_values(
+        ["_sev_rank", "risk"], ascending=[True, False]
+    ).drop(columns="_sev_rank")
+    new_df = new_df.sort_values(["_sev_rank", "risk"], ascending=[True, False]).drop(
+        columns="_sev_rank"
+    )
 
     return fixed_df, new_df, unchanged_count
 
@@ -650,8 +673,7 @@ def _classify_components(baseline: pd.DataFrame, current: pd.DataFrame) -> pd.Da
 
     type_order = {"removed": 0, "updated": 1, "added": 2}
     churn["_sort"] = churn["change_type"].map(type_order)
-    churn.sort_values("_sort", inplace=True)
-    churn.drop(columns="_sort", inplace=True)
+    churn = churn.sort_values("_sort").drop(columns="_sort")
 
     # Avoid NaN in version columns (shows as "nan" in HTML); use empty string for missing
     def _version_str(x: Any) -> str:
@@ -678,20 +700,28 @@ def _attach_findings_impact(
         churn["findings_impact"] = pd.Series(dtype=int)
         return churn
 
-    impact = []
-    for _, row in churn.iterrows():
+    # Pre-compute per-component counts to avoid per-row filtering
+    fixed_counts = (
+        fixed_df["component_name"].value_counts()
+        if not fixed_df.empty
+        else pd.Series(dtype=int)
+    )
+    new_counts = (
+        new_df["component_name"].value_counts()
+        if not new_df.empty
+        else pd.Series(dtype=int)
+    )
+
+    def _impact(row: pd.Series) -> int:
         name = row["name"]
         ct = row["change_type"]
         if ct == "removed":
-            count = len(fixed_df[fixed_df["component_name"] == name])
+            return int(fixed_counts.get(name, 0))
         elif ct == "added":
-            count = len(new_df[new_df["component_name"] == name])
-        else:
-            count = len(new_df[new_df["component_name"] == name]) + len(
-                fixed_df[fixed_df["component_name"] == name]
-            )
-        impact.append(count)
-    churn["findings_impact"] = impact
+            return int(new_counts.get(name, 0))
+        return int(new_counts.get(name, 0)) + int(fixed_counts.get(name, 0))
+
+    churn["findings_impact"] = churn.apply(_impact, axis=1)
     return churn
 
 

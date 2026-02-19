@@ -2,12 +2,16 @@
 Pandas transform functions for Scan Analysis report.
 """
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
 
 from fs_report.models import Config
+
+# Scan types that complete instantly at creation time and never get a separate
+# "completed" timestamp.  Used in several places for duration / date handling.
+INSTANT_COMPLETE_TYPES: frozenset[str] = frozenset({"SOURCE_SCA", "SBOM_IMPORT"})
 
 
 def scan_analysis_transform(
@@ -238,8 +242,7 @@ def calculate_scan_durations(df: pd.DataFrame) -> pd.DataFrame:
 
     # SOURCE_SCA and SBOM_IMPORT scans are completed when created and never get a completed date
     # Set completed_dt = created_dt for these scan types
-    instant_complete_types = ["SOURCE_SCA", "SBOM_IMPORT"]
-    instant_complete_mask = df_with_durations["type"].isin(instant_complete_types)
+    instant_complete_mask = df_with_durations["type"].isin(INSTANT_COMPLETE_TYPES)
     df_with_durations.loc[
         instant_complete_mask & df_with_durations["completed_dt"].isna(), "completed_dt"
     ] = df_with_durations.loc[
@@ -289,8 +292,7 @@ def calculate_scan_durations(df: pd.DataFrame) -> pd.DataFrame:
     # For SOURCE_SCA and SBOM_IMPORT scans, use created date as completion date
     df_with_durations["completion_date"] = df_with_durations["completed_dt"].dt.date
     # Fill in completion_date for instant-complete scan types that might still have NaN
-    instant_complete_types = ["SOURCE_SCA", "SBOM_IMPORT"]
-    instant_complete_mask = df_with_durations["type"].isin(instant_complete_types)
+    instant_complete_mask = df_with_durations["type"].isin(INSTANT_COMPLETE_TYPES)
     df_with_durations.loc[
         instant_complete_mask & df_with_durations["completion_date"].isna(),
         "completion_date",
@@ -314,23 +316,10 @@ def generate_scan_metrics(
     # Group by date for time series analysis
     daily_metrics = []
 
-    # Get date range - include both created and completed dates
+    # Verify we have valid dates
     if df["created_dt"].isna().all():
         # No valid dates, return empty DataFrame
         return pd.DataFrame()
-
-    min_created = df["created_dt"].min().date()
-    max_created = df["created_dt"].max().date()
-
-    # Also check completion dates to include scans that completed in the range
-    if "completed_dt" in df.columns and df["completed_dt"].notna().any():
-        min_completed = df["completed_dt"].min().date()
-        max_completed = df["completed_dt"].max().date()
-        min_date = min(min_created, min_completed)
-        max_date = max(max_created, max_completed)
-    else:
-        min_date = min_created
-        max_date = max_created
 
     # Determine report date range for filtering and new vs existing analysis
     report_start_date = None
@@ -340,41 +329,32 @@ def generate_scan_metrics(
     if config and hasattr(config, "end_date") and config.end_date:
         report_end_date = pd.to_datetime(config.end_date).date()
 
-    # Generate daily metrics
-    current_date = min_date
-    while current_date <= max_date:
-        # Get scans that were created on this date (for "scans started" count)
-        day_data_created = df[df["scan_date"] == current_date]
+    # Generate daily metrics — iterate only over dates that have data
+    # instead of every calendar day in the range.
+    created_by_date = dict(tuple(df.groupby("scan_date")))
+    if "completion_date" in df.columns:
+        completed_by_date = dict(tuple(df.groupby("completion_date")))
+    else:
+        completed_by_date = {}
+    active_dates = sorted(set(created_by_date) | set(completed_by_date), key=str)
 
-        # Get scans that were completed on this date (for "scans completed" count)
-        # This may include scans created on earlier dates
-        if "completion_date" in df.columns:
-            day_data_completed = df[df["completion_date"] == current_date]
-        else:
-            day_data_completed = pd.DataFrame()
+    for current_date in active_dates:
+        day_data_created = created_by_date.get(current_date, pd.DataFrame())
+        day_data_completed = completed_by_date.get(current_date, pd.DataFrame())
 
-        # We need metrics for this date if:
-        # - Any scans were created on this date, OR
-        # - Any scans were completed on this date
-        if len(day_data_created) > 0 or len(day_data_completed) > 0:
-            # Use created scans for the base data (for started counts, active scans, etc.)
-            # But pass completed scans separately for completion counts
-            # Also pass all_scans so we can find failed scans that may have been created on different dates
-            day_data = (
-                day_data_created.copy()
-                if len(day_data_created) > 0
-                else day_data_completed.head(0).copy()
-            )
-            metrics = calculate_daily_metrics(
-                day_data,
-                current_date,
-                day_data_completed,
-                all_scans=df,
-                report_start_date=report_start_date,
-            )
-            daily_metrics.append(metrics)
-
-        current_date += timedelta(days=1)
+        day_data = (
+            day_data_created.copy()
+            if len(day_data_created) > 0
+            else day_data_completed.head(0).copy()
+        )
+        metrics = calculate_daily_metrics(
+            day_data,
+            date.fromisoformat(str(current_date)),
+            day_data_completed,
+            all_scans=df,
+            report_start_date=report_start_date,
+        )
+        daily_metrics.append(metrics)
 
     # Convert to DataFrame
     if not daily_metrics:
@@ -453,12 +433,10 @@ def generate_scan_metrics(
 
     # Handle completion date properly (avoid "nan" strings)
     # For SOURCE_SCA and SBOM_IMPORT scans, use created date as completion date
-    instant_complete_types = ["SOURCE_SCA", "SBOM_IMPORT"]
-    raw_data_df["type"].isin(instant_complete_types)
 
     def format_completion_date(row: pd.Series) -> str:
         # For instant-complete scan types, use created date if completed is missing
-        if row["type"] in instant_complete_types and (
+        if row["type"] in INSTANT_COMPLETE_TYPES and (
             pd.isna(row.get("completed")) or str(row.get("completed")) == "NaT"
         ):
             return str(row["created"]) if pd.notna(row.get("created")) else "-"

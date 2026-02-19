@@ -2,6 +2,7 @@
 
 import json
 import logging
+import tempfile
 from pathlib import Path
 from typing import Union
 
@@ -61,7 +62,7 @@ def recipes(
 
         if not recipes_list:
             if output_json:
-                console.print("[]")
+                print("[]")
             else:
                 console.print("[yellow]No recipes found[/yellow]")
             return
@@ -77,7 +78,7 @@ def recipes(
                 }
                 for r in recipes_list
             ]
-            console.print(json.dumps(data, indent=2))
+            print(json.dumps(data, indent=2))
             return
 
         table = Table(title=f"Available Recipes ({len(recipes_list)} found)")
@@ -142,13 +143,14 @@ def projects(
             auth_token=auth_token,
             domain=domain_value,
             recipes_dir=str(recipes_dir) if recipes_dir else None,
-            output_dir="./output",
+            output_dir=tempfile.gettempdir(),
             start_date="2025-01-01",
             end_date="2025-01-31",
             verbose=verbose,
         )
 
-        console.print("[bold cyan]Fetching available projects...[/bold cyan]")
+        if not output_json:
+            console.print("[bold cyan]Fetching available projects...[/bold cyan]")
 
         from fs_report.api_client import APIClient
         from fs_report.models import QueryConfig, QueryParams
@@ -162,7 +164,7 @@ def projects(
 
         if not projects_data:
             if output_json:
-                console.print("[]")
+                print("[]")
             else:
                 console.print("[yellow]No projects found.[/yellow]")
             return
@@ -181,7 +183,7 @@ def projects(
                 }
                 for p in projects_data
             ]
-            console.print(json.dumps(data, indent=2))
+            print(json.dumps(data, indent=2))
             return
 
         table = Table(title=f"Available Projects ({len(projects_data)} found)")
@@ -241,6 +243,11 @@ def folders(
         "-v",
         help="Enable verbose logging",
     ),
+    output_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Output as JSON for programmatic consumption.",
+    ),
 ) -> None:
     """List all available folders with hierarchy."""
     setup_logging(verbose)
@@ -253,13 +260,14 @@ def folders(
             auth_token=auth_token,
             domain=domain_value,
             recipes_dir=str(recipes_dir) if recipes_dir else None,
-            output_dir="./output",
+            output_dir=tempfile.gettempdir(),
             start_date="2025-01-01",
             end_date="2025-01-31",
             verbose=verbose,
         )
 
-        console.print("[bold cyan]Fetching available folders...[/bold cyan]")
+        if not output_json:
+            console.print("[bold cyan]Fetching available folders...[/bold cyan]")
 
         from fs_report.api_client import APIClient
         from fs_report.models import QueryConfig, QueryParams
@@ -272,7 +280,23 @@ def folders(
         folders_data = api_client.fetch_data(folders_query)
 
         if not folders_data:
-            console.print("[yellow]No folders found.[/yellow]")
+            if output_json:
+                print("[]")
+            else:
+                console.print("[yellow]No folders found.[/yellow]")
+            return
+
+        if output_json:
+            data = [
+                {
+                    "id": f.get("id"),
+                    "name": f.get("name", "Unknown"),
+                    "parentFolderId": f.get("parentFolderId"),
+                    "projectCount": f.get("projectCount", 0),
+                }
+                for f in folders_data
+            ]
+            print(json.dumps(data, indent=2))
             return
 
         folder_by_id: dict[str, dict] = {}
@@ -376,7 +400,7 @@ def versions(
             auth_token=auth_token,
             domain=domain_value,
             recipes_dir=str(recipes_dir) if recipes_dir else None,
-            output_dir="./output",
+            output_dir=tempfile.gettempdir(),
             start_date="2025-01-01",
             end_date="2025-01-31",
             verbose=verbose,

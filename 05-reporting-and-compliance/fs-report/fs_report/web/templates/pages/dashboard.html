@@ -4,6 +4,8 @@
 
 {% block content %}
 {% include "components/_status_bar.html" %}
+{% include "components/_dir_browser.html" %}
+{% include "components/_scope_dropdowns.html" %}
 
 <div class="dashboard-layout">
     <!-- Left column: Workflow cards -->
@@ -43,6 +45,7 @@
                            name="recipe"
                            value="{{ r.name }}"
                            {% if r.auto_run %}checked{% endif %}
+                           data-auto-run="{% if r.auto_run %}1{% endif %}"
                            @change="updateSelection()">
                     <div class="recipe-info">
                         <span class="recipe-name">{{ r.name }}</span>
@@ -77,10 +80,26 @@ var NONCE = '{{ nonce }}';
 
 /* ── Recipe selector (Alpine component) ────────────────────── */
 function recipeSelector() {
+    /* Restore saved recipe selections from sessionStorage */
+    var saved = sessionStorage.getItem('fs_recipes');
+    if (saved) {
+        try {
+            var savedList = JSON.parse(saved);
+            document.querySelectorAll('#recipe-form input[type=checkbox]').forEach(function(cb) {
+                cb.checked = savedList.indexOf(cb.value) !== -1;
+            });
+        } catch(e) { /* ignore bad data */ }
+    }
+
     return {
         selectedCount: document.querySelectorAll('#recipe-form input[type=checkbox]:checked').length,
         updateSelection() {
             this.selectedCount = document.querySelectorAll('#recipe-form input[type=checkbox]:checked').length;
+            this._persist();
+        },
+        _persist() {
+            var sel = this.getSelected();
+            sessionStorage.setItem('fs_recipes', JSON.stringify(sel));
         },
         getSelected() {
             return Array.from(document.querySelectorAll('#recipe-form input[type=checkbox]:checked'))
@@ -99,6 +118,43 @@ function recipeSelector() {
     };
 }
 
+/* ── Form value persistence ────────────────────────────────── */
+function _saveFormValues() {
+    var form = document.getElementById('prerun-submit-form');
+    if (!form) return;
+    var data = {};
+    form.querySelectorAll('input, select').forEach(function(el) {
+        if (el.type === 'hidden') return;
+        if (el.type === 'checkbox') {
+            data[el.name] = el.checked;
+        } else {
+            data[el.name] = el.value;
+        }
+    });
+    sessionStorage.setItem('fs_prerun', JSON.stringify(data));
+}
+
+function _restoreFormValues() {
+    var raw = sessionStorage.getItem('fs_prerun');
+    if (!raw) return;
+    try {
+        var data = JSON.parse(raw);
+    } catch(e) { return; }
+    var form = document.getElementById('prerun-submit-form');
+    if (!form) return;
+    Object.keys(data).forEach(function(name) {
+        var el = form.querySelector('[name="' + name + '"]');
+        if (!el || el.type === 'hidden') return;
+        if (el.type === 'checkbox') {
+            el.checked = !!data[name];
+        } else if (el.tagName === 'SELECT') {
+            el.value = data[name];
+        } else {
+            el.value = data[name];
+        }
+    });
+}
+
 /* ── Load pre-run form into side panel ─────────────────────── */
 function loadPrerun(recipes) {
     var container = document.getElementById('prerun-container');
@@ -114,6 +170,8 @@ function loadPrerun(recipes) {
     .then(function(html) {
         container.innerHTML = html;
         container.classList.add('active');
+        _restoreFormValues();
+        _initPrerunWidgets();
     });
 }
 
@@ -125,6 +183,7 @@ document.addEventListener('click', function(e) {
         var btn = e.target;
         var form = document.getElementById('prerun-submit-form');
         if (!form) return;
+        _saveFormValues();
         var formData = new FormData(form);
         btn.disabled = true;
         btn.textContent = 'Starting\u2026';
@@ -136,6 +195,8 @@ document.addEventListener('click', function(e) {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (data.run_id) {
+                sessionStorage.removeItem('fs_prerun');
+                sessionStorage.removeItem('fs_recipes');
                 window.location.href = '/run/' + data.run_id;
             } else {
                 alert('Error: ' + (data.error || 'Unknown error'));
@@ -157,10 +218,32 @@ document.addEventListener('click', function(e) {
     }
 });
 
+/* ── Init dir browser + scope dropdowns in prerun panel ──── */
+function _initPrerunWidgets() {
+    initDirBrowser('pre-output', 'pre-output-browse');
+    initScopeDropdowns({
+        projectId: 'pre-project',
+        folderId:  'pre-folder',
+        versionId: 'pre-version',
+    });
+    initVersionPicker({
+        projectSelId: 'pre-bv-project',
+        versionSelId: 'pre-bv-version',
+        inputId: 'pre-bv',
+    });
+    initVersionPicker({
+        projectSelId: 'pre-cv-project',
+        versionSelId: 'pre-cv-version',
+        inputId: 'pre-cv',
+    });
+}
+
 /* ── Also activate panel after htmx swaps (workflow cards) ── */
 document.addEventListener('htmx:afterSwap', function(e) {
     if (e.detail.target && e.detail.target.id === 'prerun-container') {
         e.detail.target.classList.add('active');
+        _restoreFormValues();
+        _initPrerunWidgets();
     }
 });
 </script>
