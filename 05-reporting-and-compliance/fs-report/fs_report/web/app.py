@@ -66,12 +66,14 @@ def create_app(*, port: int = 8321) -> FastAPI:
     # ── Routers ───────────────────────────────────────────────────
     from fs_report.web.routers.dashboard import router as dashboard_router
     from fs_report.web.routers.proxy import router as proxy_router
+    from fs_report.web.routers.queue import router as queue_router
     from fs_report.web.routers.recipes import router as recipes_router
     from fs_report.web.routers.reports import router as reports_router
     from fs_report.web.routers.run import router as run_router
     from fs_report.web.routers.settings import router as settings_router
 
     app.include_router(dashboard_router)
+    app.include_router(queue_router)
     app.include_router(recipes_router)
     app.include_router(run_router)
     app.include_router(settings_router)

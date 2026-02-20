@@ -165,8 +165,24 @@ a:hover { text-decoration: underline; }
     gap: 24px;
 }
 
+.dashboard-layout.dashboard-3col {
+    grid-template-columns: 280px 1fr 1fr;
+}
+
+@media (max-width: 1200px) {
+    .dashboard-layout.dashboard-3col {
+        grid-template-columns: 1fr 1fr;
+    }
+    .dashboard-layout.dashboard-3col .queue-section {
+        grid-column: 1 / -1;
+    }
+}
+
 @media (max-width: 900px) {
-    .dashboard-layout { grid-template-columns: 1fr; }
+    .dashboard-layout,
+    .dashboard-layout.dashboard-3col {
+        grid-template-columns: 1fr;
+    }
 }
 
 .section-heading {
@@ -1248,4 +1264,353 @@ a:hover { text-decoration: underline; }
     font-size: 0.9em;
     margin-left: 6px;
     vertical-align: middle;
+}
+
+/* ── SCAN QUEUE PANEL ────────────────────────────────────────── */
+.queue-section {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+#scan-queue-container {
+    flex: 1;
+    max-height: calc(100vh - 160px);
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.queue-loading {
+    text-align: center;
+    padding: 24px 0;
+    color: #6c757d;
+    font-size: 0.85em;
+}
+
+/* Summary metrics */
+.queue-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+
+.queue-metric {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85em;
+}
+
+.queue-metric-icon {
+    font-size: 1em;
+    flex-shrink: 0;
+    width: 20px;
+    text-align: center;
+}
+
+.queue-metric-value {
+    font-weight: 700;
+    color: #2c3e50;
+}
+
+.queue-metric-label {
+    color: #6c757d;
+}
+
+/* Colorblind-safe status colors: blue for INITIAL, amber for STARTED */
+.scan-initial-icon { color: #4A90D9; }
+.scan-started-icon { color: #D4850F; }
+
+/* Group list */
+.queue-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.queue-group {
+    background-color: white;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.queue-group[open] {
+    border-color: #adb5bd;
+}
+
+.queue-group-header {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    font-size: 0.82em;
+    transition: background-color 0.15s;
+}
+
+.queue-group-header::-webkit-details-marker { display: none; }
+
+.queue-group-header:hover {
+    background-color: #f8f9fa;
+}
+
+.queue-group-info {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.queue-group-project {
+    font-weight: 600;
+    color: #2c3e50;
+    overflow: hidden;
+    text-decoration: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.queue-group-version {
+    font-size: 0.9em;
+    color: #6c757d;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+a.queue-project-link {
+    color: #2c3e50;
+    text-decoration: none;
+    border-bottom: 1px dotted #adb5bd;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+a.queue-project-link:hover {
+    color: #2980b9;
+    border-bottom-color: #2980b9;
+}
+
+.queue-group-done a.queue-project-link {
+    color: #6c757d;
+}
+
+.queue-group-user {
+    font-size: 0.8em;
+    color: #868e96;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-left: 2px;
+}
+
+.queue-group-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.queue-group-indicators {
+    display: flex;
+    gap: 2px;
+    flex-wrap: wrap;
+}
+
+.queue-dot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    font-size: 0.7em;
+    border-radius: 3px;
+}
+
+.queue-dot.scan-initial {
+    background-color: #D6E8FA;
+    color: #4A90D9;
+}
+
+.queue-dot.scan-started {
+    background-color: #FAECD6;
+    color: #D4850F;
+    animation: queue-pulse 2s ease-in-out infinite;
+}
+
+@keyframes queue-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+}
+
+.queue-group-count {
+    color: #6c757d;
+    white-space: nowrap;
+}
+
+.queue-group-wait {
+    color: #495057;
+    font-weight: 500;
+    white-space: nowrap;
+    margin-left: auto;
+}
+
+/* Expanded scan rows */
+.queue-group-body {
+    border-top: 1px solid #e9ecef;
+}
+
+.queue-scan-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    font-size: 0.8em;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.queue-scan-row:last-child {
+    border-bottom: none;
+}
+
+.queue-scan-type {
+    color: #495057;
+    font-weight: 500;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.queue-scan-status {
+    font-size: 0.9em;
+    padding: 1px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.queue-scan-status.scan-initial {
+    background-color: #D6E8FA;
+    color: #3A74B0;
+}
+
+.queue-scan-status.scan-started {
+    background-color: #FAECD6;
+    color: #B06E0A;
+}
+
+.queue-scan-wait {
+    color: #6c757d;
+    white-space: nowrap;
+    min-width: 48px;
+    text-align: right;
+}
+
+/* Footer */
+.queue-footer {
+    text-align: center;
+    font-size: 0.72em;
+    color: #adb5bd;
+    margin-top: 10px;
+}
+
+/* Empty / error / disconnected states */
+.queue-empty,
+.queue-disconnected,
+.queue-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 20px 12px;
+    font-size: 0.85em;
+    color: #6c757d;
+    text-align: center;
+}
+
+.queue-empty-icon { color: #28a745; font-size: 1.2em; }
+.queue-disconnected-icon { color: #6c757d; font-size: 1.2em; }
+.queue-error-icon { color: #dc3545; font-size: 1.2em; }
+
+/* Stuck scan indicators (SCA STARTED > 1h) */
+.queue-group-stuck {
+    border-color: #C0392B;
+}
+
+.queue-stuck-badge {
+    font-size: 0.8em;
+    font-weight: 600;
+    color: #C0392B;
+    white-space: nowrap;
+}
+
+.queue-dot.scan-stuck {
+    background-color: #FADBD8;
+    color: #C0392B;
+}
+
+.queue-scan-stuck {
+    background-color: #FDF2F0;
+}
+
+.queue-scan-status.scan-stuck {
+    background-color: #FADBD8;
+    color: #922B21;
+}
+
+/* Completed scan indicators */
+.queue-dot.scan-done {
+    background-color: #D5F5E3;
+    color: #1E8449;
+}
+
+.queue-dot.scan-error {
+    background-color: #FADBD8;
+    color: #C0392B;
+}
+
+.queue-scan-done {
+    opacity: 0.7;
+}
+
+.queue-scan-status.scan-done {
+    background-color: #D5F5E3;
+    color: #1E8449;
+}
+
+.queue-scan-status.scan-error {
+    background-color: #FADBD8;
+    color: #922B21;
+}
+
+/* All-done group styling */
+.queue-group-done {
+    background-color: #f0faf3;
+    border-color: #c8e6cf;
+}
+
+.queue-group-done .queue-group-header {
+    color: #6c757d;
+}
+
+.queue-group-done .queue-group-project {
+    color: #6c757d;
+}
+
+.queue-done-badge {
+    font-size: 0.8em;
+    font-weight: 600;
+    color: #1E8449;
+    white-space: nowrap;
+}
+
+.queue-error-badge {
+    font-size: 0.8em;
+    font-weight: 600;
+    color: #C0392B;
+    white-space: nowrap;
 }

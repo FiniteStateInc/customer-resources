@@ -231,9 +231,9 @@
                     {% for row in project_table %}
                     <tr>
                         <td>{{ row.project }}</td>
-                        <td class="num">{% if row.critical > 0 %}<span class="sev-badge sev-critical">{{ row.critical }}</span>{% else %}0{% endif %}</td>
-                        <td class="num">{% if row.high > 0 %}<span class="sev-badge sev-high">{{ row.high }}</span>{% else %}0{% endif %}</td>
-                        <td class="num">{% if row.medium > 0 %}<span class="sev-badge sev-medium">{{ row.medium }}</span>{% else %}0{% endif %}</td>
+                        <td class="num">{% if (row.critical|default(0)) > 0 %}<span class="sev-badge sev-critical">{{ row.critical }}</span>{% else %}0{% endif %}</td>
+                        <td class="num">{% if (row.high|default(0)) > 0 %}<span class="sev-badge sev-high">{{ row.high }}</span>{% else %}0{% endif %}</td>
+                        <td class="num">{% if (row.medium|default(0)) > 0 %}<span class="sev-badge sev-medium">{{ row.medium }}</span>{% else %}0{% endif %}</td>
                         <td class="num">{{ row.low }}</td>
                         <td class="num"><strong>{{ row.total }}</strong></td>
                     </tr>

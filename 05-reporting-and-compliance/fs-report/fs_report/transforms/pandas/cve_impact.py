@@ -1042,12 +1042,20 @@ def _call_llm_for_cve(
     cache_dir = getattr(config, "cache_dir", None)
     cache_ttl = getattr(config, "cache_ttl", 0) or 0
     provider = getattr(config, "ai_provider", None)
+    model_high = getattr(config, "ai_model_high", None)
+    model_low = getattr(config, "ai_model_low", None)
 
     # AI remediation data is stable — enforce minimum 7-day cache TTL
     cache_ttl = max(cache_ttl, 7 * 24 * 3600)
 
     try:
-        llm = LLMClient(cache_dir=cache_dir, cache_ttl=cache_ttl, provider=provider)
+        llm = LLMClient(
+            cache_dir=cache_dir,
+            cache_ttl=cache_ttl,
+            provider=provider,
+            model_high=model_high,
+            model_low=model_low,
+        )
     except (ValueError, ImportError) as e:
         logger.warning(f"LLM client init failed: {e}")
         return None

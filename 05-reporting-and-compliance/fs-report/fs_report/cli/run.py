@@ -56,6 +56,8 @@ def create_config(
     detected_after: Union[str, None] = None,
     ai: bool = False,
     ai_provider: Union[str, None] = None,
+    ai_model_high: Union[str, None] = None,
+    ai_model_low: Union[str, None] = None,
     ai_depth: str = "summary",
     ai_prompts: bool = False,
     nvd_api_key: Union[str, None] = None,
@@ -157,6 +159,14 @@ def create_config(
             )
             raise typer.Exit(1)
 
+    # Merge AI model overrides from config file
+    ai_model_high = merge_config(
+        ai_model_high, None, "ai_model_high", None, config_data=cfg
+    )
+    ai_model_low = merge_config(
+        ai_model_low, None, "ai_model_low", None, config_data=cfg
+    )
+
     # Validate AI options
     if ai:
         _ai_env_vars = ["ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN"]
@@ -227,6 +237,8 @@ def create_config(
         detected_after=detected_after,
         ai=ai,
         ai_provider=ai_provider,
+        ai_model_high=ai_model_high,
+        ai_model_low=ai_model_low,
         ai_depth=ai_depth,
         ai_prompts=ai_prompts,
         nvd_api_key=nvd_api_key,
@@ -268,6 +280,8 @@ def run_reports(
     detected_after: Union[str, None] = None,
     ai: bool = False,
     ai_provider: Union[str, None] = None,
+    ai_model_high: Union[str, None] = None,
+    ai_model_low: Union[str, None] = None,
     ai_depth: str = "summary",
     ai_prompts: bool = False,
     nvd_api_key: Union[str, None] = None,
@@ -625,6 +639,20 @@ def run_command(
         "Auto-detected from env vars if not set.",
         rich_help_panel=_AI,
     ),
+    ai_model_high: Union[str, None] = typer.Option(
+        None,
+        "--ai-model-high",
+        help="LLM model for summaries (high-capability). "
+        "Overrides the built-in default for the active provider.",
+        rich_help_panel=_AI,
+    ),
+    ai_model_low: Union[str, None] = typer.Option(
+        None,
+        "--ai-model-low",
+        help="LLM model for per-component guidance (fast/cheap). "
+        "Overrides the built-in default for the active provider.",
+        rich_help_panel=_AI,
+    ),
     ai_depth: str = typer.Option(
         "summary",
         "--ai-depth",
@@ -780,6 +808,8 @@ def run_command(
         detected_after=detected_after,
         ai=ai,
         ai_provider=ai_provider,
+        ai_model_high=ai_model_high,
+        ai_model_low=ai_model_low,
         ai_depth=ai_depth,
         ai_prompts=ai_prompts,
         nvd_api_key=nvd_api_key,

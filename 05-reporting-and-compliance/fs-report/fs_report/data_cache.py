@@ -58,6 +58,8 @@ class DataCache:
     def _generate_cache_key(self, query: QueryConfig) -> CacheKey:
         """Generate a cache key for the given query."""
         # Create a hash of the parameters
+        # finding_type MUST be included — different type= values return
+        # different fields from the API (e.g. reachabilityScore only with type=cve).
         params_dict = {
             "filter": query.params.filter,
             "sort": query.params.sort,
@@ -65,6 +67,7 @@ class DataCache:
             "offset": query.params.offset,
             "archived": query.params.archived,
             "excluded": query.params.excluded,
+            "finding_type": query.params.finding_type,
         }
 
         # Remove None values for consistent hashing

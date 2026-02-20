@@ -1948,6 +1948,15 @@ class ReportEngine:
                         # Executive Dashboard needs all finding types regardless of CLI flag
                         if recipe.name == "Executive Dashboard":
                             type_params = build_findings_type_params("all")
+                        elif recipe.name == "Triage Prioritization":
+                            # Triage requires reachabilityScore which the API may
+                            # omit when the ``type=cve`` URL param is used.  Use a
+                            # category RSQL filter instead so the full field set
+                            # (including reachabilityScore) is returned.
+                            type_params = {
+                                "type": None,
+                                "category_filter": "category==CVE",
+                            }
                         else:
                             type_params = build_findings_type_params(
                                 self.config.finding_types

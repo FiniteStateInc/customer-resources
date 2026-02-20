@@ -18,6 +18,7 @@ This guide explains each report available in the Finite State Reporting Kit, wha
    - [Triage Prioritization](#triage-prioritization) *(Assessment)*
    - [CVE Impact](#cve-impact) *(Assessment, on-demand: CVE dossier with affected projects)*
    - [Version Comparison](#version-comparison) *(Assessment, on-demand: full version & component changelog)*
+   - [Executive Dashboard](#executive-dashboard) *(Assessment, on-demand: executive-level security overview)*
 4. [Output Formats](#output-formats)
 5. [Filtering Options](#filtering-options)
 6. [Using Reports Together](#using-reports-together)
@@ -808,6 +809,60 @@ fs-report run --recipe "Version Comparison" \
 
 ---
 
+### Executive Dashboard
+
+**Category:** Assessment (on-demand) — executive-level security overview of the current portfolio state.
+
+**Purpose:** Provide a single-page, visual executive briefing that summarises the security posture of an entire portfolio or a specific folder. Designed for leadership reviews, board decks, and stakeholder updates.
+
+**Who should use it:** Executives, CISOs, program managers, customer-facing solutions engineers
+
+**Important:** This report does **not** run by default. You must explicitly request it:
+
+```bash
+fs-report run --recipe "Executive Dashboard" --period 90d
+```
+
+**What it shows (11 sections):**
+
+| Section | Description |
+|---------|-------------|
+| **KPI Cards** | Projects, policy violations, warnings, components, total findings — each with a delta indicator |
+| **Findings by Folder** | Stacked bar chart of severity distribution across folders (portfolio view) |
+| **Findings by Project** | Stacked bar chart of severity distribution across projects (`--folder` view) |
+| **Severity Trends** | Line chart tracking Critical & High findings over the last 12 months |
+| **Highest-Risk Products** | Doughnut chart + table with a composite risk score (Critical×10 + High×5 + Medium×2 + Low×0.5) |
+| **Open Issues by Severity** | Pie chart of unresolved findings by severity level |
+| **License Distribution** | Horizontal bar chart of the top 10 licenses by component count |
+| **Exploit Intelligence** | Horizontal bar chart showing CISA KEV and known exploit counts |
+| **Findings by Type** | Horizontal bar chart of CVE, Crypto, Credentials, Config Issues, etc. |
+| **Finding Age Distribution** | Horizontal bar chart bucketed by 0–30, 30–90, 90–180, and 180+ days |
+| **Project Findings Summary** | Full-width table listing every project with per-severity counts |
+
+**Portfolio vs folder scope:**
+
+- Without `--folder`: the report groups findings by **folder** (portfolio-level view).
+- With `--folder "Product Line A"`: the report groups findings by **project** within that folder.
+
+**Finding types:** The report automatically overrides `--finding-types` to `all` so that every finding category (CVE, SAST, credentials, etc.) is represented in the executive view.
+
+**Output format:** HTML only (standalone, self-contained).
+
+**Example commands:**
+
+```bash
+# Portfolio-wide executive dashboard
+fs-report run --recipe "Executive Dashboard" --period 90d
+
+# Scoped to a specific folder
+fs-report run --recipe "Executive Dashboard" --folder "Product Line A" --period 90d
+
+# With AI remediation guidance
+fs-report run --recipe "Executive Dashboard" --ai --period 90d
+```
+
+---
+
 ## Output Formats
 
 All reports generate three output formats:
@@ -836,6 +891,8 @@ All reports generate three output formats:
 | `--cve` | CVE(s) to analyse (required for CVE Impact), comma-separated | CVE Impact | `--cve CVE-2024-1234` |
 | `--baseline-version` | Baseline version ID | Version Comparison | `--baseline-version 12345` |
 | `--current-version` | Current version ID | Version Comparison | `--current-version 67890` |
+| `--ai-model-high` | Override the "high" (summary) LLM model | AI-enabled reports | `--ai-model-high claude-sonnet-4-20250514` |
+| `--ai-model-low` | Override the "low" (fast) LLM model | AI-enabled reports | `--ai-model-low claude-haiku-4-5-20251001` |
 
 **How `--period` interacts with report categories:**
 

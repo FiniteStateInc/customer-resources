@@ -32,6 +32,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Findings by Project | Complete findings inventory per project with CVE details, severity, and platform links |
 | Component List | Software inventory (SBOM) for compliance |
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
+| Executive Dashboard | 11-section executive-level security report with KPI cards, risk donut, severity trends, and more *(on-demand)* |
 | CVE Impact | CVE-centric dossier with affected projects, reachability, and exploit intelligence *(on-demand)* |
 | Version Comparison | Full version and component changelog (every version pair); fixed/new findings and component churn per step; CSV/XLSX include summary plus detail *(on-demand)* |
 
@@ -215,6 +216,7 @@ Running bare `fs-report` (no arguments) launches an interactive web UI at `http:
 - **Cancellation** — cancel button works at any point, including during NVD lookups
 - **Settings management** with persistence to `~/.fs-report/config.yaml`
 - **Reports browser** with preview for previously generated reports
+- **Scan Queue** panel — live scan monitoring with queued/processing counts, per-version grouping, stuck scan detection, and auto-refresh
 - **CSRF protection** and localhost-only access for security
 
 To serve existing reports without the full UI:
@@ -267,9 +269,11 @@ The reporting kit supports AI-powered remediation guidance via the `--ai` flag. 
 
 | Provider | Env Variable | Models |
 |----------|-------------|--------|
-| **Anthropic** (default) | `ANTHROPIC_AUTH_TOKEN` | Claude Sonnet / Haiku |
+| **Anthropic** (default) | `ANTHROPIC_AUTH_TOKEN` | Claude Opus / Haiku |
 | **OpenAI** | `OPENAI_API_KEY` | GPT-4o / GPT-4o-mini |
 | **GitHub Copilot** | `GITHUB_TOKEN` | GPT-4o / GPT-4o-mini |
+
+Override the default models with `--ai-model-high` / `--ai-model-low` CLI flags or the `ai_model_high` / `ai_model_low` config keys.
 
 ```bash
 # Auto-detect provider from env vars
@@ -277,6 +281,9 @@ fs-report run --recipe "Triage Prioritization" --ai --period 30d
 
 # Explicit provider
 fs-report run --recipe "Triage Prioritization" --ai --ai-provider openai --period 30d
+
+# Custom model overrides
+fs-report run --recipe "Triage Prioritization" --ai --ai-model-high claude-sonnet-4-20250514 --period 30d
 
 # Export prompts for manual use (no API key required)
 fs-report run --recipe "Triage Prioritization" --ai-prompts --period 30d

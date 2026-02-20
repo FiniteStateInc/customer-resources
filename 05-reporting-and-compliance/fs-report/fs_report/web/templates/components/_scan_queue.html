@@ -1,0 +1,108 @@
+{% if not connected %}
+<div class="queue-disconnected">
+    <span class="queue-disconnected-icon">⚡</span>
+    <span>Not connected</span>
+</div>
+
+{% elif error %}
+<div class="queue-error">
+    <span class="queue-error-icon">⚠</span>
+    <span>{{ error }}</span>
+</div>
+
+{% elif queue and queue.groups %}
+<div class="queue-summary">
+    <div class="queue-metric">
+        <span class="queue-metric-icon scan-initial-icon">⏳</span>
+        <span class="queue-metric-value">{{ queue.total_queued }}</span>
+        <span class="queue-metric-label">queued</span>
+    </div>
+    <div class="queue-metric">
+        <span class="queue-metric-icon scan-started-icon">⚙</span>
+        <span class="queue-metric-value">{{ queue.total_processing }}</span>
+        <span class="queue-metric-label">processing</span>
+    </div>
+    {% if queue.oldest_wait %}
+    <div class="queue-metric">
+        <span class="queue-metric-icon">⏱</span>
+        <span class="queue-metric-value">{{ queue.oldest_wait }}</span>
+        <span class="queue-metric-label">oldest</span>
+    </div>
+    {% endif %}
+</div>
+
+<div class="queue-groups">
+    {% for group in queue.groups %}
+    <details class="queue-group{% if group.has_stuck %} queue-group-stuck{% elif group.all_done %} queue-group-done{% endif %}">
+        <summary class="queue-group-header">
+            <div class="queue-group-info">
+                {% if platform_domain and group.project_id and group.version_id %}
+                <a class="queue-group-project queue-project-link"
+                   href="https://{{ platform_domain }}/projects/{{ group.project_id }}/versions/{{ group.version_id }}"
+                   target="_blank" rel="noopener"
+                   onclick="event.stopPropagation()"
+                   title="Open in Finite State Platform">{{ group.project_name }}</a>
+                {% elif platform_domain and group.project_id %}
+                <a class="queue-group-project queue-project-link"
+                   href="https://{{ platform_domain }}/projects/{{ group.project_id }}"
+                   target="_blank" rel="noopener"
+                   onclick="event.stopPropagation()"
+                   title="Open in Finite State Platform">{{ group.project_name }}</a>
+                {% else %}
+                <span class="queue-group-project">{{ group.project_name }}</span>
+                {% endif %}
+                {% if group.version_name %}
+                <span class="queue-group-version">{{ group.version_name }}</span>
+                {% endif %}
+                {% if group.has_stuck %}
+                <span class="queue-stuck-badge" title="SCA scan processing for over 1 hour — likely failed">⚠ stuck</span>
+                {% elif group.all_done and group.error_count == 0 %}
+                <span class="queue-done-badge">✓ done</span>
+                {% elif group.all_done and group.error_count > 0 %}
+                <span class="queue-error-badge">{{ group.error_count }} failed</span>
+                {% endif %}
+            </div>
+            {% if group.created_by %}
+            <div class="queue-group-user">{{ group.created_by | join(', ') }}</div>
+            {% endif %}
+            <div class="queue-group-meta">
+                <span class="queue-group-indicators">
+                    {%- for scan in group.scans -%}
+                    <span class="queue-dot {% if scan.likely_stuck %}scan-stuck{% elif scan.is_error %}scan-error{% elif scan.is_done %}scan-done{% elif scan.status == 'INITIAL' %}scan-initial{% else %}scan-started{% endif %}"
+                          title="{{ scan.type }} — {{ scan.status }}{% if scan.likely_stuck %} (likely failed){% endif %}">
+                        {%- if scan.likely_stuck -%}⚠{%- elif scan.is_error -%}✕{%- elif scan.is_done -%}✓{%- elif scan.status == 'INITIAL' -%}⏳{%- else -%}⚙{%- endif -%}
+                    </span>
+                    {%- endfor -%}
+                </span>
+                <span class="queue-group-count">{{ group.scans | length }} scan{{ 's' if group.scans | length != 1 else '' }}</span>
+                <span class="queue-group-wait">{{ group.oldest_wait_display }}</span>
+            </div>
+        </summary>
+        <div class="queue-group-body">
+            {% for scan in group.scans %}
+            <div class="queue-scan-row{% if scan.likely_stuck %} queue-scan-stuck{% elif scan.is_done %} queue-scan-done{% endif %}">
+                <span class="queue-scan-type">{{ scan.type }}</span>
+                <span class="queue-scan-status {% if scan.likely_stuck %}scan-stuck{% elif scan.is_error %}scan-error{% elif scan.is_done %}scan-done{% elif scan.status == 'INITIAL' %}scan-initial{% else %}scan-started{% endif %}">
+                    {%- if scan.likely_stuck -%}⚠ STUCK
+                    {%- elif scan.is_error -%}✕ ERROR
+                    {%- elif scan.is_done -%}✓ DONE
+                    {%- elif scan.status == 'INITIAL' -%}⏳ INITIAL
+                    {%- else -%}⚙ STARTED
+                    {%- endif -%}
+                </span>
+                <span class="queue-scan-wait">{{ scan.wait_display }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </details>
+    {% endfor %}
+</div>
+
+<div class="queue-footer">Updates every 30s</div>
+
+{% else %}
+<div class="queue-empty">
+    <span class="queue-empty-icon">✓</span>
+    <span>No scans in queue</span>
+</div>
+{% endif %}

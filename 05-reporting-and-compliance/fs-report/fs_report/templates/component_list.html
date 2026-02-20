@@ -72,15 +72,15 @@
             </div>
             <div class="kpi-card">
                 <div class="kpi-title">No License</div>
-                <div class="kpi-value" {% if summary.no_license_count > 0 %}style="color: #ef6c00;"{% endif %}>{{ summary.no_license_count }}</div>
+                <div class="kpi-value" {% if (summary.no_license_count|default(0)) > 0 %}style="color: #ef6c00;"{% endif %}>{{ summary.no_license_count|default(0) }}</div>
             </div>
             <div class="kpi-card">
                 <div class="kpi-title">Policy Violations</div>
-                <div class="kpi-value" {% if summary.violation_count > 0 %}style="color: #c62828;"{% endif %}>{{ summary.violation_count }}</div>
+                <div class="kpi-value" {% if (summary.violation_count|default(0)) > 0 %}style="color: #c62828;"{% endif %}>{{ summary.violation_count|default(0) }}</div>
             </div>
             <div class="kpi-card">
                 <div class="kpi-title">Copyleft Components</div>
-                <div class="kpi-value" {% if summary.copyleft_strong + summary.copyleft_weak > 0 %}style="color: #ef6c00;"{% endif %}>{{ summary.copyleft_strong + summary.copyleft_weak }}</div>
+                <div class="kpi-value" {% if (summary.copyleft_strong|default(0)) + (summary.copyleft_weak|default(0)) > 0 %}style="color: #ef6c00;"{% endif %}>{{ (summary.copyleft_strong|default(0)) + (summary.copyleft_weak|default(0)) }}</div>
             </div>
         </div>
 

@@ -117,6 +117,8 @@ def show() -> None:
         "cache_ttl",
         "ai",
         "ai_depth",
+        "ai_model_high",
+        "ai_model_low",
         "serve_port",
         "update_check",
     ]:

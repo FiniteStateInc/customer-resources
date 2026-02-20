@@ -54,8 +54,11 @@ MAX_PROJECT_TOKENS = 1500
 MAX_COMPONENT_TOKENS = 800
 
 # Provider -> (summary_model, component_model)
+# Use alias IDs (e.g. "claude-opus-4-6") rather than date-pinned IDs
+# (e.g. "claude-opus-4-6-20260205") so the API routes to the latest
+# snapshot automatically and we never 404 on a retired model.
 MODEL_MAP: dict[str, tuple[str, str]] = {
-    "anthropic": ("claude-4-opus-20250514", "claude-3-5-haiku-20241022"),
+    "anthropic": ("claude-opus-4-6", "claude-haiku-4-5"),
     "openai": ("gpt-4o", "gpt-4o-mini"),
     "copilot": ("gpt-4o", "gpt-4o-mini"),
 }
@@ -145,6 +148,8 @@ class LLMClient:
         cache_dir: str | None = None,
         cache_ttl: int = 0,
         provider: str | None = None,
+        model_high: str | None = None,
+        model_low: str | None = None,
     ) -> None:
         """
         Initialize the LLM client.
@@ -154,10 +159,14 @@ class LLMClient:
             cache_ttl: Cache TTL in seconds. 0 = no caching (always regenerate).
             provider: LLM provider override ("anthropic", "openai", "copilot").
                       Auto-detected from env vars if not set.
+            model_high: Override for the summary model (high-capability tier).
+            model_low: Override for the component model (fast/cheap tier).
         """
         # Resolve provider and API key
         self._provider, self.api_key = self._detect_provider(provider)
-        self._summary_model, self._component_model = MODEL_MAP[self._provider]
+        default_high, default_low = MODEL_MAP[self._provider]
+        self._summary_model = model_high or default_high
+        self._component_model = model_low or default_low
 
         logger.info(
             f"LLM provider: {self._provider} (models: {self._summary_model}, {self._component_model})"

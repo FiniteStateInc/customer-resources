@@ -28,14 +28,18 @@ async def session(
 
     When the server already holds credentials, ping the Jira tracker
     endpoint so HTML reports can show accurate Jira availability.
+    Reloads config on every call so domain/token changes take effect
+    without a server restart.
     """
+    state.reload()
     jira_available = False
     jira_projects: list[dict[str, object]] = []
     if state.token and state.domain:
+        ping_url = f"https://{state.domain}/api/public/v0/tracker/tickets/ping"
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
-                    f"https://{state.domain}/api/public/v0/tracker/tickets/ping",
+                    ping_url,
                     headers={
                         "X-Authorization": state.token,
                         "Content-Type": "application/json",
@@ -49,8 +53,15 @@ async def session(
                         jira_projects = ping_data.get("projects", [])
                     except Exception:
                         pass
-        except Exception:
-            pass  # Jira not reachable — that's fine
+                else:
+                    logger.warning(
+                        "Jira ping returned %s for %s: %s",
+                        resp.status_code,
+                        ping_url,
+                        resp.text[:200],
+                    )
+        except Exception as exc:
+            logger.warning("Jira ping failed for %s: %s", ping_url, exc)
 
     return JSONResponse(
         {
@@ -70,7 +81,6 @@ async def proxy(
     state: WebAppState = Depends(get_state),
 ) -> JSONResponse:
     """Proxy requests to the Finite State API with token injection."""
-    # Strip the /fsapi prefix — path is everything after it
     upstream_path = f"/{path}"
 
     # Validate path prefix

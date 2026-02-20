@@ -372,6 +372,16 @@ class Config(BaseModel):
         description="LLM provider override (anthropic, openai, copilot). "
         "Auto-detected from environment variables if not set.",
     )
+    ai_model_high: str | None = Field(
+        None,
+        description="LLM model for summaries (high-capability tier). "
+        "Overrides the built-in default for the active provider.",
+    )
+    ai_model_low: str | None = Field(
+        None,
+        description="LLM model for per-component guidance (fast/cheap tier). "
+        "Overrides the built-in default for the active provider.",
+    )
     ai_depth: str = Field(
         "summary",
         description="AI depth: 'summary' (portfolio/project) or 'full' (+ Critical/High components)",

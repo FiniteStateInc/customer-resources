@@ -800,6 +800,8 @@ def triage_prioritization_transform(
             cache_dir=ai_config.get("cache_dir"),
             cache_ttl=ai_config.get("cache_ttl", 0),
             provider=ai_config.get("provider"),
+            model_high=ai_config.get("model_high"),
+            model_low=ai_config.get("model_low"),
             nvd_api_key=ai_config.get("nvd_api_key"),
             scoring_config=scoring_config,
         )
@@ -1048,6 +1050,22 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     #   3. Nested "reachability" dict: {"score": N, "label": "...", "factors": [...]}
     #      (newer API response where reachability is a sub-object on the finding)
     #
+    # Diagnostic: log raw reachability columns before any processing
+    reach_cols_present = [c for c in df.columns if "reach" in c.lower()]
+    if reach_cols_present:
+        for rc in reach_cols_present:
+            non_null = int(df[rc].notna().sum())
+            sample = df[rc].dropna().head(3).tolist()
+            logger.info(
+                f"Raw reachability column '{rc}': {non_null}/{len(df)} non-null, "
+                f"sample={sample}"
+            )
+    else:
+        logger.warning(
+            "No reachability columns found in raw data. " "Columns present: %s",
+            [c for c in sorted(df.columns) if c not in ("cwes", "exploitInfo")],
+        )
+
     # Handle nested "reachability" dict first — extract score and factors before
     # checking for flat fields.
     if (
@@ -1135,24 +1153,28 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         reach_counts.get("REACHABLE", 0) == 0
         and reach_counts.get("UNREACHABLE", 0) == 0
     ):
-        # All unknown — check if reachabilityScore column was present at all
-        score_col = (
-            "reachabilityScore"
-            if "reachabilityScore" in df.columns
-            else "reachability_score"
-        )
-        if score_col in df.columns:
-            non_null = df[score_col].notna().sum()
-            non_zero = (df[score_col] != 0).sum() if non_null > 0 else 0
+        unknown_count = reach_counts.get("UNKNOWN", 0)
+        inconclusive_count = reach_counts.get("INCONCLUSIVE", 0)
+        dominant = "UNKNOWN" if unknown_count >= inconclusive_count else "INCONCLUSIVE"
+        # Check the ORIGINAL column (before fillna) for diagnostic accuracy
+        orig_col = "reachabilityScore" if "reachabilityScore" in df.columns else None
+        if orig_col:
+            orig_non_null = int(df[orig_col].notna().sum())
+            orig_non_zero = int((df[orig_col] != 0).sum()) if orig_non_null > 0 else 0
             logger.warning(
-                f"All reachability labels are INCONCLUSIVE. "
-                f"Column '{score_col}' has {non_null} non-null values, {non_zero} non-zero values. "
-                f"Sample values: {df[score_col].head(5).tolist()}"
+                f"No REACHABLE/UNREACHABLE findings — all labels are {dominant}. "
+                f"Original '{orig_col}' column: {orig_non_null}/{len(df)} non-null, "
+                f"{orig_non_zero} non-zero. "
+                f"Sample values: {df[orig_col].head(5).tolist()}. "
+                f"If all null, the API may not be returning reachability data "
+                f"(check that the query does NOT use type=cve URL param)."
             )
         else:
             logger.warning(
-                "No reachabilityScore column found in data. "
-                f"Available columns: {sorted(df.columns.tolist())}"
+                f"No REACHABLE/UNREACHABLE findings — all labels are {dominant}. "
+                "No 'reachabilityScore' column found in raw data. "
+                f"Available reachability columns: "
+                f"{[c for c in df.columns if 'reach' in c.lower()]}"
             )
 
     # --- EPSS ---
@@ -2369,6 +2391,8 @@ def _get_ai_config(
         "cache_dir": None,
         "cache_ttl": 0,
         "provider": None,
+        "model_high": None,
+        "model_low": None,
         "nvd_api_key": None,
     }
 
@@ -2379,6 +2403,8 @@ def _get_ai_config(
         result["cache_dir"] = getattr(config, "cache_dir", None)
         result["cache_ttl"] = getattr(config, "cache_ttl", 0) or 0
         result["provider"] = getattr(config, "ai_provider", None)
+        result["model_high"] = getattr(config, "ai_model_high", None)
+        result["model_low"] = getattr(config, "ai_model_low", None)
         result["nvd_api_key"] = getattr(config, "nvd_api_key", None)
     # Fall back to additional_data['config']
     elif additional_data and "config" in additional_data:
@@ -2389,6 +2415,8 @@ def _get_ai_config(
             result["cache_dir"] = getattr(cfg, "cache_dir", None)
             result["cache_ttl"] = getattr(cfg, "cache_ttl", 0) or 0
             result["provider"] = getattr(cfg, "ai_provider", None)
+            result["model_high"] = getattr(cfg, "ai_model_high", None)
+            result["model_low"] = getattr(cfg, "ai_model_low", None)
             result["nvd_api_key"] = getattr(cfg, "nvd_api_key", None)
 
     # Enforce minimum cache TTL for AI calls — these are expensive and stable
@@ -2407,6 +2435,8 @@ def _generate_ai_guidance(
     cache_dir: str | None = None,
     cache_ttl: int = 0,
     provider: str | None = None,
+    model_high: str | None = None,
+    model_low: str | None = None,
     nvd_api_key: str | None = None,
     scoring_config: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, str], dict[str, dict[str, Any]], dict[str, dict[str, str]]]:
@@ -2430,7 +2460,13 @@ def _generate_ai_guidance(
         return "", {}, {}, {}
 
     try:
-        llm = LLMClient(cache_dir=cache_dir, cache_ttl=cache_ttl, provider=provider)
+        llm = LLMClient(
+            cache_dir=cache_dir,
+            cache_ttl=cache_ttl,
+            provider=provider,
+            model_high=model_high,
+            model_low=model_low,
+        )
     except (ValueError, ImportError) as e:
         logger.warning(f"LLM client init failed: {e}")
         return "", {}, {}, {}

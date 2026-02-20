@@ -40,6 +40,10 @@ def convert_to_native_types(obj: Any, _depth: int = 0) -> Any:
     """
     Recursively convert pandas/numpy objects to native Python types.
     This helps prevent ambiguous truth value errors in Jinja2 templates.
+
+    NaN / NA sentinels are normalised to ``None`` so that Jinja2 templates
+    can use simple truthiness checks (``if value``) and type tests
+    (``value is string``) without stumbling on ``float('nan')``.
     """
     if _depth > 100:
         # Safety valve — avoid hitting Python's recursion limit on
@@ -47,18 +51,30 @@ def convert_to_native_types(obj: Any, _depth: int = 0) -> Any:
         return obj
     if obj is None:
         return None
-    elif isinstance(obj, pd.Series):
-        return obj.tolist()
+    # Normalise all NA-like sentinels to None *before* checking concrete
+    # types so that np.float64('nan') doesn't slip through as float(nan).
+    if obj is pd.NaT:
+        return None
+    try:
+        if obj is pd.NA:
+            return None
+    except AttributeError:
+        pass  # Very old pandas without pd.NA
+    if isinstance(obj, float) and math.isnan(obj):
+        return None
+    if isinstance(obj, pd.Series):
+        return [convert_to_native_types(v, _depth + 1) for v in obj.tolist()]
     elif isinstance(obj, pd.DataFrame):
         return [
             convert_to_native_types(row, _depth + 1) for row in obj.to_dict("records")
         ]
     elif isinstance(obj, np.ndarray):
-        return obj.tolist()
+        return [convert_to_native_types(v, _depth + 1) for v in obj.tolist()]
     elif isinstance(obj, np.integer):
         return int(obj)
     elif isinstance(obj, np.floating):
-        return float(obj)
+        v = float(obj)
+        return None if math.isnan(v) else v
     elif isinstance(obj, np.bool_):
         return bool(obj)
     elif isinstance(obj, dict):
@@ -521,8 +537,6 @@ class HTMLRenderer:
                     template_data[key] = value
         # Convert all data to native Python types to prevent ambiguous truth value errors
         converted_data = convert_to_native_types(template_data)
-        # Add debug print
-        # print(f"DEBUG: filter_options in template_data: {'filter_options' in converted_data}")
         return cast(dict[str, Any], converted_data)
 
     def _json_serializer(self, obj: Any) -> Any:
@@ -917,14 +931,18 @@ class HTMLRenderer:
                 "row_count": 0,
             }
 
-        # Identify likely numeric columns
+        # Work on a copy so we never mutate the caller's DataFrame.
+        df = df.copy()
+
+        # Identify likely numeric columns (exclude label/name columns that
+        # happen to contain a numeric keyword, e.g. "reachability_label").
+        _numeric_keywords = {"score", "count", "risk", "epss"}
+        _label_keywords = {"label", "name", "id", "version", "band", "assignment"}
         numeric_cols = [
             col
             for col in df.columns
-            if any(
-                key in col.lower()
-                for key in ["score", "count", "risk", "epss", "reachability"]
-            )
+            if any(key in col.lower() for key in _numeric_keywords)
+            and not any(key in col.lower() for key in _label_keywords)
         ]
         for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors="coerce")

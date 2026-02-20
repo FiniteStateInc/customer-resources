@@ -476,7 +476,7 @@
                             {% if c_guidance.get('guidance') %}{% if c_summary_parts.append(c_guidance.guidance) %}{% endif %}{% endif %}
                             {% if c_guidance.get('workaround') %}{% if c_summary_parts.append('Workaround: ' + c_guidance.workaround) %}{% endif %}{% endif %}
                             {% set c_summary = c_summary_parts | join('\n\n') if c_summary_parts else (row.total_findings | string ~ ' findings (' ~ row.CRITICAL | string ~ ' CRITICAL, ' ~ row.HIGH | string ~ ' HIGH) in ' ~ row.component_name ~ ' ' ~ row.component_version) %}
-                            {% set c_band = 'CRITICAL' if row.CRITICAL > 0 else ('HIGH' if row.HIGH > 0 else ('MEDIUM' if row.MEDIUM > 0 else 'LOW')) %}
+                            {% set c_band = 'CRITICAL' if (row.CRITICAL|default(0)) > 0 else ('HIGH' if (row.HIGH|default(0)) > 0 else ('MEDIUM' if (row.MEDIUM|default(0)) > 0 else 'LOW')) %}
                             <button class="action-btn btn-jira" title="Create Jira ticket for this component"
                                 data-action="{{ {'endpoint': 'components', 'title': 'Remediate ' ~ row.component_name ~ ' ' ~ row.component_version, 'summary': c_summary, 'band': c_band, 'findings': row.finding_internal_ids if row.finding_internal_ids is defined else [], 'components': [row.component_id], 'mode': 'SINGLE_COMPONENT', 'projectId': row.project_id, 'projectVersionId': row.project_version_id, 'componentId': row.component_id} | tojson | forceescape }}"
                                 onclick="fsOpenJiraModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this}))">&#x1F3AB; Jira</button>

@@ -7,8 +7,20 @@
 {% include "components/_dir_browser.html" %}
 {% include "components/_scope_dropdowns.html" %}
 
-<div class="dashboard-layout">
-    <!-- Left column: Workflow cards -->
+<div class="dashboard-layout dashboard-3col">
+    <!-- Left column: Scan Queue (live) -->
+    <section class="queue-section">
+        <h2 class="section-heading">Scan Queue</h2>
+        <div id="scan-queue-container"
+             hx-get="/api/queue"
+             hx-trigger="load delay:500ms, every 30s"
+             hx-swap="innerHTML"
+             hx-on::response-error="this.innerHTML='<div class=queue-error><span class=queue-error-icon>⚠</span> Could not load queue</div>'">
+            <div class="queue-loading">Loading&hellip;</div>
+        </div>
+    </section>
+
+    <!-- Center column: Workflow cards -->
     <section class="workflows-section">
         <h2 class="section-heading">Workflows</h2>
         <div class="workflow-grid">

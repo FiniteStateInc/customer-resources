@@ -1,5 +1,67 @@
 # Release Notes
 
+## Version 1.5.2 (February 2026)
+
+### New Features
+
+- **Scan Queue dashboard** — Live scan monitoring panel in the web UI showing queued/processing counts, per-version grouping, stuck scan detection, and auto-refresh every 30 seconds.
+- **Configurable AI models** — `--ai-model-high` / `--ai-model-low` CLI flags and `ai_model_high` / `ai_model_low` config keys let users override default LLM models per provider.
+
+### Bug Fixes
+
+- **Triage reachability regression** — Reachability labels no longer replaced with UNKNOWN in HTML reports (DataFrame mutation in `_prepare_table_data` now operates on a copy).
+- **Stable model alias IDs** — Prevent 404 errors when Anthropic retires date-pinned model versions.
+- **SQLite cache preserves nested reachability data** — Alternate API format with nested reachability fields is now correctly persisted.
+- **`serve` command accepts `--port` in any position** — Interspersed argument parsing fixed.
+- **Fixed infinite recursion in `_design_system.html`** — Template include loop resolved.
+
+---
+
+## Version 1.5.0 (February 2026)
+
+### New Features
+
+- **Executive Dashboard** — 11-section executive-level security report with KPI cards, findings by folder/project, severity trends, risk donut, open issues, license distribution, exploit intelligence, findings by type, finding age, and project table. Supports portfolio-wide and `--folder`-scoped views. HTML-only output.
+
+### Improvements
+
+- **Enhanced web UI** — Directory browser, scope dropdowns, and improved dashboard layout.
+- **Exploit intelligence refactored** — Derived from findings-level booleans (KEV, Known Exploits) instead of a separate CVE fetch, significantly improving performance.
+- **Scoped component fetch** — Prevents timeout on large portfolios by scoping component queries to relevant projects.
+
+### Bug Fixes
+
+- **Combined finding-types filter** — `--finding-types cve,sast` now works correctly when multiple types are specified.
+- **Date validation and XLSX rendering errors** — Resolved timezone-aware datetime comparisons and Excel formatting issues.
+- **Jira "not configured" notice** — Only shown on reports that actually use Jira integration.
+
+---
+
+## Version 1.4.2 (February 2026)
+
+### Improvements
+
+- **Cross-directory report history** — Report history is now shared across working directories.
+- **Reports UI distinguishes file types** — HTML, CSV, and XLSX files are visually differentiated in the reports browser.
+- **View Report button** — Links directly to the generated file after a run.
+- **Middleware hardening** — Improved security and error handling in web middleware.
+
+### Bug Fixes
+
+- **Jira integration fixes** — Resolved issues with Jira ticket creation and session management.
+- **Relative path resolution** — `generated_files` paths are now resolved before being recorded in history.
+
+---
+
+## Version 1.4.0 (February 2026)
+
+### Improvements
+
+- **Enhanced logging and session management** — Improved logging utilities and web session handling.
+- **Updated report command syntax** — CLI commands updated to use `fs-report run` subcommand pattern consistently.
+
+---
+
 ## Version 1.3.2 (February 2026)
 
 ### Bug Fixes

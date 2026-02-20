@@ -12,6 +12,7 @@ serve_app = typer.Typer(
     name="serve",
     help="Serve generated reports via a local HTTP server.",
     add_completion=False,
+    context_settings={"allow_interspersed_args": True},
 )
 
 
