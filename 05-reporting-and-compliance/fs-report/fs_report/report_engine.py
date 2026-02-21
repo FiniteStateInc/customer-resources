@@ -2995,56 +2995,30 @@ class ReportEngine:
         return f"data:{mime};base64,{b64}"
 
     @staticmethod
-    def _filter_latest_version_per_project(
+    def _filter_findings_by_version_ids(
         findings: list[dict],
+        version_ids: set[int],
     ) -> list[dict]:
-        """Keep only findings from the latest version per project.
+        """Keep only findings whose projectVersion.id is in *version_ids*.
 
         Handles both nested dict keys (live API) and flat dotted keys
-        (SQLite cache).
+        (SQLite cache).  Findings with no extractable version ID are kept
+        as a safety net.
         """
-        # Group findings by project, tracking version IDs
-        project_versions: dict[str, set[int]] = {}
-        finding_pv: list[tuple[str | None, int | None]] = []
-
+        result: list[dict] = []
         for f in findings:
-            # Extract project ID
             pv_obj = f.get("projectVersion")
             if isinstance(pv_obj, dict):
-                proj_obj = pv_obj.get("project")
-                proj_id = (
-                    str(proj_obj.get("id"))
-                    if isinstance(proj_obj, dict)
-                    else str(f.get("projectVersion.project.id", ""))
-                )
                 ver_id = pv_obj.get("id")
             else:
-                proj_id = str(f.get("projectVersion.project.id", ""))
                 ver_id = f.get("projectVersion.id") or f.get("project_version_id")
-
-            # Coerce version ID to int for comparison
             try:
                 ver_int = int(ver_id) if ver_id is not None else None
             except (ValueError, TypeError):
                 ver_int = None
-
-            pid = proj_id if proj_id else None
-            finding_pv.append((pid, ver_int))
-
-            if pid and ver_int is not None:
-                project_versions.setdefault(pid, set()).add(ver_int)
-
-        # Find latest version per project (max version ID)
-        latest: dict[str, int] = {
-            pid: max(vers) for pid, vers in project_versions.items()
-        }
-
-        # Keep findings that match the latest version (or have no project info)
-        return [
-            f
-            for f, (pid, ver) in zip(findings, finding_pv, strict=True)
-            if pid is None or ver is None or latest.get(pid) == ver
-        ]
+            if ver_int is None or ver_int in version_ids:
+                result.append(f)
+        return result
 
     def _fetch_cve_reachability(
         self, cve_records: "list[dict] | pd.DataFrame"
@@ -3114,6 +3088,38 @@ class ReportEngine:
             if nvd_rec.description:
                 descriptions_map[nvd_cve_id] = nvd_rec.description
 
+        # Pre-fetch authoritative latest version IDs (from
+        # defaultBranch.latestVersion.id) so we can filter per-CVE
+        # findings to only the current version of each project.
+        latest_version_ids: set[int] | None = None
+        if self.config.current_version_only:
+            try:
+                auth_ids = self._get_latest_version_ids()
+                # Force int conversion — the helpers don't always coerce,
+                # and SQLite cache can stringify values.
+                latest_version_ids = set()
+                for v in auth_ids:
+                    try:
+                        latest_version_ids.add(int(v))
+                    except (ValueError, TypeError):
+                        pass
+            except Exception:
+                self.logger.warning(
+                    "Failed to resolve authoritative version IDs",
+                    exc_info=True,
+                )
+            if latest_version_ids:
+                self.logger.info(
+                    f"Version filter: {len(latest_version_ids)} authoritative "
+                    f"latest version IDs"
+                )
+            else:
+                self.logger.warning(
+                    "No authoritative version IDs resolved; "
+                    "version filter will be skipped"
+                )
+                latest_version_ids = None
+
         # Fetch reachability and exploit details per CVE
         for cve_id in sorted(cve_ids_ordered):
             self._check_cancel()
@@ -3126,13 +3132,25 @@ class ReportEngine:
             )
             try:
                 findings = self.api_client.fetch_all_with_resume(finding_query)
-                if self.config.current_version_only and findings:
+                if latest_version_ids is not None and findings:
                     before = len(findings)
-                    findings = self._filter_latest_version_per_project(findings)
-                    self.logger.debug(
-                        f"  Version post-filter: {before} -> {len(findings)} "
-                        f"findings for {cve_id}"
+                    filtered = self._filter_findings_by_version_ids(
+                        findings, latest_version_ids
                     )
+                    if filtered:
+                        findings = filtered
+                        self.logger.debug(
+                            f"  Version post-filter: {before} -> "
+                            f"{len(findings)} findings for {cve_id}"
+                        )
+                    else:
+                        # Don't discard all findings — keep unfiltered so
+                        # the report shows reachability data rather than
+                        # UNKNOWN for every CVE.
+                        self.logger.debug(
+                            f"  Version filter would remove all {before} "
+                            f"findings for {cve_id}; keeping unfiltered"
+                        )
                 reachability_map[cve_id] = findings
                 self.logger.debug(
                     f"  {cve_id}: {len(findings)} findings with reachability"
