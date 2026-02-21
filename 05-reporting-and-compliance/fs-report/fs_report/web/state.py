@@ -29,6 +29,7 @@ DEFAULTS: dict[str, Any] = {
     "ai": False,
     "ai_depth": "summary",
     "ai_prompts": False,
+    "logo": "",
 }
 
 

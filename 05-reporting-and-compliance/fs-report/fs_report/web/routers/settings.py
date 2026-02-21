@@ -115,6 +115,7 @@ async def save_settings(
         "version_filter",
         "finding_types",
         "ai_depth",
+        "logo",
     ):
         val = form.get(key)
         if val is not None:
@@ -186,6 +187,22 @@ async def clear_ai_cache(state: WebAppState = Depends(get_state)) -> JSONRespons
             target.unlink(missing_ok=True)
             return JSONResponse({"status": "cleared", "type": "ai"})
     return JSONResponse({"status": "not_found", "type": "ai"})
+
+
+# ── Available logos ───────────────────────────────────────────────
+@router.get("/api/logos")
+async def list_logos() -> JSONResponse:
+    """List available logo images in ~/.fs-report/logos/."""
+    logos_dir = Path.home() / ".fs-report" / "logos"
+    if not logos_dir.is_dir():
+        return JSONResponse({"logos": []})
+    allowed = {".png", ".jpg", ".jpeg", ".svg", ".webp"}
+    logos = sorted(
+        f.name
+        for f in logos_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in allowed
+    )
+    return JSONResponse({"logos": logos})
 
 
 # ── Filesystem browser ───────────────────────────────────────────

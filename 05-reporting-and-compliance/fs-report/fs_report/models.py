@@ -439,10 +439,24 @@ class Config(BaseModel):
         description="Overwrite existing VEX statuses when generating triage recommendations. "
         "By default, findings with an existing VEX status are skipped.",
     )
+    apply_vex_triage: str | None = Field(
+        None,
+        description="Path to vex_recommendations.json to apply to the platform. "
+        "Runs VEX application only (no report generation).",
+    )
+    autotriage: bool = Field(
+        False,
+        description="Auto-apply VEX recommendations after Triage Prioritization "
+        "report completes.",
+    )
     overwrite: bool = Field(
         False,
         description="Overwrite existing report files. Without this flag, the CLI refuses "
         "to write into a recipe output directory that already has files.",
+    )
+    logo: str | None = Field(
+        None,
+        description="Logo image filename (resolved against ~/.fs-report/logos/) or absolute path.",
     )
 
     @field_validator("domain")

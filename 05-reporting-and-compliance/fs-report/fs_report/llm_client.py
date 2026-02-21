@@ -225,6 +225,13 @@ class LLMClient:
                     generated_at TEXT
                 );
             """)
+            # Migrate: add project_notes column if missing
+            try:
+                conn.execute("SELECT project_notes FROM cve_remediations LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute(
+                    "ALTER TABLE cve_remediations ADD COLUMN project_notes TEXT"
+                )
 
     # =========================================================================
     # Provider helpers
@@ -361,8 +368,9 @@ class LLMClient:
             conn.execute(
                 """INSERT OR REPLACE INTO cve_remediations
                    (cve_id, component_name, fix_version, guidance, workaround,
-                    code_search_hints, generated_by, generated_at, confidence)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    code_search_hints, generated_by, generated_at, confidence,
+                    project_notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     cve_id,
                     remediation.get("component_name", ""),
@@ -373,6 +381,7 @@ class LLMClient:
                     remediation.get("generated_by", self._component_model),
                     datetime.utcnow().isoformat(),
                     remediation.get("confidence", "medium"),
+                    remediation.get("project_notes", ""),
                 ),
             )
 
@@ -540,17 +549,29 @@ class LLMClient:
         project_summaries: list[dict[str, Any]],
         top_components: list[dict[str, Any]],
         reachability_summary: dict[str, Any] | None = None,
+        nvd_snippets_map: dict[str, str] | None = None,
+        project_ai_summaries: dict[str, str] | None = None,
     ) -> str:
         """
         Generate a strategic portfolio-level remediation summary.
 
         Uses Sonnet for rich analysis. Cached by a hash of the input data.
+
+        Args:
+            nvd_snippets_map: Optional map of "component:version" -> NVD fix snippet.
+            project_ai_summaries: Optional map of project_name -> AI summary text
+                (from project-level LLM calls, for bottom-up cascade).
         """
         # Build a stable cache key from the input data
         import hashlib
 
         key_data = json.dumps(
-            {"portfolio": portfolio_summary, "reach": reachability_summary},
+            {
+                "portfolio": portfolio_summary,
+                "reach": reachability_summary,
+                "has_nvd": bool(nvd_snippets_map),
+                "has_proj_ai": bool(project_ai_summaries),
+            },
             sort_keys=True,
             default=str,
         )
@@ -568,6 +589,8 @@ class LLMClient:
             project_summaries,
             top_components,
             reachability_summary,
+            nvd_snippets_map=nvd_snippets_map,
+            project_ai_summaries=project_ai_summaries,
         )
 
         try:
@@ -584,6 +607,8 @@ class LLMClient:
         project_summaries: list[dict[str, Any]],
         top_components: list[dict[str, Any]],
         reachability_summary: dict[str, Any] | None = None,
+        nvd_snippets_map: dict[str, str] | None = None,
+        project_ai_summaries: dict[str, str] | None = None,
     ) -> str:
         """Build the prompt for portfolio-level summary."""
         # Truncate data to keep prompt reasonable
@@ -631,7 +656,8 @@ Note: "Reachable" means static/binary analysis confirmed the vulnerable function
 
 ## Top Risky Components
 {self._format_components_bullet(top_comps)}
-
+{self._build_nvd_section_for_portfolio(top_comps, nvd_snippets_map)}
+{self._build_project_ai_section(top_projects, project_ai_summaries)}
 Provide a concise strategic summary (3-5 paragraphs):
 1. Overall risk posture assessment — highlight the reachability findings as the most urgent
 2. Top 3 remediation priorities (specific components/projects), prioritizing reachable+exploitable findings
@@ -649,16 +675,28 @@ Be specific with component names and versions. When vulnerable functions are ide
         project_name: str,
         findings: list[dict[str, Any]],
         band_counts: dict[str, int],
+        nvd_snippets_map: dict[str, str] | None = None,
+        component_guidance: dict[str, dict[str, Any]] | None = None,
     ) -> str:
         """
         Generate a project-level remediation summary.
 
         Uses Sonnet for rich analysis. Cached by project name + band distribution.
+
+        Args:
+            nvd_snippets_map: Optional map of "component:version" -> NVD fix snippet.
+            component_guidance: Optional map of "component:version" -> AI guidance dict
+                (from component-level LLM calls, containing fix_version, confidence, etc.).
         """
         import hashlib
 
         key_data = json.dumps(
-            {"project": project_name, "bands": band_counts},
+            {
+                "project": project_name,
+                "bands": band_counts,
+                "has_nvd": bool(nvd_snippets_map),
+                "has_comp_ai": bool(component_guidance),
+            },
             sort_keys=True,
             default=str,
         )
@@ -670,7 +708,13 @@ Be specific with component names and versions. When vulnerable functions are ide
             logger.info(f"Project summary for '{project_name}' loaded from cache")
             return cached
 
-        prompt = self._build_project_prompt(project_name, findings, band_counts)
+        prompt = self._build_project_prompt(
+            project_name,
+            findings,
+            band_counts,
+            nvd_snippets_map=nvd_snippets_map,
+            component_guidance=component_guidance,
+        )
 
         try:
             result_text = self._call_llm(prompt, "summary", MAX_PROJECT_TOKENS)
@@ -685,6 +729,8 @@ Be specific with component names and versions. When vulnerable functions are ide
         project_name: str,
         findings: list[dict[str, Any]],
         band_counts: dict[str, int],
+        nvd_snippets_map: dict[str, str] | None = None,
+        component_guidance: dict[str, dict[str, Any]] | None = None,
     ) -> str:
         """Build the prompt for project-level summary."""
         # Group findings by component for conciseness
@@ -696,7 +742,14 @@ Be specific with component names and versions. When vulnerable functions are ide
         component_summary = []
         for comp_key, comp_findings in sorted(
             component_groups.items(),
-            key=lambda x: max(f.get("triage_score", 0) for f in x[1]),
+            key=lambda x: (
+                sum(
+                    1
+                    for f in x[1]
+                    if f.get("priority_band", "") in ("CRITICAL", "HIGH")
+                ),
+                sum(f.get("triage_score", 0) for f in x[1]),
+            ),
             reverse=True,
         )[:10]:
             # Collect reachability info for this component
@@ -767,7 +820,8 @@ Be specific with component names and versions. When vulnerable functions are ide
 
 ## Top Components by Risk
 {self._format_project_components_bullet(component_summary)}
-
+{self._build_nvd_section_for_project(component_summary, nvd_snippets_map)}
+{self._build_component_ai_section(component_summary, component_guidance)}
 Note: "reachable" indicates CVEs where binary analysis confirmed the vulnerable code path is callable. Vulnerable functions listed are specific functions identified in the deployed binaries — developers should search for and audit these.
 
 Provide a concise project remediation plan (2-3 paragraphs):
@@ -776,6 +830,110 @@ Provide a concise project remediation plan (2-3 paragraphs):
 3. Any quick wins or workarounds, especially for reachable findings where specific functions are identified
 
 Be specific with component names and versions."""
+
+    # =========================================================================
+    # Cascade helpers (NVD + component AI → project/portfolio prompts)
+    # =========================================================================
+
+    @staticmethod
+    def _build_nvd_section_for_portfolio(
+        top_components: list[dict[str, Any]],
+        nvd_snippets_map: dict[str, str] | None,
+    ) -> str:
+        """Build Known Fix Versions section for a portfolio prompt."""
+        if not nvd_snippets_map:
+            return ""
+        lines = ["\n## Known Fix Versions (from NVD)"]
+        count = 0
+        for comp in top_components[:10]:
+            name = comp.get("component_name", comp.get("component", "Unknown"))
+            version = comp.get("component_version", "")
+            comp_key = (
+                f"{name}:{version}" if version and ":" not in str(name) else str(name)
+            )
+            snippet = nvd_snippets_map.get(comp_key, "")
+            if snippet:
+                first_line = snippet.strip().split("\n")[0]
+                lines.append(f"- **{comp_key}**: {first_line}")
+                count += 1
+        if count == 0:
+            return ""
+        lines.append("")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_project_ai_section(
+        top_projects: list[dict[str, Any]],
+        project_ai_summaries: dict[str, str] | None,
+    ) -> str:
+        """Build Project AI Summaries section for a portfolio prompt."""
+        if not project_ai_summaries:
+            return ""
+        lines = ["\n## Project AI Summaries"]
+        count = 0
+        for proj in top_projects[:5]:
+            proj_name = proj.get("project_name", "")
+            summary = project_ai_summaries.get(proj_name, "")
+            if summary:
+                truncated = summary[:200] + ("..." if len(summary) > 200 else "")
+                lines.append(f"- **{proj_name}**: {truncated}")
+                count += 1
+        if count == 0:
+            return ""
+        lines.append("")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_nvd_section_for_project(
+        component_summary: list[dict[str, Any]],
+        nvd_snippets_map: dict[str, str] | None,
+    ) -> str:
+        """Build NVD Fix Intelligence section for a project prompt."""
+        if not nvd_snippets_map:
+            return ""
+        lines = ["\n## NVD Fix Intelligence"]
+        count = 0
+        for comp in component_summary[:5]:
+            comp_key = comp.get("component", "")
+            snippet = nvd_snippets_map.get(comp_key, "")
+            if snippet:
+                # Extract first line (compact summary) for each component
+                first_line = snippet.strip().split("\n")[0]
+                lines.append(f"- **{comp_key}**: {first_line}")
+                count += 1
+        if count == 0:
+            return ""
+        lines.append("")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_component_ai_section(
+        component_summary: list[dict[str, Any]],
+        component_guidance: dict[str, dict[str, Any]] | None,
+    ) -> str:
+        """Build Component Fix Recommendations section for a project prompt."""
+        if not component_guidance:
+            return ""
+        lines = ["\n## Component Fix Recommendations (AI-generated)"]
+        count = 0
+        for comp in component_summary:
+            comp_key = comp.get("component", "")
+            guidance = component_guidance.get(comp_key)
+            if guidance:
+                fix_ver = guidance.get("fix_version", "Unknown")
+                confidence = guidance.get("confidence", "medium")
+                rationale = guidance.get("rationale", guidance.get("guidance", ""))
+                if rationale:
+                    rationale = rationale[:150]
+                lines.append(
+                    f"- **{comp_key}**: upgrade to {fix_ver} "
+                    f"(confidence: {confidence}) — {rationale}"
+                )
+                count += 1
+        if count == 0:
+            return ""
+        lines.append("")
+        return "\n".join(lines)
 
     # =========================================================================
     # Component-Level Guidance (Haiku — full depth only)

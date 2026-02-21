@@ -148,6 +148,7 @@ def _execute_run(
             baseline_version=effective.get("baseline_version") or None,
             current_version=effective.get("current_version") or None,
             verbose=bool(effective.get("verbose", False)),
+            logo=effective.get("logo") or None,
         )
 
         engine = ReportEngine(config, cancel_event=cancel_event)

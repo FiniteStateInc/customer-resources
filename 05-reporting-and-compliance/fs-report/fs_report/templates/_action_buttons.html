@@ -738,8 +738,9 @@
                 headers: apiHeaders(),
                 body: JSON.stringify({
                     status: 'IN_TRIAGE',
-                    response: 'UPDATE',
-                    justification: 'REQUIRES_CONFIGURATION',
+                    response: 'WILL_NOT_FIX',
+                    justification: 'CODE_NOT_PRESENT',
+                    reason: _triageContext.reason || '',
                 }),
             });
             if (!res.ok) {

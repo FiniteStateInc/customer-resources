@@ -106,6 +106,7 @@ def create_config(
     scoring_file: str | None = None,
     vex_override: bool = False,
     overwrite: bool = False,
+    logo: str | None = None,
 ) -> Config:
     # Handle period parameter
     if period:
@@ -230,6 +231,7 @@ def create_config(
         scoring_file=scoring_file,
         vex_override=vex_override,
         overwrite=overwrite,
+        logo=logo,
     )
 
 
@@ -984,6 +986,7 @@ def run_reports(
     scoring_file: str | None = None,
     vex_override: bool = False,
     overwrite: bool = False,
+    logo: str | None = None,
 ) -> None:
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
@@ -1029,6 +1032,7 @@ def run_reports(
             scoring_file=scoring_file,
             vex_override=vex_override,
             overwrite=overwrite,
+            logo=logo,
         )
         logger.info("Configuration:")
         logger.info(f"  Domain: {config.domain}")
@@ -1337,6 +1341,12 @@ def main(
         help="Overwrite existing report files. Without this flag, the CLI refuses "
         "to write into a recipe output directory that already has files.",
     ),
+    logo: str | None = typer.Option(
+        None,
+        "--logo",
+        help="Logo image for HTML reports. Filename (resolved in ~/.fs-report/logos/) "
+        "or absolute path. Supports PNG, SVG, JPG, WebP.",
+    ),
     no_bundled_recipes: bool = typer.Option(
         False,
         "--no-bundled-recipes",
@@ -1436,6 +1446,7 @@ def main(
         scoring_file=scoring_file,
         vex_override=vex_override,
         overwrite=overwrite,
+        logo=logo,
     )
 
     # Launch local HTTP server if requested (helps with CORS for interactive buttons)

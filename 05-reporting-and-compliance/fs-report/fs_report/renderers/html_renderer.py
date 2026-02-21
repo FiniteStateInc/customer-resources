@@ -469,6 +469,7 @@ class HTMLRenderer:
             "folder_path": report_data.metadata.get("folder_path", ""),
             "folder_filter": report_data.metadata.get("folder_filter", ""),
             "domain": report_data.metadata.get("domain", ""),
+            "logo_path": report_data.metadata.get("logo_path"),
         }
 
         template_data = {
@@ -491,6 +492,7 @@ class HTMLRenderer:
             "folder_path": slim_metadata["folder_path"],
             "folder_filter": slim_metadata["folder_filter"],
             "domain": slim_metadata["domain"],
+            "logo_path": slim_metadata["logo_path"],
             # Add period label for scan frequency chart
             "scan_frequency_period_label": chart_data.get(
                 "scan_frequency_period_label", "Month"

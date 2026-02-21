@@ -62,6 +62,13 @@
                     <span class="toggle-slider"></span>
                 </label>
             </div>
+            <div class="form-group">
+                <label for="cfg-logo">Report logo</label>
+                <input type="text" id="cfg-logo" name="logo"
+                       value="{{ state.get('logo', '') }}"
+                       placeholder="e.g. company-logo.png">
+                <small class="form-hint">PNG, SVG, JPG, or WebP from ~/.fs-report/logos/. Max 500KB recommended. Leave empty for default Finite State logo.</small>
+            </div>
         </details>
 
         <!-- Cache Management -->

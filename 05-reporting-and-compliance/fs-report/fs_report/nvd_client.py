@@ -183,6 +183,7 @@ class NVDClient:
 
         # In-memory cache (session-scoped)
         self._mem_cache: dict[str, NVDCveRecord] = {}
+        self.last_batch_missing: list[str] = []
 
         # SQLite cache — always enabled (defaults to ~/.fs-report/)
         resolved_dir = Path(cache_dir) if cache_dir else Path.home() / ".fs-report"
@@ -539,6 +540,18 @@ class NVDClient:
                 self._mem_cache[cve_id] = record
                 self._save_to_sqlite(cve_id, record)
                 results[cve_id] = record
+
+        # Track CVEs that could not be resolved
+        self.last_batch_missing = [
+            cve_id for cve_id in cve_ids if cve_id not in results
+        ]
+        if self.last_batch_missing:
+            preview = self.last_batch_missing[:10]
+            logger.warning(
+                f"NVD: {len(self.last_batch_missing)}/{len(cve_ids)} CVEs could "
+                f"not be resolved: {', '.join(preview)}"
+                + (" ..." if len(self.last_batch_missing) > 10 else "")
+            )
 
         return results
 

@@ -37,6 +37,8 @@ a:hover { text-decoration: underline; }
     text-decoration: none;
 }
 
+.nav-logo { height: 24px; width: auto; vertical-align: middle; margin-right: 6px; }
+
 .nav-links {
     display: flex;
     gap: 24px;

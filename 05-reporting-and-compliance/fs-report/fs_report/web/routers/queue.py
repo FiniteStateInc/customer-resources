@@ -4,8 +4,8 @@ Fetches the most recent scans (by created:desc) from the Finite State API,
 groups them by project version, and renders a live queue panel.
 """
 
-import asyncio
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -20,8 +20,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["queue"])
 
 _TERMINAL_STATUSES = frozenset({"COMPLETED", "ERROR", "NOT_APPLICABLE"})
-_PAGES = 5
+_MAX_PAGES = 6  # safety cap; typically stops earlier via all-terminal detection
 _PAGE_SIZE = 100
+
+# Circuit breaker: skip API calls for a cooldown period after a 429.
+_last_429_time: float = 0.0
+_BACKOFF_SECONDS = 120
 
 _TYPE_DISPLAY = {"VULNERABILITY_ANALYSIS": "REACHABILITY"}
 _TYPE_ORDER = {
@@ -234,37 +238,74 @@ async def scan_queue(
             },
         )
 
+    global _last_429_time  # noqa: PLW0603
+
     base_url = f"https://{state.domain}/api/public/v0/scans"
     headers = {"X-Authorization": state.token}
 
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            page_reqs = [
-                client.get(
-                    base_url,
-                    headers=headers,
-                    params={
-                        "sort": "created:desc",
-                        "limit": str(_PAGE_SIZE),
-                        "offset": str(i * _PAGE_SIZE),
-                    },
-                )
-                for i in range(_PAGES)
-            ]
-            results = await asyncio.gather(*page_reqs, return_exceptions=True)
+    # Circuit breaker: if we hit a 429 recently, skip the API call entirely.
+    since_429 = time.monotonic() - _last_429_time
+    if since_429 < _BACKOFF_SECONDS:
+        remaining = int(_BACKOFF_SECONDS - since_429)
+        logger.debug("Queue fetch: backing off for %ds after 429", remaining)
+        return templates.TemplateResponse(
+            "components/_scan_queue.html",
+            {
+                "request": request,
+                "connected": True,
+                "error": f"Rate-limited — retrying in {remaining}s",
+                "queue": None,
+            },
+        )
 
+    try:
         all_scans: list[dict[str, Any]] = []
         any_success = False
         last_error = ""
-        for resp in results:
-            if isinstance(resp, BaseException):
-                last_error = str(resp)
-                continue
-            if resp.status_code != 200:
-                last_error = f"API returned {resp.status_code}"
-                continue
-            any_success = True
-            all_scans.extend(_parse_scan_list(resp.json()))
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            for i in range(_MAX_PAGES):
+                try:
+                    resp = await client.get(
+                        base_url,
+                        headers=headers,
+                        params={
+                            "sort": "created:desc",
+                            "limit": str(_PAGE_SIZE),
+                            "offset": str(i * _PAGE_SIZE),
+                        },
+                    )
+                except Exception as exc:
+                    last_error = str(exc)
+                    break
+
+                if resp.status_code == 429:
+                    _last_429_time = time.monotonic()
+                    last_error = "API returned 429"
+                    logger.warning(
+                        "Queue fetch: 429 rate-limit, backing off %ds", _BACKOFF_SECONDS
+                    )
+                    break
+
+                if resp.status_code != 200:
+                    last_error = f"API returned {resp.status_code}"
+                    break
+
+                any_success = True
+                page_scans = _parse_scan_list(resp.json())
+                all_scans.extend(page_scans)
+
+                # No more pages available.
+                if len(page_scans) < _PAGE_SIZE:
+                    break
+
+                # All scans on this page are terminal — we've passed the
+                # active queue, no point fetching older pages.
+                if page_scans and all(
+                    s.get("status") in _TERMINAL_STATUSES for s in page_scans
+                ):
+                    logger.debug("Queue fetch: page %d all terminal, stopping early", i)
+                    break
 
         if not any_success:
             logger.warning("Queue fetch: all pages failed, last: %s", last_error)

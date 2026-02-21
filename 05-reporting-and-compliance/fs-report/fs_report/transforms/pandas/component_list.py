@@ -11,6 +11,30 @@ import pandas as pd
 
 from fs_report.models import Config
 
+_CSV_COLUMNS = [
+    "Component",
+    "Version",
+    "Type",
+    "Source",
+    "Project Name",
+    "Project Version",
+    "Folder",
+    "Declared License",
+    "Concluded License",
+    "Copyleft Status",
+    "Policy Status",
+    "Findings",
+    "Warnings",
+    "Violations",
+    "Supplier",
+    "Component Status",
+    "BOM Reference",
+    "Release Date",
+    "Created",
+    "Branch",
+    "License URL",
+]
+
 # =============================================================================
 # SOURCE TYPE LABELS
 # =============================================================================
@@ -168,6 +192,10 @@ def component_list_pandas_transform(
     output_df = output_df.sort_values(
         ["Project Name", "Component"], ascending=[True, True]
     )
+
+    # Apply canonical column ordering
+    csv_cols = [c for c in _CSV_COLUMNS if c in output_df.columns]
+    output_df = output_df[csv_cols]
 
     # Handle missing data gracefully
     output_df = output_df.fillna(

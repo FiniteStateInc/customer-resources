@@ -61,6 +61,33 @@ def _log_memory(logger: logging.Logger, label: str) -> None:
         pass  # Don't let memory logging break the report
 
 
+def _inject_folder_names_df(df: pd.DataFrame, pf_map: dict[str, str]) -> None:
+    """Add folder_name column to DataFrame using project-to-folder mapping."""
+
+    def _extract_pid(row: pd.Series) -> str:
+        p = row.get("project") or row.get("projectId")
+        if isinstance(p, dict):
+            return str(p.get("id", ""))
+        return str(p) if p else ""
+
+    df["folder_name"] = df.apply(_extract_pid, axis=1).map(pf_map).fillna("")
+
+
+def _inject_project_names_df(df: pd.DataFrame, project_map: dict[str, str]) -> None:
+    """Add project_name column to DataFrame using project ID mapping."""
+
+    def _extract_name(row: pd.Series) -> str:
+        p = row.get("project") or row.get("projectId")
+        if isinstance(p, dict):
+            name = p.get("name")
+            if name:
+                return str(name)
+            return project_map.get(str(p.get("id", "")), str(p.get("id", "")))
+        return project_map.get(str(p), str(p)) if p else ""
+
+    df["project_name"] = df.apply(_extract_name, axis=1)
+
+
 # Finding type/category mapping for --finding-types flag
 #
 # The API has two filtering mechanisms:
@@ -227,7 +254,9 @@ class ReportEngine:
 
         # In-memory cache: findings data keyed by (endpoint, filter, finding_type, version_ids_hash)
         # Avoids redundant API fetches when multiple reports need the same data
-        self._findings_cache: dict[str, list[dict]] = {}
+        # Stores DataFrames (not list[dict]) to reduce peak memory.
+        # Scans cache entries may still store list[dict] for internal reuse.
+        self._findings_cache: dict[str, Any] = {}
 
         # In-memory cache: per-version findings keyed by (endpoint, version_id, finding_type)
         # Shared across Version Comparison within the same run
@@ -1722,7 +1751,11 @@ class ReportEngine:
 
                     if recipe.name == "Version Comparison":
                         # --- Version Comparison: two-version parallel fetch ---
-                        raw_data = self._fetch_version_comparison_data(recipe)
+                        _fetched = self._fetch_version_comparison_data(recipe)
+                        raw_data = (
+                            pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
+                        )
+                        del _fetched
                     elif recipe.name == "User Activity":
                         # Build filter for audit endpoint using RSQL format
                         # The audit API supports: time=ge=START;time=le=END
@@ -1738,12 +1771,20 @@ class ReportEngine:
                         self.logger.info(
                             f"Fetching audit events for {recipe.name} with filter: {audit_filter}"
                         )
-                        raw_data = self.api_client.fetch_all_with_resume(unified_query)
+                        _fetched = self.api_client.fetch_all_with_resume(unified_query)
+                        raw_data = (
+                            pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
+                        )
+                        del _fetched
                     elif recipe.name == "Scan Analysis":
                         # Apply project and version filtering to scans
                         scan_query = self._apply_scan_filters(recipe.query)
                         # Use early termination to avoid fetching old scans
-                        raw_data = self._fetch_scans_with_early_termination(scan_query)
+                        _fetched = self._fetch_scans_with_early_termination(scan_query)
+                        raw_data = (
+                            pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
+                        )
+                        del _fetched
 
                         # Fetch project data for new vs existing analysis
                         # Store in a variable that will be added to additional_data later
@@ -1791,7 +1832,7 @@ class ReportEngine:
                                 "  --cve CVE-2022-37434,CVE-2023-44487\n"
                                 "  --cve CVE-2022-37434 --project openwrt"
                             )
-                            raw_data = []
+                            raw_data = pd.DataFrame()
                         else:
                             cve_filters: list[str] = []
 
@@ -1839,15 +1880,20 @@ class ReportEngine:
                                     else ""
                                 )
                             )
-                            raw_data = self.api_client.fetch_all_with_resume(cve_query)
+                            _fetched = self.api_client.fetch_all_with_resume(cve_query)
+                            raw_data = (
+                                pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
+                            )
+                            del _fetched
 
                             # In dossier mode, enrich with per-finding reachability,
                             # CVE descriptions, and exploit details
-                            if self.config.cve_filter and raw_data:
+                            if self.config.cve_filter and not raw_data.empty:
                                 (
                                     self._cve_impact_reachability,
                                     self._cve_impact_descriptions,
                                     self._cve_impact_exploit_details,
+                                    self._cve_impact_nvd_missing,
                                 ) = self._fetch_cve_reachability(raw_data)
 
                     elif recipe.name == "Component List":
@@ -1919,18 +1965,26 @@ class ReportEngine:
                             self.logger.info(
                                 f"Fetching components for {recipe.name} with --current-version-only ({len(version_ids)} versions), base filter: {combined_filter}"
                             )
-                            raw_data = self._fetch_with_version_batching(
+                            _fetched = self._fetch_with_version_batching(
                                 unified_query,
                                 version_ids,
                                 entity_type="components",
                             )
+                            raw_data = (
+                                pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
+                            )
+                            del _fetched
                         else:
                             self.logger.info(
                                 f"Fetching components for {recipe.name} with filter: {combined_filter}"
                             )
-                            raw_data = self.api_client.fetch_all_with_resume(
+                            _fetched = self.api_client.fetch_all_with_resume(
                                 unified_query
                             )
+                            raw_data = (
+                                pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
+                            )
+                            del _fetched
                     elif recipe.name in [
                         "Component Vulnerability Analysis (Pandas)",
                         "Component Vulnerability Analysis",
@@ -1973,6 +2027,29 @@ class ReportEngine:
                         needs_date_postfilter = False
                         raw_data = None
 
+                        # --- Per-batch scoring for Triage Prioritization ---
+                        # Normalize + score each batch during fetch so raw
+                        # API dicts are discarded immediately, reducing peak
+                        # memory by an additional ~20-30% on top of chunked DF.
+                        _is_triage = recipe.name == "Triage Prioritization"
+                        _triage_weights = None
+                        _triage_gates = None
+                        if _is_triage:
+                            from fs_report.transforms.pandas.triage_prioritization import (
+                                _load_gates,
+                                _load_weights,
+                                _normalize_columns,
+                                apply_tiered_gates,
+                                assign_risk_bands,
+                                calculate_additive_score,
+                            )
+
+                            _triage_ad: dict[str, Any] = {"config": self.config}
+                            if recipe.parameters:
+                                _triage_ad["recipe_parameters"] = recipe.parameters
+                            _triage_weights = _load_weights(self.config, _triage_ad)
+                            _triage_gates = _load_gates(self.config, _triage_ad)
+
                         # Build filter list for non-entity-cached paths
                         # (entity-cached paths skip this and post-filter instead)
                         filters = []
@@ -1992,6 +2069,11 @@ class ReportEngine:
                         ):
                             filters.append(
                                 f"detected>={self.config.detected_after}T00:00:00"
+                            )
+
+                        if getattr(self.config, "open_only", False):
+                            filters.append(
+                                "status=out=(NOT_AFFECTED,FALSE_POSITIVE,RESOLVED,RESOLVED_WITH_PEDIGREE)"
                             )
 
                         if self.config.project_filter:
@@ -2022,11 +2104,15 @@ class ReportEngine:
                                         self.logger.info(
                                             f"--current-version-only: scoping to latest version {latest_vids[0]}"
                                         )
-                                        raw_data = self._get_findings_for_versions(
+                                        _vf = self._get_findings_for_versions(
                                             latest_vids,
                                             finding_type,
                                             category_filter,
                                         )
+                                        raw_data = (
+                                            pd.DataFrame(_vf) if _vf else pd.DataFrame()
+                                        )
+                                        del _vf
                                         needs_date_postfilter = True
                                     else:
                                         self.logger.warning(
@@ -2050,9 +2136,15 @@ class ReportEngine:
                                 self.logger.info(
                                     f"Fetching findings for {recipe.name} with type={finding_type}, filter: {combined_filter}"
                                 )
-                                raw_data = self.api_client.fetch_all_with_resume(
+                                _fetched = self.api_client.fetch_all_with_resume(
                                     unified_query
                                 )
+                                raw_data = (
+                                    pd.DataFrame(_fetched)
+                                    if _fetched
+                                    else pd.DataFrame()
+                                )
+                                del _fetched
                         elif self._folder_project_ids:
                             # Folder scoping active — use folder's project set directly
                             # Sort for deterministic batching (ensures SQLite cache hits across runs)
@@ -2084,9 +2176,11 @@ class ReportEngine:
                                     f"Fetching findings for {recipe.name} with --current-version-only "
                                     f"({len(version_ids)} latest versions)"
                                 )
-                                raw_data = self._get_findings_for_versions(
+                                _vf = self._get_findings_for_versions(
                                     version_ids, finding_type, category_filter
                                 )
+                                raw_data = pd.DataFrame(_vf) if _vf else pd.DataFrame()
+                                del _vf
                                 needs_date_postfilter = True
                             else:
                                 # Batch by project IDs — all versions
@@ -2104,7 +2198,10 @@ class ReportEngine:
                                         f"({len(raw_data)} records, same query as a previous report)"
                                     )
                                 else:
-                                    raw_data = []
+                                    # Chunked DF construction — convert each batch
+                                    # to a DataFrame immediately so raw list[dict] is
+                                    # freed, reducing peak memory by ~40-50%.
+                                    chunks: list[pd.DataFrame] = []
                                     # Adaptive batch sizing: reduce batch size for large project counts
                                     batch_size = (
                                         15 if len(folder_pids) > 200 else 25
@@ -2141,9 +2238,39 @@ class ReportEngine:
                                                     batch_query, show_progress=False
                                                 )
                                             )
-                                            raw_data.extend(batch_data)
-                                            total_records += len(batch_data)
-                                            del batch_data  # Free batch memory immediately
+                                            if batch_data:
+                                                chunk_df = pd.DataFrame(batch_data)
+                                                total_records += len(batch_data)
+                                                del batch_data  # Free batch memory immediately
+                                                # Per-batch triage scoring
+                                                if (
+                                                    _is_triage
+                                                    and _triage_weights is not None
+                                                ):
+                                                    if self._project_folder_map:
+                                                        _inject_folder_names_df(
+                                                            chunk_df,
+                                                            self._project_folder_map,
+                                                        )
+                                                    chunk_df = _normalize_columns(
+                                                        chunk_df
+                                                    )
+                                                    chunk_df = apply_tiered_gates(
+                                                        chunk_df, gates=_triage_gates
+                                                    )
+                                                    chunk_df = calculate_additive_score(
+                                                        chunk_df,
+                                                        weights=_triage_weights,
+                                                        gates=_triage_gates,
+                                                    )
+                                                    chunk_df = assign_risk_bands(
+                                                        chunk_df,
+                                                        weights=_triage_weights,
+                                                    )
+                                                chunks.append(chunk_df)
+                                                del chunk_df
+                                            else:
+                                                del batch_data
                                             pbar.set_postfix({"records": total_records})
 
                                             # Inter-batch delay to reduce server load
@@ -2152,6 +2279,12 @@ class ReportEngine:
                                                 time.sleep(
                                                     max(1.0, self.config.request_delay)
                                                 )
+                                    raw_data = (
+                                        pd.concat(chunks, ignore_index=True)
+                                        if chunks
+                                        else pd.DataFrame()
+                                    )
+                                    del chunks
                                     self._findings_cache[_cache_key] = raw_data
 
                             self.logger.info(
@@ -2222,7 +2355,7 @@ class ReportEngine:
                                 self.logger.warning(
                                     "No projects found with scans in the specified period"
                                 )
-                                raw_data = []
+                                raw_data = pd.DataFrame()
                             elif self.config.current_version_only:
                                 # Entity-level caching: fetch per-version (shared across reports)
                                 version_ids = self._get_latest_version_ids_for_projects(
@@ -2231,9 +2364,11 @@ class ReportEngine:
                                 self.logger.info(
                                     f"Fetching findings for {len(version_ids)} projects (true latest version each)"
                                 )
-                                raw_data = self._get_findings_for_versions(
+                                _vf = self._get_findings_for_versions(
                                     sorted(version_ids), finding_type, category_filter
                                 )
+                                raw_data = pd.DataFrame(_vf) if _vf else pd.DataFrame()
+                                del _vf
                                 needs_date_postfilter = True
                             else:
                                 # Get findings for all scanned projects (all versions)
@@ -2243,8 +2378,9 @@ class ReportEngine:
                                 )
 
                                 # Batch by project IDs to avoid URL length limits
-                                # Adaptive batch sizing: reduce for large project counts to limit memory and server load
-                                raw_data = []
+                                # Chunked DF construction — convert each batch to
+                                # a DataFrame immediately so raw list[dict] is freed.
+                                pv_chunks: list[pd.DataFrame] = []
                                 batch_size = (
                                     20 if len(project_ids) > 200 else 50
                                 )  # Projects per batch
@@ -2283,9 +2419,31 @@ class ReportEngine:
                                                 batch_query, show_progress=False
                                             )
                                         )
-                                        raw_data.extend(batch_data)
-                                        total_records += len(batch_data)
-                                        del batch_data  # Free batch memory immediately
+                                        if batch_data:
+                                            chunk_df = pd.DataFrame(batch_data)
+                                            total_records += len(batch_data)
+                                            del batch_data  # Free batch memory immediately
+                                            # Per-batch triage scoring
+                                            if (
+                                                _is_triage
+                                                and _triage_weights is not None
+                                            ):
+                                                chunk_df = _normalize_columns(chunk_df)
+                                                chunk_df = apply_tiered_gates(
+                                                    chunk_df, gates=_triage_gates
+                                                )
+                                                chunk_df = calculate_additive_score(
+                                                    chunk_df,
+                                                    weights=_triage_weights,
+                                                    gates=_triage_gates,
+                                                )
+                                                chunk_df = assign_risk_bands(
+                                                    chunk_df, weights=_triage_weights
+                                                )
+                                            pv_chunks.append(chunk_df)
+                                            del chunk_df
+                                        else:
+                                            del batch_data
                                         pbar.set_postfix({"records": total_records})
 
                                         # Inter-batch delay to reduce server load
@@ -2294,6 +2452,12 @@ class ReportEngine:
                                             time.sleep(
                                                 max(1.0, self.config.request_delay)
                                             )
+                                raw_data = (
+                                    pd.concat(pv_chunks, ignore_index=True)
+                                    if pv_chunks
+                                    else pd.DataFrame()
+                                )
+                                del pv_chunks
 
                                 _log_memory(
                                     self.logger,
@@ -2303,23 +2467,27 @@ class ReportEngine:
                                     f"Fetched {total_records} total findings for scanned projects"
                                 )
                 else:
-                    raw_data = self.api_client.fetch_data(recipe.query)
+                    _fetched = self.api_client.fetch_data(recipe.query)
+                    raw_data = pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
+                    del _fetched
 
             # --- Date post-filtering for entity-cached paths ---
             # When _get_findings_for_versions was used, data is NOT date-filtered
             # at the API level (entity cache stores ALL findings per version).
             # Apply the date filter in-memory now.
-            if needs_date_postfilter and raw_data:
+            if (
+                needs_date_postfilter
+                and isinstance(raw_data, pd.DataFrame)
+                and not raw_data.empty
+            ):
                 if is_operational:
                     start = f"{self.config.start_date}T00:00:00"
                     end = f"{self.config.end_date}T23:59:59"
                     before_count = len(raw_data)
-                    raw_data = [
-                        f
-                        for f in raw_data
-                        if f.get("detected", "") >= start
-                        and f.get("detected", "") <= end
-                    ]
+                    detected = raw_data.get(
+                        "detected", pd.Series("", index=raw_data.index)
+                    ).fillna("")
+                    raw_data = raw_data[(detected >= start) & (detected <= end)]
                     self.logger.debug(
                         f"Date post-filter ({self.config.start_date} to {self.config.end_date}): "
                         f"{before_count} -> {len(raw_data)} findings"
@@ -2328,11 +2496,11 @@ class ReportEngine:
                     self.config, "detected_after", None
                 ):
                     before_count = len(raw_data)
-                    raw_data = [
-                        f
-                        for f in raw_data
-                        if f.get("detected", "")
-                        >= f"{self.config.detected_after}T00:00:00"
+                    detected = raw_data.get(
+                        "detected", pd.Series("", index=raw_data.index)
+                    ).fillna("")
+                    raw_data = raw_data[
+                        detected >= f"{self.config.detected_after}T00:00:00"
                     ]
                     self.logger.debug(
                         f"Detected-after post-filter ({self.config.detected_after}): "
@@ -2345,27 +2513,39 @@ class ReportEngine:
             # Match on `category` field (uppercase: CVE, SAST_ANALYSIS, etc.)
             # and/or `type` field (lowercase: cve, sast, thirdparty) for types
             # without a documented category mapping.
-            if (post_filter_categories or post_filter_types) and raw_data:
+            if (
+                (post_filter_categories or post_filter_types)
+                and isinstance(raw_data, pd.DataFrame)
+                and not raw_data.empty
+            ):
                 before_count = len(raw_data)
                 _pf_cats = post_filter_categories or set()
                 _pf_types = post_filter_types or set()
-                raw_data = [
-                    f
-                    for f in raw_data
-                    if (f.get("category") or "").upper() in _pf_cats
-                    or (f.get("type") or "").lower() in _pf_types
-                ]
+                cat_col = (
+                    raw_data.get("category", pd.Series("", index=raw_data.index))
+                    .fillna("")
+                    .str.upper()
+                )
+                type_col = (
+                    raw_data.get("type", pd.Series("", index=raw_data.index))
+                    .fillna("")
+                    .str.lower()
+                )
+                raw_data = raw_data[cat_col.isin(_pf_cats) | type_col.isin(_pf_types)]
                 self.logger.info(
                     f"Finding-type post-filter (categories={_pf_cats}, types={_pf_types}): "
                     f"{before_count} -> {len(raw_data)} findings"
                 )
 
-            if not raw_data:
+            # Ensure raw_data is a DataFrame at this point
+            if not isinstance(raw_data, pd.DataFrame):
+                raw_data = pd.DataFrame(raw_data) if raw_data else pd.DataFrame()
+
+            if raw_data.empty:
                 self.logger.warning(f"No data returned for recipe: {recipe.name}")
-                raw_data = []
 
             # --- Enrich with CVE details for Findings by Project ---
-            if recipe.name == "Findings by Project" and raw_data:
+            if recipe.name == "Findings by Project" and not raw_data.empty:
                 self._findings_by_project_cve_details = (
                     self._fetch_findings_cve_details(raw_data)
                 )
@@ -2374,12 +2554,16 @@ class ReportEngine:
             if recipe.name == "Component Vulnerability Analysis":
                 # Flatten nested structures if needed
                 fields_to_flatten = ["component", "project", "finding"]
-                if raw_data and isinstance(raw_data, list) and raw_data:
+                if not raw_data.empty:
                     from fs_report.data_transformer import flatten_records
 
-                    raw_data = flatten_records(
-                        raw_data, fields_to_flatten=fields_to_flatten
+                    # flatten_records expects list[dict] — convert, flatten, convert back
+                    _records: list[dict[str, Any]] = raw_data.to_dict(orient="records")  # type: ignore[assignment]
+                    _records = flatten_records(
+                        _records, fields_to_flatten=fields_to_flatten
                     )
+                    raw_data = pd.DataFrame(_records) if _records else pd.DataFrame()
+                    del _records
             # --- Inject project_name if needed ---
             # Only do this if the recipe uses project-level grouping
             # (via transform group_by or transform_function that needs it)
@@ -2409,52 +2593,23 @@ class ReportEngine:
                         # Convert project_id to string to ensure it's hashable
                         project_map[str(pid_val)] = project_name
 
-                # Inject project_name into each finding
-                for finding in raw_data:
-                    # Handle different project field formats
-                    project_field = finding.get("project") or finding.get("projectId")
-                    if project_field:
-                        if isinstance(project_field, dict):
-                            # If project is a dict with id and name, use the name directly
-                            project_name = project_field.get("name")
-                            if project_name:
-                                finding["project_name"] = project_name
-                            else:
-                                # Fallback to ID lookup
-                                pid_str = str(project_field.get("id", project_field))
-                                finding["project_name"] = project_map.get(
-                                    pid_str, pid_str
-                                )
-                        else:
-                            # If project is just an ID, look it up
-                            pid_str = str(project_field)
-                            finding["project_name"] = project_map.get(pid_str, pid_str)
+                # Inject project_name using vectorized DataFrame helper
+                if not raw_data.empty:
+                    _inject_project_names_df(raw_data, project_map)
 
             # --- Inject folder_name into raw records ---
             # Build the project-to-folder mapping (either from folder scope or from projects endpoint)
             if self._project_folder_map:
                 # Folder scoping active — use the pre-built mapping
                 pf_map = self._project_folder_map
-            elif raw_data and isinstance(raw_data, list):
+            elif not raw_data.empty:
                 # No folder scoping — try to extract folder from projects data
                 pf_map = self._build_project_folder_map_from_projects()
             else:
                 pf_map = {}
 
-            if pf_map and raw_data and isinstance(raw_data, list):
-                for record in raw_data:
-                    # Extract project ID from various formats
-                    project_field = record.get("project") or record.get("projectId")
-                    pid = None
-                    if isinstance(project_field, dict):
-                        pid = str(project_field.get("id", ""))
-                    elif project_field:
-                        pid = str(project_field)
-
-                    if pid and pid in pf_map:
-                        record["folder_name"] = pf_map[pid]
-                    else:
-                        record["folder_name"] = ""
+            if pf_map and not raw_data.empty:
+                _inject_folder_names_df(raw_data, pf_map)
 
             # Handle additional data for multiple charts
             additional_data: dict[str, Any] = {}
@@ -2479,10 +2634,9 @@ class ReportEngine:
                     and self._cve_impact_reachability
                 ):
                     additional_data["reachability"] = self._cve_impact_reachability
-                if (
-                    hasattr(self, "_cve_impact_descriptions")
-                    and self._cve_impact_descriptions
-                ):
+                # Always inject cve_descriptions when set (even if empty dict)
+                # so transforms can distinguish "not called" from "called, all failed"
+                if hasattr(self, "_cve_impact_descriptions"):
                     additional_data["cve_descriptions"] = self._cve_impact_descriptions
                 if (
                     hasattr(self, "_cve_impact_exploit_details")
@@ -2491,6 +2645,11 @@ class ReportEngine:
                     additional_data["exploit_details"] = (
                         self._cve_impact_exploit_details
                     )
+                if (
+                    hasattr(self, "_cve_impact_nvd_missing")
+                    and self._cve_impact_nvd_missing
+                ):
+                    additional_data["nvd_missing_cves"] = self._cve_impact_nvd_missing
 
             # Inject CVE details for Findings by Project
             if recipe.name == "Findings by Project":
@@ -2511,7 +2670,7 @@ class ReportEngine:
                 additional_data.update(self._version_comparison_data)
 
             # Fetch scoped components for Executive Dashboard
-            if recipe.name == "Executive Dashboard" and raw_data:
+            if recipe.name == "Executive Dashboard" and not raw_data.empty:
                 comp_filters = ["type!=file"]
                 if self.config.project_filter:
                     try:
@@ -2640,8 +2799,8 @@ class ReportEngine:
             # Apply transformations (pass additional_data for join support)
             self.logger.debug(f"Applying transformations for recipe: {recipe.name}")
             self.logger.debug(f"Raw data count: {len(raw_data)}")
-            if isinstance(raw_data, dict):
-                self.logger.debug(f"Raw data keys: {list(raw_data.keys())}")
+            if isinstance(raw_data, dict):  # type: ignore[unreachable]
+                self.logger.debug(f"Raw data keys: {list(raw_data.keys())}")  # type: ignore[unreachable]
             else:
                 self.logger.debug(
                     f"Raw data is a {type(raw_data).__name__}, not logging keys."
@@ -2776,6 +2935,7 @@ class ReportEngine:
                     "folder_path": self._folder_path,
                     "folder_filter": self.config.folder_filter,
                     "domain": self.config.domain,
+                    "logo_path": self._resolve_logo_path(),
                 },
             )
 
@@ -2789,9 +2949,106 @@ class ReportEngine:
         """Get cache statistics."""
         return self.cache.get_stats()
 
+    def _resolve_logo_path(self) -> str | None:
+        """Resolve the configured logo to a base64 data URI.
+
+        Returns a ``data:image/...;base64,...`` string or *None* if no logo
+        is configured or the file cannot be found.
+        """
+        import base64
+        import mimetypes
+
+        logo = getattr(self.config, "logo", None)
+        if not logo:
+            return None
+
+        from pathlib import Path
+
+        path = Path(logo)
+        if not path.is_absolute():
+            path = Path.home() / ".fs-report" / "logos" / logo
+
+        if not path.is_file():
+            self.logger.warning(f"Logo file not found: {path}")
+            return None
+
+        suffix = path.suffix.lower()
+        allowed = {".png", ".jpg", ".jpeg", ".svg", ".webp"}
+        if suffix not in allowed:
+            self.logger.warning(
+                f"Unsupported logo format '{suffix}'. Use: {', '.join(sorted(allowed))}"
+            )
+            return None
+
+        size = path.stat().st_size
+        if size > 500_000:
+            self.logger.warning(
+                f"Logo file is {size / 1024:.0f}KB (>500KB recommended maximum)"
+            )
+
+        mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        if suffix == ".svg":
+            mime = "image/svg+xml"
+
+        data = path.read_bytes()
+        b64 = base64.b64encode(data).decode("ascii")
+        return f"data:{mime};base64,{b64}"
+
+    @staticmethod
+    def _filter_latest_version_per_project(
+        findings: list[dict],
+    ) -> list[dict]:
+        """Keep only findings from the latest version per project.
+
+        Handles both nested dict keys (live API) and flat dotted keys
+        (SQLite cache).
+        """
+        # Group findings by project, tracking version IDs
+        project_versions: dict[str, set[int]] = {}
+        finding_pv: list[tuple[str | None, int | None]] = []
+
+        for f in findings:
+            # Extract project ID
+            pv_obj = f.get("projectVersion")
+            if isinstance(pv_obj, dict):
+                proj_obj = pv_obj.get("project")
+                proj_id = (
+                    str(proj_obj.get("id"))
+                    if isinstance(proj_obj, dict)
+                    else str(f.get("projectVersion.project.id", ""))
+                )
+                ver_id = pv_obj.get("id")
+            else:
+                proj_id = str(f.get("projectVersion.project.id", ""))
+                ver_id = f.get("projectVersion.id") or f.get("project_version_id")
+
+            # Coerce version ID to int for comparison
+            try:
+                ver_int = int(ver_id) if ver_id is not None else None
+            except (ValueError, TypeError):
+                ver_int = None
+
+            pid = proj_id if proj_id else None
+            finding_pv.append((pid, ver_int))
+
+            if pid and ver_int is not None:
+                project_versions.setdefault(pid, set()).add(ver_int)
+
+        # Find latest version per project (max version ID)
+        latest: dict[str, int] = {
+            pid: max(vers) for pid, vers in project_versions.items()
+        }
+
+        # Keep findings that match the latest version (or have no project info)
+        return [
+            f
+            for f, (pid, ver) in zip(findings, finding_pv, strict=True)
+            if pid is None or ver is None or latest.get(pid) == ver
+        ]
+
     def _fetch_cve_reachability(
-        self, cve_records: list[dict]
-    ) -> tuple[dict[str, list[dict]], dict[str, str], dict[str, list[dict]]]:
+        self, cve_records: "list[dict] | pd.DataFrame"
+    ) -> tuple[dict[str, list[dict]], dict[str, str], dict[str, list[dict]], list[str]]:
         """Fetch per-finding reachability from /findings for dossier mode.
 
         For each CVE in the records, queries the findings endpoint with
@@ -2806,6 +3063,7 @@ class ReportEngine:
             - reachability_map: cveId -> list of finding dicts
             - descriptions_map: cveId -> NVD description string
             - exploit_details_map: cveId -> list of exploit detail dicts
+            - nvd_missing_cves: list of CVE IDs that NVD could not resolve
         """
         from fs_report.models import QueryConfig, QueryParams
         from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
@@ -2816,15 +3074,22 @@ class ReportEngine:
 
         # Collect unique CVE IDs from the data
         cve_ids_ordered: list[str] = []
-        cve_ids_seen: set[str] = set()
-        for rec in cve_records:
-            cve_id = rec.get("cveId") or rec.get("cve_id")
-            if cve_id and cve_id not in cve_ids_seen:
-                cve_ids_seen.add(cve_id)
-                cve_ids_ordered.append(cve_id)
+        if isinstance(cve_records, pd.DataFrame):
+            # Try cveId first, then cve_id
+            if "cveId" in cve_records.columns:
+                cve_ids_ordered = cve_records["cveId"].dropna().unique().tolist()
+            elif "cve_id" in cve_records.columns:
+                cve_ids_ordered = cve_records["cve_id"].dropna().unique().tolist()
+        else:
+            cve_ids_seen: set[str] = set()
+            for rec in cve_records:
+                cve_id = rec.get("cveId") or rec.get("cve_id")
+                if cve_id and cve_id not in cve_ids_seen:
+                    cve_ids_seen.add(cve_id)
+                    cve_ids_ordered.append(cve_id)
 
         if not cve_ids_ordered:
-            return reachability_map, descriptions_map, exploit_details_map
+            return reachability_map, descriptions_map, exploit_details_map, []
 
         self.logger.info(
             f"Enriching {len(cve_ids_ordered)} CVEs with reachability data from /findings"
@@ -2840,6 +3105,11 @@ class ReportEngine:
         )
         self.logger.info(NVD_ATTRIBUTION)
         nvd_results = nvd.get_batch(cve_ids_ordered, progress=True)
+        nvd_missing_cves: list[str] = list(nvd.last_batch_missing)
+        if nvd_missing_cves:
+            self.logger.info(
+                f"NVD: {len(nvd_results)}/{len(cve_ids_ordered)} CVEs resolved"
+            )
         for nvd_cve_id, nvd_rec in nvd_results.items():
             if nvd_rec.description:
                 descriptions_map[nvd_cve_id] = nvd_rec.description
@@ -2856,6 +3126,13 @@ class ReportEngine:
             )
             try:
                 findings = self.api_client.fetch_all_with_resume(finding_query)
+                if self.config.current_version_only and findings:
+                    before = len(findings)
+                    findings = self._filter_latest_version_per_project(findings)
+                    self.logger.debug(
+                        f"  Version post-filter: {before} -> {len(findings)} "
+                        f"findings for {cve_id}"
+                    )
                 reachability_map[cve_id] = findings
                 self.logger.debug(
                     f"  {cve_id}: {len(findings)} findings with reachability"
@@ -2881,10 +3158,10 @@ class ReportEngine:
                 self.logger.warning(f"Failed to fetch reachability for {cve_id}: {exc}")
                 reachability_map[cve_id] = []
 
-        return reachability_map, descriptions_map, exploit_details_map
+        return reachability_map, descriptions_map, exploit_details_map, nvd_missing_cves
 
     def _fetch_findings_cve_details(
-        self, raw_data: list[dict]
+        self, raw_data: "list[dict] | pd.DataFrame"
     ) -> dict[str, dict[str, str]]:
         """Fetch CVE details (description, CVSS vectors) for Findings by Project.
 
@@ -2897,12 +3174,19 @@ class ReportEngine:
 
         # Collect unique CVE IDs from findings
         cve_ids: list[str] = []
-        seen: set[str] = set()
-        for finding in raw_data:
-            cve_id = finding.get("findingId")
-            if cve_id and cve_id not in seen:
-                seen.add(cve_id)
-                cve_ids.append(cve_id)
+        if isinstance(raw_data, pd.DataFrame):
+            cve_ids = (
+                raw_data["findingId"].dropna().unique().tolist()
+                if "findingId" in raw_data.columns
+                else []
+            )
+        else:
+            seen: set[str] = set()
+            for finding in raw_data:
+                cve_id = finding.get("findingId")
+                if cve_id and cve_id not in seen:
+                    seen.add(cve_id)
+                    cve_ids.append(cve_id)
 
         if not cve_ids:
             return {}
@@ -2932,7 +3216,7 @@ class ReportEngine:
             for cve_id, rec in nvd_results.items()
         }
 
-        self.logger.info(f"Fetched CVE details for {len(results)} CVEs")
+        self.logger.info(f"Fetched CVE details for {len(results)}/{len(cve_ids)} CVEs")
         return results
 
     def _fetch_cve_exploits(
@@ -3020,7 +3304,7 @@ class ReportEngine:
         _cache_parts = f"scans|{query_config.params.filter or ''}|{self.config.start_date}|{self.config.end_date}"
         _cache_key = hashlib.sha256(_cache_parts.encode()).hexdigest()[:16]
         if _cache_key in self._findings_cache:
-            cached = self._findings_cache[_cache_key]
+            cached: list[dict[Any, Any]] = self._findings_cache[_cache_key]
             self.logger.info(f"Using in-memory cached scans ({len(cached)} records)")
             return cached
 

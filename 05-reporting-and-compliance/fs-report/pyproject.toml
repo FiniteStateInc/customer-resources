@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "fs-report"
-version = "1.5.2"
+version = "1.5.3"
 description = "Finite State Stand-Alone Reporting Kit"
 authors = ["Finite State <support@finitestate.io>"]
 license = "MIT"
@@ -131,6 +131,7 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
+exclude = ["scripts/sample_data/", "scripts/test/", "scripts/analysis/"]
 
 [tool.pydantic-mypy]
 init_forbid_extra = true

@@ -1,6 +1,236 @@
 # Column Reference Guide
 
-This document lists all column names produced by each transform function. Use these names for template access.
+This document lists all CSV/XLSX column names produced by each report, in the order they appear. Use these names for template access.
+
+## Findings by Project
+
+### Main DataFrame
+
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `CVE ID` | string | CVE identifier |
+| 2 | `Severity` | string | Finding severity (CRITICAL, HIGH, MEDIUM, LOW) |
+| 3 | `CVSS` | float | CVSS score (0-10) |
+| 4 | `Project Name` | string | Project name |
+| 5 | `Project Version` | string | Project version |
+| 6 | `Folder` | string | Folder path (when folder filtering active) |
+| 7 | `Component` | string | Affected component name |
+| 8 | `Component Version` | string | Component version |
+| 9 | `Status` | string | Finding status |
+| 10 | `Detected` | string | Detection date |
+| 11 | `# of known exploits` | int | Exploit count |
+| 12 | `# of known weaponization` | int | Weaponization count |
+| 13 | `CWE` | string | CWE identifier |
+| 14 | `Description` | string | CVE description from NVD (English) |
+| 15 | `CVSS v2 Vector` | string | CVSS v2 vector string |
+| 16 | `CVSS v3 Vector` | string | CVSS v3.1 vector string (fallback v3.0) |
+| 17 | `NVD URL` | string | Link to NVD detail page |
+| 18 | `FS Link` | string | Direct link to finding in Finite State platform |
+
+---
+
+## Triage Prioritization
+
+### findings_df DataFrame (CSV/XLSX output)
+
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `finding_id` | string | CVE identifier (e.g., CVE-2024-0001) |
+| 2 | `severity` | string | CVSS severity (CRITICAL, HIGH, MEDIUM, LOW) |
+| 3 | `risk` | float | CVSS score (0-10) |
+| 4 | `priority_band` | string | Triage band: CRITICAL, HIGH, MEDIUM, LOW, INFO |
+| 5 | `triage_score` | float | Composite triage score (0-100) |
+| 6 | `gate_assignment` | string | GATE_1, GATE_2, ADDITIVE, or NONE |
+| 7 | `component_name` | string | Component name |
+| 8 | `component_version` | string | Component version |
+| 9 | `project_name` | string | Project name |
+| 10 | `version_name` | string | Version name |
+| 11 | `reachability_label` | string | REACHABLE, INCONCLUSIVE, UNREACHABLE |
+| 12 | `reachability_score` | float | Raw reachability score (positive/zero/negative) |
+| 13 | `vuln_functions` | string | Vulnerable function names (comma-separated) |
+| 14 | `has_exploit` | bool | Whether known exploits exist |
+| 15 | `in_kev` | bool | Whether in CISA KEV |
+| 16 | `attack_vector` | string | NETWORK, ADJACENT, LOCAL, PHYSICAL |
+| 17 | `epss_percentile` | float | EPSS percentile (0-1) |
+| 18 | `ai_fix_version` | string | AI-recommended fix version (when `--ai` enabled) |
+| 19 | `ai_guidance` | string | AI remediation guidance (when `--ai` enabled) |
+| 20 | `ai_workaround` | string | AI workaround suggestion (when `--ai` enabled) |
+| 21 | `ai_confidence` | string | AI confidence: high, medium, low (when `--ai` enabled) |
+| 22 | `internal_id` | string | Internal finding identifier |
+| 23 | `component_id` | string | Component identifier |
+| 24 | `project_id` | string | Project identifier |
+| 25 | `project_version_id` | string | Project version identifier |
+
+### portfolio_summary Dict
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `CRITICAL` | int | Count of CRITICAL findings |
+| `HIGH` | int | Count of HIGH findings |
+| `MEDIUM` | int | Count of MEDIUM findings |
+| `LOW` | int | Count of LOW findings |
+| `INFO` | int | Count of INFO findings |
+| `total` | int | Total finding count |
+
+### project_summary_df List[Dict]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `project_name` | string | Project name |
+| `CRITICAL` | int | CRITICAL count for project |
+| `HIGH` | int | HIGH count for project |
+| `MEDIUM` | int | MEDIUM count for project |
+| `LOW` | int | LOW count for project |
+| `INFO` | int | INFO count for project |
+| `total_findings` | int | Total findings in project |
+| `avg_score` | float | Average triage score |
+
+### top_components List[Dict]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `component_name` | string | Component name |
+| `component_version` | string | Component version |
+| `CRITICAL` | int | CRITICAL findings count |
+| `HIGH` | int | HIGH findings count |
+| `MEDIUM` | int | MEDIUM findings count |
+| `LOW` | int | LOW findings count |
+| `total_findings` | int | Total findings |
+| `avg_score` | float | Average triage score |
+| `max_score` | float | Max triage score |
+
+### gate_funnel Dict
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `gate_1_critical` | int | Findings entering Gate 1 (Reachable+Exploit) |
+| `gate_2_high` | int | Findings entering Gate 2 (Strong Signal) |
+| `additive_high` | int | Additive scoring -> HIGH |
+| `additive_medium` | int | Additive scoring -> MEDIUM |
+| `additive_low` | int | Additive scoring -> LOW |
+| `additive_info` | int | Additive scoring -> INFO |
+
+### cvss_band_matrix Dict
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `rows` | list | CVSS severity labels |
+| `cols` | list | Priority band labels |
+| `data` | list | Objects with `x`, `y`, `v`, `severity`, `band` |
+
+### factor_radar Dict
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `labels` | list | Factor names (Reachability, Exploit, Vector, EPSS, CVSS) |
+| `datasets` | list | Per-project datasets with `label` and `data` arrays |
+
+### vex_recommendations DataFrame (JSON output)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `finding_id` | string | CVE identifier |
+| `project_version_id` | string | Project version ID |
+| `priority_band` | string | Triage band |
+| `triage_score` | float | Composite score |
+| `vex_status` | string | EXPLOITABLE, IN_TRIAGE, NOT_AFFECTED |
+| `vex_justification` | string | Justification text |
+| `vex_reason` | string | AI-generated or template reason |
+| `component_name` | string | Component name |
+| `severity` | string | CVSS severity |
+
+### AI Guidance Fields (when `--ai` enabled)
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `ai_portfolio_summary` | string | Portfolio-level remediation narrative |
+| `ai_project_summaries` | dict | Per-project remediation narratives |
+| `ai_component_guidance` | dict | Per-component fix guidance (full depth) |
+| `ai_remediation_guidance` | dict | Per-finding guidance object |
+| `ai_remediation_guidance.guidance` | string | Remediation steps |
+| `ai_remediation_guidance.fix_version` | string | Recommended fix version |
+| `ai_remediation_guidance.workaround` | string | Temporary mitigation |
+| `ai_remediation_guidance.code_search_hints` | string | Code patterns to search for |
+| `ai_remediation_guidance.confidence` | string | high, medium, low |
+
+---
+
+## CVE Impact
+
+### Main DataFrame (CSV/XLSX output)
+
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `CVE ID` | string | CVE identifier |
+| 2 | `Severity` | string | CRITICAL, HIGH, MEDIUM, LOW |
+| 3 | `CVSS` | float | CVSS score (0-10) |
+| 4 | `Title` | string | Finding title |
+| 5 | `CWE` | string | CWE identifier |
+| 6 | `EPSS Percentile` | float | EPSS percentile (0-1) |
+| 7 | `EPSS Score` | float | Raw EPSS score (0-1) |
+| 8 | `KEV` | bool | In CISA KEV |
+| 9 | `Has Exploit` | bool | Known exploits exist |
+| 10 | `Exploits` | string | Exploit details |
+| 11 | `Affected Projects` | int | Number of affected projects |
+| 12 | `Reachable In` | int | Projects where reachable |
+| 13 | `Unreachable In` | int | Projects where unreachable |
+| 14 | `Inconclusive In` | int | Projects with inconclusive reachability |
+| 15 | `Project Names` | string | Comma-separated project names |
+| 16 | `Reachable Projects` | string | Comma-separated reachable project names |
+| 17 | `Components` | string | Affected component names |
+| 18 | `First Detected` | string | Earliest detection date |
+| 19 | `Last Detected` | string | Most recent detection date |
+
+---
+
+## Component Vulnerability Analysis
+
+### portfolio_data DataFrame
+
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `name` | string | Component name |
+| 2 | `version` | string | Component version |
+| 3 | `portfolio_composite_risk` | int | Aggregate risk score |
+| 4 | `normalized_risk_score` | int | Risk per project |
+| 5 | `cumulative_percentage` | float | Cumulative risk contribution (%) |
+| 6 | `findings_count` | int | Total findings |
+| 7 | `project_count` | int | Projects using this component |
+| 8 | `has_kev` | bool | In CISA KEV |
+| 9 | `has_exploits` | bool | Known exploits exist |
+| 10 | `project_names` | string | Comma-separated project names |
+
+---
+
+## Component List
+
+### Main DataFrame
+
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `Component` | string | Component name |
+| 2 | `Version` | string | Component version |
+| 3 | `Type` | string | library, application, firmware |
+| 4 | `Source` | string | How discovered: Source SCA, Binary SCA, SBOM Import, etc. |
+| 5 | `Project Name` | string | Project name |
+| 6 | `Project Version` | string | Project version |
+| 7 | `Folder` | string | Folder path |
+| 8 | `Declared License` | string | Automatically detected license (SPDX) |
+| 9 | `Concluded License` | string | Human-reviewed/confirmed license (SPDX) |
+| 10 | `Copyleft Status` | string | Permissive, Weak Copyleft, Strong Copyleft |
+| 11 | `Policy Status` | string | PERMITTED, WARNING, VIOLATION |
+| 12 | `Findings` | int | Finding count |
+| 13 | `Warnings` | int | Warning count |
+| 14 | `Violations` | int | Violation count |
+| 15 | `Supplier` | string | Component supplier |
+| 16 | `Component Status` | string | CONFIRMED, NEEDS_REVIEW, IN_REVIEW, FALSE_POSITIVE |
+| 17 | `BOM Reference` | string | PURL or CPE identifier |
+| 18 | `Release Date` | string | Component release date |
+| 19 | `Created` | string | Discovery timestamp |
+| 20 | `Branch` | string | Branch name |
+| 21 | `License URL` | string | Link to license text |
+
+---
 
 ## Scan Analysis
 
@@ -37,18 +267,19 @@ This document lists all column names produced by each transform function. Use th
 
 ### raw_data DataFrame
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | string | Scan identifier |
-| `scan_date` | string | Start timestamp |
-| `completion_date` | string | End timestamp or '-' |
-| `status` | string | COMPLETED, ERROR, INITIAL, STARTED |
-| `type` | string | SCA, SAST, CONFIG, etc. |
-| `project_name` | string | Project name |
-| `version_name` | string | Version name |
-| `duration_minutes` | float | Time to complete |
-| `current_status_time_minutes` | float | Time in current status |
-| `errorMessage` | string | Error details or '-' |
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `id` | string | Scan identifier |
+| 2 | `type` | string | SCA, SAST, CONFIG, etc. |
+| 3 | `status` | string | COMPLETED, ERROR, INITIAL, STARTED |
+| 4 | `folder_name` | string | Folder name |
+| 5 | `project_name` | string | Project name |
+| 6 | `version_name` | string | Version name |
+| 7 | `scan_date` | string | Start timestamp |
+| 8 | `completion_date` | string | End timestamp or '-' |
+| 9 | `duration_minutes` | float | Time to complete |
+| 10 | `current_status_time_minutes` | float | Time in current status |
+| 11 | `errorMessage` | string | Error details or '-' |
 
 ### failure_types List
 
@@ -59,65 +290,67 @@ This document lists all column names produced by each transform function. Use th
 
 ---
 
-## Component Vulnerability Analysis
+## Version Comparison
 
-### portfolio_data DataFrame
+The Version Comparison report produces four DataFrames for CSV/XLSX export.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `name` | string | Component name |
-| `version` | string | Component version |
-| `project_count` | int | Projects using this component |
-| `portfolio_composite_risk` | int | Aggregate risk score |
-| `normalized_risk_score` | int | Risk per project |
-| `findings_count` | int | Total findings |
-| `has_kev` | bool | In CISA KEV |
-| `has_exploits` | bool | Known exploits exist |
+### Summary (one row per version)
 
----
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `Project` | string | Project name |
+| 2 | `Version` | string | Version name |
+| 3 | `Date` | string | Version created date (YYYY-MM-DD) |
+| 4 | `Total Findings` | int | Total findings in this version |
+| 5 | `Critical` | int | Critical severity count |
+| 6 | `High` | int | High severity count |
+| 7 | `Medium` | int | Medium severity count |
+| 8 | `Low` | int | Low severity count |
+| 9 | `Fixed (vs prev)` | int | Findings fixed since previous version |
+| 10 | `New (vs prev)` | int | New findings since previous version |
+| 11 | `Components` | int | Unique component count |
 
-## Findings by Project
+### Findings Detail (one row per finding per version)
 
-### Main DataFrame
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `Project` | string | Project name |
+| 2 | `Version` | string | Version name |
+| 3 | `Date` | string | Version created date |
+| 4 | `ID` | string | CVE ID or finding ID |
+| 5 | `Severity` | string | CRITICAL, HIGH, MEDIUM, LOW, INFO, UNSPECIFIED |
+| 6 | `Component Name` | string | Affected component |
+| 7 | `Component Version` | string | Component version |
+| 8 | `Risk` | float | CVSS risk score (0-10) |
+| 9 | `Title` | string | Finding title/description |
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `CVSS` | float | CVSS score (0-10) |
-| `Severity` | string | Finding severity (CRITICAL, HIGH, MEDIUM, LOW) |
-| `CVE ID` | string | CVE identifier |
-| `Description` | string | CVE description from NVD (English) |
-| `Component` | string | Affected component name |
-| `Component Version` | string | Component version |
-| `Folder` | string | Folder path (when folder filtering active) |
-| `Project Name` | string | Project name |
-| `Project Version` | string | Project version |
-| `# of known exploits` | int | Exploit count |
-| `# of known weaponization` | int | Weaponization count |
-| `CWE` | string | CWE identifier |
-| `CVSS v2 Vector` | string | CVSS v2 vector string |
-| `CVSS v3 Vector` | string | CVSS v3.1 vector string (fallback v3.0) |
-| `NVD URL` | string | Link to NVD detail page |
-| `FS Link` | string | Direct link to finding in Finite State platform |
+### Findings Churn (one row per fixed or new finding per version pair)
 
----
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `Project` | string | Project name |
+| 2 | `From Version` | string | Baseline version name |
+| 3 | `To Version` | string | Current version name |
+| 4 | `Change Type` | string | `Fixed` or `New` |
+| 5 | `ID` | string | CVE ID or finding ID |
+| 6 | `Severity` | string | CRITICAL, HIGH, MEDIUM, LOW, INFO, UNSPECIFIED |
+| 7 | `Component Name` | string | Affected component |
+| 8 | `Component Version` | string | Component version |
+| 9 | `Risk` | float | CVSS risk score (0-10) |
+| 10 | `Title` | string | Finding title/description |
 
-## Component List
+### Component Churn (one row per component change per version pair)
 
-### Main DataFrame
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `Component` | string | Component name |
-| `Version` | string | Component version |
-| `Type` | string | library, application, firmware |
-| `Supplier` | string | Component supplier |
-| `Licenses` | string | License information |
-| `Project Name` | string | Project name |
-| `Project Version` | string | Project version |
-| `Findings` | int | Finding count |
-| `Warnings` | int | Warning count |
-| `Violations` | int | Violation count |
-| `Status` | string | CONFIRMED, NEEDS_REVIEW, etc. |
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `Project` | string | Project name |
+| 2 | `From Version` | string | Baseline version name |
+| 3 | `To Version` | string | Current version name |
+| 4 | `Change Type` | string | `added`, `removed`, or `updated` |
+| 5 | `Component Name` | string | Component name |
+| 6 | `Version Baseline` | string | Component version in baseline (empty if added) |
+| 7 | `Version Current` | string | Component version in current (empty if removed) |
+| 8 | `Findings Impact` | int | Number of findings attributed to this component change |
 
 ---
 
@@ -196,193 +429,9 @@ This document lists all column names produced by each transform function. Use th
 
 ---
 
-## Triage Prioritization
+## Executive Dashboard
 
-### findings_df DataFrame (main data)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `finding_id` | string | CVE identifier (e.g., CVE-2024-0001) |
-| `severity` | string | CVSS severity (CRITICAL, HIGH, MEDIUM, LOW) |
-| `risk` | float | CVSS score (0-10) |
-| `priority_band` | string | Triage band: CRITICAL, HIGH, MEDIUM, LOW, INFO |
-| `triage_score` | float | Composite triage score (0-100) |
-| `gate_assignment` | string | GATE_1, GATE_2, ADDITIVE, or NONE |
-| `reachability_label` | string | REACHABLE, INCONCLUSIVE, UNREACHABLE |
-| `reachability_score` | float | Raw reachability score (positive/zero/negative) |
-| `has_exploit` | bool | Whether known exploits exist |
-| `in_kev` | bool | Whether in CISA KEV |
-| `attack_vector` | string | NETWORK, ADJACENT, LOCAL, PHYSICAL |
-| `epss_percentile` | float | EPSS percentile (0-1) |
-| `epss_score` | float | Raw EPSS score (0-1) |
-| `component_name` | string | Component name |
-| `component_version` | string | Component version |
-| `project_name` | string | Project name |
-| `project_version_id` | string | Project version identifier |
-| `score_reachability` | float | Reachability contribution to score |
-| `score_exploit` | float | Exploit/KEV contribution to score |
-| `score_vector` | float | Attack vector contribution to score |
-| `score_epss` | float | EPSS contribution to score |
-| `score_cvss` | float | CVSS contribution to score |
-| `vex_status` | string | Recommended VEX status |
-| `vex_justification` | string | Justification for VEX status |
-| `vex_reason` | string | Human-readable reason for VEX decision |
-
-### portfolio_summary Dict
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `CRITICAL` | int | Count of CRITICAL findings |
-| `HIGH` | int | Count of HIGH findings |
-| `MEDIUM` | int | Count of MEDIUM findings |
-| `LOW` | int | Count of LOW findings |
-| `INFO` | int | Count of INFO findings |
-| `total` | int | Total finding count |
-
-### project_summary_df List[Dict]
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `project_name` | string | Project name |
-| `CRITICAL` | int | CRITICAL count for project |
-| `HIGH` | int | HIGH count for project |
-| `MEDIUM` | int | MEDIUM count for project |
-| `LOW` | int | LOW count for project |
-| `INFO` | int | INFO count for project |
-| `total_findings` | int | Total findings in project |
-| `avg_score` | float | Average triage score |
-
-### top_components List[Dict]
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `component_name` | string | Component name |
-| `component_version` | string | Component version |
-| `CRITICAL` | int | CRITICAL findings count |
-| `HIGH` | int | HIGH findings count |
-| `MEDIUM` | int | MEDIUM findings count |
-| `LOW` | int | LOW findings count |
-| `total_findings` | int | Total findings |
-| `avg_score` | float | Average triage score |
-| `max_score` | float | Max triage score |
-
-### gate_funnel Dict
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `gate_1_critical` | int | Findings entering Gate 1 (Reachable+Exploit) |
-| `gate_2_high` | int | Findings entering Gate 2 (Strong Signal) |
-| `additive_high` | int | Additive scoring → HIGH |
-| `additive_medium` | int | Additive scoring → MEDIUM |
-| `additive_low` | int | Additive scoring → LOW |
-| `additive_info` | int | Additive scoring → INFO |
-
-### cvss_band_matrix Dict
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `rows` | list | CVSS severity labels |
-| `cols` | list | Priority band labels |
-| `data` | list | Objects with `x`, `y`, `v`, `severity`, `band` |
-
-### factor_radar Dict
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `labels` | list | Factor names (Reachability, Exploit, Vector, EPSS, CVSS) |
-| `datasets` | list | Per-project datasets with `label` and `data` arrays |
-
-### vex_recommendations DataFrame (JSON output)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `finding_id` | string | CVE identifier |
-| `project_version_id` | string | Project version ID |
-| `priority_band` | string | Triage band |
-| `triage_score` | float | Composite score |
-| `vex_status` | string | EXPLOITABLE, IN_TRIAGE, NOT_AFFECTED |
-| `vex_justification` | string | Justification text |
-| `vex_reason` | string | AI-generated or template reason |
-| `component_name` | string | Component name |
-| `severity` | string | CVSS severity |
-
-### AI Guidance Fields (when `--ai` enabled)
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `ai_portfolio_summary` | string | Portfolio-level remediation narrative |
-| `ai_project_summaries` | dict | Per-project remediation narratives |
-| `ai_component_guidance` | dict | Per-component fix guidance (full depth) |
-| `ai_remediation_guidance` | dict | Per-finding guidance object |
-| `ai_remediation_guidance.guidance` | string | Remediation steps |
-| `ai_remediation_guidance.fix_version` | string | Recommended fix version |
-| `ai_remediation_guidance.workaround` | string | Temporary mitigation |
-| `ai_remediation_guidance.code_search_hints` | string | Code patterns to search for |
-| `ai_remediation_guidance.confidence` | string | high, medium, low |
-
----
-
-## Version Comparison
-
-The Version Comparison report produces four DataFrames for CSV/XLSX export.
-
-### Summary (one row per version)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `Project` | string | Project name |
-| `Version` | string | Version name |
-| `Date` | string | Version created date (YYYY-MM-DD) |
-| `Total Findings` | int | Total findings in this version |
-| `Critical` | int | Critical severity count |
-| `High` | int | High severity count |
-| `Medium` | int | Medium severity count |
-| `Low` | int | Low severity count |
-| `Fixed (vs prev)` | int | Findings fixed since previous version |
-| `New (vs prev)` | int | New findings since previous version |
-| `Components` | int | Unique component count |
-
-### Findings Detail (one row per finding per version)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `Project` | string | Project name |
-| `Version` | string | Version name |
-| `Date` | string | Version created date |
-| `ID` | string | CVE ID or finding ID |
-| `Severity` | string | CRITICAL, HIGH, MEDIUM, LOW, INFO, UNSPECIFIED |
-| `Component Name` | string | Affected component |
-| `Component Version` | string | Component version |
-| `Risk` | float | CVSS risk score (0-10) |
-| `Title` | string | Finding title/description |
-
-### Findings Churn (one row per fixed or new finding per version pair)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `Project` | string | Project name |
-| `From Version` | string | Baseline version name |
-| `To Version` | string | Current version name |
-| `Change Type` | string | `Fixed` or `New` |
-| `ID` | string | CVE ID or finding ID |
-| `Severity` | string | CRITICAL, HIGH, MEDIUM, LOW, INFO, UNSPECIFIED |
-| `Component Name` | string | Affected component |
-| `Component Version` | string | Component version |
-| `Risk` | float | CVSS risk score (0-10) |
-| `Title` | string | Finding title/description |
-
-### Component Churn (one row per component change per version pair)
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `Project` | string | Project name |
-| `From Version` | string | Baseline version name |
-| `To Version` | string | Current version name |
-| `Change Type` | string | `added`, `removed`, or `updated` |
-| `Component Name` | string | Component name |
-| `Version Baseline` | string | Component version in baseline (empty if added) |
-| `Version Current` | string | Component version in current (empty if removed) |
-| `Findings Impact` | int | Number of findings attributed to this component change |
+HTML-only output. No CSV/XLSX columns.
 
 ---
 
@@ -418,5 +467,5 @@ The Version Comparison report produces four DataFrames for CSV/XLSX export.
 ### Boolean Check
 
 ```jinja2
-{% if row.has_kev %}🔒{% else %}-{% endif %}
+{% if row.has_kev %}yes{% else %}-{% endif %}
 ```

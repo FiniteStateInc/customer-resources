@@ -14,7 +14,10 @@ from __future__ import annotations
 import ast
 import logging
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from fs_report.llm_client import LLMClient
 
 import pandas as pd
 
@@ -97,7 +100,7 @@ def cve_impact_pandas_transform(
 
         # Severity / risk -----------------------------------------------
         severity = str(rec.get("severity", "UNKNOWN")).upper()
-        risk = _safe_float(rec.get("risk", 0))
+        risk = _safe_float(rec.get("risk", 0)) / 10.0
 
         # CWE -----------------------------------------------------------
         cwe = _extract_cwe_from_list(rec.get("cwes"))
@@ -148,6 +151,12 @@ def cve_impact_pandas_transform(
         if reach_findings:
             project_details = _build_project_details_from_findings(
                 reach_findings, project_id_map, component_map
+            )
+            # Override /cves counts with version-filtered data
+            project_names = sorted({p["project_name"] for p in project_details})
+            project_count = len(project_names)
+            components = sorted(
+                {p["component"] for p in project_details if p.get("component")}
             )
             reachable_projects = [
                 p["project_name"]
@@ -245,6 +254,7 @@ def cve_impact_pandas_transform(
 
         # CVE description from enrichment --------------------------------
         cve_descriptions: dict[str, str] = additional_data.get("cve_descriptions", {})
+        nvd_missing_cves: list[str] = additional_data.get("nvd_missing_cves", [])
         description = cve_descriptions.get(cve_id, "")
 
         rows.append(
@@ -274,6 +284,7 @@ def cve_impact_pandas_transform(
                 "_attack_vector": attack_vector,
                 "_vuln_functions": vuln_functions,
                 "_description": description,
+                "_nvd_unavailable": cve_id in set(nvd_missing_cves),
             }
         )
 
@@ -314,6 +325,7 @@ def cve_impact_pandas_transform(
                     "vuln_functions": ", ".join(row["_vuln_functions"]),
                     "first_detected": row["First Detected"],
                     "last_detected": row["Last Detected"],
+                    "nvd_unavailable": row["_nvd_unavailable"],
                     "nvd_url": f"https://nvd.nist.gov/vuln/detail/{row['CVE ID']}",
                     "cwe_url": (
                         f"https://cwe.mitre.org/data/definitions/"
@@ -890,6 +902,12 @@ def _build_cve_prompt(
     nvd_section = ""
     if nvd_snippet:
         nvd_section = f"\n{nvd_snippet}\n"
+    else:
+        nvd_section = (
+            "\n## NVD Fix Data\n"
+            "NVD data was unavailable for this CVE. Set FIX_VERSION to "
+            '"UNKNOWN — verify latest stable release" and CONFIDENCE to "low".\n'
+        )
 
     # Aggregate VEX status across affected projects
     vex_dist: dict[str, int] = {}
@@ -913,6 +931,10 @@ def _build_cve_prompt(
 
     prompt = f"""You are a security remediation advisor. Provide specific remediation guidance for the following CVE.
 If any affected projects already have a VEX status (e.g. NOT_AFFECTED, RESOLVED), factor that into your guidance — they may only need verification rather than new remediation.
+
+IMPORTANT CONSTRAINTS:
+- Base your FIX_VERSION and RATIONALE strictly on the NVD data and advisory references provided below. You may use your general security knowledge for GUIDANCE, WORKAROUND, and CODE_SEARCH.
+- If NVD fix version data is not provided below, set FIX_VERSION to "UNKNOWN — verify latest stable release" and CONFIDENCE to "low".
 
 ## CVE: {cve_id}
 - Severity: {severity} (CVSS {cvss})
@@ -943,6 +965,7 @@ RATIONALE: <1 sentence explaining why this fix or version is recommended, citing
 GUIDANCE: <1-3 sentence upgrade/remediation guidance>
 WORKAROUND: <1-3 sentences: if no straightforward upgrade is available, suggest firmware-specific mitigations such as disabling affected services, network segmentation, restricting exposed interfaces, or configuration hardening. If a direct upgrade is available, state "Upgrade recommended.">
 CODE_SEARCH: <grep/search patterns to find affected code in firmware — use specific vulnerable function names if known>
+PROJECT_NOTES: <If multiple projects are affected, provide a markdown table with columns: Project, Current Component, Action. If only one project, state "Single project — see guidance above.">
 CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium (version estimated from known patterns), low (uncertain — verify independently)>"""
 
     return prompt
@@ -993,6 +1016,33 @@ def _enrich_dossiers_with_ai(
     except Exception as e:
         logger.info(f"NVD client unavailable (fix-version enrichment disabled): {e}")
 
+    # --- Initialise LLM client (once, outside the loop) ---
+    llm = None
+    if want_live_ai:
+        try:
+            from fs_report.llm_client import LLMClient
+        except ImportError:
+            logger.error(
+                "AI guidance requested but 'anthropic' or 'openai' package "
+                "not installed"
+            )
+            want_live_ai = False
+
+        if want_live_ai:
+            cache_dir = getattr(config, "cache_dir", None)
+            cache_ttl = max(getattr(config, "cache_ttl", 0) or 0, 7 * 24 * 3600)
+            try:
+                llm = LLMClient(
+                    cache_dir=cache_dir,
+                    cache_ttl=cache_ttl,
+                    provider=getattr(config, "ai_provider", None),
+                    model_high=getattr(config, "ai_model_high", None),
+                    model_low=getattr(config, "ai_model_low", None),
+                )
+            except (ValueError, ImportError) as e:
+                logger.error(f"AI guidance requested but LLM client init failed: {e}")
+                want_live_ai = False
+
     # Build row lookup by CVE ID for prompt construction
     row_by_cve: dict[str, dict[str, Any]] = {}
     for r in rows:
@@ -1017,7 +1067,8 @@ def _enrich_dossiers_with_ai(
             prompts.append((cve_id, components_label, prompt))
 
         if want_live_ai:
-            guidance = _call_llm_for_cve(prompt, cve_id, config)
+            assert llm is not None  # guarded by want_live_ai
+            guidance = _call_llm_for_cve(prompt, cve_id, llm)
             if guidance:
                 d["ai_guidance"] = guidance
 
@@ -1030,41 +1081,36 @@ def _enrich_dossiers_with_ai(
 def _call_llm_for_cve(
     prompt: str,
     cve_id: str,
-    config: Config,
+    llm: LLMClient,
 ) -> dict[str, str] | None:
-    """Call the LLM for a single CVE and return parsed guidance."""
+    """Call the LLM for a single CVE and return parsed guidance.
+
+    Args:
+        prompt: The formatted LLM prompt for this CVE.
+        cve_id: The CVE identifier (used as cache key).
+        llm: An already-initialized LLMClient instance.
+    """
     try:
-        from fs_report.llm_client import LLMClient
-    except ImportError:
-        logger.warning("LLM package not available; skipping AI guidance")
-        return None
+        # Check cache first — only use if it has meaningful content
+        cached = llm.get_cached_remediation(cve_id)
+        if cached and any(
+            cached.get(k) for k in ("fix_version", "guidance", "workaround")
+        ):
+            logger.info(f"AI cache hit for {cve_id}")
+            return cached
 
-    cache_dir = getattr(config, "cache_dir", None)
-    cache_ttl = getattr(config, "cache_ttl", 0) or 0
-    provider = getattr(config, "ai_provider", None)
-    model_high = getattr(config, "ai_model_high", None)
-    model_low = getattr(config, "ai_model_low", None)
-
-    # AI remediation data is stable — enforce minimum 7-day cache TTL
-    cache_ttl = max(cache_ttl, 7 * 24 * 3600)
-
-    try:
-        llm = LLMClient(
-            cache_dir=cache_dir,
-            cache_ttl=cache_ttl,
-            provider=provider,
-            model_high=model_high,
-            model_low=model_low,
-        )
-    except (ValueError, ImportError) as e:
-        logger.warning(f"LLM client init failed: {e}")
-        return None
-
-    try:
+        logger.info(f"Calling AI for {cve_id}...")
         text = llm._call_llm(prompt, "component", 500)
-        return _parse_ai_response(text)
+        result = _parse_ai_response(text)
+        # Only cache if we got meaningful content
+        if any(result.get(k) for k in ("fix_version", "guidance", "workaround")):
+            llm.cache_remediation(cve_id, result)
+            logger.info(f"AI guidance generated for {cve_id}")
+        else:
+            logger.warning(f"AI response for {cve_id} had no parseable fields")
+        return result
     except Exception as e:
-        logger.warning(f"AI guidance failed for {cve_id}: {e}")
+        logger.error(f"AI guidance failed for {cve_id}: {e}")
         return None
 
 
@@ -1073,6 +1119,9 @@ def _parse_ai_response(text: str) -> dict[str, str]:
 
     Supports multi-line field values — continuation lines that don't
     start with a recognized prefix are appended to the previous field.
+
+    Handles common LLM formatting quirks: markdown bold (``**PREFIX:**``),
+    bullet prefixes (``- PREFIX:``), and extra whitespace.
     """
     field_map = {
         "FIX_VERSION": "fix_version",
@@ -1080,6 +1129,7 @@ def _parse_ai_response(text: str) -> dict[str, str]:
         "GUIDANCE": "guidance",
         "WORKAROUND": "workaround",
         "CODE_SEARCH": "code_search_hints",
+        "PROJECT_NOTES": "project_notes",
         "CONFIDENCE": "confidence",
     }
     result: dict[str, str] = dict.fromkeys(field_map.values(), "")
@@ -1089,11 +1139,17 @@ def _parse_ai_response(text: str) -> dict[str, str]:
         line = line.strip()
         if not line:
             continue
+        # Strip markdown/bullet formatting before matching prefixes
+        clean = re.sub(r"^[\s\-•*#]+", "", line).strip()
+        # Also strip trailing bold markers from the prefix area
+        clean = clean.replace("**", "")
         matched = False
         for prefix, key in field_map.items():
-            if line.startswith(f"{prefix}:"):
-                result[key] = line.split(":", 1)[1].strip()
-                current_key = key
+            if clean.startswith(f"{prefix}:"):
+                result[key] = clean.split(":", 1)[1].strip()
+                # CONFIDENCE is the terminal field — stop accumulating
+                # so trailing LLM output doesn't corrupt it.
+                current_key = key if key != "confidence" else None
                 matched = True
                 break
         if not matched and current_key is not None:
@@ -1102,7 +1158,12 @@ def _parse_ai_response(text: str) -> dict[str, str]:
     # Trim and normalize
     for k in result:
         result[k] = result[k].strip()
-    result["confidence"] = result.get("confidence", "medium").lower()
+
+    # Validate confidence — only accept known levels; strip trailing words
+    raw_conf = result.get("confidence", "medium").lower().strip()
+    first_word = raw_conf.split()[0] if raw_conf else "medium"
+    valid_levels = {"high", "medium", "low"}
+    result["confidence"] = first_word if first_word in valid_levels else "medium"
 
     return result
 

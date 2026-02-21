@@ -459,13 +459,13 @@ def generate_scan_metrics(
     # Select and order columns for the raw data export
     raw_data_columns = [
         "id",
-        "scan_date",
-        "completion_date",
-        "status",
         "type",
+        "status",
         "folder_name",
         "project_name",
         "version_name",
+        "scan_date",
+        "completion_date",
         "duration_minutes",
         "current_status_time_minutes",
         "errorMessage",

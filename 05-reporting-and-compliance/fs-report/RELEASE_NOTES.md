@@ -1,5 +1,26 @@
 # Release Notes
 
+## Version 1.5.3 (February 2026)
+
+### New Features
+
+- **VEX Import** — Apply VEX triage recommendations directly from the CLI with `fs-report run --apply-vex-triage recommendations.json`. Supports `--dry-run` for previewing changes, `--filter-band CRITICAL` to limit scope, and `--vex-concurrency` for throughput control. Use `--autotriage` to generate a Triage report and apply recommendations in one step.
+- **Custom logo support** — Add your organization's logo to all HTML reports with `--logo path/to/logo.png`, via the web UI settings page, or in your config file.
+- **AI guidance in CSV/XLSX** — Triage Prioritization CSV and XLSX exports now include `ai_fix_version`, `ai_guidance`, `ai_workaround`, and `ai_confidence` columns when `--ai` is enabled.
+
+### Improvements
+
+- **Rationalized CSV/XLSX column ordering** — All tabular reports now follow a consistent layout: identity columns first, then severity/risk, triage outputs, context, threat intel, and wordy/internal columns last. This makes CSV and XLSX exports easier to scan and more consistent across reports.
+- **Smarter AI guidance** — NVD fix version data and component-level AI guidance now cascade upward into project and portfolio prompts, producing more grounded remediation advice. Component ranking uses multi-signal scoring (CRITICAL/HIGH count + score sum). Per-finding guidance covers the top 100 findings.
+
+### Bug Fixes
+
+- **CVE Impact version scoping** — Fixed a bug where CVE reachability data included findings from all versions instead of just the latest version per project.
+- **AI parser hardening** — Fixed a parser bug where LLM output after the CONFIDENCE field corrupted results. Confidence values are now validated to known levels (high/medium/low).
+- **Scan queue stability** — Fixed a rate-limit spiral in the scan queue monitor that could cause cascading 429 errors.
+
+---
+
 ## Version 1.5.2 (February 2026)
 
 ### New Features

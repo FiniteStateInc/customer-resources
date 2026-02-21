@@ -8,6 +8,27 @@ import pandas as pd
 
 from fs_report.models import Config
 
+_CSV_COLUMNS = [
+    "CVE ID",
+    "Severity",
+    "CVSS",
+    "Project Name",
+    "Project Version",
+    "Folder",
+    "Component",
+    "Component Version",
+    "Status",
+    "Detected",
+    "# of known exploits",
+    "# of known weaponization",
+    "CWE",
+    "Description",
+    "CVSS v2 Vector",
+    "CVSS v3 Vector",
+    "NVD URL",
+    "FS Link",
+]
+
 
 def findings_by_project_pandas_transform(
     data: list[dict[str, Any]] | pd.DataFrame,
@@ -54,6 +75,8 @@ def findings_by_project_pandas_transform(
         "project.version": "Project Version",
         "cve_id": "CVE ID",
         "severity": "Severity",
+        "detected": "Detected",
+        "status": "Status",
     }
 
     # Create output DataFrame with required columns
@@ -134,6 +157,10 @@ def findings_by_project_pandas_transform(
         errors="ignore",
     )
 
+    # Apply canonical column ordering
+    csv_cols = [c for c in _CSV_COLUMNS if c in output_df.columns]
+    output_df = output_df[csv_cols]
+
     # Sort by CVSS score (descending) and then by Project Name
     output_df = output_df.sort_values(["CVSS", "Project Name"], ascending=[False, True])
 
@@ -150,6 +177,8 @@ def findings_by_project_pandas_transform(
             "Project Name": "Unknown",
             "Project Version": "Unknown",
             "Severity": "",
+            "Detected": "",
+            "Status": "",
             "Description": "",
             "CVSS v2 Vector": "",
             "CVSS v3 Vector": "",

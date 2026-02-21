@@ -634,7 +634,14 @@ NVD results are cached locally (24-hour TTL) so subsequent runs are fast regardl
 The report generates a `vex_recommendations.json` file that can be used to update finding statuses in the platform:
 
 ```bash
-python scripts/apply_vex_triage.py output/triage_prioritization/vex_recommendations.json --dry-run
+# Preview changes (dry run)
+fs-report run --apply-vex-triage output/Triage_Prioritization/vex_recommendations.json --dry-run
+
+# Apply all recommendations
+fs-report run --apply-vex-triage output/Triage_Prioritization/vex_recommendations.json
+
+# Or generate and apply in one step
+fs-report run --recipe "Triage Prioritization" --autotriage --period 30d
 ```
 
 **Example commands:**

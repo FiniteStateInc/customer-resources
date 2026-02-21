@@ -4,7 +4,10 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any, Union
+
+if TYPE_CHECKING:
+    from fs_report.vex_applier import VexApplyResult
 
 import typer
 from rich.console import Console
@@ -71,6 +74,9 @@ def create_config(
     scoring_file: Union[str, None] = None,
     vex_override: bool = False,
     overwrite: bool = False,
+    logo: Union[str, None] = None,
+    apply_vex_triage: Union[str, None] = None,
+    autotriage: bool = False,
 ) -> Config:
     """Build a Config object from CLI args, config file, and env vars."""
     cfg = load_config_file()
@@ -252,6 +258,9 @@ def create_config(
         scoring_file=scoring_file,
         vex_override=vex_override,
         overwrite=overwrite,
+        logo=logo,
+        apply_vex_triage=apply_vex_triage,
+        autotriage=autotriage,
     )
 
 
@@ -295,6 +304,11 @@ def run_reports(
     scoring_file: Union[str, None] = None,
     vex_override: bool = False,
     overwrite: bool = False,
+    logo: Union[str, None] = None,
+    apply_vex_triage: Union[str, None] = None,
+    autotriage: bool = False,
+    dry_run: bool = False,
+    vex_concurrency: int = 5,
 ) -> None:
     """Execute the report generation pipeline."""
     run_id = setup_logging(verbose)
@@ -341,6 +355,9 @@ def run_reports(
             scoring_file=scoring_file,
             vex_override=vex_override,
             overwrite=overwrite,
+            logo=logo,
+            apply_vex_triage=apply_vex_triage,
+            autotriage=autotriage,
         )
 
         file_handler = attach_file_logging(run_id, config.auth_token)
@@ -370,6 +387,33 @@ def run_reports(
             logger.info(
                 f"  AI remediation: Enabled (depth: {config.ai_depth}{provider_info})"
             )
+
+        # Validate mutually exclusive VEX flags
+        if config.apply_vex_triage and config.autotriage:
+            console.print(
+                "[red]Error: --apply-vex-triage and --autotriage are "
+                "mutually exclusive.[/red]"
+            )
+            raise typer.Exit(1)
+
+        # ── Standalone VEX mode: apply and exit (no report generation) ──
+        if config.apply_vex_triage:
+            from fs_report.vex_applier import VexApplier
+
+            console.print(
+                f"[cyan]Applying VEX triage from "
+                f"{config.apply_vex_triage}...[/cyan]"
+            )
+            applier = VexApplier(
+                auth_token=config.auth_token,
+                domain=config.domain,
+                concurrency=vex_concurrency,
+                dry_run=dry_run,
+                vex_override=config.vex_override,
+            )
+            result = applier.apply_file(config.apply_vex_triage)
+            _print_vex_summary(result)
+            return
 
         output_path = Path(config.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -460,6 +504,47 @@ def run_reports(
                     logger.debug("Failed to record run in history", exc_info=True)
 
             console.print("[green]Report generation completed successfully![/green]")
+
+            # ── Auto-triage: apply VEX after reports are fully written ──
+            if autotriage:
+                vex_path = next(
+                    (
+                        f
+                        for f in engine.generated_files
+                        if f.endswith("vex_recommendations.json")
+                    ),
+                    None,
+                )
+                if vex_path:
+                    console.print(
+                        f"\n[cyan]Applying VEX triage recommendations "
+                        f"from {vex_path}...[/cyan]"
+                    )
+                    from fs_report.vex_applier import VexApplier
+
+                    applier = VexApplier(
+                        auth_token=config.auth_token,
+                        domain=config.domain,
+                        concurrency=vex_concurrency,
+                        dry_run=dry_run,
+                        vex_override=config.vex_override,
+                    )
+                    try:
+                        vex_result = applier.apply_file(vex_path)
+                        _print_vex_summary(vex_result)
+                    except Exception:
+                        logger.exception(
+                            "VEX auto-triage failed (reports already written)"
+                        )
+                        console.print(
+                            "[yellow]Warning: VEX auto-triage failed. "
+                            "Reports were generated successfully.[/yellow]"
+                        )
+                else:
+                    logger.warning(
+                        "--autotriage requested but no "
+                        "vex_recommendations.json was generated"
+                    )
         else:
             console.print("[red]Report generation failed![/red]")
             raise typer.Exit(1)
@@ -480,6 +565,28 @@ def run_reports(
         if file_handler is not None:
             logging.getLogger().removeHandler(file_handler)
             file_handler.close()
+
+
+def _print_vex_summary(result: "VexApplyResult") -> None:
+    """Print a rich summary of a VEX application result."""
+    from fs_report.vex_applier import VexApplyResult  # noqa: F811
+
+    assert isinstance(result, VexApplyResult)
+    tag = "[DRY RUN] " if result.dry_run else ""
+    rate = result.total / result.elapsed_seconds if result.elapsed_seconds > 0 else 0
+    console.print(f"\n[bold]{tag}VEX Application Results[/bold]")
+    console.print(f"  Total processed:   {result.total}")
+    console.print(f"  Succeeded:         {result.succeeded}")
+    console.print(f"  Failed:            {result.failed}")
+    if result.skipped_invalid:
+        console.print(f"  Skipped (invalid): {result.skipped_invalid}")
+    if result.skipped_existing:
+        console.print(f"  Skipped (existing):{result.skipped_existing}")
+    console.print(
+        f"  Time:              {result.elapsed_seconds:.1f}s ({rate:.0f} req/s)"
+    )
+    if result.results_path:
+        console.print(f"  Results log:       {result.results_path}")
 
 
 # ── Typer command ────────────────────────────────────────────────────
@@ -731,10 +838,46 @@ def run_command(
         help="Overwrite existing VEX statuses when generating triage recommendations.",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
+    apply_vex_triage: Union[str, None] = typer.Option(
+        None,
+        "--apply-vex-triage",
+        help="Path to vex_recommendations.json to apply to the platform. "
+        "Runs VEX application only (no report generation).",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    autotriage: bool = typer.Option(
+        False,
+        "--autotriage",
+        help="Auto-apply VEX recommendations after Triage Prioritization "
+        "report completes.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Preview VEX updates without making API calls "
+        "(use with --apply-vex-triage or --autotriage).",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    vex_concurrency: int = typer.Option(
+        5,
+        "--vex-concurrency",
+        help="Parallel API requests for VEX application (1-5).",
+        min=1,
+        max=5,
+        rich_help_panel=_PERFORMANCE,
+    ),
     overwrite: bool = typer.Option(
         False,
         "--overwrite",
         help="Overwrite existing report files.",
+        rich_help_panel=_OUTPUT,
+    ),
+    logo: Union[str, None] = typer.Option(
+        None,
+        "--logo",
+        help="Logo image for HTML reports. Filename (resolved in ~/.fs-report/logos/) "
+        "or absolute path. Supports PNG, SVG, JPG, WebP.",
         rich_help_panel=_OUTPUT,
     ),
     no_bundled_recipes: bool = typer.Option(
@@ -823,6 +966,11 @@ def run_command(
         scoring_file=scoring_file,
         vex_override=vex_override,
         overwrite=overwrite,
+        logo=logo,
+        apply_vex_triage=apply_vex_triage,
+        autotriage=autotriage,
+        dry_run=dry_run,
+        vex_concurrency=vex_concurrency,
     )
 
     # Launch local HTTP server if requested

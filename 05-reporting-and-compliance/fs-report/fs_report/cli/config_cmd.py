@@ -55,6 +55,7 @@ def init() -> None:
         "request_delay": 0.5,
         "batch_size": 5,
         "update_check": True,
+        "logo": None,
     }
 
     config_dir.mkdir(parents=True, exist_ok=True)

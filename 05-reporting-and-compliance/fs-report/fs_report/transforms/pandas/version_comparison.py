@@ -21,6 +21,56 @@ logger = logging.getLogger(__name__)
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "UNSPECIFIED"]
 SEVERITY_RANK = {s: i for i, s in enumerate(SEVERITY_ORDER)}
 
+_SUMMARY_COLUMNS = [
+    "Project",
+    "Version",
+    "Date",
+    "Total Findings",
+    "Critical",
+    "High",
+    "Medium",
+    "Low",
+    "Fixed (vs prev)",
+    "New (vs prev)",
+    "Components",
+]
+
+_DETAIL_FINDINGS_COLUMNS = [
+    "Project",
+    "Version",
+    "Date",
+    "ID",
+    "Severity",
+    "Component Name",
+    "Component Version",
+    "Risk",
+    "Title",
+]
+
+_DETAIL_CHURN_COLUMNS = [
+    "Project",
+    "From Version",
+    "To Version",
+    "Change Type",
+    "ID",
+    "Severity",
+    "Component Name",
+    "Component Version",
+    "Risk",
+    "Title",
+]
+
+_COMPONENT_CHURN_COLUMNS = [
+    "Project",
+    "From Version",
+    "To Version",
+    "Change Type",
+    "Component Name",
+    "Version Baseline",
+    "Version Current",
+    "Findings Impact",
+]
+
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -171,6 +221,23 @@ def version_comparison_transform(
         else pd.DataFrame()
     )
 
+    # Apply canonical column ordering to detail DataFrames
+    if not detail_findings_df.empty:
+        cols = [c for c in _DETAIL_FINDINGS_COLUMNS if c in detail_findings_df.columns]
+        detail_findings_df = detail_findings_df[cols]
+    if not detail_findings_churn_df.empty:
+        cols = [
+            c for c in _DETAIL_CHURN_COLUMNS if c in detail_findings_churn_df.columns
+        ]
+        detail_findings_churn_df = detail_findings_churn_df[cols]
+    if not detail_component_churn_df.empty:
+        cols = [
+            c
+            for c in _COMPONENT_CHURN_COLUMNS
+            if c in detail_component_churn_df.columns
+        ]
+        detail_component_churn_df = detail_component_churn_df[cols]
+
     # Build CSV/XLSX summary
     summary_df = pd.DataFrame(all_summary_rows) if all_summary_rows else pd.DataFrame()
     if not summary_df.empty and "Severity" in summary_df.columns:
@@ -180,6 +247,11 @@ def version_comparison_transform(
             ascending=True,
         )
         summary_df = summary_df.drop(columns="_sev_rank")
+
+    # Apply canonical column ordering to summary
+    if not summary_df.empty:
+        cols = [c for c in _SUMMARY_COLUMNS if c in summary_df.columns]
+        summary_df = summary_df[cols]
 
     # Remove internal keys from project results before passing to template
     for pr in project_results:
