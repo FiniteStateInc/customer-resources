@@ -505,21 +505,9 @@ class MarkdownRenderer:
         worst_cvss = summary.get("worst_cvss")
         if worst_cvss is not None:
             metrics.append(("Worst CVSS", _safe_float(worst_cvss)))
-        reach_stats = summary.get("reachability_stats") or summary.get(
-            "reach_by_severity", {}
-        )
-        if isinstance(reach_stats, dict):
-            reachable = (
-                sum(
-                    v
-                    for k, v in reach_stats.items()
-                    if "reachable" in str(k).lower() and "un" not in str(k).lower()
-                )
-                if reach_stats
-                else 0
-            )
-            if reachable:
-                metrics.append(("Reachable CVEs", reachable))
+        reachable = _safe_int(summary.get("total_reachable", 0))
+        if reachable:
+            metrics.append(("Reachable CVEs", reachable))
         parts.append(self._summary_table(metrics))
         parts.append("")
 
@@ -667,7 +655,7 @@ class MarkdownRenderer:
 
         # Summary
         total = (
-            sum(portfolio_summary.values()) if portfolio_summary else len(findings_df)
+            portfolio_summary.get("total", 0) if portfolio_summary else len(findings_df)
         )
         metrics = [("Total Findings", total)]
         for band in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
@@ -889,7 +877,9 @@ class MarkdownRenderer:
                 ("Top Risk Component", top_comp),
             ]
             if "findings_count" in df.columns:
-                metrics.append(("Total Findings", int(df["findings_count"].sum())))
+                metrics.append(
+                    ("Total Findings", _safe_int(df["findings_count"].sum()))
+                )
         else:
             metrics = [("Total Components", 0)]
         parts.append(self._summary_table(metrics))
@@ -955,21 +945,27 @@ class MarkdownRenderer:
         parts.append("")
 
         # KPI Summary
-        metrics = []
-        for key, label in [
-            ("first_total", "First Version Total"),
-            ("latest_total", "Latest Version Total"),
-            ("net_change", "Net Change"),
-            ("fix_rate", "Fix Rate"),
-            ("new_findings", "New Findings"),
-            ("fixed_findings", "Fixed Findings"),
-        ]:
-            val = kpi.get(key)
-            if val is not None:
-                if key == "fix_rate":
-                    metrics.append((label, f"{_safe_float(val)}%"))
-                else:
-                    metrics.append((label, val))
+        metrics: list[tuple[str, Any]] = []
+        total_f = kpi.get("total_findings", {})
+        if isinstance(total_f, dict):
+            metrics.append(("Baseline Total", _safe_int(total_f.get("baseline", 0))))
+            metrics.append(("Current Total", _safe_int(total_f.get("current", 0))))
+            delta = total_f.get("delta", 0)
+            pct = total_f.get("pct", 0.0)
+            metrics.append(
+                ("Net Change", f"{_safe_int(delta):+d} ({_safe_float(pct, 1, '0.0')}%)")
+            )
+        crit_f = kpi.get("critical_findings", {})
+        if isinstance(crit_f, dict) and crit_f.get("delta", 0):
+            metrics.append(
+                ("Critical Delta", f"{_safe_int(crit_f.get('delta', 0)):+d}")
+            )
+        fixed = kpi.get("fixed_count", 0)
+        new = kpi.get("new_count", 0)
+        if fixed:
+            metrics.append(("Fixed Findings", _safe_int(fixed)))
+        if new:
+            metrics.append(("New Findings", _safe_int(new)))
         if metrics:
             parts.append(self._summary_table(metrics))
         else:

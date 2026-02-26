@@ -323,7 +323,7 @@ async def prerun_form(
     workflow_title = str(form.get("workflow_title", ""))
 
     selected = {r.lower() for r in recipe_names}
-    show_cve = bool(selected & CVE_RECIPES)
+    show_cve = bool(selected & (CVE_RECIPES | REMEDIATION_RECIPES))
     show_ai = bool(selected & (CVE_RECIPES | TRIAGE_RECIPES | REMEDIATION_RECIPES))
     show_finding_types = bool(selected & FINDINGS_RECIPES)
     show_version_fields = bool(selected & VERSION_RECIPES)
