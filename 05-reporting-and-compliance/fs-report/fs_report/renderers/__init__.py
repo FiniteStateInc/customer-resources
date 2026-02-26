@@ -20,6 +20,7 @@
 
 """Report renderers package."""
 
+from fs_report.renderers.md_renderer import MarkdownRenderer
 from fs_report.renderers.report_renderer import ReportRenderer
 
-__all__ = ["ReportRenderer"]
+__all__ = ["MarkdownRenderer", "ReportRenderer"]

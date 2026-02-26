@@ -2,7 +2,7 @@
 Pandas transform functions for Scan Analysis report.
 """
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pandas as pd
@@ -36,7 +36,7 @@ def scan_analysis_transform(
     if isinstance(data, pd.DataFrame):
         if data.empty:
             return pd.DataFrame()
-        df = data
+        df = data.copy()
     elif not data:
         return pd.DataFrame()
     else:
@@ -232,13 +232,14 @@ def calculate_scan_durations(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate scan durations and parse timestamps."""
     df_with_durations = df.copy()
 
-    # Parse timestamps
+    # Parse timestamps (utc=True for consistent tz; as_unit("us") for consistent
+    # resolution so .loc cross-column assignment doesn't fail in pandas 2.x)
     df_with_durations["created_dt"] = pd.to_datetime(
-        df_with_durations["created"], errors="coerce"
+        df_with_durations["created"], errors="coerce", utc=True
     )
     df_with_durations["completed_dt"] = pd.to_datetime(
-        df_with_durations["completed"], errors="coerce"
-    )
+        df_with_durations["completed"], errors="coerce", utc=True
+    ).dt.as_unit("us")
 
     # SOURCE_SCA and SBOM_IMPORT scans are completed when created and never get a completed date
     # Set completed_dt = created_dt for these scan types
@@ -265,7 +266,7 @@ def calculate_scan_durations(df: pd.DataFrame) -> pd.DataFrame:
     df_with_durations.loc[instant_complete_mask, "duration_minutes"] = 0
 
     # Calculate current status timing for active scans
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
 
     def calculate_current_status_time(row: pd.Series) -> Any:
         """Calculate how long a scan has been in its current status."""
@@ -276,10 +277,8 @@ def calculate_scan_durations(df: pd.DataFrame) -> pd.DataFrame:
         if row["status"] == "COMPLETED" and pd.notna(row["completed_dt"]):
             return None  # Use duration_minutes instead
 
-        # For active scans (INITIAL, STARTED), calculate time since created
-        current_time = (
-            now - row["created_dt"].replace(tzinfo=None)
-        ).total_seconds() / 60
+        # For active scans (INITIAL, PENDING_UPLOAD, STARTED), calculate time since created
+        current_time = (now - row["created_dt"]).total_seconds() / 60
         return int(round(current_time)) if current_time >= 0 else None
 
     df_with_durations["current_status_time_minutes"] = df_with_durations.apply(
@@ -392,11 +391,13 @@ def generate_scan_metrics(
     else:
         scans_in_period = df
 
-    error_scans = scans_in_period[scans_in_period["status"] == "ERROR"]
+    error_scans = scans_in_period[
+        scans_in_period["status"].isin(["ERROR", "UPLOAD_FAILED"])
+    ]
     external_scan_types_for_fail = ["SOURCE_SCA", "JAR", "SBOM_IMPORT"]
-    # For non-external scans, INITIAL is a failed attempt
+    # For non-external scans, INITIAL/PENDING_UPLOAD is a failed attempt
     non_external_initial = scans_in_period[
-        (scans_in_period["status"] == "INITIAL")
+        (scans_in_period["status"].isin(["INITIAL", "PENDING_UPLOAD"]))
         & (~scans_in_period["type"].isin(external_scan_types_for_fail))
     ]
     # For external scans (SOURCE_SCA, JAR, SBOM_IMPORT), any non-COMPLETED status is failed
@@ -404,8 +405,8 @@ def generate_scan_metrics(
     external_non_completed = scans_in_period[
         (scans_in_period["type"].isin(external_scan_types_for_fail))
         & (
-            ~scans_in_period["status"].isin(["COMPLETED", "ERROR"])
-        )  # ERROR already in error_scans
+            ~scans_in_period["status"].isin(["COMPLETED", "ERROR", "UPLOAD_FAILED"])
+        )  # ERROR/UPLOAD_FAILED already in error_scans
     ]
     failed_scans = pd.concat(
         [error_scans, non_external_initial, external_non_completed]
@@ -515,12 +516,12 @@ def calculate_daily_metrics(
         # Fallback to scans created on this date
         completed_day_data = day_data
 
-    initial_scans = day_data[day_data["status"] == "INITIAL"]
+    initial_scans = day_data[day_data["status"].isin(["INITIAL", "PENDING_UPLOAD"])]
     started_scans = day_data[day_data["status"] == "STARTED"]
 
     # Separate external/third-party scans - they're completed externally and uploaded
     external_scan_types = ["SOURCE_SCA", "JAR", "SBOM_IMPORT"]
-    # Only count COMPLETED external scans as completed; STARTED/INITIAL external scans are failed
+    # Only count COMPLETED external scans as completed; STARTED/INITIAL/PENDING_UPLOAD external scans are failed
     external_scans = completed_day_data[
         (completed_day_data["type"].isin(external_scan_types))
         & (completed_day_data["status"] == "COMPLETED")
@@ -532,20 +533,22 @@ def calculate_daily_metrics(
     # External scans that are not COMPLETED are failed (they should complete immediately)
     external_failed = day_data[
         (day_data["type"].isin(external_scan_types))
-        & (~day_data["status"].isin(["COMPLETED", "ERROR"]))  # ERROR counted separately
+        & (
+            ~day_data["status"].isin(["COMPLETED", "ERROR", "UPLOAD_FAILED"])
+        )  # ERROR/UPLOAD_FAILED counted separately
     ]
 
-    # For non-external scans, INITIAL scans are failed attempts, only STARTED scans are actually waiting
+    # For non-external scans, INITIAL/PENDING_UPLOAD scans are failed attempts, only STARTED scans are actually waiting
     # Use day_data (created scans) for active scan counts
     other_scans_for_active = day_data[~day_data["type"].isin(external_scan_types)]
     other_initial = other_scans_for_active[
-        other_scans_for_active["status"] == "INITIAL"
+        other_scans_for_active["status"].isin(["INITIAL", "PENDING_UPLOAD"])
     ]
     other_started = other_scans_for_active[
         other_scans_for_active["status"] == "STARTED"
     ]
 
-    # All INITIAL scans are considered failed attempts (regardless of age)
+    # All INITIAL/PENDING_UPLOAD scans are considered failed attempts (regardless of age)
     stuck_scans = len(other_initial)
 
     # Only STARTED scans are actually waiting/processing
@@ -559,15 +562,18 @@ def calculate_daily_metrics(
         & (other_scans["completed"] != "-")
     ]
 
-    # Count failed scans: ERROR status scans that were created on this date
-    # Check both day_data and all_scans to ensure we catch all ERROR scans
+    # Count failed scans: ERROR/UPLOAD_FAILED status scans that were created on this date
+    # Check both day_data and all_scans to ensure we catch all failed scans
     # Use case-insensitive comparison in case status values vary
+    _error_statuses = {"ERROR", "UPLOAD_FAILED"}
     if "status" in day_data.columns:
-        error_scans_from_day_data = day_data[day_data["status"].str.upper() == "ERROR"]
+        error_scans_from_day_data = day_data[
+            day_data["status"].str.upper().isin(_error_statuses)
+        ]
     else:
         error_scans_from_day_data = pd.DataFrame()
 
-    # Also check all_scans for ERROR scans created on this date (in case day_data is filtered)
+    # Also check all_scans for ERROR/UPLOAD_FAILED scans created on this date (in case day_data is filtered)
     error_scans_from_all = pd.DataFrame()
     if (
         all_scans is not None
@@ -577,7 +583,7 @@ def calculate_daily_metrics(
     ):
         error_scans_from_all = all_scans[
             (all_scans["scan_date"] == date)
-            & (all_scans["status"].str.upper() == "ERROR")
+            & (all_scans["status"].str.upper().isin(_error_statuses))
         ]
 
     # Combine both sources and remove duplicates
@@ -705,7 +711,7 @@ def calculate_daily_metrics(
 
     # Current status analytics for active scans (exclude external scans)
     active_scans = day_data[
-        (day_data["status"].isin(["INITIAL", "STARTED"]))
+        (day_data["status"].isin(["INITIAL", "PENDING_UPLOAD", "STARTED"]))
         & (~day_data["type"].isin(external_scan_types))
     ]
     if len(active_scans) > 0 and "current_status_time_minutes" in active_scans.columns:
@@ -720,8 +726,8 @@ def calculate_daily_metrics(
         metrics["avg_active_time_minutes"] = 0
         metrics["max_active_time_minutes"] = 0
 
-    # Separate analytics for INITIAL vs STARTED scans
-    initial_scans = day_data[day_data["status"] == "INITIAL"]
+    # Separate analytics for INITIAL/PENDING_UPLOAD vs STARTED scans
+    initial_scans = day_data[day_data["status"].isin(["INITIAL", "PENDING_UPLOAD"])]
     started_scans = day_data[day_data["status"] == "STARTED"]
 
     if (
@@ -766,11 +772,13 @@ def calculate_daily_metrics(
     metrics["sbom_import_scans"] = type_counts.get("SBOM_IMPORT", 0)
 
     # Failure counts by scan type for this day (for time series chart)
-    failed_day_data = day_data[day_data["status"].isin(["ERROR", "INITIAL"])]
-    # Exclude instant-complete types from INITIAL (not real failures)
+    failed_day_data = day_data[
+        day_data["status"].isin(["ERROR", "UPLOAD_FAILED", "INITIAL", "PENDING_UPLOAD"])
+    ]
+    # Exclude instant-complete types from INITIAL/PENDING_UPLOAD (not real failures)
     failed_day_data = failed_day_data[
         ~(
-            (failed_day_data["status"] == "INITIAL")
+            (failed_day_data["status"].isin(["INITIAL", "PENDING_UPLOAD"]))
             & (failed_day_data["type"].isin(["SOURCE_SCA", "JAR", "SBOM_IMPORT"]))
         )
     ]
@@ -823,12 +831,12 @@ def calculate_summary_metrics(
     else:
         scans_completed_in_period = df[df["completion_date"].notna()]
 
-    initial_scans = df[df["status"] == "INITIAL"]
+    initial_scans = df[df["status"].isin(["INITIAL", "PENDING_UPLOAD"])]
     started_scans = df[df["status"] == "STARTED"]
 
     # Separate external/third-party scans - they're completed externally and uploaded
     external_scan_types = ["SOURCE_SCA", "JAR", "SBOM_IMPORT"]
-    # Only count COMPLETED external scans as completed; STARTED/INITIAL external scans are failed
+    # Only count COMPLETED external scans as completed; STARTED/INITIAL/PENDING_UPLOAD external scans are failed
     external_scans_in_period = scans_completed_in_period[
         (scans_completed_in_period["type"].isin(external_scan_types))
         & (scans_completed_in_period["status"] == "COMPLETED")
@@ -844,20 +852,22 @@ def calculate_summary_metrics(
     external_failed_in_period = scans_started_in_period[
         (scans_started_in_period["type"].isin(external_scan_types))
         & (
-            ~scans_started_in_period["status"].isin(["COMPLETED", "ERROR"])
-        )  # ERROR counted separately
+            ~scans_started_in_period["status"].isin(
+                ["COMPLETED", "ERROR", "UPLOAD_FAILED"]
+            )
+        )  # ERROR/UPLOAD_FAILED counted separately
     ]
 
-    # For non-external scans, INITIAL scans are failed attempts, only STARTED scans are actually waiting
+    # For non-external scans, INITIAL/PENDING_UPLOAD scans are failed attempts, only STARTED scans are actually waiting
     # Use scans started in period for these counts
     other_initial = other_scans_started_in_period[
-        other_scans_started_in_period["status"] == "INITIAL"
+        other_scans_started_in_period["status"].isin(["INITIAL", "PENDING_UPLOAD"])
     ]
     other_started = other_scans_started_in_period[
         other_scans_started_in_period["status"] == "STARTED"
     ]
 
-    # All INITIAL scans are considered failed attempts (regardless of age)
+    # All INITIAL/PENDING_UPLOAD scans are considered failed attempts (regardless of age)
     stuck_scans = len(other_initial)
 
     # Only STARTED scans are actually waiting/processing
@@ -922,12 +932,14 @@ def calculate_summary_metrics(
         "total_completed_scans": len(external_scans_in_period)
         + len(other_completed),  # Scans COMPLETED in period
         "failed_scans": len(
-            scans_started_in_period[scans_started_in_period["status"] == "ERROR"]
+            scans_started_in_period[
+                scans_started_in_period["status"].isin(["ERROR", "UPLOAD_FAILED"])
+            ]
         )
         + len(other_initial)
         + len(
             external_failed_in_period
-        ),  # ERROR + non-external INITIAL + external non-COMPLETED
+        ),  # ERROR/UPLOAD_FAILED + non-external INITIAL/PENDING_UPLOAD + external non-COMPLETED
         "stuck_scans": stuck_scans,
         "recently_queued": recently_queued,
         "still_active_scans": len(other_started),
@@ -975,7 +987,7 @@ def calculate_summary_metrics(
 
     # Overall current status analytics (exclude external scans)
     active_scans = df[
-        (df["status"].isin(["INITIAL", "STARTED"]))
+        (df["status"].isin(["INITIAL", "PENDING_UPLOAD", "STARTED"]))
         & (~df["type"].isin(external_scan_types))
     ]
     if len(active_scans) > 0 and "current_status_time_minutes" in active_scans.columns:
@@ -990,8 +1002,8 @@ def calculate_summary_metrics(
         summary["avg_active_time_minutes"] = 0
         summary["max_active_time_minutes"] = 0
 
-    # Separate analytics for INITIAL vs STARTED scans
-    initial_scans = df[df["status"] == "INITIAL"]
+    # Separate analytics for INITIAL/PENDING_UPLOAD vs STARTED scans
+    initial_scans = df[df["status"].isin(["INITIAL", "PENDING_UPLOAD"])]
     started_scans = df[df["status"] == "STARTED"]
 
     if (
@@ -1039,8 +1051,8 @@ def calculate_summary_metrics(
 
 
 def analyze_current_queue(df: pd.DataFrame) -> dict[str, Any]:
-    """Analyze current active scans with detailed INITIAL vs STARTED breakdown."""
-    initial_scans = df[df["status"] == "INITIAL"]
+    """Analyze current active scans with detailed INITIAL/PENDING_UPLOAD vs STARTED breakdown."""
+    initial_scans = df[df["status"].isin(["INITIAL", "PENDING_UPLOAD"])]
     started_scans = df[df["status"] == "STARTED"]
 
     queue_analysis: dict[str, Any] = {
@@ -1049,7 +1061,7 @@ def analyze_current_queue(df: pd.DataFrame) -> dict[str, Any]:
         "started_scans": len(started_scans),
     }
 
-    # Analytics for INITIAL scans (waiting in queue)
+    # Analytics for INITIAL/PENDING_UPLOAD scans (waiting in queue)
     if (
         len(initial_scans) > 0
         and "current_status_time_minutes" in initial_scans.columns

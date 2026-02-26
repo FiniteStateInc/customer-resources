@@ -20,6 +20,7 @@
 
 """Main report renderer that orchestrates all output formats."""
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ import pandas as pd
 from fs_report.models import Recipe, ReportData
 from fs_report.renderers.csv_renderer import CSVRenderer
 from fs_report.renderers.html_renderer import HTMLRenderer
+from fs_report.renderers.md_renderer import MarkdownRenderer
 from fs_report.renderers.xlsx_renderer import XLSXRenderer
 
 
@@ -48,6 +50,7 @@ class ReportRenderer:
         self.csv_renderer = CSVRenderer()
         self.xlsx_renderer = XLSXRenderer()
         self.html_renderer = HTMLRenderer()
+        self.md_renderer = MarkdownRenderer()
 
     def check_output_guard(self, recipe: Recipe) -> None:
         """Raise FileExistsError if the recipe output dir already has files and overwrite is off."""
@@ -73,6 +76,21 @@ class ReportRenderer:
             formats = ["csv", "xlsx", "html"]
         formats = [f.lower() for f in formats]
 
+        # Auto-skip expensive formats for large datasets
+        row_count = len(report_data.data) if hasattr(report_data.data, "__len__") else 0
+        if row_count > 65_530 and "xlsx" in formats:
+            formats = [f for f in formats if f != "xlsx"]
+            self.logger.info(
+                f"Skipping XLSX for {recipe.name}: {row_count:,} rows "
+                f"exceed Excel's URL limit. Use CSV instead."
+            )
+        if row_count > 50_000 and "html" in formats:
+            formats = [f for f in formats if f != "html"]
+            self.logger.info(
+                f"Skipping HTML for {recipe.name}: {row_count:,} rows "
+                f"would produce an oversized file. Use CSV instead."
+            )
+
         generated_files = []
 
         # Generate table-based formats if requested
@@ -84,6 +102,16 @@ class ReportRenderer:
         # Generate HTML if requested
         if "html" in formats:
             generated_files += self._render_chart_formats(
+                recipe, report_data, recipe_output_dir
+            )
+
+        # Generate JSON remediation package if requested
+        if "json" in formats:
+            generated_files += self._render_json(recipe, report_data, recipe_output_dir)
+
+        # Generate Markdown agent prompt if requested
+        if "md" in formats:
+            generated_files += self._render_markdown(
                 recipe, report_data, recipe_output_dir
             )
 
@@ -305,6 +333,50 @@ class ReportRenderer:
             generated_files.append(str(html_path))
         except Exception as e:
             self.logger.error(f"Error generating chart formats: {e}")
+        return generated_files
+
+    def _render_json(
+        self,
+        recipe: Recipe,
+        report_data: ReportData,
+        output_dir: Path,
+    ) -> list[str]:
+        """Render JSON remediation package. Returns list of generated file paths."""
+        generated_files = []
+        try:
+            additional_data = report_data.metadata.get("additional_data", {})
+            json_package = additional_data.get("json_package")
+            if json_package is None:
+                tr = additional_data.get("transform_result", {})
+                json_package = tr.get("json_package") if isinstance(tr, dict) else None
+            if json_package and isinstance(json_package, dict):
+                base_filename = self._sanitize_filename(recipe.name)
+                json_path = output_dir / f"{base_filename}.json"
+                json_path.write_text(
+                    json.dumps(json_package, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                self.logger.debug(f"Generated JSON: {json_path}")
+                generated_files.append(str(json_path))
+        except Exception as e:
+            self.logger.error(f"Error generating JSON: {e}")
+        return generated_files
+
+    def _render_markdown(
+        self,
+        recipe: Recipe,
+        report_data: ReportData,
+        output_dir: Path,
+    ) -> list[str]:
+        """Render agent-optimized Markdown report. Returns list of generated file paths."""
+        generated_files = []
+        try:
+            base_filename = self._sanitize_filename(recipe.name)
+            md_path = output_dir / f"{base_filename}.md"
+            self.md_renderer.render(recipe, report_data, md_path)
+            generated_files.append(str(md_path))
+        except Exception as e:
+            self.logger.error(f"Error generating Markdown: {e}")
         return generated_files
 
     def _sanitize_filename(self, filename: str) -> str:

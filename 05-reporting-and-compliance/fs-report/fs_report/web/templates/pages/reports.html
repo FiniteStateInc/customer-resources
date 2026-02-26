@@ -24,49 +24,87 @@
             <div class="history-list">
                 {% for run in history %}
                 <div class="history-item">
+                    {% if run.scope and (run.scope.project_filter or run.scope.folder_filter) %}
+                    <div class="history-target">
+                        {% if run.scope.project_filter %}
+                        <span class="history-target-badge target-project">Project: {{ run.scope.project_name or run.scope.project_filter }}</span>
+                        {% endif %}
+                        {% if run.scope.folder_filter %}
+                        <span class="history-target-badge target-folder">Folder: {{ run.scope.folder_filter }}</span>
+                        {% endif %}
+                    </div>
+                    {% endif %}
                     <div class="history-meta">
                         <span class="history-id">{{ run.id }}</span>
                         <span class="history-time">{{ run.timestamp_display }}</span>
                         <span class="history-domain">{{ run.domain }}</span>
                         <span class="history-dir" title="{{ run.output_dir }}">{{ run.output_dir }}</span>
+                        {% if run.log_file %}
+                        <a href="/api/reports/log/{{ run.id }}" target="_blank" class="btn btn-log">Log</a>
+                        {% endif %}
                     </div>
                     <div class="history-recipes">
                         {% for r in run.recipes %}
                         <span class="history-recipe-badge">{{ r }}</span>
                         {% endfor %}
                     </div>
-                    {% if run.files %}
+                    {% if run.file_groups %}
                     <div class="report-grid">
-                        {% for f in run.files %}
-                        {% if f.format == 'html' %}
+                        {% for group in run.file_groups %}
+                        {% if group.html %}
                         <div class="report-card" x-data="{ showPreview: false }">
                             <div class="report-info" @click="showPreview = !showPreview">
                                 <h3 class="report-name">
                                     <span class="format-badge format-html">HTML</span>
-                                    {{ f.name }}
+                                    {{ group.html.name }}
                                 </h3>
                                 <div class="report-meta">
-                                    <span class="report-path">{{ f.path }}</span>
-                                    <span class="report-size">{{ f.size_kb }} KB</span>
-                                    <span class="report-age">{{ f.age }}</span>
+                                    <span class="report-path">{{ group.html.path }}</span>
+                                    <span class="report-size">{{ group.html.size_kb }} KB</span>
+                                    <span class="report-age">{{ group.html.age }}</span>
                                 </div>
                             </div>
                             <div class="report-actions">
-                                <a href="/reports/file/{{ run.id }}/{{ f.path }}" target="_blank" class="btn btn-sm btn-primary">Open</a>
+                                <a href="/reports/file/{{ run.id }}/{{ group.html.path }}" target="_blank" class="btn btn-sm btn-primary">Open</a>
                             </div>
+                            {% if group.ancillary %}
+                            <div class="report-ancillary">
+                                {% for f in group.ancillary %}
+                                <div class="report-file-compact">
+                                    <span class="format-badge format-{{ f.format }}">{{ f.format | upper }}</span>
+                                    <span class="compact-meta">{{ f.size_kb }} KB</span>
+                                    <a href="/reports/file/{{ run.id }}/{{ f.path }}" class="compact-download" download>Download</a>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
                             <div x-show="showPreview" x-transition class="report-preview">
-                                <iframe src="/reports/file/{{ run.id }}/{{ f.path }}" sandbox="allow-same-origin" loading="lazy"></iframe>
+                                <iframe src="/reports/file/{{ run.id }}/{{ group.html.path }}" sandbox="allow-same-origin" loading="lazy"></iframe>
                             </div>
                         </div>
                         {% else %}
-                        <div class="report-file-compact">
-                            <span class="format-badge format-{{ f.format }}">{{ f.format | upper }}</span>
-                            <span class="compact-name">{{ f.name }}</span>
-                            <span class="compact-meta">{{ f.size_kb }} KB</span>
-                            <a href="/reports/file/{{ run.id }}/{{ f.path }}" class="compact-download" download>Download</a>
+                        <div class="report-card">
+                            <div class="report-info">
+                                <h3 class="report-name">{{ group.name }}</h3>
+                                <div class="report-meta">
+                                    <span class="report-age">{{ group.age }}</span>
+                                </div>
+                            </div>
+                            <div class="report-ancillary">
+                                {% for f in group.ancillary %}
+                                <div class="report-file-compact">
+                                    <span class="format-badge format-{{ f.format }}">{{ f.format | upper }}</span>
+                                    <span class="compact-meta">{{ f.size_kb }} KB</span>
+                                    <a href="/reports/file/{{ run.id }}/{{ f.path }}" class="compact-download" download>Download</a>
+                                </div>
+                                {% endfor %}
+                            </div>
                         </div>
                         {% endif %}
                         {% endfor %}
+                    </div>
+                    <div class="history-bundle">
+                        <a href="/reports/bundle/{{ run.id }}" class="btn btn-sm btn-default" download>Download All (.zip)</a>
                     </div>
                     {% else %}
                     <p class="history-no-files">Report files have been removed from disk.</p>
@@ -77,29 +115,67 @@
         </section>
         {% endif %}
 
-        {% if report_files %}
+        {% if report_groups %}
         <section class="current-output-section">
             <h3>Current Output Directory</h3>
             <span class="reports-dir">{{ output_dir }}</span>
             <div class="report-grid">
-                {% for f in report_files %}
+                {% for group in report_groups %}
+                {% if group.html %}
                 <div class="report-card" x-data="{ showPreview: false }">
                     <div class="report-info" @click="showPreview = !showPreview">
-                        <h3 class="report-name">{{ f.name }}</h3>
+                        <h3 class="report-name">
+                            <span class="format-badge format-html">HTML</span>
+                            {{ group.html.name }}
+                        </h3>
                         <div class="report-meta">
-                            <span class="report-path">{{ f.path }}</span>
-                            <span class="report-size">{{ f.size_kb }} KB</span>
-                            <span class="report-age">{{ f.age }}</span>
+                            <span class="report-path">{{ group.html.path }}</span>
+                            <span class="report-size">{{ group.html.size_kb }} KB</span>
+                            <span class="report-age">{{ group.html.age }}</span>
                         </div>
                     </div>
                     <div class="report-actions">
-                        <a href="/output/{{ f.path }}" target="_blank" class="btn btn-sm btn-primary">Open</a>
+                        <a href="/output/{{ group.html.path }}" target="_blank" class="btn btn-sm btn-primary">Open</a>
                     </div>
+                    {% if group.ancillary %}
+                    <div class="report-ancillary">
+                        {% for f in group.ancillary %}
+                        <div class="report-file-compact">
+                            <span class="format-badge format-{{ f.format }}">{{ f.format | upper }}</span>
+                            <span class="compact-meta">{{ f.size_kb }} KB</span>
+                            <a href="/output/{{ f.path }}" class="compact-download" download>Download</a>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
                     <div x-show="showPreview" x-transition class="report-preview">
-                        <iframe src="/output/{{ f.path }}" sandbox="allow-same-origin" loading="lazy"></iframe>
+                        <iframe src="/output/{{ group.html.path }}" sandbox="allow-same-origin" loading="lazy"></iframe>
                     </div>
                 </div>
+                {% else %}
+                {# No HTML — show ancillary files as a standalone group #}
+                <div class="report-card">
+                    <div class="report-info">
+                        <h3 class="report-name">{{ group.name }}</h3>
+                        <div class="report-meta">
+                            <span class="report-age">{{ group.age }}</span>
+                        </div>
+                    </div>
+                    <div class="report-ancillary">
+                        {% for f in group.ancillary %}
+                        <div class="report-file-compact">
+                            <span class="format-badge format-{{ f.format }}">{{ f.format | upper }}</span>
+                            <span class="compact-meta">{{ f.size_kb }} KB</span>
+                            <a href="/output/{{ f.path }}" class="compact-download" download>Download</a>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
                 {% endfor %}
+            </div>
+            <div class="history-bundle">
+                <a href="/reports/bundle/output" class="btn btn-sm btn-default" download>Download All (.zip)</a>
             </div>
         </section>
         {% elif not history %}

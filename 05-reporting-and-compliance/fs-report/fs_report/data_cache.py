@@ -101,14 +101,10 @@ class DataCache:
 
     def _is_subset_filter(self, cached_filter: str, requested_filter: str) -> bool:
         """Check if requested filter is a subset of cached filter."""
-        if not cached_filter and requested_filter:
-            return False
-
         if cached_filter == requested_filter:
             return True
 
-        # Simple heuristic: if cached filter is empty or more general,
-        # and requested filter adds restrictions, it's likely a subset
+        # If cached filter is empty (all data), any request is a subset
         if not cached_filter and requested_filter:
             return True
 
@@ -230,7 +226,7 @@ class DataCache:
         import time
 
         self.cache[cache_id] = CacheEntry(
-            data=data, timestamp=time.time(), params=cache_key.full_params
+            data=list(data), timestamp=time.time(), params=cache_key.full_params
         )
 
         self.logger.debug(f"Cached {len(data)} records for {cache_id}")

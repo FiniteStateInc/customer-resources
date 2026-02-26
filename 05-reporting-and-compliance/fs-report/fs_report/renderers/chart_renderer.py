@@ -150,13 +150,14 @@ class ChartRenderer:
             plt.xticks(rotation=45, ha="right")
             plt.tight_layout()
             plt.savefig(output_path, dpi=150, bbox_inches="tight")
-            plt.close()
 
             self.logger.debug(f"Bar chart saved to {output_path}")
 
         except Exception as e:
             self.logger.error(f"Error rendering bar chart: {e}")
             raise
+        finally:
+            plt.close()
 
     def render_line_chart(
         self,
@@ -222,13 +223,14 @@ class ChartRenderer:
             plt.grid(True, alpha=0.3)
             plt.tight_layout()
             plt.savefig(output_path, dpi=150, bbox_inches="tight")
-            plt.close()
 
             self.logger.debug(f"Line chart saved to {output_path}")
 
         except Exception as e:
             self.logger.error(f"Error rendering line chart: {e}")
             raise
+        finally:
+            plt.close()
 
     def render_pie_chart(
         self,
@@ -276,13 +278,14 @@ class ChartRenderer:
             plt.axis("equal")
             plt.tight_layout()
             plt.savefig(output_path, dpi=150, bbox_inches="tight")
-            plt.close()
 
             self.logger.debug(f"Pie chart saved to {output_path}")
 
         except Exception as e:
             self.logger.error(f"Error rendering pie chart: {e}")
             raise
+        finally:
+            plt.close()
 
     def render_pareto_chart(
         self,
@@ -453,13 +456,14 @@ class ChartRenderer:
                 facecolor="white",
                 edgecolor="none",
             )
-            plt.close()
 
             self.logger.debug(f"Pareto chart saved to {output_path}")
 
         except Exception as e:
             self.logger.error(f"Error rendering Pareto chart: {e}")
             raise
+        finally:
+            plt.close()
 
     def render_bubble_chart(
         self,
@@ -620,31 +624,6 @@ class ChartRenderer:
             # Enhanced grid
             ax.grid(True, alpha=0.2, linestyle="-", linewidth=0.5)
 
-            # Enhanced legend for risk levels
-            from matplotlib.patches import Patch
-
-            legend_elements = [
-                Patch(facecolor="#8B0000", label="KEV + Exploit", alpha=0.7),
-                Patch(facecolor="#DC143C", label="Has Exploit", alpha=0.7),
-                Patch(facecolor="#FF4500", label="In KEV", alpha=0.7),
-                Patch(facecolor="#FF6347", label="Very High Risk (400+)", alpha=0.7),
-                Patch(facecolor="#FF8C00", label="High Risk (300-399)", alpha=0.7),
-                Patch(
-                    facecolor="#FFD700", label="Medium-High Risk (200-299)", alpha=0.7
-                ),
-                Patch(facecolor="#90EE90", label="Medium Risk (100-199)", alpha=0.7),
-                Patch(facecolor="#4682B4", label="Low Risk (<100)", alpha=0.7),
-            ]
-            ax.legend(
-                handles=legend_elements,
-                loc="upper left",
-                bbox_to_anchor=(1.05, 1),
-                frameon=True,
-                fancybox=True,
-                shadow=True,
-                fontsize=9,
-            )
-
             # Add subtle background
             ax.set_facecolor("#FAFAFA")
 
@@ -656,13 +635,14 @@ class ChartRenderer:
                 facecolor="white",
                 edgecolor="none",
             )
-            plt.close()
 
             self.logger.debug(f"Bubble chart saved to {output_path}")
 
         except Exception as e:
             self.logger.error(f"Error rendering bubble chart: {e}")
             raise
+        finally:
+            plt.close()
 
     def render_heatmap(
         self,
@@ -738,13 +718,14 @@ class ChartRenderer:
                 facecolor="white",
                 edgecolor="none",
             )
-            plt.close()
 
             self.logger.debug(f"Heatmap saved to {output_path}")
 
         except Exception as e:
             self.logger.error(f"Error rendering heatmap: {e}")
             raise
+        finally:
+            plt.close()
 
     def render_chart(
         self,

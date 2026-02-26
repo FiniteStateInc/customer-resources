@@ -294,6 +294,11 @@ class Recipe(BaseModel):
     scan_frequency_transform: list[Transform] | None = Field(
         None, description="Transforms for scan frequency chart"
     )
+    requires_project: bool = Field(
+        False,
+        description="Whether this recipe requires a --project filter. "
+        "When true, the engine will refuse to run without one.",
+    )
     output: OutputConfig = Field(..., description="Output configuration")
 
     @field_validator("name")
@@ -343,18 +348,31 @@ class Config(BaseModel):
         "cve",
         description="Finding types to include. Types: cve, sast, thirdparty, binary_sca, source_sca. Categories: credentials, config_issues, crypto_material. Use 'all' for everything. Comma-separated for multiple.",
     )
+    scan_types: str | None = Field(
+        None,
+        description="Scan types to include (e.g. SCA,SOURCE_SCA,SAST). Comma-separated.",
+    )
+    scan_statuses: str | None = Field(
+        None,
+        description="Scan statuses to include (e.g. COMPLETED,ERROR). Comma-separated.",
+    )
+    low_memory: bool = Field(
+        False,
+        description="Reduce peak memory for large findings reports. "
+        "Drops heavy intermediate columns after per-batch scoring.",
+    )
     current_version_only: bool = Field(
         True,
         description="Only include latest version per project (default for performance). Use --all-versions for full history.",
     )
-    # [BETA] SQLite cache options
+    # SQLite cache options
     cache_ttl: int = Field(
         0,
-        description="[BETA] Cache TTL in seconds. 0 disables cross-run caching (default). "
+        description="Cache TTL in seconds. 0 disables cross-run caching (default). "
         "Use --cache-ttl flag to enable persistent cache.",
     )
     cache_dir: str | None = Field(
-        None, description="[BETA] Directory for SQLite cache. Defaults to ~/.fs-report/"
+        None, description="Directory for SQLite cache. Defaults to ~/.fs-report/"
     )
     # Optional date filter for assessment reports
     detected_after: str | None = Field(
@@ -389,6 +407,12 @@ class Config(BaseModel):
     ai_prompts: bool = Field(
         False,
         description="Export AI prompts to file and HTML for use with any LLM (no API key required)",
+    )
+    ai_analysis: bool = Field(
+        False,
+        description="Generate deep AI analysis per action using the summary model. "
+        "Produces detailed markdown remediation analysis embedded in the report. "
+        "Expensive — uses the high-capability model. Implies ai_prompts.",
     )
     nvd_api_key: str | None = Field(
         None,
@@ -427,7 +451,13 @@ class Config(BaseModel):
     cve_filter: str | None = Field(
         None,
         description="Comma-separated CVE IDs to filter (e.g. CVE-2024-1234,CVE-2024-5678). "
-        "Used by the CVE Impact report to produce dossiers for specific CVEs.",
+        "Used by CVE Impact (dossiers) and Remediation Package (scoped remediation).",
+    )
+    component_filter: str | None = Field(
+        None,
+        description="Comma-separated component names (e.g. busybox@1.36.1-r2,dropbear). "
+        "Use name@version for exact match, name alone for all versions. "
+        "Used by Remediation Package to scope remediation to specific components.",
     )
     scoring_file: str | None = Field(
         None,
@@ -458,6 +488,38 @@ class Config(BaseModel):
         None,
         description="Logo image filename (resolved against ~/.fs-report/logos/) or absolute path.",
     )
+    # Cross-server version comparison (hidden flags)
+    compare_domain: str | None = Field(
+        None,
+        description="Secondary server domain for cross-server Version Comparison.",
+    )
+    compare_auth_token: str | None = Field(
+        None,
+        description="API token for the secondary server.",
+    )
+    compare_project: str | None = Field(
+        None,
+        description="Project name or ID on the secondary server.",
+    )
+    compare_version: str | None = Field(
+        None,
+        description="Version ID on the secondary server (optional; defaults to latest).",
+    )
+
+    @field_validator("compare_domain", mode="before")
+    @classmethod
+    def validate_compare_domain(cls, v: str | None) -> str | None:
+        """Clean up compare_domain the same way as domain."""
+        if v is None:
+            return v
+        domain = v.strip().lower()
+        if not domain:
+            return None
+        if domain.startswith(("http://", "https://")):
+            domain = domain.split("://", 1)[1]
+        if domain.endswith("/"):
+            domain = domain[:-1]
+        return domain
 
     @field_validator("domain")
     @classmethod

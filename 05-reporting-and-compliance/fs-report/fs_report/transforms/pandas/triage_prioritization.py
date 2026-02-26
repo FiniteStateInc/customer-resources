@@ -627,7 +627,9 @@ def triage_prioritization_transform(
                 if str(fid).startswith("CVE-"):
                     _nvd_snip = _prompt_nvd.format_for_prompt(str(fid))
             prompt_text = _build_triage_prompt(
-                row, nvd_snippet=_nvd_snip, scoring_config=scoring_config
+                row,
+                nvd_snippet=_nvd_snip,
+                scoring_config=scoring_config,
             )
             finding_id = row.get("finding_id", "Unknown")
             component = f"{row.get('component_name', '')} {row.get('component_version', '')}".strip()
@@ -781,12 +783,25 @@ def triage_prioritization_transform(
                 _comp_nvd_snip = ""
                 if _prompt_nvd:
                     _comp_nvd_snip = _prompt_nvd.format_batch_for_prompt(cve_ids)
+                # Build per-CVE exploitability signals
+                _cve_sigs: dict[str, dict[str, Any]] = {}
+                for _cid in cve_ids:
+                    _cve_row = df[df["finding_id"] == _cid]
+                    if not _cve_row.empty:
+                        _r = _cve_row.iloc[0]
+                        _cve_sigs[_cid] = {
+                            "epss": _r.get("epss_percentile", 0),
+                            "in_kev": bool(_r.get("in_kev", False)),
+                            "has_exploit": bool(_r.get("has_exploit", False)),
+                            "gate": _r.get("gate_assignment", "NONE"),
+                        }
                 ai_component_prompts[comp_key] = _build_component_prompt(
                     crow["component_name"],
                     crow["component_version"],
                     cve_ids,
                     reach_info,
                     nvd_fix_snippet=_comp_nvd_snip,
+                    cve_signals=_cve_sigs if _cve_sigs else None,
                 )
             logger.info(
                 f"Generated {len(ai_component_prompts)} component-level AI prompts"
@@ -854,11 +869,76 @@ def triage_prioritization_transform(
             if parts:
                 rec["reason"] += " AI mitigation: " + "; ".join(parts)
 
+            # Check AI applicability/verdict — if the AI says not_affected,
+            # override VEX recommendation from IN_TRIAGE to NOT_AFFECTED.
+            ai_applicability = fg.get("applicability", "")
+            ai_verdict = cg.get("verdict", "")
+            ai_confidence = fg.get("confidence", "") or cg.get("confidence", "")
+
+            if ai_applicability == "not_affected" or ai_verdict == "not_affected":
+                rec["recommended_vex_status"] = "NOT_AFFECTED"
+                rec["justification"] = "COMPONENT_NOT_PRESENT"
+                source = (
+                    "finding" if ai_applicability == "not_affected" else "component"
+                )
+                rationale = fg.get("rationale", "") or cg.get("rationale", "")
+                rec["reason"] = (
+                    f"AI {source}-level analysis: not_affected "
+                    f"(confidence={ai_confidence}). "
+                    f"{rationale[:300]}"
+                )
+                rec["ai_override"] = True
+            elif not ai_applicability and not ai_verdict:
+                # Fallback: check ai_guidance text for strong false-positive signal
+                guidance_text = (
+                    fg.get("guidance") or fg.get("action") or cg.get("guidance", "")
+                ).lower()
+                has_mismatch = any(
+                    w in guidance_text
+                    for w in (
+                        "mismatch",
+                        "different library",
+                        "different implementation",
+                        "false positive",
+                        "not applicable",
+                    )
+                )
+                has_not_affected = (
+                    "not_affected" in guidance_text or "not affected" in guidance_text
+                )
+                if has_not_affected and has_mismatch:
+                    rec["recommended_vex_status"] = "NOT_AFFECTED"
+                    rec["justification"] = "COMPONENT_NOT_PRESENT"
+                    rec["reason"] = (
+                        f"AI guidance indicates component is not affected "
+                        f"(library mismatch detected). {rec.get('reason', '')}"
+                    )
+                    rec["ai_override"] = True
+
+        ai_overrides = sum(1 for r in vex_recommendations if r.get("ai_override"))
+        if ai_overrides:
+            logger.info(
+                f"VEX: {ai_overrides} IN_TRIAGE recommendations overridden to "
+                f"NOT_AFFECTED based on AI applicability/verdict analysis"
+            )
+
     # Build vex_reason_lookup for interactive triage button
     vex_reason_lookup: dict[str, str] = {
         rec["finding_id"]: rec["reason"]
         for rec in vex_recommendations
-        if rec.get("recommended_vex_status") == "IN_TRIAGE" and rec.get("finding_id")
+        if rec.get("finding_id")
+        and (rec.get("recommended_vex_status") == "IN_TRIAGE" or rec.get("ai_override"))
+    }
+
+    # Build vex_rec_lookup for template status column + accept-recommendation
+    vex_rec_lookup: dict[str, dict[str, Any]] = {
+        rec["finding_id"]: {
+            "recommended_vex_status": rec["recommended_vex_status"],
+            "justification": rec.get("justification", ""),
+            "reason": rec.get("reason", ""),
+        }
+        for rec in vex_recommendations
+        if rec.get("finding_id")
     }
 
     # Defensive recompute of reachability_label from reachability_score
@@ -921,6 +1001,8 @@ def triage_prioritization_transform(
         "priority_band",
         "triage_score",
         "gate_assignment",
+        # VEX status
+        "status",
         # Component
         "component_name",
         "component_version",
@@ -994,6 +1076,7 @@ def triage_prioritization_transform(
         "ai_finding_prompts": ai_finding_prompts,
         "scoring_config": scoring_config,
         "vex_reason_lookup": vex_reason_lookup,
+        "vex_rec_lookup": vex_rec_lookup,
         "_extra_generated_files": extra_generated_files,
     }
 
@@ -1584,6 +1667,15 @@ def build_portfolio_summary(df: pd.DataFrame) -> dict[str, Any]:
         round(float(df["triage_score"].mean()), 1) if not df.empty else 0.0
     )
 
+    # Gate assignment counts
+    if "gate_assignment" in df.columns:
+        gate_counts = df["gate_assignment"].value_counts()
+        summary["gate_1_count"] = int(gate_counts.get("GATE_1", 0))
+        summary["gate_2_count"] = int(gate_counts.get("GATE_2", 0))
+    else:
+        summary["gate_1_count"] = 0
+        summary["gate_2_count"] = 0
+
     # VEX/triage status distribution
     if "status" in df.columns:
         status_counts = (
@@ -1671,15 +1763,78 @@ def build_top_components(df: pd.DataFrame, top_n: int = 15) -> pd.DataFrame:
         return pd.DataFrame()
 
     # Aggregate by component
+    agg_dict: dict[str, tuple[str, str]] = {
+        "total_findings": ("finding_id", "count"),
+        "avg_score": ("triage_score", "mean"),
+        "max_score": ("triage_score", "max"),
+    }
+    if "has_exploit" in df.columns:
+        agg_dict["exploit_count"] = ("has_exploit", "sum")
+    if "in_kev" in df.columns:
+        agg_dict["kev_count"] = ("in_kev", "sum")
+    if "epss_percentile" in df.columns:
+        agg_dict["max_epss"] = ("epss_percentile", "max")
+
     component_agg = (
         df.groupby(["component_name", "component_version"])
-        .agg(
-            total_findings=("finding_id", "count"),
-            avg_score=("triage_score", "mean"),
-            max_score=("triage_score", "max"),
-        )
+        .agg(**agg_dict)
         .reset_index()
     )
+
+    # Reachable count (reachability_score > 0)
+    if "reachability_score" in df.columns:
+        reach_ct = (
+            df[df["reachability_score"] > 0]
+            .groupby(["component_name", "component_version"])
+            .size()
+            .reset_index(name="reachable_count")
+        )
+        component_agg = component_agg.merge(
+            reach_ct, on=["component_name", "component_version"], how="left"
+        )
+        component_agg["reachable_count"] = (
+            component_agg["reachable_count"].fillna(0).astype(int)
+        )
+    else:
+        component_agg["reachable_count"] = 0
+
+    # Gate counts per component
+    if "gate_assignment" in df.columns:
+        gate_ct = pd.crosstab(
+            [df["component_name"], df["component_version"]],
+            df["gate_assignment"],
+        ).reset_index()
+        for g in ("GATE_1", "GATE_2"):
+            if g not in gate_ct.columns:
+                gate_ct[g] = 0
+        gate_ct = gate_ct.rename(
+            columns={"GATE_1": "gate_1_count", "GATE_2": "gate_2_count"}
+        )
+        # Keep only the columns we need
+        gate_cols = [
+            "component_name",
+            "component_version",
+            "gate_1_count",
+            "gate_2_count",
+        ]
+        gate_ct = gate_ct[[c for c in gate_cols if c in gate_ct.columns]]
+        component_agg = component_agg.merge(
+            gate_ct, on=["component_name", "component_version"], how="left"
+        )
+    for g in ("gate_1_count", "gate_2_count"):
+        if g not in component_agg.columns:
+            component_agg[g] = 0
+        else:
+            component_agg[g] = component_agg[g].fillna(0).astype(int)
+
+    # Ensure exploit/kev/epss columns exist with defaults
+    for col, default in [
+        ("exploit_count", 0),
+        ("kev_count", 0),
+        ("max_epss", 0.0),
+    ]:
+        if col not in component_agg.columns:
+            component_agg[col] = default
 
     # Add representative IDs for platform deep links
     for col_name in ("project_id", "project_version_id", "component_id"):
@@ -1748,14 +1903,14 @@ def build_top_components(df: pd.DataFrame, top_n: int = 15) -> pd.DataFrame:
         band_ct, on=["component_name", "component_version"], how="left"
     )
 
-    # Sort by severity: CRITICAL count desc, then HIGH, then avg_score
+    # Sort by gate priority, then severity, then avg_score
     for band in BAND_ORDER:
         if band not in result.columns:
             result[band] = 0
 
     result = result.sort_values(
-        ["CRITICAL", "HIGH", "avg_score"],
-        ascending=[False, False, False],
+        ["gate_1_count", "gate_2_count", "CRITICAL", "HIGH", "avg_score"],
+        ascending=[False, False, False, False, False],
     ).head(top_n)
 
     result["avg_score"] = result["avg_score"].round(1)
@@ -1789,7 +1944,7 @@ def build_factor_radar_data(df: pd.DataFrame, top_n: int = 5) -> dict[str, Any]:
         raw_epss = proj_df["epss_percentile"].mean()
         epss = min(raw_epss * 100, 100) if raw_epss <= 1.0 else min(raw_epss, 100)
 
-        # CVSS/risk: API returns 0–10 scale
+        # CVSS/risk: API returns 0–100 scale
         raw_cvss = proj_df["risk"].mean()
         cvss = (
             min((raw_cvss / 10.0) * 100, 100)
@@ -1860,9 +2015,8 @@ def build_vex_recommendations(
         if raw_status and str(raw_status) not in ("", "nan", "None"):
             current_vex_status = str(raw_status)
 
-        # Skip findings that already have a VEX status (unless --vex-override)
-        if current_vex_status and not vex_override:
-            continue
+        # Track whether this is a new recommendation or re-confirmation
+        already_triaged = bool(current_vex_status and not vex_override)
 
         # Build reachability detail string
         reach_detail = f"Reachability={reach_label} (score={reach_score})"
@@ -1882,6 +2036,7 @@ def build_vex_recommendations(
         if reach_score < 0:
             # Unreachable findings (any band) → NOT_AFFECTED
             vex_status = "NOT_AFFECTED"
+            vex_justification = "CODE_NOT_REACHABLE"
             reason = (
                 f"Triage band={band}. {reach_detail}. "
                 f"Binary analysis confirms code path is not reachable in deployed firmware."
@@ -1889,6 +2044,7 @@ def build_vex_recommendations(
         elif band == "CRITICAL":
             # CRITICAL (not unreachable) → IN_TRIAGE
             vex_status = "IN_TRIAGE"
+            vex_justification = None  # no specific justification for IN_TRIAGE
             reason = (
                 f"Triage band=CRITICAL (score={row.get('triage_score', 0)}, "
                 f"gate={row.get('gate_assignment', 'NONE')}). "
@@ -1909,28 +2065,38 @@ def build_vex_recommendations(
         if pd.isna(project_name_val):
             project_name_val = ""
 
-        recommendations.append(
-            {
-                "id": row.get("id", ""),  # Internal numeric PK (used for API calls)
-                "finding_id": row.get("finding_id", ""),  # CVE ID (human-readable)
-                "severity": str(severity_val),
-                "project_name": str(project_name_val),
-                "project_id": str(row.get("project_id", "")),
-                "project_version_id": row.get("project_version_id", ""),
-                "version_name": str(row.get("version_name", "")),
-                "folder_name": row.get("folder_name", ""),
-                "current_vex_status": current_vex_status,
-                "priority_band": band,
-                "triage_score": row.get("triage_score", 0),
-                "recommended_vex_status": vex_status,
-                "reason": reason,
-                "reachability_score": reach_score,
-                "reachability_label": reach_label,
-                "vuln_functions": vuln_funcs,
-                "component_name": row.get("component_name", ""),
-                "component_version": row.get("component_version", ""),
-            }
-        )
+        rec: dict[str, Any] = {
+            "id": row.get("id", ""),  # Internal numeric PK (used for API calls)
+            "finding_id": row.get("finding_id", ""),  # CVE ID (human-readable)
+            "severity": str(severity_val),
+            "project_name": str(project_name_val),
+            "project_id": str(row.get("project_id", "")),
+            "project_version_id": row.get("project_version_id", ""),
+            "version_name": str(row.get("version_name", "")),
+            "folder_name": row.get("folder_name", ""),
+            "current_vex_status": current_vex_status,
+            "priority_band": band,
+            "triage_score": row.get("triage_score", 0),
+            "recommended_vex_status": vex_status,
+            "reason": reason,
+            "reachability_score": reach_score,
+            "reachability_label": reach_label,
+            "vuln_functions": vuln_funcs,
+            "component_name": row.get("component_name", ""),
+            "component_version": row.get("component_version", ""),
+        }
+        if vex_justification:
+            rec["justification"] = vex_justification
+        if already_triaged:
+            rec["already_triaged"] = True
+        recommendations.append(rec)
+
+    new_count = sum(1 for r in recommendations if not r.get("already_triaged"))
+    confirmed_count = sum(1 for r in recommendations if r.get("already_triaged"))
+    logger.info(
+        f"VEX recommendations: {len(recommendations)} total "
+        f"({new_count} new, {confirmed_count} re-confirmed)"
+    )
 
     return recommendations
 
@@ -2040,6 +2206,7 @@ If a current VEX status is present, factor it into your recommendations — for 
 {nvd_section}
 Respond in this exact format:
 PRIORITY: <confirm or adjust the priority band with rationale>
+APPLICABILITY: <affected | not_affected | uncertain — IMPORTANT: Check library identity FIRST, before considering reachability or exploit data. (1) Does the NVD Target name a DIFFERENT library than the scanned component? e.g., CVE targets "gnu/glibc" but component is openwrt/libc (musl), or CVE targets "openssl" but component is BoringSSL. If YES → answer "not_affected" and STOP. Reachability of standard functions (getaddrinfo, realpath, glob, strcoll, etc.) does NOT mean the same bug exists — different implementations have completely different code and different bugs. (2) Is this the wrong platform? e.g., Windows-only CVE on Linux. If YES → "not_affected". (3) Is the installed version outside the affected range? If YES → "not_affected". Only answer "affected" when the component is genuinely the SAME library the CVE targets.>
 ACTION: <specific recommended action: upgrade component, apply patch, configure mitigation, or accept risk>
 RATIONALE: <1 sentence explaining why this action is recommended, citing NVD data or advisory if available>
 FIX_VERSION: <specific version number. If NVD data says "FIXED in >= X", recommend X. If NVD data says a version is "STILL VULNERABLE", the fix must be AFTER that version — do NOT recommend the vulnerable version. Cross-reference the installed version ({component_ver}) against the NVD affected ranges. Only state "verify latest stable release" if no version data is available.>
@@ -2090,6 +2257,28 @@ def _format_components_bullet(components: list[dict[str, Any]]) -> str:
         line = f"- **{label}** -- {total} findings ({band_str})"
         if avg:
             line += f", avg score: {avg}"
+        # Exploitability signals
+        signals = []
+        g1 = c.get("gate_1_count", 0)
+        g2 = c.get("gate_2_count", 0)
+        if g1:
+            signals.append(f"{g1} GATE_1")
+        if g2:
+            signals.append(f"{g2} GATE_2")
+        exploit = c.get("exploit_count", 0)
+        if exploit:
+            signals.append(f"{int(exploit)} exploited")
+        kev = c.get("kev_count", 0)
+        if kev:
+            signals.append(f"{int(kev)} KEV")
+        reachable = c.get("reachable_count", 0)
+        if reachable:
+            signals.append(f"{int(reachable)} reachable")
+        max_epss = c.get("max_epss", 0)
+        if max_epss and float(max_epss) > 0.5:
+            signals.append(f"EPSS max: {float(max_epss) * 100:.0f}th pctl")
+        if signals:
+            line += f" | {', '.join(signals)}"
         lines.append(line)
     return "\n".join(lines) if lines else "No component data available."
 
@@ -2118,6 +2307,26 @@ def _format_project_components_bullet(
             line += f", {len(reach_cves)} reachable"
         if vuln_fns:
             line += f", vuln functions: {', '.join(str(f) for f in vuln_fns)}"
+        # Exploitability signals
+        signals = []
+        gate_counts = c.get("gate_counts", {})
+        g1 = gate_counts.get("GATE_1", 0) if isinstance(gate_counts, dict) else 0
+        g2 = gate_counts.get("GATE_2", 0) if isinstance(gate_counts, dict) else 0
+        if g1:
+            signals.append(f"{g1} GATE_1")
+        if g2:
+            signals.append(f"{g2} GATE_2")
+        exploit = c.get("exploit_count", 0)
+        if exploit:
+            signals.append(f"{int(exploit)} exploited")
+        kev = c.get("kev_count", 0)
+        if kev:
+            signals.append(f"{int(kev)} KEV")
+        max_epss = c.get("max_epss", 0)
+        if max_epss and float(max_epss) > 0.5:
+            signals.append(f"EPSS max: {float(max_epss) * 100:.0f}th pctl")
+        if signals:
+            line += f" | {', '.join(signals)}"
         lines.append(line)
     return "\n".join(lines) if lines else "No component data available."
 
@@ -2262,32 +2471,48 @@ Note: "Reachable" means static/binary analysis confirmed the vulnerable function
             vex_lines.append(f"- {status}: {count}")
         vex_section = "\n".join(vex_lines) + "\n"
 
+    # Gate counts for highest-priority section
+    g1 = portfolio_summary.get("gate_1_count", 0)
+    g2 = portfolio_summary.get("gate_2_count", 0)
+
+    gate_section = ""
+    if g1 or g2:
+        gate_section = f"""
+## Highest Priority: GATE_1 + GATE_2 Findings
+- GATE_1 (CRITICAL): {g1} findings — reachable + exploited/KEV vulnerabilities
+- GATE_2 (HIGH): {g2} findings — network-accessible + high EPSS or exploit available
+
+These are the most urgent findings. Focus remediation here first.
+"""
+
     return f"""You are a firmware security analyst. Analyze this vulnerability triage data and provide strategic remediation guidance.
 
 ## Portfolio Overview
 - Total findings: {portfolio_summary.get('total', 0)}
-- CRITICAL: {portfolio_summary.get('CRITICAL', 0)}
-- HIGH: {portfolio_summary.get('HIGH', 0)}
-- MEDIUM: {portfolio_summary.get('MEDIUM', 0)}
-- LOW: {portfolio_summary.get('LOW', 0)}
-- INFO: {portfolio_summary.get('INFO', 0)}
+- CRITICAL: {portfolio_summary.get('CRITICAL', 0)}, HIGH: {portfolio_summary.get('HIGH', 0)}, MEDIUM: {portfolio_summary.get('MEDIUM', 0)}, LOW: {portfolio_summary.get('LOW', 0)}, INFO: {portfolio_summary.get('INFO', 0)}
+- GATE_1 (must fix): {g1}, GATE_2 (should fix): {g2}
 {vex_section}
 {_build_scoring_methodology(scoring_config)}
-{reach_section}
+{gate_section}{reach_section}
+## Components by Exploitability (ranked)
+{_format_components_bullet(top_comps)}
+
 ## Top Projects by Risk
 {_format_projects_bullet(top_projects)}
-
-## Top Risky Components
-{_format_components_bullet(top_comps)}
 {_build_nvd_section_for_portfolio(top_comps, nvd_snippets_map)}
 {_build_project_ai_section(top_projects, project_ai_summaries)}
-Provide a concise strategic summary (3-5 paragraphs):
-1. Overall risk posture assessment — highlight the reachability findings as the most urgent
-2. Top 3 remediation priorities (specific components/projects), prioritizing reachable+exploitable findings
-3. Quick wins (high-impact, low-effort fixes), especially where specific vulnerable functions are identified
-4. Recommended remediation order
+## Applicability Warning
+Some NVD matches may be false positives (e.g., openwrt/libc matched to glibc CVEs, or BoringSSL matched to OpenSSL CVEs).
+When the NVD product name differs from the scanned component, flag it as a potential false positive.
 
-Be specific with component names and versions. When vulnerable functions are identified, mention them as they guide developers to the exact code that needs attention. Focus on actionable guidance."""
+Provide a concise strategic summary (3-5 paragraphs):
+1. Focus on GATE_1 and GATE_2 findings as the most urgent
+2. Top 3 components to remediate, ranked by exploitability (exploits, KEV, EPSS, reachability)
+3. Quick wins — single upgrades resolving multiple GATE_1/GATE_2 findings
+4. Recommended remediation order across projects
+5. Flag any likely false-positive NVD matches (where the CVE targets a different library than the scanned component)
+
+Be specific with component names and versions. Focus on actionable guidance."""
 
 
 def _build_project_prompt(
@@ -2335,6 +2560,16 @@ def _build_project_prompt(
             if vf:
                 vuln_funcs.update(fn.strip() for fn in vf.split(",") if fn.strip())
 
+        # Exploitability signals for this component
+        comp_exploit_count = sum(1 for f in comp_findings if f.get("has_exploit"))
+        comp_kev_count = sum(1 for f in comp_findings if f.get("in_kev"))
+        epss_vals = [f.get("epss_percentile", 0) for f in comp_findings]
+        comp_max_epss = max(epss_vals) if epss_vals else 0
+        comp_gate_counts: dict[str, int] = {}
+        for f in comp_findings:
+            g = f.get("gate_assignment", "NONE")
+            comp_gate_counts[g] = comp_gate_counts.get(g, 0) + 1
+
         component_summary.append(
             {
                 "component": comp_key,
@@ -2344,6 +2579,10 @@ def _build_project_prompt(
                 "reachable_cves": reachable_cves[:5],
                 "unreachable_count": unreachable_count,
                 "vuln_functions": list(vuln_funcs)[:5],
+                "exploit_count": comp_exploit_count,
+                "kev_count": comp_kev_count,
+                "max_epss": comp_max_epss,
+                "gate_counts": comp_gate_counts,
             }
         )
 
@@ -2369,28 +2608,48 @@ def _build_project_prompt(
         "\n## VEX / Triage Status\n" + "\n".join(vex_lines) + "\n" if vex_lines else ""
     )
 
+    # Gate counts for this project
+    proj_gate_1 = sum(1 for f in findings if f.get("gate_assignment") == "GATE_1")
+    proj_gate_2 = sum(1 for f in findings if f.get("gate_assignment") == "GATE_2")
+
+    gate_section = ""
+    if proj_gate_1 or proj_gate_2:
+        gate_section = f"""
+## Highest Priority: GATE_1 + GATE_2 Findings
+- GATE_1 (CRITICAL): {proj_gate_1} findings — reachable + exploited/KEV vulnerabilities
+- GATE_2 (HIGH): {proj_gate_2} findings — network-accessible + high EPSS or exploit available
+
+These are the most urgent findings. Focus remediation here first.
+"""
+
     return f"""You are a firmware security analyst. Provide remediation guidance for project "{project_name}".
 
 ## Risk Band Distribution
 {_json.dumps(band_counts, indent=2)}
+- GATE_1 (must fix): {proj_gate_1}, GATE_2 (should fix): {proj_gate_2}
 {vex_section}
 {_build_scoring_methodology(scoring_config)}
-
+{gate_section}
 ## Reachability Summary
 - Reachable: {reachable_total} (vulnerable code confirmed present and callable in firmware)
 - Unreachable: {unreachable_total} (vulnerable code not reachable — lower risk)
 - Inconclusive: {unknown_total} (reachability not determined)
 
-## Top Components by Risk
+## Top Components by Exploitability
 {_format_project_components_bullet(component_summary)}
 {_build_nvd_section_for_project(component_summary, nvd_snippets_map)}
 {_build_component_ai_section(component_summary, component_guidance)}
-Note: "reachable" indicates CVEs where binary analysis confirmed the vulnerable code path is callable. Vulnerable functions listed are specific functions identified in the deployed binaries — developers should search for and audit these.
+## Applicability Warning
+Some NVD matches may be false positives (e.g., openwrt/libc matched to glibc CVEs, or BoringSSL matched to OpenSSL CVEs).
+When the NVD product name differs from the scanned component, flag it as a potential false positive.
+
+Note: "reachable" indicates CVEs where binary analysis confirmed the vulnerable code path is callable.
 
 Provide a concise project remediation plan (2-3 paragraphs):
-1. Which components to upgrade first — prioritize those with reachable vulnerabilities and known exploits
-2. Recommended upgrade order considering dependencies. Mention specific vulnerable functions when known.
-3. Any quick wins or workarounds, especially for reachable findings where specific functions are identified
+1. Focus on GATE_1 and GATE_2 findings as the most urgent — which components to upgrade first
+2. Recommended upgrade order ranked by exploitability (exploits, KEV, EPSS, reachability)
+3. Quick wins — single upgrades resolving multiple GATE_1/GATE_2 findings
+4. Flag any likely false-positive NVD matches (where the CVE targets a different library than the scanned component)
 
 Be specific with component names and versions."""
 
@@ -2403,12 +2662,37 @@ def _build_component_prompt(
     cve_details: list[dict[str, Any]] | None = None,
     exploit_details: list[dict[str, Any]] | None = None,
     nvd_fix_snippet: str = "",
+    cve_signals: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """Build a component-level remediation prompt (offline, no API key needed).
 
     Mirrors the prompt structure in LLMClient._build_component_prompt.
+
+    Args:
+        cve_signals: Optional dict mapping CVE ID to per-CVE signals like
+            {"epss": 0.95, "in_kev": True, "has_exploit": True, "gate": "GATE_1"}.
     """
-    cve_section = "\n".join(f"- {cve}" for cve in cve_ids[:10])
+    # Build CVE list with per-CVE exploitability signals
+    cve_lines = []
+    for cve in cve_ids[:10]:
+        line = f"- {cve}"
+        if cve_signals and cve in cve_signals:
+            sig = cve_signals[cve]
+            parts = []
+            epss = sig.get("epss", 0)
+            if epss and float(epss) > 0:
+                parts.append(f"EPSS: {float(epss) * 100:.0f}th pctl")
+            if sig.get("in_kev"):
+                parts.append("CISA KEV")
+            if sig.get("has_exploit"):
+                parts.append("exploit available")
+            gate = sig.get("gate", "")
+            if gate and gate != "NONE":
+                parts.append(f"Gate: {gate}")
+            if parts:
+                line += f" ({', '.join(parts)})"
+        cve_lines.append(line)
+    cve_section = "\n".join(cve_lines)
 
     # CVE detail section (parity with live LLMClient prompt)
     cve_detail_section = ""
@@ -2493,6 +2777,7 @@ CVEs:
 {reach_section}
 {nvd_section}
 Respond in this exact format:
+VERDICT: <affected | not_affected | uncertain — IMPORTANT: Check library identity FIRST, before considering reachability or exploit data. (1) Does the NVD Target name a DIFFERENT library than the scanned component? e.g., CVE targets "gnu/glibc" but component is openwrt/libc (musl), or CVE targets "openssl" but component is BoringSSL. If YES → answer "not_affected" and STOP. Reachability of standard functions (getaddrinfo, realpath, glob, strcoll, nan, nanf, etc.) does NOT mean the same bug exists — different implementations (glibc vs musl, OpenSSL vs BoringSSL) have completely different source code and different bugs. A function name match is NOT a vulnerability match. (2) Is this the wrong platform? e.g., Windows-only CVE on Linux. If YES → "not_affected". (3) Is the installed version outside the affected range? If YES → "not_affected". Only answer "affected" when the component is genuinely the SAME library the CVE targets.>
 FIX_VERSION: <specific version number. If NVD data says "FIXED in >= X", recommend X. If NVD data says a version is "STILL VULNERABLE", the fix must be AFTER that version — do NOT recommend the vulnerable version. For well-known libraries (OpenSSL, curl, busybox, zlib, etc.), recall the specific patch version from security advisories. Only state "verify latest stable release" if no version data is available.>
 RATIONALE: <1 sentence explaining why this fix or version is recommended, citing advisory source if known>
 GUIDANCE: <1-2 sentence upgrade guidance>

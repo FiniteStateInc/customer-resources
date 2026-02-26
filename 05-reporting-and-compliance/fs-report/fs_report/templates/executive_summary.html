@@ -69,7 +69,7 @@ const severityColors = {
 // Prepare grouped bar chart data (project x severity, no 'none')
 (function() {
     const raw = {{ chart_data_json.project_breakdown | safe }};
-    const tableRows = {{ table_data.rows | tojson }};
+    const tableRows = {{ table_data.rows | tojson if table_data else '[]' }};
     const projectSeverity = {};
     tableRows.forEach(row => {
         const project = row['project.name'];

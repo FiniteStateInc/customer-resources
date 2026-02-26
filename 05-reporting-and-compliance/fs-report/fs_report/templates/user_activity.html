@@ -222,7 +222,7 @@ const loginsCtx = document.getElementById('loginsChart').getContext('2d');
 new Chart(loginsCtx, {
     type: 'line',
     data: {
-        labels: [{% for row in daily_logins %}'{{ row["Date"] }}'{% if not loop.last %}, {% endif %}{% endfor %}],
+        labels: [{% for row in daily_logins %}{{ row["Date"] | tojson }}{% if not loop.last %}, {% endif %}{% endfor %}],
         datasets: [{
             label: 'Active Users',
             data: [{% for row in daily_logins %}{{ row["Unique Users"] }}{% if not loop.last %}, {% endif %}{% endfor %}],
@@ -300,7 +300,7 @@ const pieCtx = document.getElementById('activityPieChart').getContext('2d');
 new Chart(pieCtx, {
     type: 'pie',
     data: {
-        labels: [{% for row in activity_by_type[:10] %}'{{ row["Event Type"] }}'{% if not loop.last %}, {% endif %}{% endfor %}],
+        labels: [{% for row in activity_by_type[:10] %}{{ row["Event Type"] | tojson }}{% if not loop.last %}, {% endif %}{% endfor %}],
         datasets: [{
             data: [{% for row in activity_by_type[:10] %}{{ row["Count"] }}{% if not loop.last %}, {% endif %}{% endfor %}],
             backgroundColor: [
@@ -325,7 +325,7 @@ const barCtx = document.getElementById('topUsersChart').getContext('2d');
 new Chart(barCtx, {
     type: 'bar',
     data: {
-        labels: [{% for row in top_users[:10] %}'{{ row["User"][:20] }}{% if row["User"]|length > 20 %}...{% endif %}'{% if not loop.last %}, {% endif %}{% endfor %}],
+        labels: [{% for row in top_users[:10] %}{{ (row["User"][:20] ~ ("..." if row["User"]|length > 20 else "")) | tojson }}{% if not loop.last %}, {% endif %}{% endfor %}],
         datasets: [{
             label: 'Total Actions',
             data: [{% for row in top_users[:10] %}{{ row["Total Actions"] }}{% if not loop.last %}, {% endif %}{% endfor %}],

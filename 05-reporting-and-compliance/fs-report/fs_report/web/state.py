@@ -29,6 +29,7 @@ DEFAULTS: dict[str, Any] = {
     "ai": False,
     "ai_depth": "summary",
     "ai_prompts": False,
+    "ai_analysis": False,
     "logo": "",
 }
 
@@ -122,7 +123,10 @@ class WebAppState:
 
     @property
     def domain(self) -> str:
-        return str(self._data.get("domain", ""))
+        d = str(self._data.get("domain", "")).strip()
+        if d.startswith(("http://", "https://")):
+            d = d.split("://", 1)[1]
+        return d.rstrip("/")
 
     @property
     def has_config(self) -> bool:

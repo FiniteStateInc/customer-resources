@@ -342,6 +342,7 @@ class DataTransformer:
         self.logger.debug(f"Available columns: {list(df.columns)}")
         self.logger.debug(f"DataFrame shape: {df.shape}")
 
+        df_copy = df
         try:
             df_copy = df.copy()
 

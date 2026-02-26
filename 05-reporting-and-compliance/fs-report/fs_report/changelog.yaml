@@ -1,4 +1,149 @@
 releases:
+  - version: "1.6.0"
+    date: "2026-02-25"
+    changes:
+      - report: "Remediation Package"
+        type: added
+        description: "OSV fix-version validation ensures proposed upgrades aren't themselves vulnerable"
+      - report: "Remediation Package"
+        type: added
+        description: "Structured remediation options (upgrade / workaround / code_mitigation) per action"
+      - report: "Remediation Package"
+        type: added
+        description: "NVD workaround/mitigation URL extraction and LLM enrichment fields"
+      - report: "Remediation Package"
+        type: changed
+        description: "Charts removed in favour of concentrated data output; summary shows Components instead of Actions"
+      - report: ~
+        type: added
+        description: "Markdown output format (agent-optimised, token-efficient) enabled on CVA, CVE Impact, Findings by Project, Triage, and Version Comparison"
+      - report: ~
+        type: added
+        description: "Web UI: Remediation Package, CVA, and Export Components workflow cards; zip download; log viewer; new folder; per-recipe progress bar"
+      - report: ~
+        type: added
+        description: "--ai off master switch disables all AI enrichment regardless of recipe defaults"
+      - report: ~
+        type: added
+        description: "XLSX renderer skips export with warning when rows exceed Excel 65K URL limit"
+      - report: ~
+        type: fixed
+        description: "Theme toggle (dark/light) now works — app.js was not loaded in base.html"
+      - report: ~
+        type: fixed
+        description: "18 pre-existing mypy type errors fixed in report_engine.py and settings.py"
+
+  - version: "1.5.4"
+    date: "2026-02-21"
+    changes:
+      - report: "CVE Impact"
+        type: fixed
+        description: "Version filter now uses authoritative defaultBranch.latestVersion.id instead of unreliable max(version_id) heuristic"
+      - report: "CVE Impact"
+        type: fixed
+        description: "Version ID type coercion prevents filter failures when SQLite cache returns string values"
+      - report: "CVE Impact"
+        type: fixed
+        description: "Per-CVE fallback keeps findings unfiltered rather than showing all UNKNOWN when authoritative data is incomplete"
+
+  - version: "1.5.3"
+    date: "2026-02-21"
+    changes:
+      - report: ~
+        type: added
+        description: "VEX import via --apply-vex-triage and --autotriage CLI flags"
+      - report: ~
+        type: added
+        description: "Custom logo support (--logo flag, config file, or web UI)"
+      - report: "Triage Prioritization"
+        type: added
+        description: "AI columns (ai_fix_version, ai_guidance, ai_workaround, ai_confidence) in CSV/XLSX exports"
+      - report: "Triage Prioritization"
+        type: improved
+        description: "Bottom-up AI guidance cascade with multi-signal component ranking"
+      - report: ~
+        type: changed
+        description: "Rationalized CSV/XLSX column ordering across all 6 tabular reports"
+      - report: "CVE Impact"
+        type: fixed
+        description: "Reachability data now filtered to latest version per project"
+      - report: ~
+        type: fixed
+        description: "AI parser hardening — CONFIDENCE field corruption and grounding constraints"
+      - report: "Scan Analysis"
+        type: fixed
+        description: "Scan queue rate-limit spiral replaced with sequential fetch and circuit breaker"
+
+  - version: "1.5.2"
+    date: "2026-02-19"
+    changes:
+      - report: ~
+        type: added
+        description: "Scan Queue dashboard in web UI with live monitoring and stuck scan detection"
+      - report: ~
+        type: added
+        description: "Configurable AI models via --ai-model-high and --ai-model-low flags"
+      - report: "Triage Prioritization"
+        type: fixed
+        description: "Reachability labels no longer replaced with UNKNOWN in HTML reports"
+      - report: ~
+        type: fixed
+        description: "Stable model alias IDs prevent 404 errors on retired Anthropic model versions"
+      - report: ~
+        type: fixed
+        description: "SQLite cache preserves nested reachability data from alternate API format"
+      - report: ~
+        type: fixed
+        description: "serve command accepts --port in any position"
+
+  - version: "1.5.0"
+    date: "2026-02-18"
+    changes:
+      - report: "Executive Dashboard"
+        type: added
+        description: "11-section executive-level security report with KPI cards, severity trends, exploit intelligence, and project table"
+      - report: ~
+        type: improved
+        description: "Exploit intelligence derived from findings-level booleans instead of separate CVE fetch"
+      - report: ~
+        type: improved
+        description: "Scoped component fetch prevents timeout on large portfolios"
+      - report: ~
+        type: improved
+        description: "Enhanced web UI with directory browser and scope dropdowns"
+      - report: ~
+        type: fixed
+        description: "Combined --finding-types filter now works correctly with multiple types"
+      - report: ~
+        type: fixed
+        description: "Date validation and XLSX rendering errors resolved"
+
+  - version: "1.4.2"
+    date: "2026-02-18"
+    changes:
+      - report: ~
+        type: improved
+        description: "Cross-directory report history shared across working directories"
+      - report: ~
+        type: improved
+        description: "Reports UI distinguishes HTML, CSV, and XLSX file types"
+      - report: ~
+        type: improved
+        description: "View Report button links directly to generated file"
+      - report: ~
+        type: fixed
+        description: "Jira integration fixes for ticket creation and session management"
+
+  - version: "1.4.0"
+    date: "2026-02-17"
+    changes:
+      - report: ~
+        type: improved
+        description: "Enhanced logging and session management"
+      - report: ~
+        type: changed
+        description: "CLI commands updated to use fs-report run subcommand pattern"
+
   - version: "1.3.2"
     date: "2026-02-17"
     changes:

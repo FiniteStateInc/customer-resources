@@ -548,7 +548,10 @@ class HTMLRenderer:
         if isinstance(obj, np.integer):
             return int(obj)
         elif isinstance(obj, np.floating):
-            return float(obj)
+            value = float(obj)
+            if math.isnan(value) or math.isinf(value):
+                return None
+            return value
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
         elif isinstance(obj, bool):
@@ -1030,7 +1033,9 @@ class HTMLRenderer:
                 elif pd.isna(value):
                     cleaned_value = ""
                 elif isinstance(value, int | float):
-                    if value == int(value):
+                    if math.isinf(value) or math.isnan(value):
+                        cleaned_value = str(value)
+                    elif value == int(value):
                         cleaned_value = int(value)
                     else:
                         cleaned_value = round(value, 1)

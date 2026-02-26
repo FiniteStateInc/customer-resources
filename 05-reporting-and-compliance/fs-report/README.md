@@ -1,11 +1,11 @@
 # Finite State Reporting Kit
 
-A powerful, stand-alone reporting utility for Finite State customers that generates HTML, CSV, and XLSX reports from API data using YAML recipes.
+A powerful, stand-alone reporting utility for Finite State customers that generates HTML, CSV, XLSX, and Markdown reports from API data using YAML recipes.
 
 ## Features
 
 - **YAML Recipe System**: Define reports using simple YAML configuration files
-- **Multiple Output Formats**: Generate HTML, CSV, and XLSX reports
+- **Multiple Output Formats**: Generate HTML, CSV, XLSX, and Markdown reports
 - **Interactive Charts**: Beautiful, responsive charts using Chart.js
 - **Custom Data Processing**: Advanced data manipulation and analysis
 - **Standalone Operation**: Runs entirely outside the Finite State SaaS platform
@@ -34,6 +34,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
 | Executive Dashboard | 11-section executive-level security report with KPI cards, risk donut, severity trends, and more *(on-demand)* |
 | CVE Impact | CVE-centric dossier with affected projects, reachability, and exploit intelligence *(on-demand)* |
+| Remediation Package | Actionable remediation plan with fix-version validation, structured options (upgrade/workaround/mitigation), and optional AI enrichment *(on-demand)* |
 | Version Comparison | Full version and component changelog (every version pair); fixed/new findings and component churn per step; CSV/XLSX include summary plus detail *(on-demand)* |
 
 ## Quick Start
@@ -155,7 +156,15 @@ fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --ai-prompts
 fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --ai
 ```
 
-**Persistent cache** (beta) — crash recovery and faster reruns:
+**Remediation Package** — actionable remediation plan with fix validation:
+
+```bash
+fs-report run --recipe "Remediation Package" --project "MyProject"
+fs-report run --recipe "Remediation Package" --project "MyProject" --ai
+fs-report run --recipe "Remediation Package" --folder "Product Line A"
+```
+
+**Persistent cache** — crash recovery and faster reruns:
 
 ```bash
 fs-report run --cache-ttl 1h                           # Cache data for 1 hour
@@ -217,6 +226,10 @@ Running bare `fs-report` (no arguments) launches an interactive web UI at `http:
 - **Settings management** with persistence to `~/.fs-report/config.yaml`
 - **Reports browser** with preview for previously generated reports
 - **Scan Queue** panel — live scan monitoring with queued/processing counts, per-version grouping, stuck scan detection, and auto-refresh
+- **Zip bundle download** — download current output plus history runs as a zip file
+- **Log file viewer** — view log files from history runs in the browser
+- **New Folder creation** — create directories in the directory browser
+- **Per-recipe progress** — real-time progress bar updates during multi-recipe runs
 - **CSRF protection** and localhost-only access for security
 
 To serve existing reports without the full UI:
@@ -241,7 +254,7 @@ Fetching /public/v0/findings | 38879 records
 Using cache for /public/v0/findings | 38879 records
 ```
 
-### [BETA] Persistent SQLite Cache
+### Persistent SQLite Cache
 
 For long-running reports or iterative development, enable the persistent cache:
 
@@ -258,8 +271,8 @@ fs-report cache clear
 
 Benefits:
 - **80% smaller storage** than JSON progress files
-- **Crash recovery** - resume interrupted fetches automatically
-- **Faster reruns** - skip API calls for cached data within TTL
+- **Crash recovery** — resume interrupted fetches automatically
+- **Faster reruns** — skip API calls for cached data within TTL
 
 Cache location: `~/.fs-report/cache.db`
 

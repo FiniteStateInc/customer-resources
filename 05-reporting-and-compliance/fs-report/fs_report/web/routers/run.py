@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from sse_starlette.sse import EventSourceResponse
 
 from fs_report.web.dependencies import get_nonce, get_state
@@ -31,6 +31,7 @@ TRIAGE_RECIPES = {"triage prioritization"}
 FINDINGS_RECIPES = {"findings by project"}
 VERSION_RECIPES = {"version comparison"}
 COMPONENT_RECIPES = {"component list"}
+REMEDIATION_RECIPES = {"remediation package"}
 
 
 class SSELogHandler(logging.Handler):
@@ -116,6 +117,10 @@ def _execute_run(
         file_handler = create_file_handler(run_id, token)
         root_logger.addHandler(file_handler)
 
+        # Store log filename for later retrieval
+        log_filename = Path(file_handler.baseFilename).name
+        _runs[run_id]["log_file"] = log_filename
+
         output_dir = effective.get("output_dir", "./output")
 
         scope_parts = []
@@ -144,17 +149,31 @@ def _execute_run(
             ai=bool(effective.get("ai", False)),
             ai_depth=str(effective.get("ai_depth", "summary")),
             ai_prompts=bool(effective.get("ai_prompts", False)),
+            ai_analysis=bool(effective.get("ai_analysis", False)),
             cve_filter=effective.get("cve_filter") or None,
+            component_filter=effective.get("component_filter") or None,
             baseline_version=effective.get("baseline_version") or None,
             current_version=effective.get("current_version") or None,
             verbose=bool(effective.get("verbose", False)),
             logo=effective.get("logo") or None,
         )
 
-        engine = ReportEngine(config, cancel_event=cancel_event)
+        total = len(recipe_names)
+
+        def _on_recipe_done(completed: int, total_count: int, name: str) -> None:
+            loop.call_soon_threadsafe(
+                queue.put_nowait,
+                {
+                    "event": "progress",
+                    "data": f'{{"completed":{completed},"total":{total_count},"recipe":"{_escape_json(name)}"}}',
+                },
+            )
+
+        engine = ReportEngine(
+            config, cancel_event=cancel_event, on_recipe_complete=_on_recipe_done
+        )
         engine.recipe_loader.recipe_filter = [name.lower() for name in recipe_names]
 
-        total = len(recipe_names)
         loop.call_soon_threadsafe(
             queue.put_nowait,
             {"event": "progress", "data": f'{{"completed":0,"total":{total}}}'},
@@ -218,29 +237,35 @@ def _execute_run(
                     )
                 if not history_files:
                     raise ValueError("No files to record")
+                scope_dict = {
+                    k: effective.get(k)
+                    for k in (
+                        "project_filter",
+                        "folder_filter",
+                        "period",
+                    )
+                    if effective.get(k)
+                }
+                if engine.resolved_project_name:
+                    scope_dict["project_name"] = engine.resolved_project_name
                 history_run_id = append_run(
                     output_dir=str(output_dir_abs),
                     domain=effective.get("domain", ""),
                     recipes=recipe_names,
-                    scope={
-                        k: effective.get(k)
-                        for k in (
-                            "project_filter",
-                            "folder_filter",
-                            "period",
-                        )
-                        if effective.get(k)
-                    },
+                    scope=scope_dict,
                     files=history_files,
+                    log_file=_runs[run_id].get("log_file", ""),
                 )
             except Exception:
                 logger.debug("Failed to record run in history", exc_info=True)
 
+        log_file = _runs[run_id].get("log_file", "")
         done_payload = {
             "status": status,
             "error": error_msg,
             "files": html_files,
             "history_run_id": history_run_id,
+            "log_file": log_file,
         }
         loop.call_soon_threadsafe(
             queue.put_nowait,
@@ -299,9 +324,10 @@ async def prerun_form(
 
     selected = {r.lower() for r in recipe_names}
     show_cve = bool(selected & CVE_RECIPES)
-    show_ai = bool(selected & (CVE_RECIPES | TRIAGE_RECIPES))
+    show_ai = bool(selected & (CVE_RECIPES | TRIAGE_RECIPES | REMEDIATION_RECIPES))
     show_finding_types = bool(selected & FINDINGS_RECIPES)
     show_version_fields = bool(selected & VERSION_RECIPES)
+    show_project_required = bool(selected & REMEDIATION_RECIPES)
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
@@ -316,6 +342,7 @@ async def prerun_form(
             "show_ai": show_ai,
             "show_finding_types": show_finding_types,
             "show_version_fields": show_version_fields,
+            "show_project_required": show_project_required,
         },
     )
 
@@ -345,6 +372,7 @@ async def start_run(
         "version_filter",
         "finding_types",
         "cve_filter",
+        "component_filter",
         "baseline_version",
         "current_version",
         "ai_depth",
@@ -353,10 +381,14 @@ async def start_run(
         if val:
             overrides[key] = str(val)
 
-    for key in ("overwrite", "current_version_only", "ai", "ai_prompts"):
+    for key in ("overwrite", "current_version_only", "ai", "ai_prompts", "ai_analysis"):
         val = form.get(key)
         if val is not None:
             overrides[key] = str(val).lower() in ("true", "on", "1", "yes")
+
+    # Persist selected recipes for next visit
+    state["selected_recipes"] = recipe_names
+    state.save()
 
     run_id = uuid.uuid4().hex[:8]
     queue: asyncio.Queue[dict[str, str]] = asyncio.Queue()
@@ -464,6 +496,28 @@ async def run_status(run_id: str) -> JSONResponse:
             "recipes": run["recipes"],
         }
     )
+
+
+@router.get("/api/run/{run_id}/log")
+async def run_log(run_id: str) -> PlainTextResponse:
+    """Serve the log file for a run as plain text."""
+    from fs_report.logging_utils import LOG_DIR
+
+    # Try in-memory lookup first
+    run = _runs.get(run_id)
+    log_filename = run.get("log_file") if run else None
+
+    if log_filename:
+        log_path = LOG_DIR / log_filename
+    else:
+        # Fall back to globbing for the run_id
+        matches = list(LOG_DIR.glob(f"*_{run_id}.log"))
+        log_path = matches[0] if matches else None
+
+    if not log_path or not log_path.is_file():
+        return PlainTextResponse("Log file not found.", status_code=404)
+
+    return PlainTextResponse(log_path.read_text(encoding="utf-8"))
 
 
 @router.post("/api/run/{run_id}/cancel")

@@ -63,11 +63,18 @@
                 </label>
             </div>
             <div class="form-group">
-                <label for="cfg-logo">Report logo</label>
-                <input type="text" id="cfg-logo" name="logo"
-                       value="{{ state.get('logo', '') }}"
-                       placeholder="e.g. company-logo.png">
-                <small class="form-hint">PNG, SVG, JPG, or WebP from ~/.fs-report/logos/. Max 500KB recommended. Leave empty for default Finite State logo.</small>
+                <label for="cfg-logo-select">Report logo</label>
+                <div class="input-with-btn">
+                    <select id="cfg-logo-select" style="flex:1;min-width:0;padding:8px 12px;border:1px solid #dee2e6;border-radius:6px;font-size:0.9em;">
+                        <option value="">(default Finite State logo)</option>
+                    </select>
+                    <label class="btn btn-sm btn-default" style="margin:0;cursor:pointer;">
+                        Upload
+                        <input type="file" id="cfg-logo-upload" accept=".png,.jpg,.jpeg,.svg,.webp" style="display:none;">
+                    </label>
+                </div>
+                <input type="hidden" id="cfg-logo" name="logo" value="{{ state.get('logo', '') }}">
+                <small class="form-hint">PNG, SVG, JPG, or WebP. Max 500KB. Leave empty for default logo.</small>
             </div>
         </details>
 
@@ -139,11 +146,19 @@
                 </select>
             </div>
             <div class="form-group">
-                <label for="cfg-ft">Default finding types</label>
-                <input type="text" id="cfg-ft" name="finding_types"
-                       value="{{ state.get('finding_types', 'cve') }}"
-                       placeholder="cve, sast, credentials">
-                <small class="form-hint">Types: cve, sast, thirdparty, binary_sca, source_sca. Categories: credentials, config_issues, crypto_material. Use &lsquo;all&rsquo; for everything.</small>
+                <label>Default finding types</label>
+                {% set cfg_ft = state.get('finding_types', 'cve') %}
+                <div class="finding-type-checkboxes">
+                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="cve" {% if 'cve' in cfg_ft %}checked{% endif %}> CVE</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="sast" {% if 'sast' in cfg_ft %}checked{% endif %}> SAST</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="thirdparty" {% if 'thirdparty' in cfg_ft %}checked{% endif %}> 3rd Party</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="binary_sca" {% if 'binary_sca' in cfg_ft %}checked{% endif %}> Binary SCA</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="source_sca" {% if 'source_sca' in cfg_ft %}checked{% endif %}> Source SCA</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="credentials" {% if 'credentials' in cfg_ft %}checked{% endif %}> Credentials</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="config_issues" {% if 'config_issues' in cfg_ft %}checked{% endif %}> Config</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="crypto_material" {% if 'crypto_material' in cfg_ft %}checked{% endif %}> Crypto</label>
+                </div>
+                <input type="hidden" id="cfg-ft" name="finding_types" value="{{ cfg_ft }}">
             </div>
             <div class="form-group form-row">
                 <label for="cfg-cvo">Current version only</label>
@@ -201,6 +216,7 @@ function settingsForm() {
             }
         },
         saveSettings() {
+            _syncSettingsFindingTypes();
             const form = document.getElementById('settings-form');
             const formData = new FormData(form);
             fetch('/api/settings', {
@@ -240,12 +256,88 @@ function refreshCacheStats() {
     });
 }
 
+/* Sync finding-type checkboxes to hidden field */
+function _syncSettingsFindingTypes() {
+    var cbs = document.querySelectorAll('input[name="cfg_ft_cb"]:checked');
+    var hidden = document.getElementById('cfg-ft');
+    if (!hidden || cbs.length === 0) return;
+    hidden.value = Array.from(cbs).map(function(cb) { return cb.value; }).join(',');
+}
+
 /* Init directory browser + scope dropdowns */
 initDirBrowser('cfg-output', 'cfg-output-browse');
 initScopeDropdowns({
     projectId: 'cfg-project',
     folderId: 'cfg-folder',
     versionId: 'cfg-version',
+    cvoId: 'cfg-cvo',
 });
+
+/* Logo picker */
+(function() {
+    var logoSelect = document.getElementById('cfg-logo-select');
+    var logoHidden = document.getElementById('cfg-logo');
+    var logoUpload = document.getElementById('cfg-logo-upload');
+    var currentLogo = logoHidden ? logoHidden.value : '';
+
+    function loadLogos(selectValue) {
+        fetch('/api/logos', { headers: { 'X-FS-Session': NONCE } })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            logoSelect.innerHTML = '<option value="">(default Finite State logo)</option>';
+            (data.logos || []).forEach(function(name) {
+                var o = document.createElement('option');
+                o.value = name;
+                o.textContent = name;
+                if (name === (selectValue || currentLogo)) o.selected = true;
+                logoSelect.appendChild(o);
+            });
+        });
+    }
+
+    logoSelect.addEventListener('change', function() {
+        logoHidden.value = logoSelect.value;
+    });
+
+    logoUpload.addEventListener('change', function() {
+        var file = logoUpload.files[0];
+        if (!file) return;
+        if (file.size > 512000) {
+            window.dispatchEvent(new CustomEvent('toast', {
+                detail: { message: 'File too large (max 500KB)', type: 'error' }
+            }));
+            return;
+        }
+        var formData = new FormData();
+        formData.append('file', file);
+        fetch('/api/logos/upload', {
+            method: 'POST',
+            headers: { 'X-FS-Session': NONCE },
+            body: formData,
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) {
+                window.dispatchEvent(new CustomEvent('toast', {
+                    detail: { message: data.error, type: 'error' }
+                }));
+            } else {
+                window.dispatchEvent(new CustomEvent('toast', {
+                    detail: { message: 'Logo uploaded', type: 'success' }
+                }));
+                loadLogos(data.filename);
+                logoHidden.value = data.filename;
+            }
+        })
+        .catch(function() {
+            window.dispatchEvent(new CustomEvent('toast', {
+                detail: { message: 'Upload failed', type: 'error' }
+            }));
+        });
+        logoUpload.value = '';
+    });
+
+    loadLogos();
+})();
 </script>
 {% endblock %}

@@ -50,7 +50,7 @@ def findings_by_project_pandas_transform(
     if isinstance(data, pd.DataFrame):
         if data.empty:
             return pd.DataFrame()
-        df = data
+        df = data.copy()
     elif not data:
         return pd.DataFrame()
     else:

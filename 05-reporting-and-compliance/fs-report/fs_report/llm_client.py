@@ -27,7 +27,7 @@ Provides LLM-generated remediation summaries at three scopes:
 - Finding: Fix version, workaround, code search hints (full depth only)
 
 Supports multiple LLM providers:
-- Anthropic Claude (default): Sonnet for summaries, Haiku for bulk guidance
+- Anthropic Claude (default): Opus for summaries, Sonnet for bulk guidance
 - OpenAI: GPT-4o for summaries, GPT-4o-mini for bulk guidance
 - GitHub Copilot: Uses OpenAI SDK with Copilot endpoint
 
@@ -42,7 +42,7 @@ import logging
 import os
 import sqlite3
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,13 +52,14 @@ logger = logging.getLogger(__name__)
 MAX_PORTFOLIO_TOKENS = 2000
 MAX_PROJECT_TOKENS = 1500
 MAX_COMPONENT_TOKENS = 800
+MAX_ANALYSIS_TOKENS = 4000
 
 # Provider -> (summary_model, component_model)
 # Use alias IDs (e.g. "claude-opus-4-6") rather than date-pinned IDs
 # (e.g. "claude-opus-4-6-20260205") so the API routes to the latest
 # snapshot automatically and we never 404 on a retired model.
 MODEL_MAP: dict[str, tuple[str, str]] = {
-    "anthropic": ("claude-opus-4-6", "claude-haiku-4-5"),
+    "anthropic": ("claude-opus-4-6", "claude-sonnet-4-6"),
     "openai": ("gpt-4o", "gpt-4o-mini"),
     "copilot": ("gpt-4o", "gpt-4o-mini"),
 }
@@ -74,6 +75,59 @@ COPILOT_BASE_URL = "https://api.githubcopilot.com"
 
 # System message for all LLM calls — establishes persona, constraints, and
 # the fix-version guardrail to reduce hallucinated version numbers.
+_ANALYSIS_WRAPPER = (
+    "Below is a structured remediation prompt for a security vulnerability. "
+    "Produce a detailed analysis in markdown covering:\n\n"
+    "1. **Key Finding** — Is this component actually affected? Why or why not?\n"
+    "2. **Verification Steps** — Exact shell commands to confirm the assessment\n"
+    "3. **Remediation Plan** — If affected: upgrade path, breaking-change risks, "
+    "regression tests. If not affected: how to document and close.\n"
+    "4. **Risk if Deferred** — What happens if this is not fixed?\n"
+    "5. **References** — Relevant links and advisories\n\n"
+    "Be specific and actionable — cite exact versions, function names, and commands. "
+    "Synthesize the data; do not repeat it verbatim.\n\n---\n\n"
+)
+
+_COMBINED_ANALYSIS_WRAPPER = (
+    "You are a firmware security analyst. Below is all available data for a "
+    "remediation action. Produce TWO sections:\n\n"
+    "**Section 1 — Structured Assessment** (one field per line, exact format):\n"
+    "VERDICT: <affected | not_affected | uncertain — Check library identity "
+    "FIRST: if the NVD Target names a DIFFERENT library than the scanned "
+    "component (e.g., CVE targets gnu/glibc but component is musl, or CVE "
+    "targets openssl but component is BoringSSL), answer not_affected and "
+    "STOP. Reachability of standard functions (getaddrinfo, realpath, glob, "
+    "nan, etc.) does NOT prove the same bug exists — different implementations "
+    "have different source code and different bugs.>\n"
+    "FIX_VERSION: <correct fix version for the INSTALLED branch/series, or "
+    '"none" if not affected. CRITICAL: if NVD lists a fix for a different '
+    "branch (e.g. 4.19.x) but the installed version is on a different series "
+    "(e.g. 6.6.x), find the correct fix for the installed series. "
+    "Do NOT recommend cross-branch downgrades.>\n"
+    "CONFIDENCE: <high | medium | low>\n"
+    "RATIONALE: <1 sentence explaining the verdict>\n"
+    "GUIDANCE: <1-2 sentence actionable upgrade/verification guidance>\n\n"
+    "WORKAROUNDS: <1-3 practical workarounds: WAF rules, config changes, feature "
+    "toggles, network segmentation. Numbered list. Say 'none' if not possible.>\n"
+    "BREAKING_CHANGES: <key breaking changes between current and fix version. "
+    "API changes, removed features, config format changes. Say 'none expected' "
+    "for patch-level.>\n\n"
+    "**Section 2 — Detailed Analysis** (after a `---` separator, in markdown):\n"
+    "1. **Key Finding** — Is this component actually affected? Check library "
+    "identity first: does the NVD product match the scanned component, or is "
+    "this a false-positive CPE match (e.g., glibc CVE matched to musl)?\n"
+    "2. **Verification Steps** — Exact shell commands to confirm\n"
+    "3. **Remediation Plan** — If affected: upgrade path, breaking-change risks, "
+    "regression tests. If not affected: how to document and close.\n"
+    "4. **Risk if Deferred** — What happens if this is not addressed?\n"
+    "5. **References** — Relevant links and advisories\n"
+    "6. **Environmental Controls & Workarounds** — WAF rules, config changes, "
+    "network segmentation that mitigate the vulnerability without upgrading.\n"
+    "7. **Upgrade Impact** — Breaking changes, migration steps, and regression "
+    "risks for the recommended upgrade path.\n\n"
+    "Be specific — cite exact versions, function names, and commands.\n\n---\n\n"
+)
+
 SYSTEM_MESSAGE = (
     "You are a firmware security analyst specializing in embedded device remediation. "
     "Always ground your advice in the provided data — do not speculate beyond what the "
@@ -116,7 +170,9 @@ def get_scoring_methodology(scoring_config: dict | None = None) -> str:
             _build_scoring_methodology,
         )
 
-        return _build_scoring_methodology(scoring_config)
+        result = _build_scoring_methodology(scoring_config)
+        _SCORING_METHODOLOGY_CACHE = result
+        return result
     except ImportError:
         pass
 
@@ -232,6 +288,14 @@ class LLMClient:
                 conn.execute(
                     "ALTER TABLE cve_remediations ADD COLUMN project_notes TEXT"
                 )
+            # Migrate: add verdict + rationale columns if missing
+            for col, default in [("verdict", "'affected'"), ("rationale", "''")]:
+                try:
+                    conn.execute(f"SELECT {col} FROM cve_remediations LIMIT 1")
+                except sqlite3.OperationalError:
+                    conn.execute(
+                        f"ALTER TABLE cve_remediations ADD COLUMN {col} TEXT DEFAULT {default}"
+                    )
 
     # =========================================================================
     # Provider helpers
@@ -339,7 +403,9 @@ class LLMClient:
             return False
         try:
             cached_time = datetime.fromisoformat(generated_at)
-            age_seconds = (datetime.utcnow() - cached_time).total_seconds()
+            if cached_time.tzinfo is None:
+                cached_time = cached_time.replace(tzinfo=UTC)
+            age_seconds = (datetime.now(UTC) - cached_time).total_seconds()
             return age_seconds < self.cache_ttl
         except (ValueError, TypeError):
             return False
@@ -358,6 +424,9 @@ class LLMClient:
             if row:
                 row_dict = dict(row)
                 if self._is_fresh(row_dict.get("generated_at")):
+                    # Backwards compat: old cache entries may lack verdict/rationale
+                    row_dict.setdefault("verdict", "affected")
+                    row_dict.setdefault("rationale", "")
                     return row_dict
                 logger.debug(f"Cache expired for {cve_id}")
         return None
@@ -369,8 +438,8 @@ class LLMClient:
                 """INSERT OR REPLACE INTO cve_remediations
                    (cve_id, component_name, fix_version, guidance, workaround,
                     code_search_hints, generated_by, generated_at, confidence,
-                    project_notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    project_notes, verdict, rationale)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     cve_id,
                     remediation.get("component_name", ""),
@@ -379,9 +448,11 @@ class LLMClient:
                     remediation.get("workaround", ""),
                     remediation.get("code_search_hints", ""),
                     remediation.get("generated_by", self._component_model),
-                    datetime.utcnow().isoformat(),
+                    datetime.now(UTC).isoformat(),
                     remediation.get("confidence", "medium"),
                     remediation.get("project_notes", ""),
+                    remediation.get("verdict", "affected"),
+                    remediation.get("rationale", ""),
                 ),
             )
 
@@ -409,7 +480,7 @@ class LLMClient:
                 """INSERT OR REPLACE INTO ai_summary_cache
                    (cache_key, scope, summary_text, generated_by, generated_at)
                    VALUES (?, ?, ?, ?, ?)""",
-                (cache_key, scope, summary_text, model, datetime.utcnow().isoformat()),
+                (cache_key, scope, summary_text, model, datetime.now(UTC).isoformat()),
             )
 
     def get_cached_cve_detail(self, finding_id: str) -> dict[str, Any] | None:
@@ -434,7 +505,7 @@ class LLMClient:
                 (
                     finding_id,
                     json.dumps(metadata, default=str),
-                    datetime.utcnow().isoformat(),
+                    datetime.now(UTC).isoformat(),
                 ),
             )
 
@@ -460,7 +531,7 @@ class LLMClient:
                 (
                     finding_id,
                     json.dumps(metadata, default=str),
-                    datetime.utcnow().isoformat(),
+                    datetime.now(UTC).isoformat(),
                 ),
             )
 
@@ -508,6 +579,28 @@ class LLMClient:
             line = f"- **{label}** -- {total} findings ({band_str})"
             if avg:
                 line += f", avg score: {avg}"
+            # Exploitability signals
+            signals: list[str] = []
+            g1 = c.get("gate_1_count", 0)
+            g2 = c.get("gate_2_count", 0)
+            if g1:
+                signals.append(f"{g1} GATE_1")
+            if g2:
+                signals.append(f"{g2} GATE_2")
+            exploit = c.get("exploit_count", 0)
+            if exploit:
+                signals.append(f"{int(exploit)} exploited")
+            kev = c.get("kev_count", 0)
+            if kev:
+                signals.append(f"{int(kev)} KEV")
+            reachable = c.get("reachable_count", 0)
+            if reachable:
+                signals.append(f"{int(reachable)} reachable")
+            max_epss = c.get("max_epss", 0)
+            if max_epss and float(max_epss) > 0.5:
+                signals.append(f"EPSS max: {float(max_epss) * 100:.0f}th pctl")
+            if signals:
+                line += f" | {', '.join(signals)}"
             lines.append(line)
         return "\n".join(lines) if lines else "No component data available."
 
@@ -536,6 +629,26 @@ class LLMClient:
                 line += f", {len(reach_cves)} reachable"
             if vuln_fns:
                 line += f", vuln functions: {', '.join(str(f) for f in vuln_fns)}"
+            # Exploitability signals
+            signals: list[str] = []
+            gate_cts = c.get("gate_counts", {})
+            g1 = gate_cts.get("GATE_1", 0) if isinstance(gate_cts, dict) else 0
+            g2 = gate_cts.get("GATE_2", 0) if isinstance(gate_cts, dict) else 0
+            if g1:
+                signals.append(f"{g1} GATE_1")
+            if g2:
+                signals.append(f"{g2} GATE_2")
+            exploit = c.get("exploit_count", 0)
+            if exploit:
+                signals.append(f"{int(exploit)} exploited")
+            kev = c.get("kev_count", 0)
+            if kev:
+                signals.append(f"{int(kev)} KEV")
+            max_epss = c.get("max_epss", 0)
+            if max_epss and float(max_epss) > 0.5:
+                signals.append(f"EPSS max: {float(max_epss) * 100:.0f}th pctl")
+            if signals:
+                line += f" | {', '.join(signals)}"
             lines.append(line)
         return "\n".join(lines) if lines else "No component data available."
 
@@ -639,32 +752,48 @@ Note: "Reachable" means static/binary analysis confirmed the vulnerable function
                 vex_lines.append(f"- {status}: {count}")
             vex_section = "\n".join(vex_lines) + "\n"
 
+        # Gate counts for highest-priority section
+        g1 = portfolio_summary.get("gate_1_count", 0)
+        g2 = portfolio_summary.get("gate_2_count", 0)
+
+        gate_section = ""
+        if g1 or g2:
+            gate_section = f"""
+## Highest Priority: GATE_1 + GATE_2 Findings
+- GATE_1 (CRITICAL): {g1} findings — reachable + exploited/KEV vulnerabilities
+- GATE_2 (HIGH): {g2} findings — network-accessible + high EPSS or exploit available
+
+These are the most urgent findings. Focus remediation here first.
+"""
+
         return f"""Analyze this vulnerability triage data and provide strategic remediation guidance.
 
 ## Portfolio Overview
 - Total findings: {portfolio_summary.get('total', 0)}
-- CRITICAL: {portfolio_summary.get('CRITICAL', 0)}
-- HIGH: {portfolio_summary.get('HIGH', 0)}
-- MEDIUM: {portfolio_summary.get('MEDIUM', 0)}
-- LOW: {portfolio_summary.get('LOW', 0)}
-- INFO: {portfolio_summary.get('INFO', 0)}
+- CRITICAL: {portfolio_summary.get('CRITICAL', 0)}, HIGH: {portfolio_summary.get('HIGH', 0)}, MEDIUM: {portfolio_summary.get('MEDIUM', 0)}, LOW: {portfolio_summary.get('LOW', 0)}, INFO: {portfolio_summary.get('INFO', 0)}
+- GATE_1 (must fix): {g1}, GATE_2 (should fix): {g2}
 {vex_section}
 {get_scoring_methodology()}
-{reach_section}
+{gate_section}{reach_section}
+## Components by Exploitability (ranked)
+{self._format_components_bullet(top_comps)}
+
 ## Top Projects by Risk
 {self._format_projects_bullet(top_projects)}
-
-## Top Risky Components
-{self._format_components_bullet(top_comps)}
 {self._build_nvd_section_for_portfolio(top_comps, nvd_snippets_map)}
 {self._build_project_ai_section(top_projects, project_ai_summaries)}
-Provide a concise strategic summary (3-5 paragraphs):
-1. Overall risk posture assessment — highlight the reachability findings as the most urgent
-2. Top 3 remediation priorities (specific components/projects), prioritizing reachable+exploitable findings
-3. Quick wins (high-impact, low-effort fixes), especially where specific vulnerable functions are identified
-4. Recommended remediation order
+## Applicability Warning
+Some NVD matches may be false positives (e.g., openwrt/libc matched to glibc CVEs, or BoringSSL matched to OpenSSL CVEs).
+When the NVD product name differs from the scanned component, flag it as a potential false positive.
 
-Be specific with component names and versions. When vulnerable functions are identified, mention them as they guide developers to the exact code that needs attention. Focus on actionable guidance."""
+Provide a concise strategic summary (3-5 paragraphs):
+1. Focus on GATE_1 and GATE_2 findings as the most urgent
+2. Top 3 components to remediate, ranked by exploitability (exploits, KEV, EPSS, reachability)
+3. Quick wins — single upgrades resolving multiple GATE_1/GATE_2 findings
+4. Recommended remediation order across projects
+5. Flag any likely false-positive NVD matches (where the CVE targets a different library than the scanned component)
+
+Be specific with component names and versions. Focus on actionable guidance."""
 
     # =========================================================================
     # Project Summary (Sonnet)
@@ -767,6 +896,16 @@ Be specific with component names and versions. When vulnerable functions are ide
                 if vf:
                     vuln_funcs.update(fn.strip() for fn in vf.split(",") if fn.strip())
 
+            # Exploitability signals for this component
+            comp_exploit_count = sum(1 for f in comp_findings if f.get("has_exploit"))
+            comp_kev_count = sum(1 for f in comp_findings if f.get("in_kev"))
+            epss_vals = [f.get("epss_percentile", 0) for f in comp_findings]
+            comp_max_epss = max(epss_vals) if epss_vals else 0
+            comp_gate_counts: dict[str, int] = {}
+            for f in comp_findings:
+                g = f.get("gate_assignment", "NONE")
+                comp_gate_counts[g] = comp_gate_counts.get(g, 0) + 1
+
             component_summary.append(
                 {
                     "component": comp_key,
@@ -776,6 +915,10 @@ Be specific with component names and versions. When vulnerable functions are ide
                     "reachable_cves": reachable_cves[:5],
                     "unreachable_count": unreachable_count,
                     "vuln_functions": list(vuln_funcs)[:5],
+                    "exploit_count": comp_exploit_count,
+                    "kev_count": comp_kev_count,
+                    "max_epss": comp_max_epss,
+                    "gate_counts": comp_gate_counts,
                 }
             )
 
@@ -806,28 +949,48 @@ Be specific with component names and versions. When vulnerable functions are ide
             else ""
         )
 
+        # Gate counts for this project
+        proj_gate_1 = sum(1 for f in findings if f.get("gate_assignment") == "GATE_1")
+        proj_gate_2 = sum(1 for f in findings if f.get("gate_assignment") == "GATE_2")
+
+        gate_section = ""
+        if proj_gate_1 or proj_gate_2:
+            gate_section = f"""
+## Highest Priority: GATE_1 + GATE_2 Findings
+- GATE_1 (CRITICAL): {proj_gate_1} findings — reachable + exploited/KEV vulnerabilities
+- GATE_2 (HIGH): {proj_gate_2} findings — network-accessible + high EPSS or exploit available
+
+These are the most urgent findings. Focus remediation here first.
+"""
+
         return f"""Provide remediation guidance for project "{project_name}".
 
 ## Risk Band Distribution
 {json.dumps(band_counts, indent=2)}
+- GATE_1 (must fix): {proj_gate_1}, GATE_2 (should fix): {proj_gate_2}
 {vex_section}
 {get_scoring_methodology()}
-
+{gate_section}
 ## Reachability Summary
 - Reachable: {reachable_total} (vulnerable code confirmed present and callable in firmware)
 - Unreachable: {unreachable_total} (vulnerable code not reachable — lower risk)
 - Inconclusive: {unknown_total} (reachability not determined)
 
-## Top Components by Risk
+## Top Components by Exploitability
 {self._format_project_components_bullet(component_summary)}
 {self._build_nvd_section_for_project(component_summary, nvd_snippets_map)}
 {self._build_component_ai_section(component_summary, component_guidance)}
-Note: "reachable" indicates CVEs where binary analysis confirmed the vulnerable code path is callable. Vulnerable functions listed are specific functions identified in the deployed binaries — developers should search for and audit these.
+## Applicability Warning
+Some NVD matches may be false positives (e.g., openwrt/libc matched to glibc CVEs, or BoringSSL matched to OpenSSL CVEs).
+When the NVD product name differs from the scanned component, flag it as a potential false positive.
+
+Note: "reachable" indicates CVEs where binary analysis confirmed the vulnerable code path is callable.
 
 Provide a concise project remediation plan (2-3 paragraphs):
-1. Which components to upgrade first — prioritize those with reachable vulnerabilities and known exploits
-2. Recommended upgrade order considering dependencies. Mention specific vulnerable functions when known.
-3. Any quick wins or workarounds, especially for reachable findings where specific functions are identified
+1. Focus on GATE_1 and GATE_2 findings as the most urgent — which components to upgrade first
+2. Recommended upgrade order ranked by exploitability (exploits, KEV, EPSS, reachability)
+3. Quick wins — single upgrades resolving multiple GATE_1/GATE_2 findings
+4. Flag any likely false-positive NVD matches (where the CVE targets a different library than the scanned component)
 
 Be specific with component names and versions."""
 
@@ -1106,6 +1269,7 @@ CVEs:
 {reach_section}
 {nvd_section}
 Respond in this exact format:
+VERDICT: <affected | not_affected | uncertain — IMPORTANT: Check library identity FIRST, before considering reachability or exploit data. (1) Does the NVD Target name a DIFFERENT library than the scanned component? e.g., CVE targets "gnu/glibc" but component is openwrt/libc (musl), or CVE targets "openssl" but component is BoringSSL. If YES → answer "not_affected" and STOP. Reachability of standard functions (getaddrinfo, realpath, glob, strcoll, nan, nanf, etc.) does NOT mean the same bug exists — different implementations (glibc vs musl, OpenSSL vs BoringSSL) have completely different source code and different bugs. A function name match is NOT a vulnerability match. (2) Is this the wrong platform? e.g., Windows-only CVE on Linux. If YES → "not_affected". (3) Is the installed version outside the affected range? If YES → "not_affected". Only answer "affected" when the component is genuinely the SAME library the CVE targets.>
 FIX_VERSION: <specific version number. If NVD data says "FIXED in >= X", recommend X. If NVD data says a version is "STILL VULNERABLE", the fix must be AFTER that version — do NOT recommend the vulnerable version. Cross-reference the component version ({component_version}) against the NVD affected ranges. Only state "verify latest stable release" if no version data is available.>
 RATIONALE: <1 sentence explaining why this fix or version is recommended, citing the NVD data or advisory if available>
 GUIDANCE: <1-2 sentence upgrade guidance>
@@ -1159,6 +1323,72 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
 
         return result
 
+    @staticmethod
+    def _parse_combined_response(text: str) -> tuple[dict[str, str], str]:
+        """Parse a combined structured + analysis response.
+
+        The LLM produces structured fields (VERDICT, FIX_VERSION, etc.)
+        followed by a ``---`` separator and a markdown analysis section.
+
+        Returns:
+            Tuple of (structured_dict, markdown_str).
+        """
+        field_map = {
+            "VERDICT": "verdict",
+            "FIX_VERSION": "fix_version",
+            "CONFIDENCE": "confidence",
+            "RATIONALE": "rationale",
+            "GUIDANCE": "guidance",
+            "WORKAROUNDS": "workarounds",
+            "BREAKING_CHANGES": "breaking_changes",
+        }
+        # Split on first --- separator after the structured fields
+        parts = text.split("\n---\n", 1)
+        structured_text = parts[0] if parts else text
+        markdown = parts[1].strip() if len(parts) > 1 else ""
+
+        # If no explicit separator, look for markdown headers as boundary
+        if not markdown:
+            lines = text.strip().split("\n")
+            struct_lines: list[str] = []
+            md_lines: list[str] = []
+            in_markdown = False
+            for line in lines:
+                if not in_markdown and (
+                    line.startswith("# ") or line.startswith("## ")
+                ):
+                    in_markdown = True
+                if in_markdown:
+                    md_lines.append(line)
+                else:
+                    struct_lines.append(line)
+            structured_text = "\n".join(struct_lines)
+            markdown = "\n".join(md_lines).strip()
+
+        parsed = LLMClient._parse_structured_response(structured_text, field_map)
+
+        # Normalize verdict
+        raw_v = parsed.get("verdict", "affected").lower().strip()
+        parsed["verdict"] = (
+            "not_affected"
+            if raw_v
+            in (
+                "not_affected",
+                "not affected",
+                "already_fixed",
+                "already fixed",
+            )
+            else "uncertain" if raw_v == "uncertain" else "affected"
+        )
+        # Normalize confidence
+        raw_c = parsed.get("confidence", "medium").lower().strip()
+        conf_word = raw_c.split()[0].rstrip("—-:,") if raw_c else "medium"
+        parsed["confidence"] = (
+            conf_word if conf_word in ("high", "medium", "low") else "medium"
+        )
+
+        return parsed, markdown
+
     def _parse_component_response(
         self,
         response_text: str,
@@ -1167,6 +1397,7 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
     ) -> dict[str, Any]:
         """Parse structured response from component guidance prompt."""
         field_map = {
+            "VERDICT": "verdict",
             "FIX_VERSION": "fix_version",
             "RATIONALE": "rationale",
             "GUIDANCE": "guidance",
@@ -1181,11 +1412,25 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
             "generated_by": "llm",
             **parsed,
         }
-        result["confidence"] = result.get("confidence", "medium").lower()
+        # Normalize confidence to just the level (high/medium/low), stripping
+        # any trailing rationale the LLM may have appended after a dash.
+        raw_conf = result.get("confidence", "medium").lower().strip()
+        conf_word = raw_conf.split()[0].rstrip("—-:,") if raw_conf else "medium"
+        result["confidence"] = (
+            conf_word if conf_word in ("high", "medium", "low", "none") else "medium"
+        )
+
+        # Normalize verdict to one of: affected, not_affected, uncertain
+        raw_verdict = result.get("verdict", "affected").lower().strip()
+        result["verdict"] = (
+            "not_affected"
+            if raw_verdict in ("not_affected", "not affected")
+            else "uncertain" if raw_verdict == "uncertain" else "affected"
+        )
 
         # If parsing didn't work well, use the raw text as guidance
         if not result.get("guidance"):
-            result["guidance"] = response_text.strip()[:500]
+            result["guidance"] = response_text.strip()
 
         return result
 
@@ -1324,6 +1569,7 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
                 "finding_id": finding_id,
                 "component_name": "",
                 "priority": "",
+                "applicability": "",
                 "action": "",
                 "rationale": "",
                 "fix_version": "Unknown",
@@ -1340,6 +1586,7 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
         """Parse structured response from finding triage prompt."""
         field_map = {
             "PRIORITY": "priority",
+            "APPLICABILITY": "applicability",
             "ACTION": "action",
             "RATIONALE": "rationale",
             "FIX_VERSION": "fix_version",
@@ -1357,6 +1604,17 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
             **parsed,
         }
         result["confidence"] = result.get("confidence", "medium").lower()
+
+        # Normalize applicability verdict (check not_affected before affected)
+        raw_app = result.get("applicability", "").lower().strip()
+        if "not_affected" in raw_app or "not affected" in raw_app:
+            result["applicability"] = "not_affected"
+        elif "uncertain" in raw_app:
+            result["applicability"] = "uncertain"
+        elif "affected" in raw_app:
+            result["applicability"] = "affected"
+        elif raw_app:
+            result["applicability"] = "uncertain"
 
         # If parsing didn't work well, use the raw text as action
         if not result.get("action") and not result.get("priority"):
@@ -1402,6 +1660,88 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
                 f"{len(findings) - cached_this_batch} from API"
             )
 
+        return results
+
+    # =========================================================================
+    # Action-Level Deep Analysis (Summary model — expensive)
+    # =========================================================================
+
+    def generate_action_analysis(self, action_key: str, agent_prompt: str) -> str:
+        """Send an action's agent prompt to the summary model for deep analysis."""
+        cached = self.get_cached_summary(action_key)
+        if cached is not None:
+            self._cached_count += 1
+            return cached
+
+        wrapped = _ANALYSIS_WRAPPER + agent_prompt
+        try:
+            text = self._call_llm(wrapped, "summary", MAX_ANALYSIS_TOKENS)
+            self.cache_summary(action_key, "action", text, self._summary_model)
+            return text
+        except Exception as e:
+            logger.error(f"Action analysis failed for {action_key}: {e}")
+            return ""
+
+    def generate_batch_action_analysis(
+        self,
+        actions: list[tuple[str, str]],
+    ) -> dict[str, str]:
+        """Generate deep analysis for multiple actions with rate limiting."""
+        results: dict[str, str] = {}
+        from tqdm import tqdm
+
+        with tqdm(actions, desc="Generating AI analysis", unit=" actions") as pbar:
+            for action_key, agent_prompt in pbar:
+                pbar.set_postfix_str(action_key[:40])
+                prev = self._cached_count
+                results[action_key] = self.generate_action_analysis(
+                    action_key, agent_prompt
+                )
+                if self._cached_count == prev:  # was not a cache hit → rate limit
+                    time.sleep(0.5)
+        return results
+
+    # =========================================================================
+    # Combined Analysis (single high-model pass: structured + deep analysis)
+    # =========================================================================
+
+    def generate_combined_action_analysis(
+        self,
+        action_key: str,
+        context_prompt: str,
+    ) -> tuple[dict[str, str], str]:
+        """Single high-model call: structured verdict + deep analysis."""
+        cached = self.get_cached_summary(action_key)
+        if cached is not None:
+            self._cached_count += 1
+            return self._parse_combined_response(cached)
+
+        wrapped = _COMBINED_ANALYSIS_WRAPPER + context_prompt
+        try:
+            text = self._call_llm(wrapped, "summary", MAX_ANALYSIS_TOKENS)
+            self.cache_summary(action_key, "action_combined", text, self._summary_model)
+            return self._parse_combined_response(text)
+        except Exception as e:
+            logger.error(f"Combined analysis failed for {action_key}: {e}")
+            return {}, ""
+
+    def generate_batch_combined_analysis(
+        self,
+        actions: list[tuple[str, str]],
+    ) -> dict[str, tuple[dict[str, str], str]]:
+        """Batch combined analysis with rate limiting."""
+        results: dict[str, tuple[dict[str, str], str]] = {}
+        from tqdm import tqdm
+
+        with tqdm(actions, desc="Generating AI analysis", unit=" actions") as pbar:
+            for action_key, context_prompt in pbar:
+                pbar.set_postfix_str(action_key[:40])
+                prev = self._cached_count
+                results[action_key] = self.generate_combined_action_analysis(
+                    action_key, context_prompt
+                )
+                if self._cached_count == prev:
+                    time.sleep(0.5)
         return results
 
     # =========================================================================

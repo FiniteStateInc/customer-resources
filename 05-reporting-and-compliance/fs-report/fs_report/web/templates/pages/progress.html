@@ -57,6 +57,8 @@
 
     <div class="progress-actions">
         <a href="/" class="btn btn-default">Back to Dashboard</a>
+        <a x-show="done && logFile" :href="'/api/run/' + '{{ run_id }}' + '/log'"
+           class="btn btn-default" target="_blank">View Log</a>
     </div>
 </div>
 {% endblock %}
@@ -78,6 +80,7 @@ function progressStream(runId) {
         resultClass: '',
         reportFiles: [],
         historyRunId: '',
+        logFile: '',
         eventSource: null,
 
         init() {
@@ -105,7 +108,11 @@ function progressStream(runId) {
                     this.completed = data.completed || 0;
                     this.total = data.total || 0;
                     this.progressPct = this.total > 0 ? Math.round((this.completed / this.total) * 100) : 0;
-                    this.progressLabel = this.completed + ' / ' + this.total;
+                    var label = this.completed + ' / ' + this.total;
+                    if (data.recipe && this.completed < this.total) {
+                        label += ' \u2014 ' + data.recipe + ' done';
+                    }
+                    this.progressLabel = label;
                 } catch (err) {}
             });
 
@@ -117,6 +124,7 @@ function progressStream(runId) {
                     this.errorMsg = data.error || '';
                     this.reportFiles = data.files || [];
                     this.historyRunId = data.history_run_id || '';
+                    this.logFile = data.log_file || '';
                     this.resultClass = this.status === 'success' ? 'result-success' : this.status === 'cancelled' ? 'result-warning' : 'result-error';
                     if (this.status === 'success') {
                         this.progressPct = 100;
@@ -140,7 +148,10 @@ function progressStream(runId) {
 
         cancelRun() {
             this.cancelling = true;
-            fetch('/api/run/' + runId + '/cancel', { method: 'POST' });
+            fetch('/api/run/' + runId + '/cancel', {
+                method: 'POST',
+                headers: { 'X-FS-Session': '{{ nonce }}' },
+            });
         },
 
         destroy() {

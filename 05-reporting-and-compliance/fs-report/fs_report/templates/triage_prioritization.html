@@ -7,6 +7,8 @@
     <title>Triage Prioritization - Finite State Report</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -77,6 +79,18 @@
         .reach-INCONCLUSIVE { background: #6c757d; color: white; }
         .reach-UNKNOWN { background: #adb5bd; color: #333; }
 
+        /* VEX status badges (set statuses — solid border) */
+        .vex-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; white-space: nowrap; }
+        .vex-IN_TRIAGE { background: #fff8e1; color: #856404; border: 1px solid #e6a817; }
+        .vex-NOT_AFFECTED, .vex-FALSE_POSITIVE { background: #e6ffe6; color: #166534; border: 1px solid #28a745; }
+        .vex-EXPLOITABLE { background: #fef2f2; color: #991b1b; border: 1px solid #dc3545; }
+        .vex-RESOLVED, .vex-RESOLVED_WITH_PEDIGREE { background: #e6ffe6; color: #166534; border: 1px solid #28a745; }
+
+        /* VEX recommendation badges (dashed border = not yet applied) */
+        .vex-rec-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; border: 1.5px dashed; white-space: nowrap; }
+        .vex-rec-NOT_AFFECTED { background: #f0fdf4; color: #166534; border-color: #86efac; }
+        .vex-rec-IN_TRIAGE { background: #fefce8; color: #854d0e; border-color: #fde047; }
+
         /* Icons */
         .icon-exploit { color: #6f42c1; }
         .icon-kev { color: #dc3545; }
@@ -93,6 +107,8 @@
 
         .footer { text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e9ecef; color: #6c757d; font-size: 0.9em; }
         .finite-state-logo { color: #007bff; font-weight: bold; }
+        .action-btn.btn-remediation { border-color: #2563eb; color: #2563eb; }
+        .action-btn.btn-remediation:hover { background: #eff6ff; }
         .no-data { text-align: center; color: #6c757d; font-style: italic; padding: 40px; }
 
         @media print {
@@ -234,7 +250,7 @@
             {% for gate in scoring_config.gates %}
             <h4>{{ gate.name | replace('_', ' ') | title }} — {{ gate.band }} (score={{ gate.score }})</h4>
             <ul>
-                <li>{{ gate.description | replace(' AND ', ' <strong>AND</strong> ') | replace(' OR ', ' <strong>OR</strong> ') | safe }}</li>
+                <li>{{ gate.description | e | replace(' AND ', ' <strong>AND</strong> ') | replace(' OR ', ' <strong>OR</strong> ') | safe }}</li>
             </ul>
             {% endfor %}
             {% endif %}
@@ -289,7 +305,8 @@
         {% if ai_portfolio_summary and not is_single_project %}
         <div class="narrative-section" style="border-left: 4px solid #007bff;">
             <h3>🤖 AI Portfolio Remediation Summary</h3>
-            <div style="white-space: pre-wrap; line-height: 1.8;">{{ ai_portfolio_summary }}</div>
+            <div id="ai-portfolio-summary"></div>
+            <textarea id="ai-portfolio-summary-raw" style="display:none">{{ ai_portfolio_summary }}</textarea>
         </div>
         {% endif %}
 
@@ -298,7 +315,8 @@
             <h3>🤖 AI Project Remediation Guidance</h3>
             {% for project_name, summary in ai_project_summaries.items() %}
             <h4>{{ project_name }}</h4>
-            <div style="white-space: pre-wrap; line-height: 1.8; margin-bottom: 20px;">{{ summary }}</div>
+            <div id="ai-project-summary-{{ loop.index0 }}"></div>
+            <textarea id="ai-project-summary-raw-{{ loop.index0 }}" style="display:none">{{ summary }}</textarea>
             {% endfor %}
         </div>
         {% endif %}
@@ -486,6 +504,10 @@
                             <button class="action-btn btn-jira" title="Create Jira ticket for this component"
                                 data-action="{{ {'endpoint': 'components', 'title': 'Remediate ' ~ row.component_name ~ ' ' ~ row.component_version, 'summary': c_summary, 'band': c_band, 'findings': row.finding_internal_ids if row.finding_internal_ids is defined else [], 'components': [row.component_id], 'mode': 'SINGLE_COMPONENT', 'projectId': row.project_id, 'projectVersionId': row.project_version_id, 'componentId': row.component_id} | tojson | forceescape }}"
                                 onclick="fsOpenJiraModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this}))">&#x1F3AB; Jira</button>
+                            <button class="action-btn btn-remediation" title="Generate Remediation Package for this component"
+                                data-component="{{ row.component_name }}@{{ row.component_version }}"
+                                data-project="{{ row.project_id }}"
+                                onclick="fsGenerateRemediation(this, 'component')">&#x1F4E6; Remediation</button>
                         </td>
                     </tr>
                     {% endfor %}
@@ -518,6 +540,7 @@
                         <th>EPSS %ile</th>
                         <th>CVSS</th>
                         {% if ai_finding_prompts %}<th>AI Prompt</th>{% endif %}
+                        <th>AI Status</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -581,6 +604,16 @@
                             {% else %}—{% endif %}
                         </td>
                         {% endif %}
+                        <td>
+                            {% if row.status is defined and row.status and row.status not in ('', 'nan', 'None') %}
+                                <span class="vex-badge vex-{{ row.status }}">{{ row.status }}</span>
+                            {% elif vex_rec_lookup is defined and vex_rec_lookup and row.finding_id in vex_rec_lookup %}
+                                {% set vrec = vex_rec_lookup[row.finding_id] %}
+                                <span class="vex-rec-badge vex-rec-{{ vrec.recommended_vex_status }}" title="{{ vrec.reason }}">{{ vrec.recommended_vex_status }}</span>
+                            {% else %}
+                                —
+                            {% endif %}
+                        </td>
                         <td class="action-cell">
                             {% set f_guidance = ai_finding_guidance.get(row.finding_id, {}) if ai_finding_guidance is defined and ai_finding_guidance else {} %}
                             {% set f_summary_parts = [] %}
@@ -594,10 +627,15 @@
                                 onclick="fsOpenJiraModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this}))">&#x1F3AB; Jira</button>
                             {% if row.internal_id and row.project_version_id %}
                             {% set vex_reason = vex_reason_lookup.get(row.finding_id, '') if vex_reason_lookup is defined and vex_reason_lookup else '' %}
+                            {% set rec_data = vex_rec_lookup.get(row.finding_id) if vex_rec_lookup is defined and vex_rec_lookup else None %}
                             <button class="action-btn btn-triage" title="Set status to IN_TRIAGE"
-                                data-action="{{ {'findingId': row.finding_id, 'internalId': row.internal_id, 'projectVersionId': row.project_version_id, 'reason': vex_reason} | tojson | forceescape }}"
+                                data-action="{{ {'findingId': row.finding_id, 'internalId': row.internal_id, 'projectVersionId': row.project_version_id, 'reason': vex_reason, 'recommendation': rec_data} | tojson | forceescape }}"
                                 onclick="fsOpenTriageModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this, currentStatus: this.dataset.currentStatus || ''}))">&#x2691; Triage</button>
                             {% endif %}
+                            <button class="action-btn btn-remediation" title="Generate Remediation Package for this CVE"
+                                data-cve="{{ row.finding_id }}"
+                                data-project="{{ row.project_id }}"
+                                onclick="fsGenerateRemediation(this, 'cve')">&#x1F4E6; Remediation</button>
                         </td>
                     </tr>
                     {% endfor %}
@@ -608,6 +646,7 @@
 
         <div class="footer">
             <p>Generated by <span class="finite-state-logo">Finite State</span> | {{ generated_at }}</p>
+            <p style="font-size: 0.8em; margin-top: 4px;">Copyright &copy; 2026 Finite State, Inc.</p>
         </div>
     </div>
 
@@ -617,6 +656,49 @@
             navigator.clipboard.writeText(pre.textContent).then(function() {
                 btn.textContent = 'Copied!';
                 setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+            });
+        }
+
+        function fsGenerateRemediation(btn, mode) {
+            // Only works when served via localhost (needs /api/run endpoint)
+            if (!(window.location.protocol === 'http:' &&
+                  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'))) {
+                alert('Remediation Package generation requires fs-report serve mode.');
+                return;
+            }
+
+            var formData = new FormData();
+            formData.append('recipes', 'Remediation Package');
+            formData.append('project_filter', btn.dataset.project);
+            formData.append('ai_prompts', 'true');
+            formData.append('overwrite', 'true');
+
+            if (mode === 'component') {
+                formData.append('component_filter', btn.dataset.component);
+            } else {
+                formData.append('cve_filter', btn.dataset.cve);
+            }
+
+            btn.disabled = true;
+            var origText = btn.textContent;
+            btn.textContent = 'Generating...';
+
+            fetch('/fsapi/session').then(function(r) { return r.json(); }).then(function(session) {
+                var headers = {};
+                if (session.nonce) headers['X-FS-Session'] = session.nonce;
+                return fetch('/api/run', { method: 'POST', body: formData, headers: headers });
+            }).then(function(r) {
+                if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'HTTP ' + r.status); });
+                return r.json();
+            }).then(function(data) {
+                if (!data.run_id) throw new Error('No run_id returned');
+                window.open('/run/' + data.run_id, '_blank');
+                btn.disabled = false;
+                btn.textContent = origText;
+            }).catch(function(err) {
+                btn.disabled = false;
+                btn.textContent = origText;
+                alert('Failed to start remediation: ' + err.message);
             });
         }
 
@@ -1050,6 +1132,22 @@
                 });
             })();
             {% endif %}
+
+            // Render AI summary markdown
+            if (typeof marked !== 'undefined') {
+                var portfolioRaw = document.getElementById('ai-portfolio-summary-raw');
+                var portfolioTarget = document.getElementById('ai-portfolio-summary');
+                if (portfolioTarget && portfolioRaw && portfolioRaw.value) {
+                    portfolioTarget.innerHTML = DOMPurify.sanitize(marked.parse(portfolioRaw.value));
+                }
+                document.querySelectorAll('[id^="ai-project-summary-raw-"]').forEach(function(ta) {
+                    var idx = ta.id.replace('ai-project-summary-raw-', '');
+                    var target = document.getElementById('ai-project-summary-' + idx);
+                    if (target && ta.value) {
+                        target.innerHTML = DOMPurify.sanitize(marked.parse(ta.value));
+                    }
+                });
+            }
 
         });
     </script>

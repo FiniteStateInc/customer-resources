@@ -56,7 +56,7 @@
                     <input type="checkbox"
                            name="recipe"
                            value="{{ r.name }}"
-                           {% if r.auto_run %}checked{% endif %}
+                           {% if saved_recipes %}{% if r.name in saved_recipes %}checked{% endif %}{% elif r.auto_run %}checked{% endif %}
                            data-auto-run="{% if r.auto_run %}1{% endif %}"
                            @change="updateSelection()">
                     <div class="recipe-info">
@@ -170,6 +170,8 @@ function _restoreFormValues() {
 /* ── Load pre-run form into side panel ─────────────────────── */
 function loadPrerun(recipes) {
     var container = document.getElementById('prerun-container');
+    container.innerHTML = '<div class="prerun-loading"><span class="spinner"></span> Loading...</div>';
+    container.classList.add('active');
     var formData = new FormData();
     formData.append('recipes', recipes.join(','));
     formData.append('_csrf', NONCE);
@@ -181,7 +183,6 @@ function loadPrerun(recipes) {
     .then(function(r) { return r.text(); })
     .then(function(html) {
         container.innerHTML = html;
-        container.classList.add('active');
         _restoreFormValues();
         _initPrerunWidgets();
     });
@@ -195,6 +196,8 @@ document.addEventListener('click', function(e) {
         var btn = e.target;
         var form = document.getElementById('prerun-submit-form');
         if (!form) return;
+        _hidePrerunError();
+        _syncFindingTypes();
         _saveFormValues();
         var formData = new FormData(form);
         btn.disabled = true;
@@ -211,32 +214,54 @@ document.addEventListener('click', function(e) {
                 sessionStorage.removeItem('fs_recipes');
                 window.location.href = '/run/' + data.run_id;
             } else {
-                alert('Error: ' + (data.error || 'Unknown error'));
+                _showPrerunError(data.error || 'Unknown error');
                 btn.disabled = false;
-                btn.textContent = 'Run';
+                btn.textContent = btn.getAttribute('data-label') || 'Run';
             }
         })
         .catch(function(err) {
-            alert('Failed to start run: ' + err);
+            _showPrerunError('Failed to start run: ' + err);
             btn.disabled = false;
-            btn.textContent = 'Run';
+            btn.textContent = btn.getAttribute('data-label') || 'Run';
         });
     }
 
     /* Cancel / close button */
     if (e.target && e.target.classList.contains('prerun-close')) {
+        _hidePrerunError();
         document.getElementById('prerun-container').classList.remove('active');
         document.getElementById('prerun-container').innerHTML = '';
     }
 });
 
+/* ── Inline error helpers ──────────────────────────────────── */
+function _showPrerunError(msg) {
+    var el = document.getElementById('prerun-error');
+    if (el) { el.textContent = msg; el.style.display = 'block'; }
+}
+function _hidePrerunError() {
+    var el = document.getElementById('prerun-error');
+    if (el) { el.style.display = 'none'; el.textContent = ''; }
+}
+
+/* ── Sync finding-type checkboxes to hidden field ─────────── */
+function _syncFindingTypes() {
+    var cbs = document.querySelectorAll('input[name="ft_cb"]:checked');
+    var hidden = document.getElementById('pre-ft');
+    if (!hidden || cbs.length === 0) return;
+    hidden.value = Array.from(cbs).map(function(cb) { return cb.value; }).join(',');
+}
+
 /* ── Init dir browser + scope dropdowns in prerun panel ──── */
 function _initPrerunWidgets() {
+    var runBtn = document.getElementById('btn-run-submit');
+    if (runBtn) runBtn.setAttribute('data-label', runBtn.textContent);
     initDirBrowser('pre-output', 'pre-output-browse');
     initScopeDropdowns({
         projectId: 'pre-project',
         folderId:  'pre-folder',
         versionId: 'pre-version',
+        cvoId:     'pre-cvo',
     });
     initVersionPicker({
         projectSelId: 'pre-bv-project',
@@ -249,6 +274,19 @@ function _initPrerunWidgets() {
         inputId: 'pre-cv',
     });
 }
+
+/* ── Sync side column heights to workflow column ───────────── */
+function _syncColumnHeights() {
+    var wf = document.querySelector('.workflows-section');
+    if (!wf) return;
+    var h = wf.offsetHeight;
+    var queue = document.querySelector('.queue-section');
+    var recipes = document.querySelector('.recipes-section');
+    if (queue) queue.style.maxHeight = h + 'px';
+    if (recipes) recipes.style.maxHeight = h + 'px';
+}
+window.addEventListener('load', _syncColumnHeights);
+window.addEventListener('resize', _syncColumnHeights);
 
 /* ── Also activate panel after htmx swaps (workflow cards) ── */
 document.addEventListener('htmx:afterSwap', function(e) {

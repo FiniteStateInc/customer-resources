@@ -31,6 +31,7 @@ try:
     import resource  # Unix only; not available on Windows
 except ImportError:
     resource = None  # type: ignore[assignment]
+from collections.abc import Callable
 from typing import Any
 
 import pandas as pd
@@ -45,6 +46,43 @@ from fs_report.renderers import ReportRenderer
 from fs_report.sqlite_cache import _trim_factors
 
 # [REMOVED] All DuckDB-related logic and imports. Only pandas transformer is used.
+
+# Raw API columns that _normalize_columns already extracts into flat
+# columns (component_name, has_exploit, reachability_score, etc.).
+# Safe to drop after per-batch scoring to reclaim ~1 KB/row.
+_TRIAGE_DROP_AFTER_SCORE: frozenset[str] = frozenset(
+    {
+        # Nested dicts (biggest memory hogs — ~500 bytes each)
+        "component",
+        "project",
+        "projectVersion",
+        # List/dict fields consumed by _normalize_columns
+        "exploitInfo",
+        "reachability",
+        "factors",
+        # Flat API fields already normalized into snake_case columns
+        "cwes",
+        "attackVector",
+        "epssPercentile",
+        "epssScore",
+        "reachabilityScore",
+        "hasKnownExploit",
+        "inKev",
+        "inVcKev",
+        "affectedFunctions",
+        "findingId",
+        "projectId",
+        # Dot-notation columns from json_normalize (if pre-flattened)
+        "component.name",
+        "component.version",
+        "component.vcId",
+        "component.id",
+        "project.name",
+        "project.id",
+        "projectVersion.id",
+        "projectVersion.version",
+    }
+)
 
 
 def _log_memory(logger: logging.Logger, label: str) -> None:
@@ -217,11 +255,18 @@ class ReportEngine:
         config: Config,
         data_override: dict[str, Any] | None = None,
         cancel_event: threading.Event | None = None,
+        on_recipe_complete: Callable[[int, int, str], None] | None = None,
     ) -> None:
-        """Initialize the report engine."""
+        """Initialize the report engine.
+
+        Args:
+            on_recipe_complete: Optional callback invoked after each recipe
+                finishes.  Signature: ``(completed, total, recipe_name)``.
+        """
         self.config = config
         self.logger = logging.getLogger(__name__)
         self._cancel_event = cancel_event
+        self._on_recipe_complete = on_recipe_complete
 
         # Initialize cache
         self.cache = DataCache()
@@ -232,6 +277,27 @@ class ReportEngine:
             cache=self.cache,
             cache_ttl=getattr(config, "cache_ttl", 0),
         )
+        # Secondary API client for cross-server version comparison
+        if config.compare_domain and config.compare_auth_token:
+            compare_config = Config(
+                auth_token=config.compare_auth_token,
+                domain=config.compare_domain,
+                recipes_dir=config.recipes_dir,
+                use_bundled_recipes=config.use_bundled_recipes,
+                output_dir=config.output_dir,
+                start_date=config.start_date,
+                end_date=config.end_date,
+                verbose=config.verbose,
+                finding_types=config.finding_types,
+                request_delay=config.request_delay,
+                batch_size=config.batch_size,
+            )
+            self.compare_api_client: APIClient | None = APIClient(
+                compare_config, cache=DataCache()
+            )
+        else:
+            self.compare_api_client = None
+
         self.recipe_loader = RecipeLoader(
             config.recipes_dir,
             use_bundled=getattr(config, "use_bundled_recipes", True),
@@ -274,6 +340,9 @@ class ReportEngine:
         # Files produced by the last run() call
         self.generated_files: list[str] = []
 
+        # Resolved project name (populated by _validate_and_resolve_filters)
+        self.resolved_project_name: str | None = None
+
         # Folder scoping state (populated by _resolve_folder_scope in run())
         self._folder_project_ids: set[str] | None = None
         self._project_folder_map: dict[str, str] = {}  # project_id -> folder_name
@@ -294,6 +363,25 @@ class ReportEngine:
         """Raise ``ReportCancelled`` if the cancel event has been set."""
         if self._cancel_event is not None and self._cancel_event.is_set():
             raise ReportCancelled("Report cancelled by user")
+
+    def _validate_numeric_project_id(self, project_id: int) -> bool:
+        """Check whether *project_id* is a valid project in the API.
+
+        Returns ``True`` if the API returns project data for this ID,
+        ``False`` otherwise (e.g. 404 or non-project entity).
+        """
+        try:
+            url = f"{self.api_client.base_url}/public/v0/projects/{project_id}"
+            resp = self.api_client.client.get(url)
+            if resp.status_code == 404:
+                return False
+            resp.raise_for_status()
+            data = resp.json()
+            # Sanity-check: the response should contain an "id" key matching
+            # the requested project ID.
+            return isinstance(data, dict) and data.get("id") is not None
+        except Exception:
+            return False
 
     def _resolve_project_name(self, project_name: str) -> int | None:
         """
@@ -322,6 +410,20 @@ class ReportEngine:
             self.logger.info(f"Did you mean one of these? {close[:5]}")
 
         return None
+
+    def _resolve_project_id_to_name(self, project_id: int) -> str | None:
+        """Resolve a numeric project ID to its display name.
+
+        Returns the project name, or None if the lookup fails.
+        """
+        try:
+            url = f"{self.api_client.base_url}/public/v0/projects/{project_id}"
+            resp = self.api_client.client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("name") if isinstance(data, dict) else None
+        except Exception:
+            return None
 
     def _resolve_version_name(self, project_id: int, version_name: str) -> int | None:
         """Resolve a version name to its numeric API ID within a project.
@@ -403,7 +505,7 @@ class ReportEngine:
 
     def _collect_folder_tree(
         self, target_folder_id: str, all_folders: list[dict] | None = None
-    ) -> tuple[set[str], dict[str, str], list[dict]]:
+    ) -> tuple[set[str], dict[str, str], list[dict], dict[str, str]]:
         """
         Walk the folder tree starting from *target_folder_id* and collect:
         1. All descendant folder IDs (including the target itself).
@@ -441,6 +543,7 @@ class ReportEngine:
         from fs_report.models import QueryConfig, QueryParams
 
         project_folder_map: dict[str, str] = {}
+        project_name_to_id: dict[str, str] = {}
         all_project_ids: set[str] = set()
 
         for fid in all_folder_ids:
@@ -453,9 +556,12 @@ class ReportEngine:
                 projects = self.api_client.fetch_data(projects_query)
                 for p in projects:
                     pid = str(p.get("id", ""))
+                    pname = p.get("name", "")
                     if pid:
                         all_project_ids.add(pid)
                         project_folder_map[pid] = folder_name
+                        if pname:
+                            project_name_to_id[pname.lower()] = pid
             except Exception as e:
                 self.logger.warning(
                     f"Error fetching projects for folder '{folder_name}' ({fid}): {e}"
@@ -466,7 +572,7 @@ class ReportEngine:
             f"{len(all_project_ids)} project(s)"
         )
 
-        return all_project_ids, project_folder_map, subfolder_list
+        return all_project_ids, project_folder_map, subfolder_list, project_name_to_id
 
     def _build_folder_path(
         self, folder_id: str, all_folders: list[dict] | None = None
@@ -516,8 +622,8 @@ class ReportEngine:
         all_folders = self._fetch_all_folders()
         self._folder_path = self._build_folder_path(folder_id, all_folders)
 
-        project_ids, project_folder_map, subfolders = self._collect_folder_tree(
-            folder_id, all_folders
+        project_ids, project_folder_map, subfolders, project_name_to_id = (
+            self._collect_folder_tree(folder_id, all_folders)
         )
 
         self._folder_project_ids = project_ids
@@ -531,12 +637,18 @@ class ReportEngine:
         # If --project is also specified, validate it's within the folder
         if self.config.project_filter:
             pid = str(self.config.project_filter)
+            # The filter may be a numeric ID or a project name
             if pid not in project_ids:
-                self.logger.error(
-                    f"Project '{self.config.project_filter}' is not in folder "
-                    f"'{self._folder_name}' or its subfolders."
-                )
-                return False
+                # Try resolving by name (case-insensitive)
+                resolved = project_name_to_id.get(pid.lower())
+                if resolved:
+                    pid = resolved
+                else:
+                    self.logger.error(
+                        f"Project '{self.config.project_filter}' is not in folder "
+                        f"'{self._folder_name}' or its subfolders."
+                    )
+                    return False
 
         return True
 
@@ -718,7 +830,7 @@ class ReportEngine:
             leave=True,
         ):
             try:
-                url = f"/api/public/v0/projects/{pid}"
+                url = f"{self.api_client.base_url}/public/v0/projects/{pid}"
                 resp = self.api_client.client.get(url)
                 resp.raise_for_status()
                 data = resp.json()
@@ -892,6 +1004,7 @@ class ReportEngine:
         finding_type: str,
         category_filter: str | None = None,
         entity_type: str = "findings",
+        on_records: "Callable[[list[dict]], None] | None" = None,
     ) -> list[dict]:
         """Reassemble data from per-version cache, fetching any missing versions first.
 
@@ -904,6 +1017,10 @@ class ReportEngine:
             finding_type: API finding type (e.g. 'cve').
             category_filter: Optional RSQL category filter.
             entity_type: 'findings' or 'components'.
+            on_records: Optional callback invoked with each batch of records
+                as they become available (cached records first, then each
+                API batch).  Used to start background work (e.g. NVD
+                lookups) in parallel with the remaining fetch.
 
         Returns:
             Merged list of records across all requested versions.
@@ -919,6 +1036,11 @@ class ReportEngine:
                 all_records.extend(cached)
             else:
                 missing.append(vid)
+
+        # Notify callback with cached records so background work can start
+        # while API batches are still being fetched.
+        if on_records and all_records:
+            on_records(all_records)
 
         cached_count = len(version_ids) - len(missing)
         if missing:
@@ -957,6 +1079,7 @@ class ReportEngine:
                 finding_type=finding_type,
                 category_filter=category_filter,
                 entity_type=entity_type,
+                on_records=on_records,
             )
             all_records.extend(new_records)
         else:
@@ -984,6 +1107,7 @@ class ReportEngine:
         finding_type: str = "",
         category_filter: str | None = None,
         entity_type: str = "findings",
+        on_records: "Callable[[list[dict]], None] | None" = None,
     ) -> list[dict]:
         """Fetch data in batches, filtering by version IDs.
 
@@ -1110,6 +1234,8 @@ class ReportEngine:
                         record["factors"] = _trim_factors(raw_factors)
 
                 all_results.extend(batch_results)
+                if on_records and batch_results:
+                    on_records(batch_results)
                 pbar.set_postfix({"records": len(all_results)})
 
                 # Adaptive cooldown between batches — scale with data volume
@@ -1206,14 +1332,27 @@ class ReportEngine:
         # Resolve project name to numeric ID if needed (API filters require numeric IDs)
         if self.config.project_filter and not self.data_override:
             try:
-                int(self.config.project_filter)
-                # Already a numeric ID — no resolution needed
+                pid = int(self.config.project_filter)
+                # Numeric ID — validate it actually refers to a project
+                if not self._validate_numeric_project_id(pid):
+                    self.logger.error(
+                        f"No project found with ID {pid}. "
+                        "This may be a project *version* ID rather than a project ID. "
+                        "If so, use --version (with --project) or "
+                        "--baseline-version / --current-version instead.\n"
+                        "Use 'fs-report list-projects' to see available projects."
+                    )
+                    return False
+                # Resolve numeric ID to project name for display
+                self.resolved_project_name = self._resolve_project_id_to_name(pid)
             except ValueError:
+                original_name = self.config.project_filter
                 resolved_id = self._resolve_project_name(self.config.project_filter)
                 if resolved_id:
                     self.logger.info(
                         f"Resolved project '{self.config.project_filter}' to ID {resolved_id}"
                     )
+                    self.resolved_project_name = original_name
                     self.config.project_filter = str(resolved_id)
                 else:
                     self.logger.error(
@@ -1268,10 +1407,36 @@ class ReportEngine:
             self._check_cancel()
             try:
                 self.logger.info(f"[{idx}/{total}] Generating: {recipe.name} ...")
-                self.renderer.check_output_guard(recipe)
+
+                # Require --project for recipes that declare requires_project
+                if (
+                    getattr(recipe, "requires_project", False) is True
+                    and not self.config.project_filter
+                ):
+                    self.logger.error(
+                        f"'{recipe.name}' requires a --project filter. "
+                        "Use --project <name-or-id> to scope to a single project."
+                    )
+                    all_succeeded = False
+                    continue
+
+                # Scoped Remediation Package: override recipe name for output dir
+                # (applied after _process_recipe so internal name checks still work)
+                _scoped_recipe = recipe
+                if recipe.name == "Remediation Package":
+                    scope_suffix = ""
+                    if getattr(self.config, "component_filter", None):
+                        scope_suffix = str(self.config.component_filter)
+                    elif getattr(self.config, "cve_filter", None):
+                        scope_suffix = str(self.config.cve_filter)
+                    if scope_suffix:
+                        _scoped_recipe = recipe.model_copy(
+                            update={"name": f"Remediation Package - {scope_suffix}"}
+                        )
+                self.renderer.check_output_guard(_scoped_recipe)
                 report_data = self._process_recipe(recipe)
                 if report_data:
-                    files = self.renderer.render(recipe, report_data)
+                    files = self.renderer.render(_scoped_recipe, report_data)
                     if files:
                         generated_files.extend(files)
                     # Collect extra files written by transforms (prompts, VEX JSON)
@@ -1288,13 +1453,281 @@ class ReportEngine:
             except Exception as e:
                 self.logger.error(f"Failed to process recipe {recipe.name}: {e}")
                 all_succeeded = False
-                continue
+            finally:
+                if self._on_recipe_complete:
+                    try:
+                        self._on_recipe_complete(idx, total, recipe.name)
+                    except Exception:
+                        pass
         self.generated_files = generated_files
         if generated_files:
             print("\nReports generated:")
             for f in generated_files:
                 print(f"  - {f}")
         return all_succeeded
+
+    # ------------------------------------------------------------------
+    # Cross-server Version Comparison helper
+    # ------------------------------------------------------------------
+
+    def _fetch_cross_server_comparison(
+        self,
+        _fetch_findings_primary: Any,
+        _fetch_components_primary: Any,
+        finding_type: str,
+        category_filter: str | None,
+    ) -> list[dict]:
+        """Fetch findings from two different servers and build pair comparison."""
+        from tqdm import tqdm as _tqdm
+
+        from fs_report.models import QueryConfig, QueryParams
+
+        assert self.compare_api_client is not None
+
+        def _fetch_findings_secondary(version_id: str) -> list[dict]:
+            version_filter = f"projectVersion=={version_id}"
+            combined_filter = (
+                f"{version_filter};{category_filter}"
+                if category_filter
+                else version_filter
+            )
+            q = QueryConfig(
+                endpoint="/public/v0/findings",
+                params=QueryParams(
+                    limit=10000,
+                    filter=combined_filter,
+                    finding_type=finding_type,
+                    archived=False,
+                    excluded=False,
+                ),
+            )
+            assert self.compare_api_client is not None
+            return self.compare_api_client.fetch_all_with_resume(q, show_progress=False)
+
+        def _fetch_components_secondary(version_id: str) -> list[dict]:
+            q = QueryConfig(
+                endpoint="/public/v0/components",
+                params=QueryParams(
+                    limit=10000,
+                    filter=f"projectVersion=={version_id}",
+                ),
+            )
+            assert self.compare_api_client is not None
+            return self.compare_api_client.fetch_all_with_resume(q, show_progress=False)
+
+        def _resolve_latest_version(
+            api_client: APIClient, project_filter: str
+        ) -> tuple[str, str, str]:
+            """Resolve project → latest version. Returns (version_id, version_name, project_name)."""
+            # Fetch projects
+            pq = QueryConfig(
+                endpoint="/public/v0/projects",
+                params=QueryParams(limit=10000, archived=False, excluded=False),
+            )
+            projects = api_client.fetch_all_with_resume(pq, show_progress=False)
+            project = None
+            for p in projects:
+                pid = str(p.get("id", ""))
+                pname = p.get("name", "")
+                if pid == project_filter or pname.lower() == project_filter.lower():
+                    project = p
+                    break
+            if not project:
+                raise ValueError(
+                    f"Project '{project_filter}' not found on " f"{api_client.base_url}"
+                )
+            pid = str(project["id"])
+            pname = project.get("name", pid)
+
+            # Fetch versions for project
+            url = f"{api_client.base_url}/public/v0/projects/{pid}/versions"
+            resp = api_client.client.get(url)
+            resp.raise_for_status()
+            versions = resp.json()
+            if not isinstance(versions, list) or not versions:
+                raise ValueError(
+                    f"No versions found for project '{pname}' on "
+                    f"{api_client.base_url}"
+                )
+            # Latest = most recently created
+            versions.sort(key=lambda v: v.get("created", v.get("id", "")), reverse=True)
+            latest = versions[0]
+            vid = str(latest.get("id", ""))
+            vname = latest.get("version", latest.get("name", vid))
+            return vid, vname, pname
+
+        # ── Resolve primary side ──────────────────────────────────────
+        primary_version_id = self.config.version_filter
+        primary_version_name = primary_version_id or ""
+        primary_project_name = ""
+
+        if primary_version_id:
+            # Explicit version ID
+            self.logger.info("Cross-server: primary version ID %s", primary_version_id)
+        elif self.config.project_filter:
+            # Resolve project → latest version
+            self.logger.info(
+                "Cross-server: resolving primary project '%s'",
+                self.config.project_filter,
+            )
+            primary_version_id, primary_version_name, primary_project_name = (
+                _resolve_latest_version(self.api_client, self.config.project_filter)
+            )
+            self.logger.info(
+                "Cross-server: primary resolved to %s (%s) in project '%s'",
+                primary_version_id,
+                primary_version_name,
+                primary_project_name,
+            )
+        else:
+            raise ValueError(
+                "Cross-server comparison requires --project or --version "
+                "to identify the primary version."
+            )
+
+        # ── Resolve secondary side ────────────────────────────────────
+        secondary_version_id = self.config.compare_version
+        secondary_version_name = secondary_version_id or ""
+        secondary_project_name = ""
+
+        if secondary_version_id:
+            self.logger.info(
+                "Cross-server: secondary version ID %s", secondary_version_id
+            )
+        elif self.config.compare_project:
+            self.logger.info(
+                "Cross-server: resolving secondary project '%s'",
+                self.config.compare_project,
+            )
+            secondary_version_id, secondary_version_name, secondary_project_name = (
+                _resolve_latest_version(
+                    self.compare_api_client, self.config.compare_project
+                )
+            )
+            self.logger.info(
+                "Cross-server: secondary resolved to %s (%s) in project '%s'",
+                secondary_version_id,
+                secondary_version_name,
+                secondary_project_name,
+            )
+        else:
+            raise ValueError(
+                "Cross-server comparison requires --compare-project or "
+                "--compare-version to identify the secondary version."
+            )
+
+        # ── Fetch data from both servers ──────────────────────────────
+        pair_pbar = _tqdm(
+            total=4,
+            desc="Fetching cross-server pair",
+            unit=" requests",
+            leave=False,
+        )
+
+        pair_pbar.set_postfix({"step": "Primary findings"})
+        primary_findings = _fetch_findings_primary(primary_version_id)
+        pair_pbar.update(1)
+
+        pair_pbar.set_postfix({"step": "Primary components"})
+        primary_components = _fetch_components_primary(primary_version_id)
+        pair_pbar.update(1)
+
+        pair_pbar.set_postfix({"step": "Secondary findings"})
+        secondary_findings = _fetch_findings_secondary(secondary_version_id)
+        pair_pbar.update(1)
+
+        pair_pbar.set_postfix({"step": "Secondary components"})
+        secondary_components = _fetch_components_secondary(secondary_version_id)
+        pair_pbar.update(1)
+        pair_pbar.close()
+
+        # Extract version metadata from findings if not already resolved
+        def _extract_meta(
+            findings: list[dict], version_id: str
+        ) -> tuple[str, str, str]:
+            vname, created, pname = version_id, "", ""
+            for f in findings:
+                pv = f.get("projectVersion")
+                if isinstance(pv, dict):
+                    v = pv.get("version") or pv.get("name")
+                    if v:
+                        vname = str(v)
+                    c = pv.get("created", "")
+                    if c:
+                        created = c
+                proj = f.get("project")
+                if isinstance(proj, dict):
+                    n = proj.get("name")
+                    if n:
+                        pname = str(n)
+                if vname != version_id and pname:
+                    break
+            return vname, created, pname
+
+        if not primary_project_name:
+            primary_version_name, primary_created, primary_project_name = _extract_meta(
+                primary_findings, primary_version_id
+            )
+        else:
+            _, primary_created, _ = _extract_meta(primary_findings, primary_version_id)
+
+        if not secondary_project_name:
+            secondary_version_name, secondary_created, secondary_project_name = (
+                _extract_meta(secondary_findings, secondary_version_id)
+            )
+        else:
+            _, secondary_created, _ = _extract_meta(
+                secondary_findings, secondary_version_id
+            )
+
+        # Build labels with domain for clarity
+        primary_domain = self.config.domain
+        secondary_domain = self.config.compare_domain
+        primary_label = f"{primary_domain} @ {primary_version_name}"
+        secondary_label = f"{secondary_domain} @ {secondary_version_name}"
+
+        # Build project name for display
+        if primary_project_name and secondary_project_name:
+            if primary_project_name == secondary_project_name:
+                project_name = primary_project_name
+            else:
+                project_name = (
+                    primary_project_name + " \u2194 " + secondary_project_name
+                )
+        else:
+            project_name = (
+                primary_project_name
+                or secondary_project_name
+                or "Cross-Server Comparison"
+            )
+
+        projects_data: list[dict] = [
+            {
+                "project_name": project_name,
+                "is_pair_comparison": True,
+                "versions": [
+                    {
+                        "id": primary_version_id,
+                        "name": primary_label,
+                        "created": primary_created,
+                        "project_name": primary_project_name,
+                        "findings": primary_findings,
+                        "components": primary_components,
+                    },
+                    {
+                        "id": secondary_version_id,
+                        "name": secondary_label,
+                        "created": secondary_created,
+                        "project_name": secondary_project_name,
+                        "findings": secondary_findings,
+                        "components": secondary_components,
+                    },
+                ],
+            }
+        ]
+
+        self._version_comparison_data = {"projects": projects_data}
+        return [{"_vc_placeholder": True}]
 
     # ------------------------------------------------------------------
     # Version Comparison: specialised data fetcher
@@ -1370,6 +1803,15 @@ class ReportEngine:
             cache_key = self._cache_key("components", version_id)
             self._version_findings_cache[cache_key] = result
             return result
+
+        # ── Cross-server comparison ────────────────────────────────────
+        if self.compare_api_client is not None:
+            return self._fetch_cross_server_comparison(
+                _fetch_findings,
+                _fetch_components,
+                finding_type,
+                category_filter,
+            )
 
         # ── Validate --baseline-version / --current-version ─────────────
         bv = self.config.baseline_version
@@ -1699,6 +2141,10 @@ class ReportEngine:
             post_filter_categories: set[str] | None = None
             post_filter_types: set[str] | None = None
 
+            # --- NVD pipeline handles (initialised here so both branches see them) ---
+            _nvd_on_records = None
+            _nvd_collect = None
+
             # Use override data if provided
             if self.data_override is not None:
                 self.logger.info(
@@ -1734,19 +2180,21 @@ class ReportEngine:
                     return None
             else:
                 # Use robust pagination for all major findings-based reports
-                if recipe.name in [
-                    "Component Vulnerability Analysis (Pandas)",
-                    "Component Vulnerability Analysis",
-                    "Executive Summary",
-                    "Executive Dashboard",
-                    "Scan Analysis",
-                    "Findings by Project",
-                    "Component List",
-                    "User Activity",
-                    "Triage Prioritization",
+                _ROBUST_ENDPOINTS = {
+                    "/public/v0/findings",
+                    "/public/v0/scans",
+                    "/public/v0/cves",
+                    "/public/v0/audit",
+                    "/public/v0/components",
+                }
+                _endpoint = recipe.query.endpoint if recipe.query else ""
+                if _endpoint in _ROBUST_ENDPOINTS or recipe.name in (
                     "Version Comparison",
+                    "User Activity",
+                    "Scan Analysis",
                     "CVE Impact",
-                ]:
+                    "Component List",
+                ):
                     from fs_report.models import QueryConfig, QueryParams
 
                     if recipe.name == "Version Comparison":
@@ -1985,28 +2433,37 @@ class ReportEngine:
                                 pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
                             )
                             del _fetched
-                    elif recipe.name in [
-                        "Component Vulnerability Analysis (Pandas)",
-                        "Component Vulnerability Analysis",
-                        "Executive Summary",
-                        "Executive Dashboard",
-                        "Findings by Project",
-                        "Triage Prioritization",
-                    ]:
+                    elif recipe.query.endpoint == "/public/v0/findings":
                         # Report category determines period behaviour:
                         #   Operational (Executive Summary): period filters findings by detected date
                         #   Assessment  (CVA, Findings by Project, Triage): shows current state, period ignored
                         is_operational = recipe.name == "Executive Summary"
 
+                        # Recipes whose YAML filter declares ${start}/${end} have opted
+                        # into period-based date filtering regardless of category.
+                        _recipe_has_date_filter = bool(
+                            recipe.query
+                            and recipe.query.params
+                            and recipe.query.params.filter
+                            and (
+                                "${start}" in recipe.query.params.filter
+                                or "${end}" in recipe.query.params.filter
+                            )
+                        )
+
                         # Build finding type parameters based on --finding-types flag
                         # Executive Dashboard needs all finding types regardless of CLI flag
+                        _uses_gates = bool(
+                            recipe.parameters and recipe.parameters.get("gates")
+                        )
                         if recipe.name == "Executive Dashboard":
                             type_params = build_findings_type_params("all")
-                        elif recipe.name == "Triage Prioritization":
-                            # Triage requires reachabilityScore which the API may
-                            # omit when the ``type=cve`` URL param is used.  Use a
-                            # category RSQL filter instead so the full field set
-                            # (including reachabilityScore) is returned.
+                        elif _uses_gates:
+                            # Recipes with gate-based triage scoring need
+                            # reachabilityScore which the API omits when the
+                            # ``type=cve`` URL param is used.  Use a category
+                            # RSQL filter instead so the full field set is
+                            # returned.
                             type_params = {
                                 "type": None,
                                 "category_filter": "category==CVE",
@@ -2032,6 +2489,7 @@ class ReportEngine:
                         # API dicts are discarded immediately, reducing peak
                         # memory by an additional ~20-30% on top of chunked DF.
                         _is_triage = recipe.name == "Triage Prioritization"
+                        _low_memory = getattr(self.config, "low_memory", False)
                         _triage_weights = None
                         _triage_gates = None
                         if _is_triage:
@@ -2050,22 +2508,56 @@ class ReportEngine:
                             _triage_weights = _load_weights(self.config, _triage_ad)
                             _triage_gates = _load_gates(self.config, _triage_ad)
 
+                        # --- Per-batch flattening for Findings by Project ---
+                        # Pre-flatten nested dict columns and drop unused API
+                        # fields per-chunk, reducing accumulated memory ~60%.
+                        _is_findings_by_project = recipe.name == "Findings by Project"
+                        _flatten_findings_data: Callable | None = None
+                        if _is_findings_by_project:
+                            from fs_report.transforms.pandas.findings_by_project import (
+                                flatten_findings_data as _flatten_findings_data,
+                            )
+
+                        # Nested dict columns consumed by flatten_findings_data, plus
+                        # API fields not used by the Findings by Project transform.
+                        _FBP_DROP_AFTER_FLATTEN = {
+                            "component",
+                            "project",
+                            "projectVersion",
+                            "exploitInfo",
+                            "cwes",
+                            "attackVector",
+                            "epssPercentile",
+                            "epssScore",
+                            "reachabilityScore",
+                            "hasKnownExploit",
+                            "inKev",
+                            "affectedFunctions",
+                            "risk",  # already extracted to cvss_score
+                        }
+
+                        # --- NVD pipeline: start background lookups during fetch ---
+                        if _is_findings_by_project:
+                            _nvd_on_records, _nvd_collect = self._start_nvd_pipeline()
+
                         # Build filter list for non-entity-cached paths
                         # (entity-cached paths skip this and post-filter instead)
                         filters = []
                         if category_filter:
                             filters.append(category_filter)
 
-                        # Operational reports: add detected date range filter
-                        if is_operational:
+                        # Period-filtered reports: add detected date range filter
+                        if is_operational or _recipe_has_date_filter:
                             filters.append(
                                 f"detected>={self.config.start_date}T00:00:00"
                             )
                             filters.append(f"detected<={self.config.end_date}T23:59:59")
 
-                        # Assessment reports: apply --detected-after if specified
-                        if not is_operational and getattr(
-                            self.config, "detected_after", None
+                        # Assessment reports (without date vars): apply --detected-after if specified
+                        if (
+                            not is_operational
+                            and not _recipe_has_date_filter
+                            and getattr(self.config, "detected_after", None)
                         ):
                             filters.append(
                                 f"detected>={self.config.detected_after}T00:00:00"
@@ -2075,6 +2567,10 @@ class ReportEngine:
                             filters.append(
                                 "status=out=(NOT_AFFECTED,FALSE_POSITIVE,RESOLVED,RESOLVED_WITH_PEDIGREE)"
                             )
+
+                        # Scoped Remediation Package: CVE filter is applied in the
+                        # transform (not at API level) so sibling CVEs on the
+                        # same component are included in the action card.
 
                         if self.config.project_filter:
                             # Single project filter - get findings for this project
@@ -2108,11 +2604,26 @@ class ReportEngine:
                                             latest_vids,
                                             finding_type,
                                             category_filter,
+                                            on_records=_nvd_on_records,
                                         )
                                         raw_data = (
                                             pd.DataFrame(_vf) if _vf else pd.DataFrame()
                                         )
                                         del _vf
+                                        # Pre-flatten nested dicts for Findings by Project
+                                        if (
+                                            _is_findings_by_project
+                                            and _flatten_findings_data is not None
+                                            and not raw_data.empty
+                                        ):
+                                            raw_data = _flatten_findings_data(raw_data)
+                                            _drop = [
+                                                c
+                                                for c in _FBP_DROP_AFTER_FLATTEN
+                                                if c in raw_data.columns
+                                            ]
+                                            if _drop:
+                                                raw_data = raw_data.drop(columns=_drop)
                                         needs_date_postfilter = True
                                     else:
                                         self.logger.warning(
@@ -2177,10 +2688,34 @@ class ReportEngine:
                                     f"({len(version_ids)} latest versions)"
                                 )
                                 _vf = self._get_findings_for_versions(
-                                    version_ids, finding_type, category_filter
+                                    version_ids,
+                                    finding_type,
+                                    category_filter,
+                                    on_records=_nvd_on_records,
                                 )
                                 raw_data = pd.DataFrame(_vf) if _vf else pd.DataFrame()
                                 del _vf
+                                # Pre-flatten nested dicts for Findings by Project
+                                if (
+                                    _is_findings_by_project
+                                    and _flatten_findings_data is not None
+                                    and not raw_data.empty
+                                ):
+                                    if self._project_folder_map:
+                                        _inject_folder_names_df(
+                                            raw_data, self._project_folder_map
+                                        )
+                                    raw_data = _flatten_findings_data(raw_data)
+                                    _drop = [
+                                        c
+                                        for c in _FBP_DROP_AFTER_FLATTEN
+                                        if c in raw_data.columns
+                                    ]
+                                    if _drop:
+                                        raw_data = raw_data.drop(columns=_drop)
+                                    self.logger.info(
+                                        f"Pre-flattened {len(raw_data)} findings ({len(raw_data.columns)} columns after pruning)"
+                                    )
                                 needs_date_postfilter = True
                             else:
                                 # Batch by project IDs — all versions
@@ -2239,6 +2774,9 @@ class ReportEngine:
                                                 )
                                             )
                                             if batch_data:
+                                                # Feed CVE IDs to NVD pipeline
+                                                if _nvd_on_records is not None:
+                                                    _nvd_on_records(batch_data)
                                                 chunk_df = pd.DataFrame(batch_data)
                                                 total_records += len(batch_data)
                                                 del batch_data  # Free batch memory immediately
@@ -2267,6 +2805,39 @@ class ReportEngine:
                                                         chunk_df,
                                                         weights=_triage_weights,
                                                     )
+                                                    if _low_memory:
+                                                        _drop = [
+                                                            c
+                                                            for c in _TRIAGE_DROP_AFTER_SCORE
+                                                            if c in chunk_df.columns
+                                                        ]
+                                                        if _drop:
+                                                            chunk_df = chunk_df.drop(
+                                                                columns=_drop
+                                                            )
+                                                # Per-batch flattening for Findings by Project
+                                                if (
+                                                    _is_findings_by_project
+                                                    and _flatten_findings_data
+                                                    is not None
+                                                ):
+                                                    if self._project_folder_map:
+                                                        _inject_folder_names_df(
+                                                            chunk_df,
+                                                            self._project_folder_map,
+                                                        )
+                                                    chunk_df = _flatten_findings_data(
+                                                        chunk_df
+                                                    )
+                                                    _drop = [
+                                                        c
+                                                        for c in _FBP_DROP_AFTER_FLATTEN
+                                                        if c in chunk_df.columns
+                                                    ]
+                                                    if _drop:
+                                                        chunk_df = chunk_df.drop(
+                                                            columns=_drop
+                                                        )
                                                 chunks.append(chunk_df)
                                                 del chunk_df
                                             else:
@@ -2365,10 +2936,27 @@ class ReportEngine:
                                     f"Fetching findings for {len(version_ids)} projects (true latest version each)"
                                 )
                                 _vf = self._get_findings_for_versions(
-                                    sorted(version_ids), finding_type, category_filter
+                                    sorted(version_ids),
+                                    finding_type,
+                                    category_filter,
+                                    on_records=_nvd_on_records,
                                 )
                                 raw_data = pd.DataFrame(_vf) if _vf else pd.DataFrame()
                                 del _vf
+                                # Pre-flatten nested dicts for Findings by Project
+                                if (
+                                    _is_findings_by_project
+                                    and _flatten_findings_data is not None
+                                    and not raw_data.empty
+                                ):
+                                    raw_data = _flatten_findings_data(raw_data)
+                                    _drop = [
+                                        c
+                                        for c in _FBP_DROP_AFTER_FLATTEN
+                                        if c in raw_data.columns
+                                    ]
+                                    if _drop:
+                                        raw_data = raw_data.drop(columns=_drop)
                                 needs_date_postfilter = True
                             else:
                                 # Get findings for all scanned projects (all versions)
@@ -2420,6 +3008,9 @@ class ReportEngine:
                                             )
                                         )
                                         if batch_data:
+                                            # Feed CVE IDs to NVD pipeline
+                                            if _nvd_on_records is not None:
+                                                _nvd_on_records(batch_data)
                                             chunk_df = pd.DataFrame(batch_data)
                                             total_records += len(batch_data)
                                             del batch_data  # Free batch memory immediately
@@ -2440,6 +3031,33 @@ class ReportEngine:
                                                 chunk_df = assign_risk_bands(
                                                     chunk_df, weights=_triage_weights
                                                 )
+                                                if _low_memory:
+                                                    _drop = [
+                                                        c
+                                                        for c in _TRIAGE_DROP_AFTER_SCORE
+                                                        if c in chunk_df.columns
+                                                    ]
+                                                    if _drop:
+                                                        chunk_df = chunk_df.drop(
+                                                            columns=_drop
+                                                        )
+                                            # Per-batch flattening for Findings by Project
+                                            if (
+                                                _is_findings_by_project
+                                                and _flatten_findings_data is not None
+                                            ):
+                                                chunk_df = _flatten_findings_data(
+                                                    chunk_df
+                                                )
+                                                _drop = [
+                                                    c
+                                                    for c in _FBP_DROP_AFTER_FLATTEN
+                                                    if c in chunk_df.columns
+                                                ]
+                                                if _drop:
+                                                    chunk_df = chunk_df.drop(
+                                                        columns=_drop
+                                                    )
                                             pv_chunks.append(chunk_df)
                                             del chunk_df
                                         else:
@@ -2463,6 +3081,11 @@ class ReportEngine:
                                     self.logger,
                                     f"After batch fetch ({total_records} findings)",
                                 )
+                                if _low_memory and not raw_data.empty:
+                                    self.logger.info(
+                                        f"[low-memory] Concat'd {total_records:,} findings "
+                                        f"({len(raw_data.columns)} columns)"
+                                    )
                                 self.logger.info(
                                     f"Fetched {total_records} total findings for scanned projects"
                                 )
@@ -2480,7 +3103,7 @@ class ReportEngine:
                 and isinstance(raw_data, pd.DataFrame)
                 and not raw_data.empty
             ):
-                if is_operational:
+                if is_operational or _recipe_has_date_filter:
                     start = f"{self.config.start_date}T00:00:00"
                     end = f"{self.config.end_date}T23:59:59"
                     before_count = len(raw_data)
@@ -2492,8 +3115,10 @@ class ReportEngine:
                         f"Date post-filter ({self.config.start_date} to {self.config.end_date}): "
                         f"{before_count} -> {len(raw_data)} findings"
                     )
-                elif not is_operational and getattr(
-                    self.config, "detected_after", None
+                elif (
+                    not is_operational
+                    and not _recipe_has_date_filter
+                    and getattr(self.config, "detected_after", None)
                 ):
                     before_count = len(raw_data)
                     detected = raw_data.get(
@@ -2545,10 +3170,16 @@ class ReportEngine:
                 self.logger.warning(f"No data returned for recipe: {recipe.name}")
 
             # --- Enrich with CVE details for Findings by Project ---
+            # If NVD pipeline was started during fetch, collect results now.
+            # Otherwise fall back to synchronous fetch for non-batched paths
+            # (e.g. single project without --current-version-only).
             if recipe.name == "Findings by Project" and not raw_data.empty:
-                self._findings_by_project_cve_details = (
-                    self._fetch_findings_cve_details(raw_data)
-                )
+                if _nvd_collect is not None:
+                    self._findings_by_project_cve_details = _nvd_collect()
+                else:
+                    self._findings_by_project_cve_details = (
+                        self._fetch_findings_cve_details(raw_data)
+                    )
 
             # --- Apply flattening if needed ---
             if recipe.name == "Component Vulnerability Analysis":
@@ -2608,7 +3239,7 @@ class ReportEngine:
             else:
                 pf_map = {}
 
-            if pf_map and not raw_data.empty:
+            if pf_map and not raw_data.empty and "folder_name" not in raw_data.columns:
                 _inject_folder_names_df(raw_data, pf_map)
 
             # Handle additional data for multiple charts
@@ -2668,6 +3299,28 @@ class ReportEngine:
                 self, "_version_comparison_data"
             ):
                 additional_data.update(self._version_comparison_data)
+
+            # Inject API client and domain for Remediation Package (SBOM fetching)
+            if recipe.name == "Remediation Package":
+                additional_data["api_client"] = self.api_client
+                additional_data["domain"] = self.config.domain
+
+                # AI master switch: --ai off → disable all AI regardless of recipe YAML
+                rp = additional_data.get("recipe_parameters", {})
+                if not getattr(self.config, "ai", False):
+                    rp["ai_live"] = False
+                    rp["ai_prompts"] = False
+                    rp["ai_analysis"] = False
+                else:
+                    # AI enabled — respect recipe defaults, apply depth
+                    if getattr(self.config, "ai_prompts", False):
+                        rp["ai_prompts"] = True
+                    if getattr(self.config, "ai_depth", "summary") == "full":
+                        rp["ai_analysis"] = True
+
+                # Fetch component details for enriching agent prompts
+                if not raw_data.empty:
+                    self._fetch_remediation_component_details(raw_data, additional_data)
 
             # Fetch scoped components for Executive Dashboard
             if recipe.name == "Executive Dashboard" and not raw_data.empty:
@@ -2848,6 +3501,10 @@ class ReportEngine:
                     # Write VEX recommendations JSON for Triage Prioritization
                     if recipe.name == "Triage Prioritization":
                         vex_recs = transform_result.get("vex_recommendations", [])
+                        if not vex_recs:
+                            self.logger.info(
+                                "No VEX recommendations generated (no eligible findings)"
+                            )
                         if vex_recs:
                             import json
                             from pathlib import Path as _Path
@@ -2886,6 +3543,16 @@ class ReportEngine:
                     "Extracting 'main' DataFrame from transform result dict"
                 )
                 transformed_data = transformed_data["main"]
+
+            # Promote Remediation Package transform results into additional_data
+            # so the HTML template receives actions_df, remediation_summary,
+            # charts, etc. as top-level template variables.
+            if recipe.name == "Remediation Package":
+                tr = additional_data.get("transform_result", {})
+                if isinstance(tr, dict):
+                    for k, v in tr.items():
+                        if k != "main":
+                            additional_data[k] = v
 
             # Apply portfolio transforms if available (for Component Vulnerability Analysis)
             portfolio_data = None
@@ -3019,6 +3686,54 @@ class ReportEngine:
             if ver_int is None or ver_int in version_ids:
                 result.append(f)
         return result
+
+    def _fetch_remediation_component_details(
+        self,
+        raw_data: "pd.DataFrame",
+        additional_data: dict[str, Any],
+    ) -> None:
+        """Fetch component details from /public/v0/components for Remediation Package.
+
+        Enriches agent prompts with component metadata (type, license, supplier, etc.).
+        Results are stored in ``additional_data["component_details"]``.
+        """
+        from fs_report.models import QueryConfig, QueryParams
+
+        # Determine project scope
+        comp_filters = ["type!=file"]
+        if self.config.project_filter:
+            try:
+                _proj_id = int(self.config.project_filter)
+                comp_filters.append(f"project=={_proj_id}")
+            except ValueError:
+                comp_filters.append(f"project=={self.config.project_filter}")
+        elif self._folder_project_ids:
+            folder_pids = sorted(self._folder_project_ids)
+            comp_filters.append(f"project=in=({','.join(str(p) for p in folder_pids)})")
+
+        comp_query = QueryConfig(
+            endpoint="/public/v0/components",
+            params=QueryParams(
+                limit=10000,
+                filter=";".join(comp_filters),
+            ),
+        )
+        self.logger.info(
+            f"Fetching component details for Remediation Package "
+            f"(filter: {comp_query.params.filter})"
+        )
+        try:
+            additional_data["component_details"] = (
+                self.api_client.fetch_all_with_resume(comp_query, show_progress=True)
+            )
+            self.logger.info(
+                f"Fetched {len(additional_data['component_details'])} component details"
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Could not fetch component details for Remediation Package: {e}"
+            )
+            additional_data["component_details"] = []
 
     def _fetch_cve_reachability(
         self, cve_records: "list[dict] | pd.DataFrame"
@@ -3177,6 +3892,96 @@ class ReportEngine:
                 reachability_map[cve_id] = []
 
         return reachability_map, descriptions_map, exploit_details_map, nvd_missing_cves
+
+    def _start_nvd_pipeline(
+        self,
+    ) -> "tuple[Callable[[list[dict]], None], Callable[[], dict[str, dict[str, str]]]]":
+        """Start a background NVD lookup pipeline.
+
+        Returns ``(on_records, collect)`` where:
+
+        * ``on_records(records)`` — callback to invoke with each batch of raw
+          finding dicts as they become available.  Extracts ``findingId``
+          values and queues them for the background NVD thread.
+        * ``collect()`` — blocks until the pipeline is finished and returns
+          the CVE details dict (same shape as ``_fetch_findings_cve_details``).
+
+        The background thread processes CVE IDs incrementally: as soon as
+        ``on_records`` is called (e.g. with cached findings), the thread
+        starts NVD/OSV lookups.  Subsequent calls add new CVE IDs.  This
+        overlaps NVD I/O with the remaining FS API fetch and its cooldowns.
+        """
+        import queue as _queue
+        from concurrent.futures import ThreadPoolExecutor
+
+        from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
+
+        cve_queue: _queue.Queue[set[str] | None] = _queue.Queue()
+
+        def _consumer() -> dict[str, dict[str, str]]:
+            nvd = NVDClient(
+                api_key=getattr(self.config, "nvd_api_key", None),
+                cache_dir=getattr(self.config, "cache_dir", None),
+                cache_ttl=max(getattr(self.config, "cache_ttl", 0) or 0, 86400),
+                cancel_event=self._cancel_event,
+            )
+            self.logger.info(NVD_ATTRIBUTION)
+
+            seen: set[str] = set()
+            results: dict[str, dict[str, str]] = {}
+            batch_num = 0
+
+            while True:
+                try:
+                    batch = cve_queue.get(timeout=1.0)
+                except _queue.Empty:
+                    continue
+                if batch is None:  # sentinel
+                    break
+                new_ids = batch - seen
+                seen.update(batch)
+                if new_ids:
+                    batch_num += 1
+                    self.logger.info(
+                        f"NVD background: looking up {len(new_ids)} new CVEs "
+                        f"({len(seen)} total so far)"
+                    )
+                    nvd_results = nvd.get_batch(list(new_ids), progress=True)
+                    results.update(
+                        {
+                            cve_id: {
+                                "description": rec.description,
+                                "cvss_v2_vector": rec.cvss_v2_vector,
+                                "cvss_v3_vector": rec.cvss_v3_vector,
+                            }
+                            for cve_id, rec in nvd_results.items()
+                        }
+                    )
+                    self.logger.info(
+                        f"NVD background: batch {batch_num} done, "
+                        f"{len(results)}/{len(seen)} CVEs resolved so far"
+                    )
+
+            self.logger.info(
+                f"NVD background: completed — {len(results)}/{len(seen)} CVEs"
+            )
+            return results
+
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nvd")
+        future = executor.submit(_consumer)
+        executor.shutdown(wait=False)
+        self.logger.info("NVD/OSV pipeline started in background thread")
+
+        def on_records(records: list[dict]) -> None:
+            ids: set[str] = {r["findingId"] for r in records if r.get("findingId")}
+            if ids:
+                cve_queue.put(ids)
+
+        def collect() -> dict[str, dict[str, str]]:
+            cve_queue.put(None)  # sentinel
+            return future.result()
+
+        return on_records, collect
 
     def _fetch_findings_cve_details(
         self, raw_data: "list[dict] | pd.DataFrame"
@@ -3554,6 +4359,24 @@ class ReportEngine:
             self.logger.debug(
                 f"Added version filter to scans: projectVersion=={self.config.version_filter}"
             )
+
+        if getattr(self.config, "scan_types", None):
+            types_list = [
+                t.strip().upper() for t in str(self.config.scan_types).split(",")
+            ]
+            if len(types_list) == 1:
+                additional_filters.append(f"type=={types_list[0]}")
+            else:
+                additional_filters.append(f"type=in=({','.join(types_list)})")
+
+        if getattr(self.config, "scan_statuses", None):
+            statuses_list = [
+                s.strip().upper() for s in str(self.config.scan_statuses).split(",")
+            ]
+            if len(statuses_list) == 1:
+                additional_filters.append(f"status=={statuses_list[0]}")
+            else:
+                additional_filters.append(f"status=in=({','.join(statuses_list)})")
 
         # Combine filters
         if additional_filters:

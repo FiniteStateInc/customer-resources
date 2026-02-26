@@ -140,7 +140,7 @@ def component_list_pandas_transform(
     if isinstance(data, pd.DataFrame):
         if data.empty:
             return {"main": pd.DataFrame(), "component_summary": _empty_summary()}
-        df = data
+        df = data.copy()
     elif not data:
         return {"main": pd.DataFrame(), "component_summary": _empty_summary()}
     else:

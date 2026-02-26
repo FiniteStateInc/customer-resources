@@ -1047,7 +1047,7 @@ def run_reports(
         if config.current_version_only:
             logger.info("  Current version only: Yes (filtering to latest versions)")
         if config.cache_ttl > 0:
-            logger.info(f"  [BETA] SQLite cache: Enabled (TTL: {config.cache_ttl}s)")
+            logger.info(f"  SQLite cache: Enabled (TTL: {config.cache_ttl}s)")
         if config.folder_filter:
             logger.info(f"  Folder scope: {config.folder_filter}")
         if config.cve_filter:
@@ -1215,7 +1215,7 @@ def main(
     cache_ttl: str | None = typer.Option(
         None,
         "--cache-ttl",
-        help="[BETA] Enable persistent SQLite cache with TTL (e.g., '4' for 4 hours, '30m', '1d'). "
+        help="Enable persistent SQLite cache with TTL (e.g., '4' for 4 hours, '30m', '1d'). "
         "Bare numbers are hours. Default: disabled (fresh data each run).",
     ),
     no_cache: bool = typer.Option(
@@ -1403,7 +1403,7 @@ def main(
             cache_ttl_seconds = parse_ttl(cache_ttl)
             if cache_ttl_seconds > 0:
                 console.print(
-                    f"[cyan][BETA] SQLite cache enabled with TTL: {cache_ttl} ({cache_ttl_seconds} seconds)[/cyan]"
+                    f"[cyan]SQLite cache enabled with TTL: {cache_ttl} ({cache_ttl_seconds} seconds)[/cyan]"
                 )
         except ValueError as e:
             console.print(f"[red]Error: Invalid cache TTL format: {e}[/red]")

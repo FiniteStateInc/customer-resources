@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remediation Package — {{ project_name }}</title>
+    <style>
+        :root {
+            --p0: #dc2626; --p1: #ea580c; --p2: #ca8a04; --p3: #2563eb;
+            --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0;
+            --text: #1e293b; --muted: #64748b; --code-bg: #f1f5f9;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+               background: var(--bg); color: var(--text); line-height: 1.5; padding: 24px; }
+        h1 { font-size: 1.5rem; margin-bottom: 4px; }
+        h2 { font-size: 1.25rem; margin: 24px 0 12px 0; }
+        h3 { font-size: 1rem; margin: 16px 0 8px 0; }
+
+        .banner { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+                   padding: 20px; margin-bottom: 24px; }
+        .banner-stats { display: flex; gap: 24px; flex-wrap: wrap; margin-top: 12px; }
+        .stat { text-align: center; }
+        .stat-value { font-size: 1.75rem; font-weight: 700; }
+        .stat-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+
+        .priority-pills { display: flex; gap: 8px; margin-top: 8px; }
+        .pill { padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-weight: 600; color: #fff; }
+        .pill-p0 { background: var(--p0); } .pill-p1 { background: var(--p1); }
+        .pill-p2 { background: var(--p2); } .pill-p3 { background: var(--p3); }
+
+        .section { margin-bottom: 32px; }
+        .section-header { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+        .section-count { background: var(--code-bg); padding: 2px 8px; border-radius: 10px;
+                         font-size: 0.8rem; color: var(--muted); }
+
+        .action-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+                       padding: 16px; margin-bottom: 12px; border-left: 4px solid var(--border); }
+        .action-card.p0 { border-left-color: var(--p0); }
+        .action-card.p1 { border-left-color: var(--p1); }
+        .action-card.p2 { border-left-color: var(--p2); }
+        .action-card.p3 { border-left-color: var(--p3); }
+
+        .action-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .action-title { font-weight: 700; font-size: 1rem; }
+        .action-priority { font-weight: 700; font-size: 0.8rem; padding: 2px 8px; border-radius: 4px; color: #fff; }
+        .action-priority.p0 { background: var(--p0); } .action-priority.p1 { background: var(--p1); }
+        .action-priority.p2 { background: var(--p2); } .action-priority.p3 { background: var(--p3); }
+
+        .action-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); margin-bottom: 8px; }
+        .action-meta span { display: inline-flex; align-items: center; gap: 4px; }
+
+        .tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 0.75rem; font-weight: 600; }
+        .tag-direct { background: #dbeafe; color: #1e40af; }
+        .tag-transitive { background: #fef3c7; color: #92400e; }
+        .tag-exploit { background: #fee2e2; color: #991b1b; }
+        .tag-kev { background: #fecdd3; color: #9f1239; }
+        .tag-reachable { background: #dcfce7; color: #166534; }
+
+        /* AI verdict recommendation badges — dashed border distinguishes from set statuses */
+        .verdict-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;
+                         font-weight: 600; border: 1.5px dashed; }
+        .verdict-not-affected { background: #f0fdf4; color: #166534; border-color: #86efac; }
+        .verdict-affected { background: #fef2f2; color: #991b1b; border-color: #fca5a5; }
+
+        .code-block { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
+                      padding: 8px 12px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem;
+                      margin: 6px 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+
+        .cve-list { font-size: 0.85rem; margin: 6px 0; }
+        .cve-item { display: inline-block; margin: 2px 4px 2px 0; padding: 1px 6px; border-radius: 3px;
+                    background: var(--code-bg); font-family: monospace; font-size: 0.8rem; }
+        .cve-item.critical { background: #fee2e2; color: #991b1b; }
+        .cve-item.high { background: #ffedd5; color: #9a3412; }
+
+        .guidance { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 4px;
+                    padding: 10px 12px; margin: 8px 0; font-size: 0.85rem; }
+
+        .analysis { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 4px;
+                    padding: 14px 16px; margin: 8px 0; font-size: 0.85rem; line-height: 1.6; }
+        .analysis h1, .analysis h2, .analysis h3 { font-size: 0.95rem; margin: 10px 0 4px 0; }
+        .analysis h1:first-child, .analysis h2:first-child, .analysis h3:first-child { margin-top: 0; }
+        .analysis ul, .analysis ol { margin: 4px 0 4px 20px; }
+        .analysis code { background: var(--code-bg); padding: 1px 4px; border-radius: 3px;
+                         font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.82rem; }
+        .analysis pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
+                        padding: 8px 12px; overflow-x: auto; margin: 6px 0; }
+        .analysis pre code { background: none; padding: 0; }
+        .analysis p { margin: 4px 0; }
+        .analysis-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+
+        .dep-path { font-size: 0.85rem; color: var(--muted); margin: 4px 0; }
+
+        .suppressed-table, .unresolvable-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        .suppressed-table th, .suppressed-table td,
+        .unresolvable-table th, .unresolvable-table td {
+            padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+        .suppressed-table th, .unresolvable-table th {
+            background: var(--code-bg); font-weight: 600; font-size: 0.8rem;
+            text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+
+        .btn { display: inline-block; padding: 4px 12px; border-radius: 4px; font-size: 0.8rem;
+               cursor: pointer; border: 1px solid var(--border); background: var(--card);
+               color: var(--text); text-decoration: none; }
+        .btn:hover { background: var(--code-bg); }
+        .btn-copied { background: #dcfce7; border-color: #86efac; }
+
+        .remediation-options { margin: 8px 0; }
+        .remediation-option { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
+                             padding: 10px 14px; margin: 6px 0; }
+        .remediation-option-header { font-weight: 600; font-size: 0.9rem; margin-bottom: 4px; }
+        .remediation-option-header .option-num { display: inline-block; width: 22px; height: 22px; line-height: 22px;
+                                                  text-align: center; border-radius: 50%; background: var(--text);
+                                                  color: #fff; font-size: 0.75rem; margin-right: 6px; }
+        .remediation-option .tag-validated { background: #dcfce7; color: #166534; }
+        .remediation-option .tag-unvalidated { background: #fef3c7; color: #92400e; }
+        .remediation-option ul { margin: 4px 0 4px 20px; font-size: 0.85rem; }
+        .remediation-option li { margin: 2px 0; }
+
+        .prompt-block { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
+                       padding: 12px; margin: 8px 0; max-height: 200px; overflow-y: auto;
+                       font-family: monospace; font-size: 0.8rem; white-space: pre-wrap; }
+
+        .hidden-row { display: none; }
+        .show-more-btn { display: inline-block; padding: 6px 14px; margin: 8px 0; border-radius: 4px;
+                         font-size: 0.8rem; cursor: pointer; border: 1px solid var(--border);
+                         background: var(--card); color: var(--muted); }
+        .show-more-btn:hover { background: var(--code-bg); }
+
+        .footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border);
+                  font-size: 0.75rem; color: var(--muted); }
+        @media print { body { padding: 12px; } .btn { display: none; } }
+    </style>
+</head>
+<body>
+
+<!-- ===== SUMMARY BANNER ===== -->
+<div class="banner">
+    <h1>Remediation Package</h1>
+    {% if scope_label %}
+    <div style="display: inline-block; background: #dbeafe; color: #1e40af; padding: 2px 10px; border-radius: 12px;
+                font-size: 0.8rem; font-weight: 600; margin-bottom: 4px;">Scope: {{ scope_label }}</div>
+    {% endif %}
+    <div style="color: var(--muted); font-size: 0.9rem;">
+        {{ project_name }}{% if project_version %} &middot; {{ project_version }}{% endif %}
+    </div>
+    {% if remediation_summary %}
+    <div class="banner-stats">
+        <div class="stat">
+            <div class="stat-value">{{ remediation_summary.total_components }}</div>
+            <div class="stat-label">Components</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ remediation_summary.total_cves_resolved }}</div>
+            <div class="stat-label">CVEs Resolved</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ remediation_summary.suppressed_count }}</div>
+            <div class="stat-label">Suppressed</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value">{{ remediation_summary.unresolvable_count }}</div>
+            <div class="stat-label">No Fix</div>
+        </div>
+    </div>
+    {% if remediation_summary.by_priority %}
+    <div class="priority-pills">
+        {% for prio in ['P0', 'P1', 'P2', 'P3'] %}
+            {% if remediation_summary.by_priority.get(prio, 0) > 0 %}
+            <span class="pill pill-{{ prio|lower }}">{{ prio }}: {{ remediation_summary.by_priority[prio] }}</span>
+            {% endif %}
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endif %}
+</div>
+
+<!-- ===== ACTIONS ===== -->
+{% if actions_df %}
+{% for priority_label in ['P0', 'P1', 'P2', 'P3'] %}
+    {% set prio_actions = actions_df | selectattr('priority', 'equalto', priority_label) | list %}
+    {% if prio_actions %}
+    <div class="section">
+        <div class="section-header">
+            <h2>{{ priority_label }}
+                {% if priority_label == 'P0' %} — Fix Immediately
+                {% elif priority_label == 'P1' %} — Fix This Sprint
+                {% elif priority_label == 'P2' %} — Fix Within 30 Days
+                {% elif priority_label == 'P3' %} — Schedule for Maintenance
+                {% endif %}
+            </h2>
+            <span class="section-count">{{ prio_actions|length }}</span>
+        </div>
+
+        {% for action in prio_actions %}
+        <div class="action-card {{ priority_label|lower }}">
+            <div class="action-header">
+                <span class="action-title">
+                    {% if action.ai_verdict == "not_affected" %}
+                        VERIFY {{ action.component_name }} {{ action.component_version }}
+                    {% elif action.fixed_version %}
+                        UPGRADE {{ action.component_name }}
+                        {{ action.component_version }} &rarr; {{ action.fixed_version }}
+                    {% else %}
+                        INVESTIGATE {{ action.component_name }} {{ action.component_version }}
+                    {% endif %}
+                </span>
+                <span class="action-priority {{ priority_label|lower }}">{{ priority_label }}</span>
+            </div>
+
+            <div class="action-meta">
+                {% if action.purl %}<span title="PURL">{{ action.purl }}</span>{% endif %}
+                {% if action.dep_is_direct %}
+                    <span class="tag tag-direct">Direct</span>
+                {% else %}
+                    <span class="tag tag-transitive">Transitive via {{ action.dep_direct_dependency }}</span>
+                {% endif %}
+                {% if action.any_exploit %}<span class="tag tag-exploit">Exploit</span>{% endif %}
+                {% if action.any_kev %}<span class="tag tag-kev">KEV</span>{% endif %}
+                {% if action.ai_verdict == "not_affected" %}
+                    <span class="verdict-badge verdict-not-affected" title="{{ action.ai_rationale | default('', true) }}">Recommended: Not Affected</span>
+                {% elif action.ai_verdict is defined and action.ai_verdict != "affected" %}
+                    <span class="verdict-badge verdict-affected" title="{{ action.ai_rationale | default('', true) }}">{{ action.ai_verdict }}</span>
+                {% endif %}
+                <span>{{ action.cve_count }} CVE{{ 's' if action.cve_count != 1 }}</span>
+                <span>CVSS {{ '%.1f' | format(action.max_cvss) }}</span>
+                {% if action.ai_verdict != "not_affected" %}
+                <span>{{ action.upgrade_type }} ({{ action.breaking_change_risk }} risk)</span>
+                <span>Effort: {{ action.effort_estimate }}</span>
+                {% endif %}
+            </div>
+
+            {% if action.dep_path_display %}
+            <div class="dep-path">{{ action.dep_path_display }}</div>
+            {% endif %}
+
+            {% if action.ai_verdict != "not_affected" and action.remediation_options_parsed %}
+            <div class="remediation-options">
+                {% for opt in action.remediation_options_parsed %}
+                <div class="remediation-option">
+                    <div class="remediation-option-header">
+                        <span class="option-num">{{ opt.option_number }}</span>
+                        {{ opt.title }}
+                        {% if opt.type == 'upgrade' %}
+                            {% if opt.fix_validated %}
+                                <span class="tag tag-validated">Validated</span>
+                            {% else %}
+                                <span class="tag tag-unvalidated">Unvalidated</span>
+                            {% endif %}
+                        {% endif %}
+                    </div>
+                    {% if opt.type == 'upgrade' %}
+                        {% if opt.upgrade_command %}
+                        <div class="code-block">{{ opt.upgrade_command }}</div>
+                        {% endif %}
+                        {% if opt.upgrade_type or opt.breaking_change_risk %}
+                        <div style="font-size: 0.85rem; color: var(--muted);">
+                            Type: {{ opt.upgrade_type }} | Risk: {{ opt.breaking_change_risk }}
+                        </div>
+                        {% endif %}
+                        {% if opt.breaking_change_notes and opt.breaking_change_notes|lower not in ['', 'none expected'] %}
+                        <div style="font-size: 0.85rem; margin-top: 4px;">
+                            <strong>Breaking changes:</strong> {{ opt.breaking_change_notes }}
+                        </div>
+                        {% endif %}
+                    {% elif opt.type == 'workaround' %}
+                        {% if opt.workarounds %}
+                        <ul>
+                            {% for wa in opt.workarounds %}
+                            <li>{{ wa }}</li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                        {% if opt.workaround_urls %}
+                        <div style="font-size: 0.8rem; margin-top: 4px;">
+                            <strong>References:</strong>
+                            {% for url in opt.workaround_urls[:3] %}
+                                <a href="{{ url }}" target="_blank" style="word-break: break-all;">{{ url }}</a>{% if not loop.last %}, {% endif %}
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    {% elif opt.type == 'code_mitigation' %}
+                        {% if opt.affected_functions %}
+                        <div style="font-size: 0.85rem;">
+                            <strong>Affected functions:</strong> <code>{{ opt.affected_functions }}</code>
+                        </div>
+                        {% endif %}
+                        {% if opt.patch_urls %}
+                        <div style="font-size: 0.8rem; margin-top: 4px;">
+                            <strong>Patches:</strong>
+                            {% for url in opt.patch_urls[:3] %}
+                                <a href="{{ url }}" target="_blank" style="word-break: break-all;">{{ url }}</a>{% if not loop.last %}, {% endif %}
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+            {% elif action.ai_verdict != "not_affected" and action.upgrade_instruction %}
+            <div class="code-block">{{ action.upgrade_instruction }}</div>
+            {% endif %}
+
+            <div class="cve-list">
+                {% for r in action.resolves_parsed %}
+                    <span class="cve-item {{ r.severity|lower }}">
+                        {{ r.cve_id }} ({{ r.severity }}, {{ '%.1f' | format(r.cvss) }})
+                    </span>
+                {% endfor %}
+            </div>
+
+            {% if action.affected_functions %}
+            <div style="font-size: 0.85rem; margin: 4px 0;">
+                <strong>Affected functions:</strong> <code>{{ action.affected_functions }}</code>
+            </div>
+            {% endif %}
+
+            {% if action.ai_analysis %}
+            <div class="analysis">
+                <div class="analysis-header">
+                    <strong>AI Remediation Analysis</strong>
+                    <button class="btn" onclick="copyAnalysis(this, '{{ priority_label|lower }}-{{ loop.index0 }}')">Copy</button>
+                </div>
+                <div id="analysis-{{ priority_label|lower }}-{{ loop.index0 }}"></div>
+                <textarea id="analysis-raw-{{ priority_label|lower }}-{{ loop.index0 }}" style="display:none">{{ action.ai_analysis }}</textarea>
+            </div>
+            {% elif action.llm_guidance %}
+            <div class="analysis">
+                <div class="analysis-header"><strong>AI Guidance</strong></div>
+                <div id="guidance-{{ priority_label|lower }}-{{ loop.index0 }}"></div>
+                <textarea id="guidance-raw-{{ priority_label|lower }}-{{ loop.index0 }}" style="display:none">{{ action.llm_guidance }}</textarea>
+            </div>
+            {% endif %}
+
+            {% if action.agent_prompt %}
+            <div style="margin-top: 8px;">
+                <button class="btn" onclick="copyPrompt(this, '{{ priority_label|lower }}-{{ loop.index0 }}')">Copy Agent Prompt</button>
+                <textarea id="prompt-{{ priority_label|lower }}-{{ loop.index0 }}" style="display:none">{{ action.agent_prompt }}</textarea>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+{% endfor %}
+{% endif %}
+
+<!-- ===== SUPPRESSED ===== -->
+{% if suppressed_df %}
+<div class="section">
+    <div class="section-header">
+        <h2>Suppressed (VEX: Not Affected)</h2>
+        <span class="section-count">{{ suppressed_df|length }}</span>
+    </div>
+    <table class="suppressed-table" id="suppressed-table">
+        <thead>
+            <tr><th>CVE</th><th>Component</th><th>VEX State</th><th>Justification</th><th>Detail</th></tr>
+        </thead>
+        <tbody>
+        {% for row in suppressed_df %}
+            <tr{% if loop.index0 >= 10 %} class="hidden-row"{% endif %}>
+                <td><code>{{ row.finding_id }}</code></td>
+                <td>{{ row.component_name }}{% if row.component_version %}@{{ row.component_version }}{% endif %}</td>
+                <td>{{ row.vex_state }}</td>
+                <td>{{ row.vex_justification }}</td>
+                <td>{{ row.detail }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% if suppressed_df|length > 10 %}
+    <button class="show-more-btn" onclick="toggleRows('suppressed-table', this)">Show {{ suppressed_df|length - 10 }} more&hellip;</button>
+    {% endif %}
+</div>
+{% endif %}
+
+<!-- ===== UNRESOLVABLE ===== -->
+{% if unresolvable_df %}
+<div class="section">
+    <div class="section-header">
+        <h2>No Fix Available</h2>
+        <span class="section-count">{{ unresolvable_df|length }}</span>
+    </div>
+    <table class="unresolvable-table" id="unresolvable-table">
+        <thead>
+            <tr><th>Component</th><th>Version</th><th>CVEs</th><th>Worst Band</th><th>Max CVSS</th></tr>
+        </thead>
+        <tbody>
+        {% for row in unresolvable_df %}
+            <tr{% if loop.index0 >= 10 %} class="hidden-row"{% endif %}>
+                <td>{{ row.component_name }}</td>
+                <td>{{ row.component_version }}</td>
+                <td>{{ row.cve_count }}</td>
+                <td>{{ row.worst_band }}</td>
+                <td>{{ '%.1f' | format(row.max_cvss) }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% if unresolvable_df|length > 10 %}
+    <button class="show-more-btn" onclick="toggleRows('unresolvable-table', this)">Show {{ unresolvable_df|length - 10 }} more&hellip;</button>
+    {% endif %}
+</div>
+{% endif %}
+
+<!-- ===== PROJECT AGENT PROMPT ===== -->
+{% if project_agent_prompt %}
+<div class="section">
+    <div class="section-header">
+        <h2>AI Agent: Project Remediation Prompt</h2>
+        <button class="btn" onclick="copyProjectPrompt(this)">Copy Full Prompt</button>
+    </div>
+    <div class="prompt-block" id="project-prompt">{{ project_agent_prompt }}</div>
+</div>
+{% endif %}
+
+<div class="footer">
+    Generated by fs-report &middot; {{ generated_at or '' }}
+    <p style="font-size: 0.8em; margin-top: 4px;">Copyright &copy; 2026 Finite State, Inc.</p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script>
+function copyPrompt(btn, id) {
+    var textarea = document.getElementById('prompt-' + id);
+    navigator.clipboard.writeText(textarea.value).then(function() {
+        btn.textContent = 'Copied!';
+        btn.classList.add('btn-copied');
+        setTimeout(function() { btn.textContent = 'Copy Agent Prompt'; btn.classList.remove('btn-copied'); }, 2000);
+    });
+}
+function copyAnalysis(btn, id) {
+    var textarea = document.getElementById('analysis-raw-' + id);
+    navigator.clipboard.writeText(textarea.value).then(function() {
+        btn.textContent = 'Copied!';
+        btn.classList.add('btn-copied');
+        setTimeout(function() { btn.textContent = 'Copy'; btn.classList.remove('btn-copied'); }, 2000);
+    });
+}
+function toggleRows(tableId, btn) {
+    var table = document.getElementById(tableId);
+    var rows = table.querySelectorAll('.hidden-row');
+    var showing = rows[0] && rows[0].style.display === 'table-row';
+    rows.forEach(function(row) { row.style.display = showing ? 'none' : 'table-row'; });
+    if (showing) {
+        btn.textContent = 'Show ' + rows.length + ' more\u2026';
+    } else {
+        btn.textContent = 'Show fewer';
+    }
+}
+function copyProjectPrompt(btn) {
+    var el = document.getElementById('project-prompt');
+    navigator.clipboard.writeText(el.textContent).then(function() {
+        btn.textContent = 'Copied!';
+        btn.classList.add('btn-copied');
+        setTimeout(function() { btn.textContent = 'Copy Full Prompt'; btn.classList.remove('btn-copied'); }, 2000);
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Render AI analysis markdown
+    if (typeof marked !== 'undefined') {
+        document.querySelectorAll('[id^="analysis-raw-"]').forEach(function(ta) {
+            var id = ta.id.replace('analysis-raw-', '');
+            var target = document.getElementById('analysis-' + id);
+            if (target && ta.value) {
+                target.innerHTML = DOMPurify.sanitize(marked.parse(ta.value));
+            }
+        });
+        document.querySelectorAll('[id^="guidance-raw-"]').forEach(function(ta) {
+            var id = ta.id.replace('guidance-raw-', '');
+            var target = document.getElementById('guidance-' + id);
+            if (target && ta.value) {
+                target.innerHTML = DOMPurify.sanitize(marked.parse(ta.value));
+            }
+        });
+    }
+});
+</script>
+</body>
+</html>

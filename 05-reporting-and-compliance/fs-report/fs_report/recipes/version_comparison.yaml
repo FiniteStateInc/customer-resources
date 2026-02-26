@@ -15,7 +15,7 @@ query:
 transform_function: version_comparison_transform
 
 output:
-  formats: ["csv", "xlsx", "html"]
+  formats: ["csv", "xlsx", "html", "md"]
   chart: bar
   table: true
   slide_title: "Version Comparison"

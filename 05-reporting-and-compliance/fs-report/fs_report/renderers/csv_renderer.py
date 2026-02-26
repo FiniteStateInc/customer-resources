@@ -43,6 +43,16 @@ class CSVRenderer:
             else:
                 df = pd.DataFrame(data)
 
+            # Sanitize cells that could be interpreted as formulas by spreadsheet apps
+            _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+            def _sanitize_cell(val: object) -> object:
+                if isinstance(val, str) and val and val[0] in _FORMULA_PREFIXES:
+                    return "'" + val
+                return val
+
+            df = df.map(_sanitize_cell)
+
             # Export to CSV
             df.to_csv(output_path, index=False, encoding="utf-8")
             self.logger.debug(f"CSV exported to: {output_path}")

@@ -9,8 +9,9 @@ function initScopeDropdowns(opts) {
     var versionSel = document.getElementById(opts.versionId);
     if (!projectSel || !folderSel || !versionSel) return;
 
-    var allProjects = [];   // [{id, name, folder_id}, ...]
-    var allFolders  = [];   // [{id, name, parent_id}, ...]
+    var allProjects = [];       // [{id, name}, ...] — full project list
+    var allFolders  = [];       // [{id, name, parent_id}, ...]
+    var folderProjects = [];    // projects currently shown (folder-scoped or all)
     var nonce = window.NONCE || '';
 
     /* ── helpers ─────────────────────────────────────────────── */
@@ -118,18 +119,17 @@ function initScopeDropdowns(opts) {
                 savedFolder
             );
 
-            // Populate projects (filtered if folder selected)
-            filterProjects(savedProject);
-
             setLoading(folderSel, false);
-            setLoading(projectSel, false);
 
-            // If a project is already selected, load versions
-            if (projectSel.value) {
-                loadVersions(projectSel.value, savedVersion);
-            } else {
-                setLoading(versionSel, false);
-            }
+            // Populate projects (filtered if folder selected), then load versions
+            filterProjects(savedProject).then(function() {
+                setLoading(projectSel, false);
+                if (projectSel.value) {
+                    loadVersions(projectSel.value, savedVersion);
+                } else {
+                    setLoading(versionSel, false);
+                }
+            });
         })
         .catch(function(err) {
             console.warn('Failed to load scope data:', err);
@@ -142,24 +142,50 @@ function initScopeDropdowns(opts) {
     /* ── filter projects by selected folder ──────────────────── */
     function filterProjects(restoreValue) {
         var folderName = folderSel.value;
-        var filtered = allProjects;
-        if (folderName) {
-            // Find folder id by name
-            var folder = allFolders.find(function(f) {
-                return (f.name || String(f.id)) === folderName;
+        if (!folderName) {
+            // No folder selected — show all projects
+            folderProjects = allProjects.slice();
+            folderProjects.sort(function(a, b) {
+                return (a.name || '').localeCompare(b.name || '');
             });
-            if (folder) {
-                filtered = allProjects.filter(function(p) {
-                    return p.folder_id === folder.id;
-                });
-            }
+            populateSelect(projectSel, folderProjects,
+                function(p) { return p.name || String(p.id); },
+                function(p) { return p.name || String(p.id); },
+                restoreValue
+            );
+            return Promise.resolve();
         }
-        filtered.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
-        populateSelect(projectSel, filtered,
-            function(p) { return p.name || String(p.id); },
-            function(p) { return p.name || String(p.id); },
-            restoreValue
-        );
+        // Find folder by name to get its id
+        var folder = allFolders.find(function(f) {
+            return (f.name || String(f.id)) === folderName;
+        });
+        if (!folder) {
+            populateSelect(projectSel, [],
+                function(p) { return ''; },
+                function(p) { return ''; },
+                restoreValue
+            );
+            return Promise.resolve();
+        }
+        // Fetch projects for this folder from the API
+        setLoading(projectSel, true);
+        return apiFetch('public/v0/folders/' + folder.id + '/projects?limit=10000&archived=false&excluded=false')
+        .then(function(data) {
+            folderProjects = (data.items || data || []);
+            folderProjects.sort(function(a, b) {
+                return (a.name || '').localeCompare(b.name || '');
+            });
+            populateSelect(projectSel, folderProjects,
+                function(p) { return p.name || String(p.id); },
+                function(p) { return p.name || String(p.id); },
+                restoreValue
+            );
+            setLoading(projectSel, false);
+        })
+        .catch(function(err) {
+            console.warn('Failed to load folder projects:', err);
+            setLoading(projectSel, false);
+        });
     }
 
     /* ── load versions for a project ─────────────────────────── */
@@ -169,8 +195,10 @@ function initScopeDropdowns(opts) {
             setLoading(versionSel, false);
             return;
         }
-        // Find project by name to get its id
-        var proj = allProjects.find(function(p) {
+        // Find project by name to get its id (search folder-scoped list first, then all)
+        var proj = folderProjects.find(function(p) {
+            return (p.name || String(p.id)) === projectValue || String(p.id) === projectValue;
+        }) || allProjects.find(function(p) {
             return (p.name || String(p.id)) === projectValue || String(p.id) === projectValue;
         });
         if (!proj) {
@@ -208,6 +236,16 @@ function initScopeDropdowns(opts) {
 
     /* ── kick off ────────────────────────────────────────────── */
     loadAll();
+
+    /* ── CVO checkbox disables version dropdown ──────────────── */
+    if (opts.cvoId) {
+        var cvoCheckbox = document.getElementById(opts.cvoId);
+        if (cvoCheckbox) {
+            function syncCvo() { versionSel.disabled = cvoCheckbox.checked; }
+            cvoCheckbox.addEventListener('change', syncCvo);
+            syncCvo();
+        }
+    }
 }
 
 /* ── Version picker: project → version cascading selects ───── */

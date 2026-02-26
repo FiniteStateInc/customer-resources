@@ -5,9 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Finite State Report Kit{% endblock %}</title>
     <link rel="icon" href="/static/img/favicon.webp" type="image/webp">
+    <script>(function(){var t=localStorage.getItem('fs-theme');if(!t)t=matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)})()</script>
     <link rel="stylesheet" href="/static/css/app.css">
     <script src="/static/vendor/htmx.min.js"></script>
     <script src="/static/vendor/alpine.min.js" defer></script>
+    <script src="/static/js/app.js"></script>
 </head>
 <body hx-headers='{"X-FS-Session": "{{ nonce }}"}'>
     {% include "components/_nav.html" %}

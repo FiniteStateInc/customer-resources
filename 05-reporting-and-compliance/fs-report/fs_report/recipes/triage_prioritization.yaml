@@ -79,6 +79,7 @@ output:
     - csv
     - xlsx
     - html
+    - md
   charts:
     - name: band_distribution
       chart: bar

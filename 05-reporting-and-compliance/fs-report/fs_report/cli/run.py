@@ -63,6 +63,7 @@ def create_config(
     ai_model_low: Union[str, None] = None,
     ai_depth: str = "summary",
     ai_prompts: bool = False,
+    ai_analysis: bool = False,
     nvd_api_key: Union[str, None] = None,
     baseline_date: Union[str, None] = None,
     baseline_version: Union[str, None] = None,
@@ -71,12 +72,20 @@ def create_config(
     request_delay: float = 0.5,
     batch_size: int = 5,
     cve_filter: Union[str, None] = None,
+    component_filter: Union[str, None] = None,
     scoring_file: Union[str, None] = None,
     vex_override: bool = False,
     overwrite: bool = False,
     logo: Union[str, None] = None,
     apply_vex_triage: Union[str, None] = None,
     autotriage: bool = False,
+    scan_types: Union[str, None] = None,
+    scan_statuses: Union[str, None] = None,
+    low_memory: bool = False,
+    compare_domain: Union[str, None] = None,
+    compare_token: Union[str, None] = None,
+    compare_project: Union[str, None] = None,
+    compare_version: Union[str, None] = None,
 ) -> Config:
     """Build a Config object from CLI args, config file, and env vars."""
     cfg = load_config_file()
@@ -118,6 +127,14 @@ def create_config(
         default_start, default_end = get_default_dates()
         start = start or default_start
         end = end or default_end
+
+    # Validate date order
+    if start and end and start > end:
+        console.print(
+            f"[red]Error: --start ({start}) is after --end ({end}). "
+            f"Start date must be before end date.[/red]"
+        )
+        raise typer.Exit(1)
 
     # If using data file, make token and domain optional
     if data_file:
@@ -164,6 +181,51 @@ def create_config(
                 f"[yellow]Valid types: {', '.join(sorted(valid_finding_types))}[/yellow]"
             )
             raise typer.Exit(1)
+
+    # Validate scan_types
+    valid_scan_types = {
+        "SCA",
+        "SAST",
+        "CONFIG",
+        "SOURCE_SCA",
+        "SBOM_IMPORT",
+        "VULNERABILITY_ANALYSIS",
+    }
+    if scan_types:
+        st_list = [t.strip().upper() for t in scan_types.split(",")]
+        invalid_st = set(st_list) - valid_scan_types
+        if invalid_st:
+            console.print(
+                f"[red]Error: Invalid scan type(s): {', '.join(invalid_st)}[/red]"
+            )
+            console.print(
+                f"[yellow]Valid types: {', '.join(sorted(valid_scan_types))}[/yellow]"
+            )
+            raise typer.Exit(1)
+        scan_types = ",".join(st_list)  # normalize
+
+    # Validate scan_statuses
+    valid_scan_statuses = {
+        "INITIAL",
+        "PENDING_UPLOAD",
+        "UPLOAD_FAILED",
+        "COMPLETED",
+        "ERROR",
+        "STARTED",
+        "NOT_APPLICABLE",
+    }
+    if scan_statuses:
+        ss_list = [s.strip().upper() for s in scan_statuses.split(",")]
+        invalid_ss = set(ss_list) - valid_scan_statuses
+        if invalid_ss:
+            console.print(
+                f"[red]Error: Invalid scan status(es): {', '.join(invalid_ss)}[/red]"
+            )
+            console.print(
+                f"[yellow]Valid statuses: {', '.join(sorted(valid_scan_statuses))}[/yellow]"
+            )
+            raise typer.Exit(1)
+        scan_statuses = ",".join(ss_list)  # normalize
 
     # Merge AI model overrides from config file
     ai_model_high = merge_config(
@@ -223,6 +285,30 @@ def create_config(
             )
             raise typer.Exit(1)
 
+    # Merge cross-server comparison flags from env vars
+    compare_domain = merge_config(
+        compare_domain, "FINITE_STATE_COMPARE_DOMAIN", None, None, config_data=cfg
+    )
+    compare_token = merge_config(
+        compare_token, "FINITE_STATE_COMPARE_AUTH_TOKEN", None, None, config_data=cfg
+    )
+
+    # Validate cross-server flags
+    has_compare = any([compare_domain, compare_token, compare_project, compare_version])
+    if has_compare:
+        if not compare_domain or not compare_token:
+            console.print(
+                "[red]Error: --compare-domain and --compare-token are both required "
+                "for cross-server comparison.[/red]"
+            )
+            raise typer.Exit(1)
+        if not compare_project and not compare_version:
+            console.print(
+                "[red]Error: At least one of --compare-project or --compare-version "
+                "is required for cross-server comparison.[/red]"
+            )
+            raise typer.Exit(1)
+
     return Config(
         auth_token=auth_token,
         domain=domain_value,
@@ -247,6 +333,7 @@ def create_config(
         ai_model_low=ai_model_low,
         ai_depth=ai_depth,
         ai_prompts=ai_prompts,
+        ai_analysis=ai_analysis,
         nvd_api_key=nvd_api_key,
         baseline_date=baseline_date,
         baseline_version=baseline_version,
@@ -255,12 +342,20 @@ def create_config(
         request_delay=request_delay,
         batch_size=batch_size,
         cve_filter=cve_filter,
+        component_filter=component_filter,
         scoring_file=scoring_file,
         vex_override=vex_override,
         overwrite=overwrite,
         logo=logo,
         apply_vex_triage=apply_vex_triage,
         autotriage=autotriage,
+        scan_types=scan_types,
+        scan_statuses=scan_statuses,
+        low_memory=low_memory,
+        compare_domain=compare_domain,
+        compare_auth_token=compare_token,
+        compare_project=compare_project,
+        compare_version=compare_version,
     )
 
 
@@ -293,6 +388,7 @@ def run_reports(
     ai_model_low: Union[str, None] = None,
     ai_depth: str = "summary",
     ai_prompts: bool = False,
+    ai_analysis: bool = False,
     nvd_api_key: Union[str, None] = None,
     baseline_date: Union[str, None] = None,
     baseline_version: Union[str, None] = None,
@@ -301,6 +397,7 @@ def run_reports(
     request_delay: float = 0.5,
     batch_size: int = 5,
     cve_filter: Union[str, None] = None,
+    component_filter: Union[str, None] = None,
     scoring_file: Union[str, None] = None,
     vex_override: bool = False,
     overwrite: bool = False,
@@ -309,6 +406,13 @@ def run_reports(
     autotriage: bool = False,
     dry_run: bool = False,
     vex_concurrency: int = 5,
+    scan_types: Union[str, None] = None,
+    scan_statuses: Union[str, None] = None,
+    low_memory: bool = False,
+    compare_domain: Union[str, None] = None,
+    compare_token: Union[str, None] = None,
+    compare_project: Union[str, None] = None,
+    compare_version: Union[str, None] = None,
 ) -> None:
     """Execute the report generation pipeline."""
     run_id = setup_logging(verbose)
@@ -342,8 +446,11 @@ def run_reports(
             detected_after=detected_after,
             ai=ai,
             ai_provider=ai_provider,
+            ai_model_high=ai_model_high,
+            ai_model_low=ai_model_low,
             ai_depth=ai_depth,
             ai_prompts=ai_prompts,
+            ai_analysis=ai_analysis,
             nvd_api_key=nvd_api_key,
             baseline_date=baseline_date,
             baseline_version=baseline_version,
@@ -352,12 +459,20 @@ def run_reports(
             request_delay=request_delay,
             batch_size=batch_size,
             cve_filter=cve_filter,
+            component_filter=component_filter,
             scoring_file=scoring_file,
             vex_override=vex_override,
             overwrite=overwrite,
             logo=logo,
             apply_vex_triage=apply_vex_triage,
             autotriage=autotriage,
+            scan_types=scan_types,
+            scan_statuses=scan_statuses,
+            low_memory=low_memory,
+            compare_domain=compare_domain,
+            compare_token=compare_token,
+            compare_project=compare_project,
+            compare_version=compare_version,
         )
 
         file_handler = attach_file_logging(run_id, config.auth_token)
@@ -369,24 +484,73 @@ def run_reports(
             f"  Recipes: bundled={'yes' if config.use_bundled_recipes else 'no'}"
             f"{', overlay=' + config.recipes_dir if config.recipes_dir else ''}"
         )
+        if config.recipe_filter:
+            logger.info(f"  Recipe filter: {config.recipe_filter}")
         logger.info(f"  Output directory: {config.output_dir}")
         logger.info(f"  Date range: {config.start_date} to {config.end_date}")
         logger.info(f"  Finding types: {config.finding_types}")
-        if config.current_version_only:
-            logger.info("  Current version only: Yes (filtering to latest versions)")
-        if config.cache_ttl > 0:
-            logger.info(f"  [BETA] SQLite cache: Enabled (TTL: {config.cache_ttl}s)")
+        if config.project_filter:
+            logger.info(f"  Project: {config.project_filter}")
+        if config.version_filter:
+            logger.info(f"  Version: {config.version_filter}")
         if config.folder_filter:
             logger.info(f"  Folder scope: {config.folder_filter}")
+        if config.compare_domain:
+            logger.info("  Cross-server comparison:")
+            logger.info(f"    Compare domain: {config.compare_domain}")
+            if config.compare_project:
+                logger.info(f"    Compare project: {config.compare_project}")
+            if config.compare_version:
+                logger.info(f"    Compare version: {config.compare_version}")
+        if config.baseline_version or config.current_version:
+            logger.info(
+                f"  Version comparison: baseline={config.baseline_version}, "
+                f"current={config.current_version}"
+            )
+        if config.current_version_only:
+            logger.info("  Current version only: Yes (filtering to latest versions)")
+        if config.detected_after:
+            logger.info(f"  Detected after: {config.detected_after}")
+        if config.open_only:
+            logger.info("  Open findings only: Yes")
+        if config.cache_ttl > 0:
+            logger.info(f"  SQLite cache: Enabled (TTL: {config.cache_ttl}s)")
         if config.cve_filter:
             logger.info(f"  CVE filter: {config.cve_filter}")
+        if config.component_filter:
+            logger.info(f"  Component filter: {config.component_filter}")
+        if config.scan_types:
+            logger.info(f"  Scan types: {config.scan_types}")
+        if config.scan_statuses:
+            logger.info(f"  Scan statuses: {config.scan_statuses}")
+        if config.low_memory:
+            logger.info("  Low-memory mode: Enabled")
+        if config.scoring_file:
+            logger.info(f"  Scoring file: {config.scoring_file}")
         if config.ai:
             provider_info = (
                 f", provider: {config.ai_provider}" if config.ai_provider else ""
             )
+            model_info = ""
+            if config.ai_model_high:
+                model_info += f", model-high: {config.ai_model_high}"
+            if config.ai_model_low:
+                model_info += f", model-low: {config.ai_model_low}"
             logger.info(
-                f"  AI remediation: Enabled (depth: {config.ai_depth}{provider_info})"
+                f"  AI remediation: Enabled (depth: {config.ai_depth}{provider_info}{model_info})"
             )
+            if config.ai_prompts:
+                logger.info("  AI prompts: Enabled (saving prompts to output)")
+            if config.ai_analysis:
+                logger.info("  AI analysis: Enabled")
+        if config.apply_vex_triage:
+            logger.info(f"  Apply VEX triage: {config.apply_vex_triage}")
+        if config.autotriage:
+            logger.info("  Autotriage: Enabled")
+        if config.nvd_api_key:
+            logger.info("  NVD API key: configured")
+        if config.logo:
+            logger.info(f"  Logo: {config.logo}")
 
         # Validate mutually exclusive VEX flags
         if config.apply_vex_triage and config.autotriage:
@@ -493,6 +657,7 @@ def run_reports(
                             k: v
                             for k, v in {
                                 "project_filter": config.project_filter,
+                                "project_name": engine.resolved_project_name,
                                 "folder_filter": config.folder_filter,
                                 "period": period,
                             }.items()
@@ -551,6 +716,9 @@ def run_reports(
 
     except typer.Exit:
         raise
+    except FileNotFoundError as e:
+        console.print(f"[red]File not found: {e}[/red]")
+        raise typer.Exit(1) from e
     except FileExistsError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from e
@@ -705,6 +873,22 @@ def run_command(
         "Use 'all' for everything. Comma-separated for multiple (e.g. cve,sast).",
         rich_help_panel=_SCOPE,
     ),
+    scan_types: Union[str, None] = typer.Option(
+        None,
+        "--scan-type",
+        "-st",
+        help="Scan types to include (e.g. SCA, SAST, SOURCE_SCA, CONFIG, SBOM_IMPORT). "
+        "Comma-separated for multiple.",
+        rich_help_panel=_SCOPE,
+    ),
+    scan_statuses: Union[str, None] = typer.Option(
+        None,
+        "--scan-status",
+        "-ss",
+        help="Scan statuses to include (e.g. COMPLETED, ERROR, INITIAL, STARTED). "
+        "Comma-separated for multiple.",
+        rich_help_panel=_SCOPE,
+    ),
     current_version_only: bool = typer.Option(
         True,
         "--current-version-only/--all-versions",
@@ -716,7 +900,7 @@ def run_command(
     cache_ttl: Union[str, None] = typer.Option(
         None,
         "--cache-ttl",
-        help="[BETA] Enable persistent SQLite cache with TTL "
+        help="Enable persistent SQLite cache with TTL "
         "(e.g., '4' for 4 hours, '30m', '1d').",
         rich_help_panel=_PERFORMANCE,
     ),
@@ -774,6 +958,14 @@ def run_command(
         "No API key required.",
         rich_help_panel=_AI,
     ),
+    ai_analysis: bool = typer.Option(
+        False,
+        "--ai-analysis",
+        help="Generate deep AI analysis per action using the summary model. "
+        "Produces detailed markdown remediation analysis embedded in the report. "
+        "Expensive — uses the high-capability model. Implies --ai-prompts.",
+        rich_help_panel=_AI,
+    ),
     nvd_api_key: Union[str, None] = typer.Option(
         None,
         "--nvd-api-key",
@@ -822,8 +1014,16 @@ def run_command(
     cve_filter: Union[str, None] = typer.Option(
         None,
         "--cve",
-        help="CVE(s) for the CVE Impact report. "
+        help="CVE(s) for CVE Impact or scoped Remediation Package. "
         "Comma-separated (e.g. CVE-2024-1234,CVE-2024-5678).",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    component_filter: Union[str, None] = typer.Option(
+        None,
+        "--component",
+        help="Component(s) for scoped Remediation Package. "
+        "name@version for exact match, name alone for all versions. "
+        "Comma-separated (e.g. busybox@1.36.1-r2,dropbear).",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
     scoring_file: Union[str, None] = typer.Option(
@@ -867,6 +1067,13 @@ def run_command(
         max=5,
         rich_help_panel=_PERFORMANCE,
     ),
+    low_memory: bool = typer.Option(
+        False,
+        "--low-memory",
+        help="Reduce peak memory for large findings reports. "
+        "Drops heavy columns after scoring; skips HTML/XLSX.",
+        rich_help_panel=_PERFORMANCE,
+    ),
     overwrite: bool = typer.Option(
         False,
         "--overwrite",
@@ -905,6 +1112,19 @@ def run_command(
         help="Explicit non-interactive mode for CI/CD. Never starts a server.",
         rich_help_panel=_OUTPUT,
     ),
+    # Hidden cross-server version comparison flags
+    compare_domain: Union[str, None] = typer.Option(
+        None, "--compare-domain", help="", hidden=True
+    ),
+    compare_token: Union[str, None] = typer.Option(
+        None, "--compare-token", help="", hidden=True
+    ),
+    compare_project: Union[str, None] = typer.Option(
+        None, "--compare-project", help="", hidden=True
+    ),
+    compare_version: Union[str, None] = typer.Option(
+        None, "--compare-version", help="", hidden=True
+    ),
 ) -> None:
     """Generate reports from recipes.
 
@@ -922,7 +1142,7 @@ def run_command(
             cache_ttl_seconds = parse_ttl(cache_ttl)
             if cache_ttl_seconds > 0:
                 console.print(
-                    f"[cyan][BETA] SQLite cache enabled with TTL: "
+                    f"[cyan]SQLite cache enabled with TTL: "
                     f"{cache_ttl} ({cache_ttl_seconds} seconds)[/cyan]"
                 )
         except ValueError as e:
@@ -955,6 +1175,7 @@ def run_command(
         ai_model_low=ai_model_low,
         ai_depth=ai_depth,
         ai_prompts=ai_prompts,
+        ai_analysis=ai_analysis,
         nvd_api_key=nvd_api_key,
         baseline_date=baseline_date,
         baseline_version=baseline_version,
@@ -963,6 +1184,7 @@ def run_command(
         request_delay=request_delay,
         batch_size=batch_size,
         cve_filter=cve_filter,
+        component_filter=component_filter,
         scoring_file=scoring_file,
         vex_override=vex_override,
         overwrite=overwrite,
@@ -971,6 +1193,13 @@ def run_command(
         autotriage=autotriage,
         dry_run=dry_run,
         vex_concurrency=vex_concurrency,
+        scan_types=scan_types,
+        scan_statuses=scan_statuses,
+        low_memory=low_memory,
+        compare_domain=compare_domain,
+        compare_token=compare_token,
+        compare_project=compare_project,
+        compare_version=compare_version,
     )
 
     # Launch local HTTP server if requested

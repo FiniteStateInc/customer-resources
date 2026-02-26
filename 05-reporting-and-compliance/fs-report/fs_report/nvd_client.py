@@ -56,7 +56,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +113,7 @@ class NVDCveRecord:
     references: list[dict[str, Any]] = field(default_factory=list)
     patch_urls: list[str] = field(default_factory=list)
     advisory_urls: list[str] = field(default_factory=list)
+    workaround_urls: list[str] = field(default_factory=list)
     cvss_v2_vector: str = ""
     cvss_v3_vector: str = ""
 
@@ -125,6 +126,46 @@ class NVDCveRecord:
             if fv and fv not in versions:
                 versions.append(fv)
         return versions
+
+    def fix_version_for(self, installed_version: str) -> str:
+        """Return the fix version for the range containing *installed_version*.
+
+        Iterates affected ranges and checks if the installed version falls
+        within [version_start, version_end). Returns the matching range's
+        fix_version, or falls back to best_fix_for_version() across all
+        fix versions.
+        """
+        from fs_report.purl_utils import _version_tuple, best_fix_for_version
+
+        inst = _version_tuple(installed_version)
+        if inst is None:
+            return self.fix_versions[0] if self.fix_versions else ""
+
+        for r in self.affected_ranges:
+            fv = r.fix_version
+            if not fv:
+                continue
+            # Check if installed is in this range
+            start = _version_tuple(r.version_start) if r.version_start else None
+            end = _version_tuple(r.version_end) if r.version_end else None
+
+            in_range = True
+            if start is not None:
+                if r.version_start_type == "including":
+                    in_range = inst >= start
+                else:
+                    in_range = inst > start
+            if in_range and end is not None:
+                if r.version_end_type == "excluding":
+                    in_range = inst < end
+                else:
+                    in_range = inst <= end
+
+            if in_range:
+                return fv
+
+        # No range matched — use best_fix_for_version as fallback
+        return best_fix_for_version(installed_version, self.fix_versions)
 
     @property
     def fix_versions_summary(self) -> str:
@@ -182,6 +223,7 @@ class NVDClient:
         self._cancel_event = cancel_event
 
         # In-memory cache (session-scoped)
+        self._db_lock = threading.Lock()
         self._mem_cache: dict[str, NVDCveRecord] = {}
         self.last_batch_missing: list[str] = []
 
@@ -216,7 +258,10 @@ class NVDClient:
             self._conn = None
 
     def __del__(self) -> None:
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _cancellable_sleep(self, seconds: float) -> None:
         """Sleep in short intervals, checking for cancellation."""
@@ -244,36 +289,40 @@ class NVDClient:
         """Retrieve a cached record from SQLite, respecting TTL."""
         if not self._conn:
             return None
-        try:
-            row = self._conn.execute(
-                "SELECT data_json, fetched_at FROM nvd_cve_cache WHERE cve_id = ?",
-                (cve_id,),
-            ).fetchone()
-            if row:
-                fetched_at = datetime.fromisoformat(row["fetched_at"])
-                age = (datetime.utcnow() - fetched_at).total_seconds()
-                if age < self._cache_ttl:
-                    return self._deserialize(json.loads(row["data_json"]))
-                logger.debug(f"NVD cache expired for {cve_id} ({age:.0f}s old)")
-        except Exception as e:
-            logger.debug(f"NVD SQLite cache read error for {cve_id}: {e}")
+        with self._db_lock:
+            try:
+                row = self._conn.execute(
+                    "SELECT data_json, fetched_at FROM nvd_cve_cache WHERE cve_id = ?",
+                    (cve_id,),
+                ).fetchone()
+                if row:
+                    fetched_at = datetime.fromisoformat(row["fetched_at"])
+                    if fetched_at.tzinfo is None:
+                        fetched_at = fetched_at.replace(tzinfo=UTC)
+                    age = (datetime.now(UTC) - fetched_at).total_seconds()
+                    if age < self._cache_ttl:
+                        return self._deserialize(json.loads(row["data_json"]))
+                    logger.debug(f"NVD cache expired for {cve_id} ({age:.0f}s old)")
+            except Exception as e:
+                logger.debug(f"NVD SQLite cache read error for {cve_id}: {e}")
         return None
 
     def _save_to_sqlite(self, cve_id: str, record: NVDCveRecord) -> None:
         """Persist a record to SQLite cache."""
         if not self._conn:
             return
-        try:
-            data = self._serialize(record)
-            self._conn.execute(
-                """INSERT OR REPLACE INTO nvd_cve_cache
-                   (cve_id, data_json, fetched_at)
-                   VALUES (?, ?, ?)""",
-                (cve_id, json.dumps(data), datetime.utcnow().isoformat()),
-            )
-            self._conn.commit()
-        except Exception as e:
-            logger.debug(f"NVD SQLite cache write error for {cve_id}: {e}")
+        with self._db_lock:
+            try:
+                data = self._serialize(record)
+                self._conn.execute(
+                    """INSERT OR REPLACE INTO nvd_cve_cache
+                       (cve_id, data_json, fetched_at)
+                       VALUES (?, ?, ?)""",
+                    (cve_id, json.dumps(data), datetime.now(UTC).isoformat()),
+                )
+                self._conn.commit()
+            except Exception as e:
+                logger.debug(f"NVD SQLite cache write error for {cve_id}: {e}")
 
     @staticmethod
     def _serialize(record: NVDCveRecord) -> dict[str, Any]:
@@ -295,6 +344,7 @@ class NVDClient:
             "references": record.references,
             "patch_urls": record.patch_urls,
             "advisory_urls": record.advisory_urls,
+            "workaround_urls": record.workaround_urls,
             "cvss_v2_vector": record.cvss_v2_vector,
             "cvss_v3_vector": record.cvss_v3_vector,
         }
@@ -310,6 +360,7 @@ class NVDClient:
             references=data.get("references", []),
             patch_urls=data.get("patch_urls", []),
             advisory_urls=data.get("advisory_urls", []),
+            workaround_urls=data.get("workaround_urls", []),
             cvss_v2_vector=data.get("cvss_v2_vector", ""),
             cvss_v3_vector=data.get("cvss_v3_vector", ""),
         )
@@ -418,6 +469,7 @@ class NVDClient:
         references: list[dict[str, Any]] = []
         patch_urls: list[str] = []
         advisory_urls: list[str] = []
+        workaround_urls: list[str] = []
         for ref in cve_data.get("references", []):
             url = ref.get("url", "")
             tags = ref.get("tags", [])
@@ -426,6 +478,8 @@ class NVDClient:
                 patch_urls.append(url)
             if "Vendor Advisory" in tags or "Third Party Advisory" in tags:
                 advisory_urls.append(url)
+            if "Mitigation" in tags or "Workaround" in tags:
+                workaround_urls.append(url)
 
         # Extract CVSS vectors from metrics
         cvss_v2_vector = ""
@@ -452,6 +506,7 @@ class NVDClient:
             references=references,
             patch_urls=patch_urls,
             advisory_urls=advisory_urls,
+            workaround_urls=workaround_urls,
             cvss_v2_vector=cvss_v2_vector,
             cvss_v3_vector=cvss_v3_vector,
         )
@@ -571,6 +626,27 @@ class NVDClient:
 
         lines: list[str] = []
 
+        # Description helps LLMs detect false-positive CPE matches
+        if record.description:
+            desc = record.description[:200]
+            if len(record.description) > 200:
+                desc += "..."
+            lines.append(f"NVD Description: {desc}")
+
+        # Vendor/product pairs show what the CVE actually targets
+        if record.affected_ranges:
+            targets = []
+            for ar in record.affected_ranges:
+                if ar.vendor or ar.product:
+                    targets.append(
+                        f"{ar.vendor}/{ar.product}" if ar.vendor else ar.product
+                    )
+            if targets:
+                lines.append(f"NVD Target: {', '.join(dict.fromkeys(targets))}")
+
+        if lines:
+            lines.append("")  # blank separator before fix versions
+
         fix_summary = record.fix_versions_summary
         if fix_summary:
             lines.append("## Known Fix Versions (derived from NVD)")
@@ -586,12 +662,14 @@ class NVDClient:
             for url in record.advisory_urls[:3]:
                 lines.append(f"- {url}")
 
+        if record.workaround_urls:
+            lines.append("\n## Workaround & Mitigation References (via NVD)")
+            for url in record.workaround_urls[:5]:
+                lines.append(f"- {url}")
+
         return "\n".join(lines)
 
-    def format_batch_for_prompt(
-        self,
-        cve_ids: list[str],
-    ) -> str:
+    def format_batch_for_prompt(self, cve_ids: list[str]) -> str:
         """
         Build a combined prompt snippet with NVD fix data for multiple CVEs.
 

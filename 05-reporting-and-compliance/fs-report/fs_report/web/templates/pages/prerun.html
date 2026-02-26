@@ -5,44 +5,19 @@
         <button class="btn-close prerun-close">&times;</button>
     </div>
 
+    <!-- Inline error banner (hidden by default) -->
+    <div id="prerun-error" class="prerun-error" style="display:none;"></div>
+
     <form id="prerun-submit-form" onsubmit="return false;">
         <input type="hidden" name="recipes" value="{{ recipe_names | join(',') }}">
         <input type="hidden" name="_csrf" value="{{ nonce }}">
 
-        <!-- Run Settings (always shown) -->
-        <details open class="form-section">
-            <summary class="form-section-title">Run Settings</summary>
-            <div class="form-group">
-                <label for="pre-period">Period</label>
-                <input type="text" id="pre-period" name="period"
-                       value="{{ state.get('period', '30d') }}" placeholder="30d, 2m, 90d">
-            </div>
-            <div class="form-group">
-                <label for="pre-output">Output directory</label>
-                <div class="input-with-btn">
-                    <input type="text" id="pre-output" name="output_dir"
-                           value="{{ state.get('output_dir', './output') }}" placeholder="./output">
-                    <button type="button" id="pre-output-browse" class="btn btn-sm btn-default">Browse</button>
-                </div>
-            </div>
-            <div class="form-group form-row">
-                <label for="pre-overwrite">Overwrite existing</label>
-                <label class="toggle">
-                    <input type="checkbox" id="pre-overwrite" name="overwrite"
-                           {% if state.get('overwrite') %}checked{% endif %}>
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-            <div class="form-group">
-                <label for="pre-cache-ttl">Cache TTL (hours, 0=off)</label>
-                <input type="text" id="pre-cache-ttl" name="cache_ttl"
-                       value="{{ state.get('cache_ttl', '4') }}" placeholder="4">
-            </div>
-        </details>
-
-        <!-- Assessment Scope -->
-        <details open class="form-section">
-            <summary class="form-section-title">Assessment Scope</summary>
+        <!-- Scope (always visible, not collapsible) -->
+        <div class="form-section-static">
+            <div class="form-section-static-title">Scope</div>
+            {% if show_cve and show_version_fields %}
+            <div class="form-hint-info">CVE and Version Comparison recipes require the fields below. Leave empty to skip those recipes.</div>
+            {% endif %}
             <div class="form-group">
                 <label for="pre-folder">&#128193; Folder filter</label>
                 <select id="pre-folder" name="folder_filter"
@@ -56,6 +31,9 @@
                         data-value="{{ state.get('project_filter', '') }}">
                     <option value="">(all projects)</option>
                 </select>
+                {% if show_project_required %}
+                <small class="form-hint-warning">Required for Remediation Package</small>
+                {% endif %}
             </div>
             <div class="form-group">
                 <label for="pre-version">&#127991; Version filter</label>
@@ -72,6 +50,11 @@
                     <span class="toggle-slider"></span>
                 </label>
             </div>
+            <div class="form-group">
+                <label for="pre-period">Period</label>
+                <input type="text" id="pre-period" name="period"
+                       value="{{ state.get('period', '30d') }}" placeholder="30d, 2m, 90d">
+            </div>
 
             {% if show_cve %}
             <div class="form-group">
@@ -84,11 +67,19 @@
 
             {% if show_finding_types %}
             <div class="form-group">
-                <label for="pre-ft">Finding types</label>
-                <input type="text" id="pre-ft" name="finding_types"
-                       value="{{ state.get('finding_types', 'cve') }}"
-                       placeholder="cve, sast, credentials">
-                <small class="form-hint">Types: cve, sast, thirdparty, binary_sca, source_sca. Categories: credentials, config_issues, crypto_material. &lsquo;all&rsquo; for everything.</small>
+                <label>Finding types</label>
+                <div class="finding-type-checkboxes">
+                    {% set current_ft = state.get('finding_types', 'cve') %}
+                    <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="cve" {% if 'cve' in current_ft %}checked{% endif %}> CVE</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="sast" {% if 'sast' in current_ft %}checked{% endif %}> SAST</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="thirdparty" {% if 'thirdparty' in current_ft %}checked{% endif %}> 3rd Party</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="binary_sca" {% if 'binary_sca' in current_ft %}checked{% endif %}> Binary SCA</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="source_sca" {% if 'source_sca' in current_ft %}checked{% endif %}> Source SCA</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="credentials" {% if 'credentials' in current_ft %}checked{% endif %}> Credentials</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="config_issues" {% if 'config_issues' in current_ft %}checked{% endif %}> Config</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="crypto_material" {% if 'crypto_material' in current_ft %}checked{% endif %}> Crypto</label>
+                </div>
+                <input type="hidden" id="pre-ft" name="finding_types" value="{{ current_ft }}">
             </div>
             {% endif %}
 
@@ -122,7 +113,7 @@
                        placeholder="Or paste version ID directly">
             </div>
             {% endif %}
-        </details>
+        </div>
 
         {% if show_ai %}
         <!-- AI Settings -->
@@ -154,8 +145,34 @@
         </details>
         {% endif %}
 
+        <!-- Advanced Options (collapsed by default) -->
+        <details class="form-section">
+            <summary class="form-section-title">Advanced Options</summary>
+            <div class="form-group">
+                <label for="pre-output">Output directory</label>
+                <div class="input-with-btn">
+                    <input type="text" id="pre-output" name="output_dir"
+                           value="{{ state.get('output_dir', './output') }}" placeholder="./output">
+                    <button type="button" id="pre-output-browse" class="btn btn-sm btn-default">Browse</button>
+                </div>
+            </div>
+            <div class="form-group form-row">
+                <label for="pre-overwrite">Overwrite existing</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-overwrite" name="overwrite"
+                           {% if state.get('overwrite') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label for="pre-cache-ttl">Cache TTL (hours, 0=off)</label>
+                <input type="text" id="pre-cache-ttl" name="cache_ttl"
+                       value="{{ state.get('cache_ttl', '4') }}" placeholder="4">
+            </div>
+        </details>
+
         <div class="prerun-actions">
-            <button type="button" class="btn btn-primary" id="btn-run-submit">Run</button>
+            <button type="button" class="btn btn-primary" id="btn-run-submit">Run {{ recipe_names | length }} recipe{{ 's' if recipe_names | length != 1 else '' }}</button>
             <button type="button" class="btn btn-default prerun-close">Cancel</button>
         </div>
     </form>

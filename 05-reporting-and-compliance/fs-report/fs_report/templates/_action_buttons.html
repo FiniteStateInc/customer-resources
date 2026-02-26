@@ -175,10 +175,15 @@
         <p style="color:#6c757d;font-size:0.82em;margin-bottom:14px;">
             This will update the finding status in the Finite State platform.
         </p>
+        <div id="fsTriageRecInfo" style="display:none; background:#f0fdf4; border:1px solid #86efac; border-radius:6px; padding:10px 14px; margin-bottom:14px; font-size:0.85em;">
+            <strong>Recommendation:</strong> <span id="fsTriageRecStatus"></span>
+            <div id="fsTriageRecReason" style="color:#6c757d; margin-top:4px;"></div>
+        </div>
         <div class="fs-modal-actions">
             <button class="fs-modal-btn" onclick="fsCloseModal('fsTriageModal')">Cancel</button>
             <button class="fs-modal-btn primary" id="fsTriageClearBtn" style="display:none;" onclick="fsClearStatus()">Clear Status</button>
             <button class="fs-modal-btn primary" id="fsTriageConfirmBtn" onclick="fsSetTriage()">Set IN_TRIAGE</button>
+            <button class="fs-modal-btn primary" id="fsTriageAcceptBtn" style="display:none;" onclick="fsAcceptRecommendation()">Accept</button>
         </div>
     </div>
 </div>
@@ -682,6 +687,23 @@
             var hasStatus = data.currentStatus;
             var clearBtn = document.getElementById('fsTriageClearBtn');
             var confirmBtn = document.getElementById('fsTriageConfirmBtn');
+            var acceptBtn = document.getElementById('fsTriageAcceptBtn');
+            var recInfo = document.getElementById('fsTriageRecInfo');
+
+            // Recommendation handling
+            var rec = data.recommendation;
+            var hasRec = rec && rec.recommended_vex_status;
+            if (hasRec) {
+                document.getElementById('fsTriageRecStatus').textContent = rec.recommended_vex_status;
+                document.getElementById('fsTriageRecReason').textContent = rec.reason || '';
+                recInfo.style.display = '';
+                acceptBtn.style.display = '';
+                acceptBtn.textContent = 'Accept: ' + rec.recommended_vex_status;
+                acceptBtn.disabled = false;
+            } else {
+                recInfo.style.display = 'none';
+                acceptBtn.style.display = 'none';
+            }
 
             if (hasStatus) {
                 // Finding already has a status — offer to clear or set IN_TRIAGE
@@ -786,6 +808,51 @@
             showError('fsTriageError', err.message);
         } finally {
             setLoading('fsTriageClearBtn', false);
+        }
+    };
+
+    // =========================================================================
+    // Accept Recommendation
+    // =========================================================================
+
+    window.fsAcceptRecommendation = async function() {
+        hideError('fsTriageError');
+        setLoading('fsTriageAcceptBtn', true);
+
+        var rec = _triageContext.recommendation;
+        if (!rec || !rec.recommended_vex_status) {
+            showError('fsTriageError', 'No recommendation data available.');
+            setLoading('fsTriageAcceptBtn', false);
+            return;
+        }
+
+        const pvId = _triageContext.projectVersionId;
+        const intId = _triageContext.internalId;
+        const url = apiBase() + '/public/v0/findings/' + pvId + '/' + intId + '/status';
+
+        try {
+            const res = await fetch(url, {
+                method: 'PUT',
+                headers: apiHeaders(),
+                body: JSON.stringify({
+                    status: rec.recommended_vex_status,
+                    response: 'WILL_NOT_FIX',
+                    justification: rec.justification || 'CODE_NOT_PRESENT',
+                    reason: rec.reason || '',
+                }),
+            });
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error('HTTP ' + res.status + ': ' + (text || 'Failed to accept recommendation'));
+            }
+            fsCloseModal('fsTriageModal');
+            if (_triageContext.sourceBtn) {
+                _setTriageBtnStatus(_triageContext.sourceBtn, rec.recommended_vex_status);
+            }
+        } catch (err) {
+            showError('fsTriageError', err.message);
+        } finally {
+            setLoading('fsTriageAcceptBtn', false);
         }
     };
 

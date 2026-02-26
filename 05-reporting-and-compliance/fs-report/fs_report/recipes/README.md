@@ -14,6 +14,9 @@ This directory contains YAML recipe files that define the available reports in t
 | `user_activity.yaml` | User Activity | Platform usage tracking with user engagement metrics |
 | `version_comparison.yaml` | Version Comparison | Full version and component changelog (every version pair); fixed/new findings and component churn per step; CSV/XLSX include summary + detail *(on-demand)* |
 | `triage_prioritization.yaml` | Triage Prioritization | Context-aware vulnerability triage with optional AI guidance *(on-demand)* |
+| `remediation_package.yaml` | Remediation Package | Actionable remediation plan with fix-version validation and structured options *(on-demand)* |
+| `executive_dashboard.yaml` | Executive Dashboard | 11-section executive-level security report with KPI cards, severity trends, and exploit intelligence *(on-demand)* |
+| `cve_impact.yaml` | CVE Impact | CVE-centric dossier with affected projects, reachability, and exploit intelligence *(on-demand)* |
 
 ## Usage
 

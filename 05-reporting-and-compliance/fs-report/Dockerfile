@@ -32,10 +32,8 @@ RUN apt-get update && apt-get install -y \
 # Copy poetry files and README
 COPY pyproject.toml poetry.lock* README.md ./
 
-# Copy application code first
+# Copy application code (includes recipes, templates, and web UI)
 COPY fs_report/ ./fs_report/
-COPY templates/ ./templates/
-COPY recipes/ ./recipes/
 
 # Install poetry and dependencies
 RUN pip install --no-cache-dir poetry && \

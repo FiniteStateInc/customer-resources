@@ -491,6 +491,7 @@ class VexApplier:
         vex_status = rec["recommended_vex_status"]
         reason = rec.get("reason", "")
         reachability_label = rec.get("reachability_label", "INCONCLUSIVE")
+        justification = rec.get("justification")
 
         client = httpx.Client(
             headers={
@@ -507,6 +508,7 @@ class VexApplier:
                 internal_id,
                 vex_status,
                 reason,
+                justification_enum=justification,
                 reachability_label=reachability_label,
             )
         finally:

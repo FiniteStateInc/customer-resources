@@ -13,4 +13,9 @@ query:
 transform_function: cve_impact_pandas_transform
 output:
   table: true
+  formats:
+    - csv
+    - xlsx
+    - html
+    - md
   charts: []

@@ -189,6 +189,38 @@ async def clear_ai_cache(state: WebAppState = Depends(get_state)) -> JSONRespons
     return JSONResponse({"status": "not_found", "type": "ai"})
 
 
+# ── Logo upload ───────────────────────────────────────────────────
+@router.post("/api/logos/upload")
+async def upload_logo(request: Request) -> JSONResponse:
+    """Upload a logo image to ~/.fs-report/logos/."""
+    form = await request.form()
+    file = form.get("file")
+    if file is None or not hasattr(file, "filename") or not hasattr(file, "read"):
+        return JSONResponse({"error": "No file provided"}, status_code=400)
+
+    filename = Path(str(file.filename)).name  # strip directory components
+    allowed = {".png", ".jpg", ".jpeg", ".svg", ".webp"}
+    suffix = Path(filename).suffix.lower()
+    if suffix not in allowed:
+        return JSONResponse(
+            {
+                "error": f"Invalid file type: {suffix}. Allowed: {', '.join(sorted(allowed))}"
+            },
+            status_code=400,
+        )
+
+    contents = await file.read()
+    if len(contents) > 512_000:
+        return JSONResponse({"error": "File too large (max 500KB)"}, status_code=400)
+
+    logos_dir = Path.home() / ".fs-report" / "logos"
+    logos_dir.mkdir(parents=True, exist_ok=True)
+    dest = logos_dir / filename
+    dest.write_bytes(contents)
+
+    return JSONResponse({"filename": filename})
+
+
 # ── Available logos ───────────────────────────────────────────────
 @router.get("/api/logos")
 async def list_logos() -> JSONResponse:
@@ -224,3 +256,39 @@ async def browse_filesystem(
         return JSONResponse({"current": str(base), "parent": parent, "dirs": dirs})
     except PermissionError:
         return JSONResponse({"error": "Permission denied"}, status_code=403)
+
+
+@router.post("/api/filesystem/mkdir")
+async def create_directory(request: Request) -> JSONResponse:
+    """Create a new subdirectory inside the given parent path."""
+    body = await request.json()
+    parent = body.get("parent", "").strip()
+    name = body.get("name", "").strip()
+
+    if not parent or not name:
+        return JSONResponse(
+            {"error": "Parent path and folder name are required"}, status_code=400
+        )
+
+    # Sanitise: block path separators and hidden dirs
+    if "/" in name or "\\" in name or name.startswith("."):
+        return JSONResponse({"error": "Invalid folder name"}, status_code=400)
+
+    try:
+        parent_path = Path(parent).expanduser().resolve()
+        if not parent_path.is_dir():
+            return JSONResponse(
+                {"error": f"Not a directory: {parent_path}"}, status_code=400
+            )
+
+        new_dir = (parent_path / name).resolve()
+        # Path traversal guard
+        if not str(new_dir).startswith(str(parent_path)):
+            return JSONResponse({"error": "Invalid folder name"}, status_code=400)
+
+        new_dir.mkdir(exist_ok=True)
+        return JSONResponse({"created": str(new_dir)})
+    except PermissionError:
+        return JSONResponse({"error": "Permission denied"}, status_code=403)
+    except OSError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)

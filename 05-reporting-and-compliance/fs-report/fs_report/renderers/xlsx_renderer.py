@@ -21,6 +21,7 @@
 """XLSX renderer for exporting data as Excel files."""
 
 import logging
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,10 @@ import pandas as pd
 
 # Excel's maximum row limit (excluding header)
 EXCEL_MAX_ROWS = 1_048_575  # 1,048,576 total including header
+
+# Excel's URL-per-worksheet limit — beyond this xlsxwriter silently drops URLs
+# and spams warnings.  Skip XLSX entirely for sheets this large.
+EXCEL_MAX_URLS = 65_530
 
 
 class XLSXRenderer:
@@ -51,6 +56,13 @@ class XLSXRenderer:
             else:
                 df = pd.DataFrame(data)
 
+            if len(df) > EXCEL_MAX_URLS:
+                self.logger.warning(
+                    f"Skipping XLSX: {len(df):,} rows exceeds Excel's "
+                    f"{EXCEL_MAX_URLS:,} URL limit. Use the CSV output instead."
+                )
+                return
+
             # Check for Excel row limit and truncate if necessary
             original_rows = len(df)
             if original_rows > EXCEL_MAX_ROWS:
@@ -63,8 +75,16 @@ class XLSXRenderer:
             # Truncate sheet name if necessary
             safe_name = self.safe_sheet_name(sheet_name)
 
-            # Export to XLSX
-            with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
+            # Export to XLSX (suppress xlsxwriter URL-limit warnings for edge cases)
+            with (
+                warnings.catch_warnings(),
+                pd.ExcelWriter(output_path, engine="xlsxwriter") as writer,
+            ):
+                warnings.filterwarnings(
+                    "ignore",
+                    message="Ignoring URL.*exceeds Excel's limit",
+                    module="xlsxwriter",
+                )
                 df.to_excel(writer, sheet_name=safe_name, index=False)
 
                 # Get the workbook and worksheet objects
@@ -109,7 +129,26 @@ class XLSXRenderer:
     ) -> None:
         """Render multiple DataFrames as sheets in one XLSX file."""
         try:
-            with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
+            # Check if any sheet exceeds the URL limit
+            for sheet_name, data in sheets:
+                row_count = len(data) if hasattr(data, "__len__") else 0
+                if row_count > EXCEL_MAX_URLS:
+                    self.logger.warning(
+                        f"Skipping XLSX: sheet '{sheet_name}' has {row_count:,} rows, "
+                        f"exceeding Excel's {EXCEL_MAX_URLS:,} URL limit. "
+                        f"Use the CSV output instead."
+                    )
+                    return
+
+            with (
+                warnings.catch_warnings(),
+                pd.ExcelWriter(output_path, engine="xlsxwriter") as writer,
+            ):
+                warnings.filterwarnings(
+                    "ignore",
+                    message="Ignoring URL.*exceeds Excel's limit",
+                    module="xlsxwriter",
+                )
                 workbook = writer.book
                 header_format = workbook.add_format(
                     {

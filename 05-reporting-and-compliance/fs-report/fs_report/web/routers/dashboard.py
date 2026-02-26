@@ -13,49 +13,63 @@ WORKFLOWS = [
     {
         "id": "executive-dashboard",
         "title": "Executive Dashboard",
-        "icon": "📊",
+        "icon": "\U0001f4ca",
         "description": "Single-page security posture overview with 11 visualizations",
         "recipes": ["executive dashboard"],
     },
     {
         "id": "operational",
         "title": "Operational Reports",
-        "icon": "📈",
+        "icon": "\U0001f4c8",
         "description": "Operational reports: summary, scan analysis, user activity",
         "recipes": ["executive summary", "scan analysis", "user activity"],
     },
     {
         "id": "cve",
         "title": "CVE Investigation",
-        "icon": "🔍",
+        "icon": "\U0001f50d",
         "description": "Deep-dive into specific CVEs across your portfolio",
         "recipes": ["cve impact"],
     },
     {
         "id": "triage",
-        "title": "Triage Project",
-        "icon": "🎯",
+        "title": "Triage & Prioritize",
+        "icon": "\U0001f3af",
         "description": "AI-prioritized findings for a single project",
         "recipes": ["triage prioritization"],
     },
     {
+        "id": "remediation",
+        "title": "Remediation Package",
+        "icon": "\U0001f527",
+        "description": "AI-generated fix guidance for a project\u2019s vulnerabilities",
+        "recipes": ["remediation package"],
+    },
+    {
+        "id": "component-analysis",
+        "title": "Component Vuln Analysis",
+        "icon": "\U0001f6e1",
+        "description": "Vulnerability analysis for components in a project",
+        "recipes": ["component vulnerability analysis"],
+    },
+    {
         "id": "findings",
         "title": "Export Findings",
-        "icon": "📋",
+        "icon": "\U0001f4cb",
         "description": "Export all findings for selected projects",
         "recipes": ["findings by project"],
     },
     {
         "id": "components",
         "title": "Export Components",
-        "icon": "📦",
+        "icon": "\U0001f4e6",
         "description": "Export components and licenses for a project",
         "recipes": ["component list"],
     },
     {
         "id": "compare",
         "title": "Compare Versions",
-        "icon": "🔀",
+        "icon": "\U0001f500",
         "description": "What changed between two firmware versions?",
         "recipes": ["version comparison"],
     },
@@ -94,6 +108,9 @@ async def dashboard(
 
     token_display = redact_token(state.token) if state.token else "(not set)"
 
+    # Saved recipe selection from last run (persisted in config.yaml)
+    saved_recipes = state.get("selected_recipes") or []
+
     templates = request.app.state.templates
     return templates.TemplateResponse(
         "pages/dashboard.html",
@@ -104,5 +121,6 @@ async def dashboard(
             "token_display": token_display,
             "workflows": WORKFLOWS,
             "recipes": recipes,
+            "saved_recipes": saved_recipes,
         },
     )

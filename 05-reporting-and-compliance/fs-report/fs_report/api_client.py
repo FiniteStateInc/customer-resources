@@ -139,9 +139,9 @@ class APIClient:
             )
         if query.params.sort:
             params["sort"] = query.params.sort
-        if query.params.limit:
+        if query.params.limit is not None:
             params["limit"] = str(query.params.limit)
-        if query.params.offset:
+        if query.params.offset is not None:
             params["offset"] = str(query.params.offset)
         if query.params.archived is not None:
             params["archived"] = str(query.params.archived).lower()
@@ -285,7 +285,7 @@ class APIClient:
             cached_data = self.sqlite_cache.get_cached_data(endpoint, params)
             if cached_data:
                 self.logger.info(
-                    f"[BETA] Using SQLite cached data for {endpoint} ({len(cached_data)} records)"
+                    f"Using SQLite cached data for {endpoint} ({len(cached_data)} records)"
                 )
                 return cached_data
 
@@ -295,7 +295,7 @@ class APIClient:
 
         if existing_count > 0:
             self.logger.info(
-                f"[BETA] Resuming from SQLite cache: {existing_count} records already fetched"
+                f"Resuming from SQLite cache: {existing_count} records already fetched"
             )
             query_hash = self.sqlite_cache.start_fetch(endpoint, params, self.cache_ttl)
             # Don't clear existing data - we're resuming
@@ -321,6 +321,7 @@ class APIClient:
             initial=existing_count,
         )
 
+        fetch_completed = False
         try:
             while True:
                 page_query = query.model_copy(deep=True)
@@ -399,6 +400,7 @@ class APIClient:
                         self.logger.debug(
                             f"Stopping pagination after {consecutive_empty_pages} consecutive empty pages."
                         )
+                        fetch_completed = True
                         break
                     offset += limit
                     continue
@@ -414,6 +416,7 @@ class APIClient:
                     self.logger.debug(
                         f"All {len(page_ids)} records at offset {offset} are duplicates. Stopping pagination."
                     )
+                    fetch_completed = True
                     break
                 if duplicates:
                     self.logger.debug(
@@ -439,10 +442,11 @@ class APIClient:
         finally:
             pbar.close()
 
-        # Mark fetch as complete
-        self.sqlite_cache.complete_fetch(query_hash)
+        # Mark fetch as complete only on clean loop exits
+        if fetch_completed:
+            self.sqlite_cache.complete_fetch(query_hash)
         self.logger.debug(
-            f"[BETA] Fetch complete: {total_stored} records stored in SQLite cache"
+            f"Fetch complete: {total_stored} records stored in SQLite cache"
         )
 
         # Return all records from cache
@@ -602,9 +606,9 @@ class APIClient:
             )
         if query.params.sort:
             params["sort"] = query.params.sort
-        if query.params.limit:
+        if query.params.limit is not None:
             params["limit"] = str(query.params.limit)
-        if query.params.offset:
+        if query.params.offset is not None:
             params["offset"] = str(query.params.offset)
         if query.params.archived is not None:
             params["archived"] = str(query.params.archived).lower()
@@ -913,6 +917,40 @@ class APIClient:
         if self.sqlite_cache:
             self.sqlite_cache.clear()
 
+    def fetch_sbom(
+        self,
+        project_version_id: int,
+        sbom_format: str = "cyclonedx",
+        include_vex: bool = True,
+    ) -> dict[str, Any]:
+        """Download a CycloneDX or SPDX SBOM for a project version.
+
+        Args:
+            project_version_id: Numeric project version ID.
+            sbom_format: ``"cyclonedx"`` or ``"spdx"``.
+            include_vex: Whether to include VEX vulnerability data.
+
+        Returns:
+            Parsed SBOM JSON as a Python dict.
+
+        Raises:
+            httpx.HTTPStatusError: If the API returns an error status.
+        """
+        url = f"{self.base_url}/public/v0/sboms/{sbom_format}/{project_version_id}"
+        params: dict[str, str] = {}
+        if include_vex:
+            params["includeVex"] = "true"
+
+        self.logger.debug(f"Fetching SBOM for version {project_version_id}")
+        response = self.client.get(url, params=params, timeout=120)
+        response.raise_for_status()
+        data: dict[str, Any] = response.json()
+        self.logger.debug(
+            f"SBOM fetched for version {project_version_id}: "
+            f"{len(data.get('components', []))} components"
+        )
+        return data
+
     def __enter__(self) -> "APIClient":
         """Context manager entry."""
         return self
@@ -920,3 +958,11 @@ class APIClient:
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Context manager exit."""
         self.client.close()
+
+    def __del__(self) -> None:
+        """Close the HTTP client if not already closed."""
+        try:
+            if hasattr(self, "client") and not self.client.is_closed:
+                self.client.close()
+        except Exception:
+            pass

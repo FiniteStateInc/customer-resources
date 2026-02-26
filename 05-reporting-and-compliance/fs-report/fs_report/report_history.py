@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS runs (
     domain TEXT,
     recipes TEXT,       -- JSON list of recipe names
     scope TEXT,         -- JSON dict: {project, folder, period}
+    log_file TEXT,      -- log filename, e.g. 2026-02-25_a1b2c3d4.log
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -47,6 +48,11 @@ def _ensure_db() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA)
+    # Migrate: add log_file column if missing (pre-existing databases)
+    try:
+        conn.execute("SELECT log_file FROM runs LIMIT 0")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE runs ADD COLUMN log_file TEXT")
     _set_permissions()
     return conn
 
@@ -66,6 +72,7 @@ def append_run(
     recipes: list[str],
     scope: dict[str, Any],
     files: list[dict[str, str]],
+    log_file: str = "",
 ) -> str:
     """Record a completed report run. Returns the run ID."""
     run_id = uuid.uuid4().hex[:8]
@@ -74,8 +81,8 @@ def append_run(
     conn = _ensure_db()
     try:
         conn.execute(
-            "INSERT INTO runs (id, timestamp, output_dir, domain, recipes, scope) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO runs (id, timestamp, output_dir, domain, recipes, scope, log_file) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 timestamp,
@@ -83,6 +90,7 @@ def append_run(
                 domain,
                 json.dumps(recipes),
                 json.dumps(scope),
+                log_file or None,
             ),
         )
         for f in files:
@@ -103,7 +111,7 @@ def list_runs(limit: int = 50) -> list[dict[str, Any]]:
     conn = _ensure_db()
     try:
         cursor = conn.execute(
-            "SELECT id, timestamp, output_dir, domain, recipes, scope "
+            "SELECT id, timestamp, output_dir, domain, recipes, scope, log_file "
             "FROM runs ORDER BY timestamp DESC LIMIT ?",
             (limit,),
         )
@@ -111,7 +119,7 @@ def list_runs(limit: int = 50) -> list[dict[str, Any]]:
 
         runs = []
         for row in rows:
-            run_id, ts, out_dir, domain, recipes_json, scope_json = row
+            run_id, ts, out_dir, domain, recipes_json, scope_json, log_file = row
             file_cursor = conn.execute(
                 "SELECT recipe, path, format FROM run_files WHERE run_id = ?",
                 (run_id,),
@@ -129,6 +137,7 @@ def list_runs(limit: int = 50) -> list[dict[str, Any]]:
                     "recipes": json.loads(recipes_json) if recipes_json else [],
                     "scope": json.loads(scope_json) if scope_json else {},
                     "files": files,
+                    "log_file": log_file or "",
                 }
             )
         return runs
@@ -141,14 +150,14 @@ def get_run(run_id: str) -> dict[str, Any] | None:
     conn = _ensure_db()
     try:
         cursor = conn.execute(
-            "SELECT id, timestamp, output_dir, domain, recipes, scope "
+            "SELECT id, timestamp, output_dir, domain, recipes, scope, log_file "
             "FROM runs WHERE id = ?",
             (run_id,),
         )
         row = cursor.fetchone()
         if not row:
             return None
-        rid, ts, out_dir, domain, recipes_json, scope_json = row
+        rid, ts, out_dir, domain, recipes_json, scope_json, log_file = row
         file_cursor = conn.execute(
             "SELECT recipe, path, format FROM run_files WHERE run_id = ?",
             (rid,),
@@ -165,6 +174,7 @@ def get_run(run_id: str) -> dict[str, Any] | None:
             "recipes": json.loads(recipes_json) if recipes_json else [],
             "scope": json.loads(scope_json) if scope_json else {},
             "files": files,
+            "log_file": log_file or "",
         }
     finally:
         conn.close()

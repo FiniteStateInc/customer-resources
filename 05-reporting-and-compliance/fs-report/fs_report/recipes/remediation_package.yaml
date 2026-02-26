@@ -1,0 +1,109 @@
+name: "Remediation Package"
+category: assessment
+template: "remediation_package.html"
+description: >
+  Developer-friendly remediation package per project version. Groups vulnerabilities
+  by component (not CVE) and provides actionable upgrade instructions including
+  package manager commands, dependency paths from SBOM, and AI agent-ready prompts.
+  Enriched with SBOM data (PURLs, dependency graph, VEX), OSV fix versions,
+  NVD patch URLs, and optional LLM-generated guidance.
+execution_order: 30
+auto_run: false
+requires_project: true
+
+parameters:
+  # LLM guidance modes
+  ai_live: true          # Embed LLM guidance in report
+  ai_prompts: true       # Generate AI agent prompts per action
+  ai_analysis: false     # Deep AI analysis per action (summary model, expensive)
+
+  # OSV enrichment
+  osv_enabled: true      # Query OSV for ecosystem-native fix versions
+
+  # SBOM options
+  sbom_format: cyclonedx
+  include_vex: true
+
+  # Gate definitions (same DSL as triage prioritization)
+  gates:
+    - name: GATE_1
+      band: CRITICAL
+      priority: P0
+      conditions:
+        all:
+          - field: reachability_score
+            op: ">"
+            value: 0
+          - any:
+              - field: has_exploit
+                op: "=="
+                value: true
+              - field: in_kev
+                op: "=="
+                value: true
+
+    - name: GATE_2
+      band: HIGH
+      priority: P1
+      conditions:
+        all:
+          - field: reachability_score
+            op: ">="
+            value: 0
+          - field: attack_vector
+            op: in
+            value: ["NETWORK"]
+          - field: epss_percentile
+            op: ">"
+            value: 0.9
+
+  # Additive scoring weights (for findings that don't hit any gate)
+  scoring_weights:
+    reachable: 30
+    unknown: 0
+    unreachable: -15
+    exploit: 25
+    kev_only: 20
+    vector_network: 15
+    vector_adjacent: 10
+    vector_local: 5
+    vector_physical: 0
+    epss_max: 20
+    cvss_max: 10
+    band_high_threshold: 70
+    band_medium_threshold: 40
+    band_low_threshold: 25
+    vex_resolved: -50
+
+  # Priority mapping from bands
+  band_to_priority:
+    CRITICAL: P0
+    HIGH: P1
+    MEDIUM: P2
+    LOW: P3
+    INFO: P3
+
+  # Component grouping
+  top_actions_limit: 100
+
+  # LLM prompt generation for which priority bands
+  ai_prompt_bands:
+    - CRITICAL
+    - HIGH
+    - MEDIUM
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+
+transform_function: remediation_package_transform
+
+output:
+  table: true
+  formats:
+    - html
+    - csv
+    - xlsx
+    - json
+    - md

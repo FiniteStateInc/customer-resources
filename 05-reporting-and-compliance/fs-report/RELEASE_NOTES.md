@@ -1,5 +1,13 @@
 # Release Notes
 
+## Version 1.5.4 (February 2026)
+
+### Bug Fixes
+
+- **CVE Impact version filter** — The version filter used `max(version_id)` to guess the latest version per project, which is wrong when IDs aren't monotonically increasing. Now uses the authoritative `defaultBranch.latestVersion.id` from the project API — the same source of truth used by all other reports. Includes a graceful fallback so reachability never shows all UNKNOWN due to incomplete version data.
+
+---
+
 ## Version 1.5.3 (February 2026)
 
 ### New Features

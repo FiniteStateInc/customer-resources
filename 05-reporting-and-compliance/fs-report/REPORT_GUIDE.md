@@ -19,6 +19,7 @@ This guide explains each report available in the Finite State Reporting Kit, wha
    - [CVE Impact](#cve-impact) *(Assessment, on-demand: CVE dossier with affected projects)*
    - [Version Comparison](#version-comparison) *(Assessment, on-demand: full version & component changelog)*
    - [Executive Dashboard](#executive-dashboard) *(Assessment, on-demand: executive-level security overview)*
+   - [Remediation Package](#remediation-package) *(Assessment, on-demand: actionable remediation plan)*
 4. [Output Formats](#output-formats)
 5. [Filtering Options](#filtering-options)
 6. [Using Reports Together](#using-reports-together)
@@ -45,7 +46,7 @@ fs-report list recipes
 fs-report run --project "MyProject" --period 30d
 ```
 
-Reports are saved to the `output/` directory in HTML, CSV, and XLSX formats.
+Reports are saved to the `output/` directory in HTML, CSV, XLSX, and Markdown formats.
 
 ---
 
@@ -870,15 +871,76 @@ fs-report run --recipe "Executive Dashboard" --ai --period 90d
 
 ---
 
+### Remediation Package
+
+**Category:** Assessment (on-demand) — actionable remediation plan with validated fix versions and structured options.
+
+**Purpose:** Produce a ready-to-execute remediation plan for a project or folder. Each vulnerable component gets validated upgrade targets (checked against OSV to ensure the fix version isn't itself vulnerable), plus optional workaround and code-mitigation alternatives.
+
+**Who should use it:** Security teams, remediation planners, development leads
+
+**Important:** This report does **not** run by default. You must explicitly request it:
+
+```bash
+fs-report run --recipe "Remediation Package" --project "MyProject"
+```
+
+**What it shows:**
+
+| Section | Details |
+|---------|---------|
+| **Summary** | Component count, severity breakdown, suppressed/unresolvable counts |
+| **Remediation actions** | Per-component: upgrade target (validated), workaround URLs, code mitigation options |
+| **Fix-version validation** | OSV check ensures proposed fix versions aren't themselves vulnerable; walks alternatives when needed |
+| **Suppressed findings** | Findings excluded by VEX status or triage |
+| **Unresolvable findings** | Findings with no known fix or workaround |
+
+**Structured remediation options:**
+
+Each action includes typed options:
+- **upgrade** — Target version with validation status
+- **workaround** — NVD-sourced workaround URLs and descriptions
+- **code_mitigation** — Code-level mitigation guidance (AI-enriched when `--ai` is enabled)
+
+**AI enrichment (optional):**
+
+```bash
+# With AI workaround and breaking-change analysis
+fs-report run --recipe "Remediation Package" --project "MyProject" --ai
+```
+
+When `--ai` is enabled, each action is enriched with LLM-generated workaround guidance and breaking-change risk assessment. Use `--ai off` to disable AI even if the recipe YAML enables it by default.
+
+**Formats:** HTML, CSV, XLSX, JSON, Markdown
+
+**Example commands:**
+
+```bash
+# Single project
+fs-report run --recipe "Remediation Package" --project "MyProject"
+
+# Scope to a folder
+fs-report run --recipe "Remediation Package" --folder "Product Line A"
+
+# With AI enrichment
+fs-report run --recipe "Remediation Package" --project "MyProject" --ai
+
+# Export as Markdown (agent-optimised)
+fs-report run --recipe "Remediation Package" --project "MyProject" --format md
+```
+
+---
+
 ## Output Formats
 
-All reports generate three output formats:
+Most reports generate output in multiple formats:
 
 | Format | Best for | Location |
 |--------|----------|----------|
 | **HTML** | Interactive viewing, sharing, presentations | `output/{Report Name}/{Report Name}.html` |
 | **CSV** | Data analysis, spreadsheet import, scripting | `output/{Report Name}/{Report Name}.csv` |
 | **XLSX** | Excel users, formatted reports, filtering | `output/{Report Name}/{Report Name}.xlsx` |
+| **Markdown** | LLM/agent consumption, token-efficient structured output | `output/{Report Name}/{Report Name}.md` |
 
 **Version Comparison** (full version and component changelog) produces additional detail in CSV and XLSX: alongside the summary file/sheet, it writes **Findings Detail**, **Findings Churn** (fixed/new per version pair), and **Component Churn** as separate CSV files or as additional sheets in the same XLSX workbook. See [Version Comparison](#version-comparison) for the full export table.
 

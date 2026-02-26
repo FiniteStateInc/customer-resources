@@ -54,7 +54,10 @@ function initDirBrowser(inputId, btnId) {
     function render(data) {
         var html = '<div class="dir-browser-header">';
         html += '<span class="dir-browser-path" title="' + data.current + '">' + data.current + '</span>';
+        html += '<div class="dir-browser-header-actions">';
+        html += '<button type="button" class="dir-browser-new-btn btn btn-default btn-sm">New Folder</button>';
         html += '<button type="button" class="dir-browser-select-btn btn btn-primary btn-sm">Select</button>';
+        html += '</div>';
         html += '</div>';
         html += '<div class="dir-browser-list">';
         if (data.parent) {
@@ -70,16 +73,72 @@ function initDirBrowser(inputId, btnId) {
         html += '</div>';
         dropdown.innerHTML = html;
 
-        dropdown.querySelector('.dir-browser-select-btn').addEventListener('click', function() {
+        dropdown.querySelector('.dir-browser-select-btn').addEventListener('click', function(e) {
+            e.stopPropagation();
             input.value = data.current;
             input.dispatchEvent(new Event('input', { bubbles: true }));
             close();
         });
+        dropdown.querySelector('.dir-browser-new-btn').addEventListener('click', function(e) {
+            e.stopPropagation();
+            showNewFolderInput(data);
+        });
         dropdown.querySelectorAll('.dir-browser-item').forEach(function(el) {
-            el.addEventListener('click', function() {
+            el.addEventListener('click', function(e) {
+                e.stopPropagation();
                 load(el.getAttribute('data-path'));
             });
         });
+    }
+
+    function showNewFolderInput(data) {
+        var list = dropdown.querySelector('.dir-browser-list');
+        // Don't add twice
+        if (dropdown.querySelector('.dir-browser-new-input')) return;
+
+        var row = document.createElement('div');
+        row.className = 'dir-browser-new-row';
+        row.innerHTML = '<input type="text" class="dir-browser-new-input" placeholder="Folder name" autocomplete="off">'
+            + '<button type="button" class="btn btn-primary btn-xs dir-browser-create-btn">Create</button>'
+            + '<button type="button" class="btn btn-default btn-xs dir-browser-cancel-btn">Cancel</button>';
+        list.insertBefore(row, list.firstChild);
+
+        var nameInput = row.querySelector('.dir-browser-new-input');
+        nameInput.focus();
+
+        function doCreate() {
+            var name = nameInput.value.trim();
+            if (!name) return;
+            fetch('/api/filesystem/mkdir', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-FS-Session': (window.NONCE || '') },
+                body: JSON.stringify({ parent: data.current, name: name })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(resp) {
+                if (resp.error) {
+                    nameInput.style.borderColor = 'var(--color-danger)';
+                    nameInput.title = resp.error;
+                } else {
+                    load(resp.created);
+                }
+            });
+        }
+
+        row.querySelector('.dir-browser-create-btn').addEventListener('click', function(e) {
+            e.stopPropagation();
+            doCreate();
+        });
+        row.querySelector('.dir-browser-cancel-btn').addEventListener('click', function(e) {
+            e.stopPropagation();
+            row.remove();
+        });
+        nameInput.addEventListener('keydown', function(e) {
+            e.stopPropagation();
+            if (e.key === 'Enter') doCreate();
+            if (e.key === 'Escape') row.remove();
+        });
+        nameInput.addEventListener('click', function(e) { e.stopPropagation(); });
     }
 
     btn.addEventListener('click', function(e) {

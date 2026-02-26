@@ -21,4 +21,9 @@ project_list_query:
 transform_function: findings_by_project_pandas_transform
 output:
   table: true
-  charts: [] 
+  formats:
+    - csv
+    - xlsx
+    - html
+    - md
+  charts: []
