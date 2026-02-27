@@ -120,10 +120,14 @@ def findings_by_project_pandas_transform(
         )
     )
 
-    # NVD URL — constructed from CVE ID
+    # NVD URL — constructed from CVE ID (GHSA IDs link to GitHub Advisories)
     output_df["NVD URL"] = output_df["CVE ID"].apply(
         lambda cve: (
-            f"https://nvd.nist.gov/vuln/detail/{cve}" if cve and cve != "N/A" else ""
+            f"https://github.com/advisories/{cve}"
+            if cve and cve.startswith("GHSA-")
+            else f"https://nvd.nist.gov/vuln/detail/{cve}"
+            if cve and cve != "N/A"
+            else ""
         )
     )
 
