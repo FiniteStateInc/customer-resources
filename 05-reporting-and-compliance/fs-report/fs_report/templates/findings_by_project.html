@@ -101,6 +101,11 @@
                                target="_blank" style="color: #007bff; text-decoration: none;">
                                 {{ row['CVE ID'] }}
                             </a>
+                            {% elif row['CVE ID'].startswith('PYSEC-') %}
+                            <a href="https://osv.dev/vulnerability/{{ row['CVE ID'] }}"
+                               target="_blank" style="color: #007bff; text-decoration: none;">
+                                {{ row['CVE ID'] }}
+                            </a>
                             {% else %}
                             <a href="https://nvd.nist.gov/vuln/detail/{{ row['CVE ID'] }}"
                                target="_blank" style="color: #007bff; text-decoration: none;">
