@@ -341,7 +341,12 @@ def cve_impact_pandas_transform(
 
     # AI guidance and prompt export (dossier mode only) ------------------
     if mode == "dossier" and dossiers:
-        _prompts_path = _enrich_dossiers_with_ai(dossiers, rows, config)
+        _deployment_ctx = (
+            additional_data.get("deployment_context") if additional_data else None
+        )
+        _prompts_path = _enrich_dossiers_with_ai(
+            dossiers, rows, config, deployment_context=_deployment_ctx
+        )
         if _prompts_path:
             extra_generated_files.append(_prompts_path)
 
@@ -839,7 +844,10 @@ def _build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _build_cve_prompt(
-    dossier: dict[str, Any], row: dict[str, Any], nvd_snippet: str = ""
+    dossier: dict[str, Any],
+    row: dict[str, Any],
+    nvd_snippet: str = "",
+    deployment_context: Any | None = None,
 ) -> str:
     """Build an LLM prompt for remediation guidance for one CVE.
 
@@ -852,6 +860,8 @@ def _build_cve_prompt(
         row: Corresponding row dict from the output table.
         nvd_snippet: Optional pre-formatted NVD fix version data
             (from NVDClient.format_for_prompt).
+        deployment_context: Optional deployment context for persona/product
+            customization.
     """
     cve_id = dossier["cve_id"]
     severity = dossier["severity"]
@@ -929,7 +939,13 @@ def _build_cve_prompt(
         else ""
     )
 
-    prompt = f"""You are a security remediation advisor. Provide specific remediation guidance for the following CVE.
+    from fs_report.deployment_context import build_context_section, get_persona
+    from fs_report.llm_client import _fix_version_block, _workaround_block
+
+    _persona = get_persona(deployment_context)
+    _ctx_section = build_context_section(deployment_context)
+
+    prompt = f"""You are a {_persona}. Provide specific remediation guidance for the following CVE.
 If any affected projects already have a VEX status (e.g. NOT_AFFECTED, RESOLVED), factor that into your guidance — they may only need verification rather than new remediation.
 
 IMPORTANT CONSTRAINTS:
@@ -958,13 +974,13 @@ IMPORTANT CONSTRAINTS:
 {vex_section}
 ## Known Exploits
 {chr(10).join(exploit_lines) if exploit_lines else 'None known'}
-{nvd_section}
+{nvd_section}{_ctx_section}
 Respond in this exact format:
-FIX_VERSION: <specific version number. If NVD data says "FIXED in >= X", recommend X. If NVD data says a version is "STILL VULNERABLE", the fix must be AFTER that version — do NOT recommend the vulnerable version. Cross-reference the installed component version against the NVD affected ranges. For well-known libraries (OpenSSL, curl, busybox, zlib, etc.), recall the specific patch version from security advisories. Only state "verify latest stable release" if no version data is available.>
+FIX_VERSION: <{_fix_version_block()}>
 RATIONALE: <1 sentence explaining why this fix or version is recommended, citing NVD data or advisory if available>
 GUIDANCE: <1-3 sentence upgrade/remediation guidance>
-WORKAROUND: <1-3 sentences: if no straightforward upgrade is available, suggest firmware-specific mitigations such as disabling affected services, network segmentation, restricting exposed interfaces, or configuration hardening. If a direct upgrade is available, state "Upgrade recommended.">
-CODE_SEARCH: <grep/search patterns to find affected code in firmware — use specific vulnerable function names if known>
+WORKAROUND: <{_workaround_block(deployment_context)}>
+CODE_SEARCH: <grep/search patterns to find affected code — use specific vulnerable function names if known>
 PROJECT_NOTES: <If multiple projects are affected, provide a markdown table with columns: Project, Current Component, Action. If only one project, state "Single project — see guidance above.">
 CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium (version estimated from known patterns), low (uncertain — verify independently)>"""
 
@@ -975,6 +991,7 @@ def _enrich_dossiers_with_ai(
     dossiers: list[dict[str, Any]],
     rows: list[dict[str, Any]],
     config: Config,
+    deployment_context: Any | None = None,
 ) -> str | None:
     """Enrich dossier dicts with AI guidance and/or exportable prompts.
 
@@ -1038,6 +1055,7 @@ def _enrich_dossiers_with_ai(
                     provider=getattr(config, "ai_provider", None),
                     model_high=getattr(config, "ai_model_high", None),
                     model_low=getattr(config, "ai_model_low", None),
+                    deployment_context=deployment_context,
                 )
             except (ValueError, ImportError) as e:
                 logger.error(f"AI guidance requested but LLM client init failed: {e}")
@@ -1059,7 +1077,9 @@ def _enrich_dossiers_with_ai(
         if nvd:
             nvd_snippet = nvd.format_for_prompt(cve_id)
 
-        prompt = _build_cve_prompt(d, row, nvd_snippet=nvd_snippet)
+        prompt = _build_cve_prompt(
+            d, row, nvd_snippet=nvd_snippet, deployment_context=deployment_context
+        )
 
         if want_prompts:
             d["ai_prompt"] = prompt

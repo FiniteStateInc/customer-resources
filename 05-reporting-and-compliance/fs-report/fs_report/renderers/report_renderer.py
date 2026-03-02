@@ -78,18 +78,36 @@ class ReportRenderer:
 
         # Auto-skip expensive formats for large datasets
         row_count = len(report_data.data) if hasattr(report_data.data, "__len__") else 0
+
+        # When the transform returned a dict (chart/dashboard data), the
+        # DataFrame in report_data.data is a CSV/XLSX fallback extracted from
+        # the dict's "main" key.  The HTML template renders the compact chart
+        # data, so its size is NOT proportional to the DataFrame row count.
+        _additional = report_data.metadata.get("additional_data", {})
+        _html_is_chart_driven = isinstance(
+            (
+                _additional.get("transform_result")
+                if isinstance(_additional, dict)
+                else None
+            ),
+            dict,
+        )
+
         if row_count > 65_530 and "xlsx" in formats:
             formats = [f for f in formats if f != "xlsx"]
             self.logger.info(
                 f"Skipping XLSX for {recipe.name}: {row_count:,} rows "
                 f"exceed Excel's URL limit. Use CSV instead."
             )
-        if row_count > 50_000 and "html" in formats:
+        if row_count > 50_000 and "html" in formats and not _html_is_chart_driven:
             formats = [f for f in formats if f != "html"]
             self.logger.info(
                 f"Skipping HTML for {recipe.name}: {row_count:,} rows "
                 f"would produce an oversized file. Use CSV instead."
             )
+            # Add CSV as fallback so we still produce output
+            if "csv" not in formats:
+                formats.append("csv")
 
         generated_files = []
 

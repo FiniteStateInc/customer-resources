@@ -41,6 +41,9 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Sentinel for "parameter not provided" (distinct from None = NVD unavailable)
+_UNSET: Any = object()
+
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -125,11 +128,14 @@ def remediation_package_transform(
         sbom_map = _fetch_sboms(df, api_client, recipe_params)
         df = _enrich_with_sbom(df, sbom_map)
 
+    # Create NVD client once for the entire transform
+    nvd_client = _init_nvd_client(cfg)
+
     # Step 4: Resolve fix versions (OSV → VEX → NVD fallback)
     if recipe_params.get("osv_enabled", True):
-        df = _resolve_fix_versions(df, sbom_map, cfg)
+        df = _resolve_fix_versions(df, sbom_map, cfg, nvd_client=nvd_client)
     else:
-        df = _resolve_fix_versions_no_osv(df, sbom_map, cfg)
+        df = _resolve_fix_versions_no_osv(df, sbom_map, cfg, nvd_client=nvd_client)
 
     # Step 5: Classify upgrades and generate commands
     df = _classify_and_generate_commands(df)
@@ -189,7 +195,10 @@ def remediation_package_transform(
             actions_df[col] = default  # type: ignore[call-overload]
 
     # Step 10c: Extract NVD workaround info
-    actions_df = _extract_workaround_info(actions_df, cfg)
+    actions_df = _extract_workaround_info(actions_df, cfg, nvd_client=nvd_client)
+
+    # Build NVD snippets map once for LLM functions and agent prompts
+    nvd_snippets_map = _build_nvd_snippets_map(actions_df, nvd_client)
 
     # Step 11: LLM enrichment
     ai_live = recipe_params.get("ai_live", False)
@@ -198,10 +207,14 @@ def remediation_package_transform(
 
     if ai_analysis:
         # Single high-model pass: structured + analysis in one call
-        actions_df = _enrich_with_combined_analysis(actions_df, cfg, additional_data)
+        actions_df = _enrich_with_combined_analysis(
+            actions_df, cfg, additional_data, nvd_snippets_map=nvd_snippets_map
+        )
         ai_prompts = True  # still generate agent prompts for JSON/copy-paste
     elif ai_live:
-        actions_df = _enrich_with_llm_guidance(actions_df, cfg, additional_data)
+        actions_df = _enrich_with_llm_guidance(
+            actions_df, cfg, additional_data, nvd_snippets_map=nvd_snippets_map
+        )
         ai_prompts = True  # show what was sent to the LLM
 
     # Ensure AI verdict columns exist with defaults (for ai_live=False or no credentials)
@@ -236,7 +249,11 @@ def remediation_package_transform(
 
     if ai_prompts:
         actions_df = _generate_agent_prompts(
-            actions_df, sbom_map, component_details_map, cfg
+            actions_df,
+            sbom_map,
+            component_details_map,
+            cfg,
+            nvd_snippets_map=nvd_snippets_map,
         )
 
     # Ensure ai_analysis column exists
@@ -492,7 +509,12 @@ def _enrich_with_sbom(df: pd.DataFrame, sbom_map: dict[int, Any]) -> pd.DataFram
 # ---------------------------------------------------------------------------
 
 
-def _resolve_fix_versions(df: pd.DataFrame, sbom_map: dict, cfg: Any) -> pd.DataFrame:
+def _resolve_fix_versions(
+    df: pd.DataFrame,
+    sbom_map: dict,
+    cfg: Any,
+    nvd_client: Any = _UNSET,
+) -> pd.DataFrame:
     """Resolve fix versions using OSV (primary), SBOM VEX, NVD fallback."""
     from fs_report.nvd_client import NVDCveRecord
     from fs_report.osv_client import OSVClient, OSVFixResult
@@ -517,7 +539,8 @@ def _resolve_fix_versions(df: pd.DataFrame, sbom_map: dict, cfg: Any) -> pd.Data
 
     # --- Source 3: NVD batch prefetch ---
     nvd_record_map: dict[str, NVDCveRecord] = {}
-    nvd_client = _init_nvd_client(cfg)
+    if nvd_client is _UNSET:
+        nvd_client = _init_nvd_client(cfg)
     if nvd_client:
         cve_ids = [
             str(fid)
@@ -543,6 +566,7 @@ def _resolve_fix_versions(df: pd.DataFrame, sbom_map: dict, cfg: Any) -> pd.Data
     fix_sources = []
     nvd_patch_urls: list[str] = []
     nvd_advisory_urls: list[str] = []
+    nvd_descriptions: list[str] = []
     for _, row in df.iterrows():
         purl = row.get("purl", "")
         cve_id = str(row.get("finding_id", ""))
@@ -581,9 +605,10 @@ def _resolve_fix_versions(df: pd.DataFrame, sbom_map: dict, cfg: Any) -> pd.Data
                     fix = nvd_fix
                     source = "nvd"
 
-        # Collect NVD patch/advisory URLs regardless of fix source
+        # Collect NVD patch/advisory URLs and description regardless of fix source
         patch_urls_str = ""
         advisory_urls_str = ""
+        description_str = ""
         if nvd_client:
             record = nvd_client.get_cve(cve_id)
             if record:
@@ -591,16 +616,19 @@ def _resolve_fix_versions(df: pd.DataFrame, sbom_map: dict, cfg: Any) -> pd.Data
                     patch_urls_str = json.dumps(record.patch_urls[:5])
                 if record.advisory_urls:
                     advisory_urls_str = json.dumps(record.advisory_urls[:5])
+                description_str = record.description or ""
 
         fixed_versions.append(fix)
         fix_sources.append(source)
         nvd_patch_urls.append(patch_urls_str)
         nvd_advisory_urls.append(advisory_urls_str)
+        nvd_descriptions.append(description_str)
 
     df["fixed_version"] = fixed_versions
     df["fix_source"] = fix_sources
     df["nvd_patch_urls"] = nvd_patch_urls
     df["nvd_advisory_urls"] = nvd_advisory_urls
+    df["nvd_description"] = nvd_descriptions
 
     resolved = sum(1 for f in fixed_versions if f)
     logger.info(f"Fix resolution: {resolved}/{len(df)} findings have fix versions")
@@ -608,7 +636,10 @@ def _resolve_fix_versions(df: pd.DataFrame, sbom_map: dict, cfg: Any) -> pd.Data
 
 
 def _resolve_fix_versions_no_osv(
-    df: pd.DataFrame, sbom_map: dict, cfg: Any
+    df: pd.DataFrame,
+    sbom_map: dict,
+    cfg: Any,
+    nvd_client: Any = _UNSET,
 ) -> pd.DataFrame:
     """Resolve fix versions using SBOM VEX + NVD (OSV disabled)."""
     from fs_report.nvd_client import NVDCveRecord
@@ -616,7 +647,8 @@ def _resolve_fix_versions_no_osv(
 
     # NVD batch prefetch
     nvd_record_map: dict[str, NVDCveRecord] = {}
-    nvd_client = _init_nvd_client(cfg)
+    if nvd_client is _UNSET:
+        nvd_client = _init_nvd_client(cfg)
     if nvd_client:
         cve_ids = [
             str(fid)
@@ -641,6 +673,7 @@ def _resolve_fix_versions_no_osv(
     fix_sources = []
     nvd_patch_urls: list[str] = []
     nvd_advisory_urls: list[str] = []
+    nvd_descriptions: list[str] = []
 
     for _, row in df.iterrows():
         cve_id = str(row.get("finding_id", ""))
@@ -669,9 +702,10 @@ def _resolve_fix_versions_no_osv(
                     fix = nvd_fix
                     source = "nvd"
 
-        # Collect NVD patch/advisory URLs regardless of fix source
+        # Collect NVD patch/advisory URLs and description regardless of fix source
         patch_urls_str = ""
         advisory_urls_str = ""
+        description_str = ""
         if nvd_client:
             record = nvd_client.get_cve(cve_id)
             if record:
@@ -679,16 +713,19 @@ def _resolve_fix_versions_no_osv(
                     patch_urls_str = json.dumps(record.patch_urls[:5])
                 if record.advisory_urls:
                     advisory_urls_str = json.dumps(record.advisory_urls[:5])
+                description_str = record.description or ""
 
         fixed_versions.append(fix)
         fix_sources.append(source)
         nvd_patch_urls.append(patch_urls_str)
         nvd_advisory_urls.append(advisory_urls_str)
+        nvd_descriptions.append(description_str)
 
     df["fixed_version"] = fixed_versions
     df["fix_source"] = fix_sources
     df["nvd_patch_urls"] = nvd_patch_urls
     df["nvd_advisory_urls"] = nvd_advisory_urls
+    df["nvd_description"] = nvd_descriptions
     return df
 
 
@@ -824,7 +861,11 @@ def _validate_fix_versions(actions_df: pd.DataFrame, cfg: Any) -> pd.DataFrame:
     return actions_df
 
 
-def _extract_workaround_info(actions_df: pd.DataFrame, cfg: Any) -> pd.DataFrame:
+def _extract_workaround_info(
+    actions_df: pd.DataFrame,
+    cfg: Any,
+    nvd_client: Any = _UNSET,
+) -> pd.DataFrame:
     """Extract NVD workaround URLs for each action's CVEs.
 
     Looks up CVE IDs in the NVD client (using cache) and aggregates
@@ -836,7 +877,8 @@ def _extract_workaround_info(actions_df: pd.DataFrame, cfg: Any) -> pd.DataFrame
         actions_df["workaround_urls"] = "[]"
         return actions_df
 
-    nvd_client = _init_nvd_client(cfg)
+    if nvd_client is _UNSET:
+        nvd_client = _init_nvd_client(cfg)
     workaround_urls_col: list[str] = []
 
     for _, row in actions_df.iterrows():
@@ -1003,6 +1045,44 @@ def _init_nvd_client(cfg: Any) -> Any:
     except Exception as e:
         logger.info(f"NVD client unavailable: {e}")
         return None
+
+
+def _build_nvd_snippets_map(
+    df: pd.DataFrame,
+    nvd_client: Any,
+) -> dict[str, str]:
+    """Build NVD prompt snippets per component from a pre-initialized client.
+
+    Collects unique CVEs from ``df["cve_ids"]``, batch-fetches them, then
+    calls ``format_batch_for_prompt()`` for each component.
+
+    Returns:
+        ``{comp_key: snippet}`` dict, or ``{}`` if *nvd_client* is None.
+    """
+    if nvd_client is None:
+        return {}
+
+    nvd_snippets_map: dict[str, str] = {}
+    all_cve_ids: list[str] = []
+    for _, row in df.iterrows():
+        cves = json.loads(row.get("cve_ids", "[]"))
+        all_cve_ids.extend(c for c in cves if str(c).startswith("CVE-"))
+    unique_cves = list(dict.fromkeys(all_cve_ids))
+    if unique_cves:
+        logger.info(f"Fetching NVD data for {len(unique_cves)} CVEs...")
+        nvd_client.get_batch(unique_cves, progress=True)
+        for _, row in df.iterrows():
+            comp_key = (
+                f"{row.get('component_name', '')}:"
+                f"{row.get('component_version', '')}"
+            )
+            cves = json.loads(row.get("cve_ids", "[]"))
+            snippet = nvd_client.format_batch_for_prompt(
+                [c for c in cves[:10] if str(c).startswith("CVE-")],
+            )
+            if snippet:
+                nvd_snippets_map[comp_key] = snippet
+    return nvd_snippets_map
 
 
 # ---------------------------------------------------------------------------
@@ -1271,6 +1351,7 @@ def _group_by_component(df: pd.DataFrame, recipe_params: dict) -> pd.DataFrame:
                     ),
                     "patch_urls": patch_urls,
                     "advisory_urls": advisory_urls,
+                    "description": str(frow.get("nvd_description", "")),
                 }
             )
 
@@ -1393,7 +1474,10 @@ def _assign_priorities(df: pd.DataFrame, recipe_params: dict) -> pd.DataFrame:
 
 
 def _enrich_with_llm_guidance(
-    df: pd.DataFrame, cfg: Any, additional_data: dict
+    df: pd.DataFrame,
+    cfg: Any,
+    additional_data: dict,
+    nvd_snippets_map: dict[str, str] | None = _UNSET,
 ) -> pd.DataFrame:
     """Generate live LLM guidance for each action, including fix versions.
 
@@ -1429,28 +1513,9 @@ def _enrich_with_llm_guidance(
         df["llm_guidance"] = ""
         return df
 
-    # --- Build NVD snippets per component (like triage_prioritization) ---
-    nvd_snippets_map: dict[str, str] = {}
-    nvd_client = _init_nvd_client(cfg)
-    if nvd_client:
-        all_cve_ids: list[str] = []
-        for _, row in df.iterrows():
-            cves = json.loads(row.get("cve_ids", "[]"))
-            all_cve_ids.extend(c for c in cves if str(c).startswith("CVE-"))
-        unique_cves = list(dict.fromkeys(all_cve_ids))
-        if unique_cves:
-            logger.info(
-                f"Fetching NVD data for {len(unique_cves)} CVEs (AI guidance)..."
-            )
-            nvd_client.get_batch(unique_cves, progress=True)
-            for _, row in df.iterrows():
-                comp_key = f"{row.get('component_name', '')}:{row.get('component_version', '')}"
-                cves = json.loads(row.get("cve_ids", "[]"))
-                snippet = nvd_client.format_batch_for_prompt(
-                    [c for c in cves[:10] if str(c).startswith("CVE-")],
-                )
-                if snippet:
-                    nvd_snippets_map[comp_key] = snippet
+    # --- Build NVD snippets per component (reuse pre-built map or build on demand) ---
+    if nvd_snippets_map is _UNSET:
+        nvd_snippets_map = _build_nvd_snippets_map(df, _init_nvd_client(cfg))
 
     # --- Build component list for batch guidance ---
     components_list = []
@@ -1694,6 +1759,7 @@ def _enrich_with_combined_analysis(
     df: pd.DataFrame,
     cfg: Any,
     additional_data: dict,
+    nvd_snippets_map: dict[str, str] | None = _UNSET,
 ) -> pd.DataFrame:
     """Single high-model pass: structured verdict + deep analysis per action.
 
@@ -1728,34 +1794,16 @@ def _enrich_with_combined_analysis(
         df["ai_analysis"] = ""
         return df
 
-    # --- Build NVD snippets per component ---
-    nvd_snippets_map: dict[str, str] = {}
-    nvd_client = _init_nvd_client(cfg)
-    if nvd_client:
-        all_cve_ids: list[str] = []
-        for _, row in df.iterrows():
-            cves = json.loads(row.get("cve_ids", "[]"))
-            all_cve_ids.extend(c for c in cves if str(c).startswith("CVE-"))
-        unique_cves = list(dict.fromkeys(all_cve_ids))
-        if unique_cves:
-            logger.info(
-                f"Fetching NVD data for {len(unique_cves)} CVEs "
-                f"(combined analysis)..."
-            )
-            nvd_client.get_batch(unique_cves, progress=True)
-            for _, row in df.iterrows():
-                comp_key = (
-                    f"{row.get('component_name', '')}:"
-                    f"{row.get('component_version', '')}"
-                )
-                cves = json.loads(row.get("cve_ids", "[]"))
-                snippet = nvd_client.format_batch_for_prompt(
-                    [c for c in cves[:10] if str(c).startswith("CVE-")],
-                )
-                if snippet:
-                    nvd_snippets_map[comp_key] = snippet
+    # --- Build NVD snippets per component (reuse pre-built map or build on demand) ---
+    if nvd_snippets_map is _UNSET or nvd_snippets_map is None:
+        nvd_snippets_map = _build_nvd_snippets_map(df, _init_nvd_client(cfg))
 
     # --- Build (action_key, context_prompt) tuples ---
+    _deployment_ctx = (
+        additional_data.get("deployment_context") if additional_data else None
+    )
+    _ctx_hash = _deployment_ctx.context_hash() if _deployment_ctx else ""
+
     actions: list[tuple[str, str]] = []
     action_keys_by_idx: dict[int, str] = {}
     for idx, (_, row) in enumerate(df.iterrows()):
@@ -1763,7 +1811,11 @@ def _enrich_with_combined_analysis(
         ver = str(row.get("component_version", ""))
         cve_ids_str = str(row.get("cve_ids", "[]"))
         key_hash = hashlib.sha256(cve_ids_str.encode()).hexdigest()[:12]
-        action_key = f"combined:{comp}:{ver}:{key_hash}"
+        action_key = (
+            f"combined:{comp}:{ver}:{key_hash}:{_ctx_hash}"
+            if _ctx_hash
+            else f"combined:{comp}:{ver}:{key_hash}"
+        )
         action_keys_by_idx[idx] = action_key
 
         comp_key = f"{comp}:{ver}"
@@ -1910,36 +1962,22 @@ def _generate_agent_prompts(
     sbom_map: dict,
     component_details: dict | None = None,
     cfg: Any = None,
+    nvd_snippets_map: dict[str, str] | None = _UNSET,
 ) -> pd.DataFrame:
     """Generate per-action AI agent prompts.
 
     Uses the same prompt that --ai-analysis sends to the LLM,
     so users can send these to their own LLM for identical results.
     """
-    from fs_report.llm_client import _COMBINED_ANALYSIS_WRAPPER
+    from fs_report.llm_client import build_combined_analysis_wrapper
 
-    # Build NVD snippets (same pattern as _enrich_with_combined_analysis)
-    nvd_snippets_map: dict[str, str] = {}
-    nvd_client = _init_nvd_client(cfg)
-    if nvd_client:
-        all_cve_ids: list[str] = []
-        for _, row in df.iterrows():
-            cves = json.loads(row.get("cve_ids", "[]"))
-            all_cve_ids.extend(c for c in cves if str(c).startswith("CVE-"))
-        unique_cves = list(dict.fromkeys(all_cve_ids))
-        if unique_cves:
-            nvd_client.get_batch(unique_cves, progress=True)
-            for _, row in df.iterrows():
-                comp_key = (
-                    f"{row.get('component_name', '')}:"
-                    f"{row.get('component_version', '')}"
-                )
-                cves = json.loads(row.get("cve_ids", "[]"))
-                snippet = nvd_client.format_batch_for_prompt(
-                    [c for c in cves[:10] if str(c).startswith("CVE-")],
-                )
-                if snippet:
-                    nvd_snippets_map[comp_key] = snippet
+    # Resolve deployment context from cfg's additional_data if available
+    _deployment_ctx = getattr(cfg, "_deployment_context", None)
+    wrapper = build_combined_analysis_wrapper(_deployment_ctx)
+
+    # Build NVD snippets (reuse pre-built map or build on demand)
+    if nvd_snippets_map is _UNSET or nvd_snippets_map is None:
+        nvd_snippets_map = _build_nvd_snippets_map(df, _init_nvd_client(cfg))
 
     prompts = []
     for _, row in df.iterrows():
@@ -1948,7 +1986,7 @@ def _generate_agent_prompts(
         )
         nvd_snippet = nvd_snippets_map.get(comp_key, "")
         context = _build_combined_context_prompt(row, nvd_snippet)
-        prompt = _COMBINED_ANALYSIS_WRAPPER + context
+        prompt = wrapper + context
         prompts.append(prompt)
 
     df = df.copy()

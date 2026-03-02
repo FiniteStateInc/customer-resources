@@ -44,7 +44,10 @@ import sqlite3
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from fs_report.deployment_context import DeploymentContext
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +76,145 @@ _PROVIDER_ENV_VARS: list[tuple[str, str]] = [
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 
+
+# ── Shared prompt blocks ────────────────────────────────────────────
+# These replace text that was previously duplicated across 5+ prompt
+# locations.  Each function returns a stable string fragment.
+
+
+def _verdict_block() -> str:
+    """Library-identity check preamble for VERDICT / APPLICABILITY fields."""
+    return (
+        "IMPORTANT: Check library identity FIRST, before considering "
+        "reachability or exploit data. (1) Does the NVD Target name a "
+        "DIFFERENT library than the scanned component? e.g., CVE targets "
+        '"gnu/glibc" but component is openwrt/libc (musl), or CVE targets '
+        '"openssl" but component is BoringSSL. If YES → answer "not_affected" '
+        "and STOP. Reachability of standard functions (getaddrinfo, realpath, "
+        "glob, strcoll, nan, nanf, etc.) does NOT mean the same bug exists — "
+        "different implementations (glibc vs musl, OpenSSL vs BoringSSL) have "
+        "completely different source code and different bugs. A function name "
+        "match is NOT a vulnerability match. (2) Is this the wrong platform? "
+        'e.g., Windows-only CVE on Linux. If YES → "not_affected". '
+        "(3) Is the installed version outside the affected range? If YES → "
+        '"not_affected". Only answer "affected" when the component is '
+        "genuinely the SAME library the CVE targets."
+    )
+
+
+def _fix_version_block(component_version: str = "") -> str:
+    """Fix-version guidance for FIX_VERSION fields."""
+    ver_ref = ""
+    if component_version:
+        ver_ref = (
+            f" Cross-reference the installed version ({component_version}) "
+            "against the NVD affected ranges."
+        )
+    return (
+        'specific version number. If NVD data says "FIXED in >= X", recommend X. '
+        'If NVD data says a version is "STILL VULNERABLE", the fix must be '
+        "AFTER that version — do NOT recommend the vulnerable version."
+        f"{ver_ref} "
+        "For well-known libraries (OpenSSL, curl, busybox, zlib, etc.), recall "
+        "the specific patch version from security advisories. "
+        'Only state "verify latest stable release" if no version data is available.'
+    )
+
+
+def _workaround_block(ctx: "DeploymentContext | None" = None) -> str:
+    """Workaround template parameterized by product type."""
+    from fs_report.deployment_context import get_workaround_template
+
+    mitigations = get_workaround_template(ctx)
+    return (
+        f"1-3 sentences: if no straightforward upgrade is available, suggest "
+        f"mitigations such as {mitigations}. "
+        f'If a direct upgrade is available, state "Upgrade recommended."'
+    )
+
+
+def _applicability_warning() -> str:
+    """False-positive NVD warning block for portfolio/project prompts."""
+    return (
+        "## Applicability Warning\n"
+        "Some NVD matches may be false positives (e.g., openwrt/libc matched "
+        "to glibc CVEs, or BoringSSL matched to OpenSSL CVEs).\n"
+        "When the NVD product name differs from the scanned component, flag "
+        "it as a potential false positive."
+    )
+
+
+# ── System message & combined wrapper builders ──────────────────────
+
+
+def build_system_message(ctx: "DeploymentContext | None" = None) -> str:
+    """Build the LLM system message, parameterized by deployment context."""
+    from fs_report.deployment_context import get_persona
+
+    persona = get_persona(ctx)
+    return (
+        f"You are a {persona}. "
+        "Always ground your advice in the provided data — do not speculate beyond what the "
+        "evidence supports. "
+        "When NVD fix version data is provided, USE IT: cross-reference the installed "
+        "component version against the NVD affected ranges and state the exact minimum "
+        "fixed version. CRITICAL RULE: when the data says a version is 'FIXED in >= X', "
+        "then X is safe to recommend. But when it says a version is 'STILL VULNERABLE' "
+        "or 'affects up to and including X', then X is NOT a fix — the fix must be a "
+        "version AFTER X. Never recommend a version that is marked as vulnerable. "
+        "When NVD data is absent, draw on your knowledge of well-known open-source "
+        "libraries (e.g. OpenSSL, busybox, curl, zlib, Linux kernel) to recall specific "
+        "patch versions from security advisories. "
+        "Only fall back to 'verify latest stable release' if you have no version data at all. "
+        "Cite the source of your version recommendation (NVD, vendor advisory, or general "
+        "knowledge) to help the reader calibrate trust. "
+        "Format responses exactly as instructed."
+    )
+
+
+def build_combined_analysis_wrapper(ctx: "DeploymentContext | None" = None) -> str:
+    """Build the combined analysis wrapper, parameterized by deployment context."""
+    from fs_report.deployment_context import build_context_section, get_persona
+
+    persona = get_persona(ctx)
+    context_section = build_context_section(ctx)
+    context_block = f"\n{context_section}\n" if context_section else ""
+    workaround_examples = _workaround_block(ctx)
+
+    return (
+        f"You are a {persona}. Below is all available data for a "
+        f"remediation action.{context_block} Produce TWO sections:\n\n"
+        "**Section 1 — Structured Assessment** (one field per line, exact format):\n"
+        f"VERDICT: <affected | not_affected | uncertain — {_verdict_block()}>\n"
+        "FIX_VERSION: <correct fix version for the INSTALLED branch/series, or "
+        '"none" if not affected. CRITICAL: if NVD lists a fix for a different '
+        "branch (e.g. 4.19.x) but the installed version is on a different series "
+        "(e.g. 6.6.x), find the correct fix for the installed series. "
+        "Do NOT recommend cross-branch downgrades.>\n"
+        "CONFIDENCE: <high | medium | low>\n"
+        "RATIONALE: <1 sentence explaining the verdict>\n"
+        "GUIDANCE: <1-2 sentence actionable upgrade/verification guidance>\n\n"
+        f"WORKAROUNDS: <{workaround_examples} Numbered list. Say 'none' if not possible.>\n"
+        "BREAKING_CHANGES: <key breaking changes between current and fix version. "
+        "API changes, removed features, config format changes. Say 'none expected' "
+        "for patch-level.>\n\n"
+        "**Section 2 — Detailed Analysis** (after a `---` separator, in markdown):\n"
+        "1. **Key Finding** — Is this component actually affected? Check library "
+        "identity first: does the NVD product match the scanned component, or is "
+        "this a false-positive CPE match (e.g., glibc CVE matched to musl)?\n"
+        "2. **Verification Steps** — Exact shell commands to confirm\n"
+        "3. **Remediation Plan** — If affected: upgrade path, breaking-change risks, "
+        "regression tests. If not affected: how to document and close.\n"
+        "4. **Risk if Deferred** — What happens if this is not addressed?\n"
+        "5. **References** — Relevant links and advisories\n"
+        "6. **Environmental Controls & Workarounds** — WAF rules, config changes, "
+        "network segmentation that mitigate the vulnerability without upgrading.\n"
+        "7. **Upgrade Impact** — Breaking changes, migration steps, and regression "
+        "risks for the recommended upgrade path.\n\n"
+        "Be specific — cite exact versions, function names, and commands.\n\n---\n\n"
+    )
+
+
 # System message for all LLM calls — establishes persona, constraints, and
 # the fix-version guardrail to reduce hallucinated version numbers.
 _ANALYSIS_WRAPPER = (
@@ -88,64 +230,9 @@ _ANALYSIS_WRAPPER = (
     "Synthesize the data; do not repeat it verbatim.\n\n---\n\n"
 )
 
-_COMBINED_ANALYSIS_WRAPPER = (
-    "You are a firmware security analyst. Below is all available data for a "
-    "remediation action. Produce TWO sections:\n\n"
-    "**Section 1 — Structured Assessment** (one field per line, exact format):\n"
-    "VERDICT: <affected | not_affected | uncertain — Check library identity "
-    "FIRST: if the NVD Target names a DIFFERENT library than the scanned "
-    "component (e.g., CVE targets gnu/glibc but component is musl, or CVE "
-    "targets openssl but component is BoringSSL), answer not_affected and "
-    "STOP. Reachability of standard functions (getaddrinfo, realpath, glob, "
-    "nan, etc.) does NOT prove the same bug exists — different implementations "
-    "have different source code and different bugs.>\n"
-    "FIX_VERSION: <correct fix version for the INSTALLED branch/series, or "
-    '"none" if not affected. CRITICAL: if NVD lists a fix for a different '
-    "branch (e.g. 4.19.x) but the installed version is on a different series "
-    "(e.g. 6.6.x), find the correct fix for the installed series. "
-    "Do NOT recommend cross-branch downgrades.>\n"
-    "CONFIDENCE: <high | medium | low>\n"
-    "RATIONALE: <1 sentence explaining the verdict>\n"
-    "GUIDANCE: <1-2 sentence actionable upgrade/verification guidance>\n\n"
-    "WORKAROUNDS: <1-3 practical workarounds: WAF rules, config changes, feature "
-    "toggles, network segmentation. Numbered list. Say 'none' if not possible.>\n"
-    "BREAKING_CHANGES: <key breaking changes between current and fix version. "
-    "API changes, removed features, config format changes. Say 'none expected' "
-    "for patch-level.>\n\n"
-    "**Section 2 — Detailed Analysis** (after a `---` separator, in markdown):\n"
-    "1. **Key Finding** — Is this component actually affected? Check library "
-    "identity first: does the NVD product match the scanned component, or is "
-    "this a false-positive CPE match (e.g., glibc CVE matched to musl)?\n"
-    "2. **Verification Steps** — Exact shell commands to confirm\n"
-    "3. **Remediation Plan** — If affected: upgrade path, breaking-change risks, "
-    "regression tests. If not affected: how to document and close.\n"
-    "4. **Risk if Deferred** — What happens if this is not addressed?\n"
-    "5. **References** — Relevant links and advisories\n"
-    "6. **Environmental Controls & Workarounds** — WAF rules, config changes, "
-    "network segmentation that mitigate the vulnerability without upgrading.\n"
-    "7. **Upgrade Impact** — Breaking changes, migration steps, and regression "
-    "risks for the recommended upgrade path.\n\n"
-    "Be specific — cite exact versions, function names, and commands.\n\n---\n\n"
-)
-
-SYSTEM_MESSAGE = (
-    "You are a firmware security analyst specializing in embedded device remediation. "
-    "Always ground your advice in the provided data — do not speculate beyond what the "
-    "evidence supports. "
-    "When NVD fix version data is provided, USE IT: cross-reference the installed "
-    "component version against the NVD affected ranges and state the exact minimum "
-    "fixed version. CRITICAL RULE: when the data says a version is 'FIXED in >= X', "
-    "then X is safe to recommend. But when it says a version is 'STILL VULNERABLE' "
-    "or 'affects up to and including X', then X is NOT a fix — the fix must be a "
-    "version AFTER X. Never recommend a version that is marked as vulnerable. "
-    "When NVD data is absent, draw on your knowledge of well-known open-source "
-    "libraries (e.g. OpenSSL, busybox, curl, zlib, Linux kernel) to recall specific "
-    "patch versions from security advisories. "
-    "Only fall back to 'verify latest stable release' if you have no version data at all. "
-    "Cite the source of your version recommendation (NVD, vendor advisory, or general "
-    "knowledge) to help the reader calibrate trust. "
-    "Format responses exactly as instructed."
-)
+# Backward-compatible aliases — module-level constants built with default context
+SYSTEM_MESSAGE = build_system_message()
+_COMBINED_ANALYSIS_WRAPPER = build_combined_analysis_wrapper()
 
 # Scoring methodology block — appended to portfolio/project prompts so the
 # LLM can reason about (and validate) the pre-computed priority bands.
@@ -206,6 +293,7 @@ class LLMClient:
         provider: str | None = None,
         model_high: str | None = None,
         model_low: str | None = None,
+        deployment_context: Any | None = None,
     ) -> None:
         """
         Initialize the LLM client.
@@ -217,7 +305,10 @@ class LLMClient:
                       Auto-detected from env vars if not set.
             model_high: Override for the summary model (high-capability tier).
             model_low: Override for the component model (fast/cheap tier).
+            deployment_context: Optional DeploymentContext for prompt customization.
         """
+        self._deployment_ctx = deployment_context
+
         # Resolve provider and API key
         self._provider, self.api_key = self._detect_provider(provider)
         default_high, default_low = MODEL_MAP[self._provider]
@@ -375,11 +466,13 @@ class LLMClient:
             self._summary_model if model_tier == "summary" else self._component_model
         )
 
+        system_msg = build_system_message(self._deployment_ctx)
+
         if self._provider == "anthropic":
             response = self.client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
-                system=SYSTEM_MESSAGE,
+                system=system_msg,
                 messages=[{"role": "user", "content": prompt}],
             )
             self._call_count += 1
@@ -390,12 +483,18 @@ class LLMClient:
                 model=model,
                 max_tokens=max_tokens,
                 messages=[
-                    {"role": "system", "content": SYSTEM_MESSAGE},
+                    {"role": "system", "content": system_msg},
                     {"role": "user", "content": prompt},
                 ],
             )
             self._call_count += 1
             return response.choices[0].message.content or ""
+
+    def _context_section(self) -> str:
+        """Return deployment context section for prompts, or empty string."""
+        from fs_report.deployment_context import build_context_section
+
+        return build_context_section(self._deployment_ctx)
 
     def _is_fresh(self, generated_at: str | None) -> bool:
         """Check if a cached entry is still within the TTL window."""
@@ -678,12 +777,14 @@ class LLMClient:
         # Build a stable cache key from the input data
         import hashlib
 
+        ctx_hash = self._deployment_ctx.context_hash() if self._deployment_ctx else ""
         key_data = json.dumps(
             {
                 "portfolio": portfolio_summary,
                 "reach": reachability_summary,
                 "has_nvd": bool(nvd_snippets_map),
                 "has_proj_ai": bool(project_ai_summaries),
+                "ctx": ctx_hash,
             },
             sort_keys=True,
             default=str,
@@ -782,9 +883,8 @@ These are the most urgent findings. Focus remediation here first.
 {self._format_projects_bullet(top_projects)}
 {self._build_nvd_section_for_portfolio(top_comps, nvd_snippets_map)}
 {self._build_project_ai_section(top_projects, project_ai_summaries)}
-## Applicability Warning
-Some NVD matches may be false positives (e.g., openwrt/libc matched to glibc CVEs, or BoringSSL matched to OpenSSL CVEs).
-When the NVD product name differs from the scanned component, flag it as a potential false positive.
+{_applicability_warning()}
+{self._context_section()}
 
 Provide a concise strategic summary (3-5 paragraphs):
 1. Focus on GATE_1 and GATE_2 findings as the most urgent
@@ -819,12 +919,14 @@ Be specific with component names and versions. Focus on actionable guidance."""
         """
         import hashlib
 
+        ctx_hash = self._deployment_ctx.context_hash() if self._deployment_ctx else ""
         key_data = json.dumps(
             {
                 "project": project_name,
                 "bands": band_counts,
                 "has_nvd": bool(nvd_snippets_map),
                 "has_comp_ai": bool(component_guidance),
+                "ctx": ctx_hash,
             },
             sort_keys=True,
             default=str,
@@ -980,11 +1082,10 @@ These are the most urgent findings. Focus remediation here first.
 {self._format_project_components_bullet(component_summary)}
 {self._build_nvd_section_for_project(component_summary, nvd_snippets_map)}
 {self._build_component_ai_section(component_summary, component_guidance)}
-## Applicability Warning
-Some NVD matches may be false positives (e.g., openwrt/libc matched to glibc CVEs, or BoringSSL matched to OpenSSL CVEs).
-When the NVD product name differs from the scanned component, flag it as a potential false positive.
+{_applicability_warning()}
 
 Note: "reachable" indicates CVEs where binary analysis confirmed the vulnerable code path is callable.
+{self._context_section()}
 
 Provide a concise project remediation plan (2-3 paragraphs):
 1. Focus on GATE_1 and GATE_2 findings as the most urgent — which components to upgrade first
@@ -1255,6 +1356,7 @@ Be specific with component names and versions."""
         if nvd_fix_snippet:
             nvd_section = f"\n{nvd_fix_snippet}\n"
 
+        ctx_section = self._context_section()
         return f"""Provide specific fix guidance for:
 
 Component: {component_name} version {component_version}
@@ -1268,13 +1370,14 @@ CVEs:
 
 {reach_section}
 {nvd_section}
+{ctx_section}
 Respond in this exact format:
-VERDICT: <affected | not_affected | uncertain — IMPORTANT: Check library identity FIRST, before considering reachability or exploit data. (1) Does the NVD Target name a DIFFERENT library than the scanned component? e.g., CVE targets "gnu/glibc" but component is openwrt/libc (musl), or CVE targets "openssl" but component is BoringSSL. If YES → answer "not_affected" and STOP. Reachability of standard functions (getaddrinfo, realpath, glob, strcoll, nan, nanf, etc.) does NOT mean the same bug exists — different implementations (glibc vs musl, OpenSSL vs BoringSSL) have completely different source code and different bugs. A function name match is NOT a vulnerability match. (2) Is this the wrong platform? e.g., Windows-only CVE on Linux. If YES → "not_affected". (3) Is the installed version outside the affected range? If YES → "not_affected". Only answer "affected" when the component is genuinely the SAME library the CVE targets.>
-FIX_VERSION: <specific version number. If NVD data says "FIXED in >= X", recommend X. If NVD data says a version is "STILL VULNERABLE", the fix must be AFTER that version — do NOT recommend the vulnerable version. Cross-reference the component version ({component_version}) against the NVD affected ranges. Only state "verify latest stable release" if no version data is available.>
+VERDICT: <affected | not_affected | uncertain — {_verdict_block()}>
+FIX_VERSION: <{_fix_version_block(component_version)}>
 RATIONALE: <1 sentence explaining why this fix or version is recommended, citing the NVD data or advisory if available>
 GUIDANCE: <1-2 sentence upgrade guidance>
-WORKAROUND: <1-3 sentences: if no straightforward upgrade is available, suggest firmware-specific mitigations such as disabling affected services, network segmentation, restricting exposed interfaces, or configuration hardening. If a direct upgrade is available, state "Upgrade recommended.">
-CODE_SEARCH: <grep/search patterns to find affected code in firmware — use specific vulnerable function names if known from reachability analysis, e.g., "grep -r 'vulnerableFunction' src/">
+WORKAROUND: <{_workaround_block(self._deployment_ctx)}>
+CODE_SEARCH: <grep/search patterns to find affected code — use specific vulnerable function names if known from reachability analysis, e.g., "grep -r 'vulnerableFunction' src/">
 CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium (version estimated from known patterns), low (uncertain — verify independently)>"""
 
     @staticmethod
@@ -1543,7 +1646,10 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
         """
         # Check cache — use ai_summary_cache with "finding:" prefix to avoid
         # collision with component-level cve_remediations cache.
-        cache_key = f"finding:{finding_id}"
+        ctx_hash = self._deployment_ctx.context_hash() if self._deployment_ctx else ""
+        cache_key = (
+            f"finding:{finding_id}:{ctx_hash}" if ctx_hash else f"finding:{finding_id}"
+        )
         cached_json = self.get_cached_summary(cache_key)
         if cached_json is not None:
             self._cached_count += 1
@@ -1716,7 +1822,7 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
             self._cached_count += 1
             return self._parse_combined_response(cached)
 
-        wrapped = _COMBINED_ANALYSIS_WRAPPER + context_prompt
+        wrapped = build_combined_analysis_wrapper(self._deployment_ctx) + context_prompt
         try:
             text = self._call_llm(wrapped, "summary", MAX_ANALYSIS_TOKENS)
             self.cache_summary(action_key, "action_combined", text, self._summary_model)

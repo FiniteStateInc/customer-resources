@@ -414,6 +414,18 @@ class Config(BaseModel):
         "Produces detailed markdown remediation analysis embedded in the report. "
         "Expensive — uses the high-capability model. Implies ai_prompts.",
     )
+    context_file: str | None = Field(
+        None,
+        description="Path to deployment context YAML file for AI prompt customization.",
+    )
+    product_type: str | None = Field(
+        None,
+        description="Product type for AI prompts (firmware, web_app, container, etc.).",
+    )
+    network_exposure: str | None = Field(
+        None,
+        description="Network exposure level (air_gapped, internal_only, internet_facing, etc.).",
+    )
     nvd_api_key: str | None = Field(
         None,
         description="NVD API key for faster fix-version lookups. "
@@ -431,6 +443,14 @@ class Config(BaseModel):
     )
     current_version: str | None = Field(
         None, description="Current version ID for Version Comparison report."
+    )
+    version_sort: str = Field(
+        "created",
+        description="Sort key for Version Comparison versions: 'created' (chronological) or 'name' (lexicographic).",
+    )
+    version_sort_desc: bool = Field(
+        False,
+        description="Reverse version sort order (newest/last first).",
     )
     open_only: bool = Field(
         False,

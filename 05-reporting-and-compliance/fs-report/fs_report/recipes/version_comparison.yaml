@@ -1,7 +1,7 @@
 name: "Version Comparison"
 category: assessment
 template: "version_comparison.html"
-description: "Full version and component changelog for every project: progression across all versions with fixed/new findings and component churn per version pair. Scope with --project or --folder; use --baseline-version and --current-version to limit to a single pair."
+description: "Full version and component changelog for every project: progression across all versions with fixed/new findings and component churn per version pair. Scope with --project or --folder; use --baseline-version and --current-version to limit to a single pair. Use --version-sort (created|name) and --version-sort-desc to control ordering."
 execution_order: 50
 auto_run: false
 

@@ -12,8 +12,7 @@ query:
 
 # Main transform for project breakdown (stacked bar chart)
 transform:
-  # Flatten nested data structures
-  - flatten: ["component", "project"]
+  # project.name is already a flat column (extracted per-batch in report_engine)
   # Group by project and severity for stacked bar chart
   - group_by:
       keys: ["project.name", severity]
@@ -26,8 +25,7 @@ transform:
 
 # Transform for open issues pie chart
 open_issues_transform:
-  # Flatten nested data structures
-  - flatten: ["component", "project"]
+  # project.name is already a flat column (extracted per-batch in report_engine)
   # Rename fields for consistency
   - rename:
       columns:

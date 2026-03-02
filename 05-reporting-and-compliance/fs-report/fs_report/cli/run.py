@@ -82,6 +82,9 @@ def create_config(
     scan_types: Union[str, None] = None,
     scan_statuses: Union[str, None] = None,
     low_memory: bool = False,
+    context_file: Union[str, None] = None,
+    product_type: Union[str, None] = None,
+    network_exposure: Union[str, None] = None,
     compare_domain: Union[str, None] = None,
     compare_token: Union[str, None] = None,
     compare_project: Union[str, None] = None,
@@ -235,6 +238,17 @@ def create_config(
         ai_model_low, None, "ai_model_low", None, config_data=cfg
     )
 
+    # Merge deployment context from config file / env var
+    context_file = merge_config(
+        context_file, "FS_REPORT_CONTEXT_FILE", "context_file", None, config_data=cfg
+    )
+    product_type = merge_config(
+        product_type, None, "product_type", None, config_data=cfg
+    )
+    network_exposure = merge_config(
+        network_exposure, None, "network_exposure", None, config_data=cfg
+    )
+
     # Validate AI options
     if ai:
         _ai_env_vars = ["ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN"]
@@ -334,6 +348,9 @@ def create_config(
         ai_depth=ai_depth,
         ai_prompts=ai_prompts,
         ai_analysis=ai_analysis,
+        context_file=context_file,
+        product_type=product_type,
+        network_exposure=network_exposure,
         nvd_api_key=nvd_api_key,
         baseline_date=baseline_date,
         baseline_version=baseline_version,
@@ -406,6 +423,9 @@ def run_reports(
     autotriage: bool = False,
     dry_run: bool = False,
     vex_concurrency: int = 5,
+    context_file: Union[str, None] = None,
+    product_type: Union[str, None] = None,
+    network_exposure: Union[str, None] = None,
     scan_types: Union[str, None] = None,
     scan_statuses: Union[str, None] = None,
     low_memory: bool = False,
@@ -451,6 +471,9 @@ def run_reports(
             ai_depth=ai_depth,
             ai_prompts=ai_prompts,
             ai_analysis=ai_analysis,
+            context_file=context_file,
+            product_type=product_type,
+            network_exposure=network_exposure,
             nvd_api_key=nvd_api_key,
             baseline_date=baseline_date,
             baseline_version=baseline_version,
@@ -543,6 +566,12 @@ def run_reports(
                 logger.info("  AI prompts: Enabled (saving prompts to output)")
             if config.ai_analysis:
                 logger.info("  AI analysis: Enabled")
+            if config.product_type:
+                logger.info(f"  Product type: {config.product_type}")
+            if config.network_exposure:
+                logger.info(f"  Network exposure: {config.network_exposure}")
+            if config.context_file:
+                logger.info(f"  Context file: {config.context_file}")
         if config.apply_vex_triage:
             logger.info(f"  Apply VEX triage: {config.apply_vex_triage}")
         if config.autotriage:
@@ -579,10 +608,43 @@ def run_reports(
             _print_vex_summary(result)
             return
 
+        # Build deployment context from context file + CLI overrides
+        deployment_ctx = None
+        if config.context_file or config.product_type or config.network_exposure:
+            from pydantic import ValidationError
+
+            from fs_report.deployment_context import (
+                DeploymentContext,
+                load_context_file,
+            )
+
+            if config.context_file:
+                try:
+                    deployment_ctx = load_context_file(config.context_file)
+                except (FileNotFoundError, ValueError) as e:
+                    console.print(f"[red]Error loading context file: {e}[/red]")
+                    raise typer.Exit(1) from e
+            else:
+                deployment_ctx = DeploymentContext()
+
+            # CLI flags override context file values
+            try:
+                if config.product_type:
+                    deployment_ctx.product_type = config.product_type
+                if config.network_exposure:
+                    deployment_ctx.network_exposure = config.network_exposure
+            except (ValueError, ValidationError) as e:
+                console.print(f"[red]Invalid deployment context: {e}[/red]")
+                raise typer.Exit(1) from e
+
         output_path = Path(config.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        engine = ReportEngine(config, data_override=data_override)
+        engine = ReportEngine(
+            config,
+            data_override=data_override,
+            deployment_context=deployment_ctx,
+        )
 
         # Patch API client if using data_override
         if data_override is not None:
@@ -966,6 +1028,25 @@ def run_command(
         "Expensive — uses the high-capability model. Implies --ai-prompts.",
         rich_help_panel=_AI,
     ),
+    context_file: Union[str, None] = typer.Option(
+        None,
+        "--context-file",
+        envvar="FS_REPORT_CONTEXT_FILE",
+        help="Path to deployment context YAML file for AI prompt customization.",
+        rich_help_panel=_AI,
+    ),
+    product_type: Union[str, None] = typer.Option(
+        None,
+        "--product-type",
+        help="Product type for AI prompts (firmware, web_app, container, library, etc.).",
+        rich_help_panel=_AI,
+    ),
+    network_exposure: Union[str, None] = typer.Option(
+        None,
+        "--network-exposure",
+        help="Network exposure level (air_gapped, internal_only, internet_facing, mixed).",
+        rich_help_panel=_AI,
+    ),
     nvd_api_key: Union[str, None] = typer.Option(
         None,
         "--nvd-api-key",
@@ -1176,6 +1257,9 @@ def run_command(
         ai_depth=ai_depth,
         ai_prompts=ai_prompts,
         ai_analysis=ai_analysis,
+        context_file=context_file,
+        product_type=product_type,
+        network_exposure=network_exposure,
         nvd_api_key=nvd_api_key,
         baseline_date=baseline_date,
         baseline_version=baseline_version,

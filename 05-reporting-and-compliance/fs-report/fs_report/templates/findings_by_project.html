@@ -1,6 +1,13 @@
 {% extends "base.html" %}
 
 {% block content %}
+<style>
+    .reach-badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }
+    .reach-REACHABLE { background: #dc3545; color: white; }
+    .reach-UNREACHABLE { background: #28a745; color: white; }
+    .reach-INCONCLUSIVE { background: #6c757d; color: white; }
+    .reach-UNKNOWN { background: #adb5bd; color: #333; }
+</style>
 <!-- Filter Information -->
 {% if folder_path or project_filter %}
 <div class="chart-container">
@@ -22,6 +29,7 @@
             <tr>
                 <th>CVSS</th>
                 <th>Severity</th>
+                <th>Reachability</th>
                 <th>CVE ID</th>
                 <th>Description</th>
                 <th>Component</th>
@@ -43,7 +51,7 @@
                 {% if row['Project Name'] != current_project.value %}
                     {% set current_project.value = row['Project Name'] %}
                     <tr style="background-color: #f8f9fa; font-weight: bold;">
-                        <td colspan="{% if folder_path %}15{% else %}14{% endif %}">{{ row['Project Name'] }}</td>
+                        <td colspan="{% if folder_path %}16{% else %}15{% endif %}">{{ row['Project Name'] }}</td>
                     </tr>
                 {% endif %}
                 <tr>
@@ -93,6 +101,10 @@
                             {% endif %}
                         ">{{ sev }}</span>
                         {% endif %}
+                    </td>
+                    <td>
+                        {% set rlabel = row.get('Reachability', 'UNKNOWN') %}
+                        <span class="reach-badge reach-{{ rlabel }}">{{ rlabel }}</span>
                     </td>
                     <td>
                         {% if row['CVE ID'] and row['CVE ID'] != 'N/A' %}

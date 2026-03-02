@@ -85,6 +85,116 @@ _TRIAGE_DROP_AFTER_SCORE: frozenset[str] = frozenset(
 )
 
 
+# Columns the Executive Summary actually uses.  Everything else is
+# dropped per-batch during fetch to avoid accumulating ~50+ columns
+# (nested dicts, exploit info, etc.) across 500K+ rows.
+_EXEC_SUMMARY_KEEP: frozenset[str] = frozenset(
+    {"id", "project.name", "severity", "status", "detected"}
+)
+
+
+def _prune_exec_summary(
+    df: pd.DataFrame,
+    extra_keep: frozenset[str] | None = None,
+) -> pd.DataFrame:
+    """Extract ``project.name`` and keep only the columns Executive Summary needs.
+
+    This is called per-batch during fetch so large nested-dict columns
+    (component, project, exploitInfo, …) are freed immediately, reducing
+    peak memory from ~4-5 GB to ~100 MB on folders with 500K+ findings.
+    """
+    # Extract project.name from nested dict if not already flat
+    if "project.name" not in df.columns and "project" in df.columns:
+        df = df.copy()
+        df["project.name"] = df["project"].apply(
+            lambda p: p.get("name", "") if isinstance(p, dict) else ""
+        )
+    else:
+        df = df.copy()
+
+    keep = _EXEC_SUMMARY_KEEP | extra_keep if extra_keep else _EXEC_SUMMARY_KEEP
+    drop = [c for c in df.columns if c not in keep]
+    if drop:
+        df = df.drop(columns=drop)
+    return df
+
+
+# Columns the Executive Dashboard actually uses.  Everything else is
+# dropped per-batch during fetch, same pattern as Executive Summary.
+_EXEC_DASHBOARD_KEEP: frozenset[str] = frozenset(
+    {
+        "id",
+        "severity",
+        "status",
+        "detected",
+        "category",
+        "projectId",
+        "inKev",
+        "hasKnownExploit",
+    }
+)
+
+
+def _prune_exec_dashboard(
+    df: pd.DataFrame,
+    extra_keep: frozenset[str] | None = None,
+) -> pd.DataFrame:
+    """Extract ``projectId`` and keep only the columns Executive Dashboard needs.
+
+    This is called per-batch during fetch so large nested-dict columns
+    (component, project, exploitInfo, …) are freed immediately.
+    """
+    df = df.copy()
+    # Extract projectId from nested dict if not already flat
+    if "projectId" not in df.columns and "project" in df.columns:
+        df["projectId"] = df["project"].apply(
+            lambda p: p.get("id", "") if isinstance(p, dict) else ""
+        )
+
+    keep = _EXEC_DASHBOARD_KEEP | extra_keep if extra_keep else _EXEC_DASHBOARD_KEEP
+    drop = [c for c in df.columns if c not in keep]
+    if drop:
+        df = df.drop(columns=drop)
+    return df
+
+
+# Columns the Component Vulnerability Analysis transform actually uses.
+# Everything else is dropped per-batch after flattening.
+_CVA_KEEP: frozenset[str] = frozenset(
+    {
+        "id",
+        "severity",
+        "risk",
+        "component.name",
+        "component.version",
+        "project.name",
+        "inKev",
+        "inVcKev",
+        "hasKnownExploit",
+        "epssPercentile",
+        "reachabilityScore",
+        "exploitInfo",
+    }
+)
+
+
+def _prune_cva(
+    df: pd.DataFrame,
+    extra_keep: frozenset[str] | None = None,
+) -> pd.DataFrame:
+    """Keep only the columns Component Vulnerability Analysis needs.
+
+    This is called per-batch (after flatten) during fetch so unused
+    columns are freed immediately.
+    """
+    df = df.copy()
+    keep = _CVA_KEEP | extra_keep if extra_keep else _CVA_KEEP
+    drop = [c for c in df.columns if c not in keep]
+    if drop:
+        df = df.drop(columns=drop)
+    return df
+
+
 def _log_memory(logger: logging.Logger, label: str) -> None:
     """Log current process memory usage (RSS) for diagnostics."""
     try:
@@ -256,14 +366,17 @@ class ReportEngine:
         data_override: dict[str, Any] | None = None,
         cancel_event: threading.Event | None = None,
         on_recipe_complete: Callable[[int, int, str], None] | None = None,
+        deployment_context: Any | None = None,
     ) -> None:
         """Initialize the report engine.
 
         Args:
             on_recipe_complete: Optional callback invoked after each recipe
                 finishes.  Signature: ``(completed, total, recipe_name)``.
+            deployment_context: Optional DeploymentContext for AI prompt customization.
         """
         self.config = config
+        self._deployment_context = deployment_context
         self.logger = logging.getLogger(__name__)
         self._cancel_event = cancel_event
         self._on_recipe_complete = on_recipe_complete
@@ -410,6 +523,55 @@ class ReportEngine:
             self.logger.info(f"Did you mean one of these? {close[:5]}")
 
         return None
+
+    @staticmethod
+    def _is_glob(value: str) -> bool:
+        """Return True if *value* contains glob metacharacters (``*``, ``?``, ``[``)."""
+        return any(c in value for c in ("*", "?", "["))
+
+    def _resolve_project_glob(self, pattern: str) -> list[tuple[int, str]]:
+        """Resolve a glob pattern against all project names.
+
+        Returns a list of ``(id, name)`` tuples for every project whose name
+        matches *pattern* (case-insensitive ``fnmatch``).  Also logs a warning
+        if any project names collide when lowercased.
+        """
+        import fnmatch
+        from collections import defaultdict
+
+        from fs_report.models import QueryConfig, QueryParams
+
+        projects_query = QueryConfig(
+            endpoint="/public/v0/projects",
+            params=QueryParams(limit=10000, archived=False, excluded=False),
+        )
+        projects = self.api_client.fetch_data(projects_query)
+
+        # Case-collision check across ALL projects
+        by_lower: dict[str, list[str]] = defaultdict(list)
+        for p in projects:
+            name = p.get("name", "")
+            if name:
+                by_lower[name.lower()].append(name)
+        for lower, names in by_lower.items():
+            distinct = sorted(set(names))
+            if len(distinct) > 1:
+                self.logger.warning(
+                    f"Case collision: projects {distinct} map to the same "
+                    f"lowercase name '{lower}'. Glob matching is case-insensitive "
+                    "and will match all of them."
+                )
+
+        # Match projects against the glob pattern
+        pat_lower = pattern.lower()
+        matches: list[tuple[int, str]] = []
+        for p in projects:
+            name = p.get("name", "")
+            pid = p.get("id")
+            if name and pid is not None and fnmatch.fnmatch(name.lower(), pat_lower):
+                matches.append((pid, name))
+
+        return matches
 
     def _resolve_project_id_to_name(self, project_id: int) -> str | None:
         """Resolve a numeric project ID to its display name.
@@ -1346,20 +1508,59 @@ class ReportEngine:
                 # Resolve numeric ID to project name for display
                 self.resolved_project_name = self._resolve_project_id_to_name(pid)
             except ValueError:
-                original_name = self.config.project_filter
-                resolved_id = self._resolve_project_name(self.config.project_filter)
-                if resolved_id:
-                    self.logger.info(
-                        f"Resolved project '{self.config.project_filter}' to ID {resolved_id}"
-                    )
-                    self.resolved_project_name = original_name
-                    self.config.project_filter = str(resolved_id)
+                filter_value = self.config.project_filter
+                if self._is_glob(filter_value):
+                    matches = self._resolve_project_glob(filter_value)
+                    if not matches:
+                        self.logger.error(
+                            f"No projects matched glob pattern '{filter_value}'. "
+                            "Use 'fs-report list-projects' to see available projects."
+                        )
+                        return False
+                    elif len(matches) == 1:
+                        mid, mname = matches[0]
+                        self.logger.info(
+                            f"Glob '{filter_value}' matched 1 project: {mname} (ID {mid})"
+                        )
+                        self.resolved_project_name = mname
+                        self.config.project_filter = str(mid)
+                    else:
+                        names = [m[1] for m in matches]
+                        self.logger.info(
+                            f"Glob '{filter_value}' matched {len(matches)} projects: "
+                            + ", ".join(sorted(names))
+                        )
+                        self._folder_project_ids = {str(m[0]) for m in matches}
+                        self.config.project_filter = None
                 else:
-                    self.logger.error(
-                        f"Could not resolve project name '{self.config.project_filter}'. "
-                        "Use 'fs-report list-projects' to see available projects."
-                    )
-                    return False
+                    original_name = filter_value
+                    resolved_id = self._resolve_project_name(filter_value)
+                    if resolved_id:
+                        self.logger.info(
+                            f"Resolved project '{filter_value}' to ID {resolved_id}"
+                        )
+                        self.resolved_project_name = original_name
+                        self.config.project_filter = str(resolved_id)
+                    else:
+                        self.logger.error(
+                            f"Could not resolve project name '{filter_value}'. "
+                            "Use 'fs-report list-projects' to see available projects."
+                        )
+                        return False
+
+        # Reject version filter with multi-project glob
+        if (
+            self.config.version_filter
+            and not self.data_override
+            and self._folder_project_ids
+            and not self.config.project_filter
+            and not self.config.folder_filter
+        ):
+            self.logger.error(
+                "Version filter is not supported with project glob patterns. "
+                "Use an exact project name or ID with --version."
+            )
+            return False
 
         # Resolve version name to numeric ID if needed (API filters require numeric IDs)
         if self.config.version_filter and not self.data_override:
@@ -2060,9 +2261,11 @@ class ReportEngine:
                     )
                     continue
 
-                # Sort by created ascending
+                # Sort versions by configured key (default: created ascending)
+                _vs = self.config.version_sort or "created"
                 versions.sort(
-                    key=lambda v: v.get("created", v.get("id", "")),
+                    key=lambda v: v.get(_vs, v.get("id", "")),
+                    reverse=self.config.version_sort_desc,
                 )
                 project_version_lists.append((pname, versions))
 
@@ -2144,6 +2347,12 @@ class ReportEngine:
             # --- NVD pipeline handles (initialised here so both branches see them) ---
             _nvd_on_records = None
             _nvd_collect = None
+            _es_cache_key: str | None = None
+            _ed_cache_key: str | None = None
+            # CVA flatten/prune state (initialised here so post-accumulation code sees them)
+            _is_cva = False
+            _cva_pre_flattened = False
+            _cva_extra_keep: frozenset[str] | None = None
 
             # Use override data if provided
             if self.data_override is not None:
@@ -2529,12 +2738,35 @@ class ReportEngine:
                             "attackVector",
                             "epssPercentile",
                             "epssScore",
-                            "reachabilityScore",
                             "hasKnownExploit",
                             "inKev",
                             "affectedFunctions",
                             "risk",  # already extracted to cvss_score
                         }
+
+                        # --- Per-batch column pruning for Executive Summary ---
+                        # Keep only the 5 columns the transforms actually use,
+                        # dropping ~50+ nested-dict/API columns per batch.
+                        _is_exec_summary = recipe.name == "Executive Summary"
+                        _exec_extra_keep: frozenset[str] | None = None
+                        if _is_exec_summary and (
+                            post_filter_categories or post_filter_types
+                        ):
+                            _exec_extra_keep = frozenset({"category", "type"})
+
+                        # --- Per-batch column pruning for Executive Dashboard ---
+                        _is_exec_dashboard = recipe.name == "Executive Dashboard"
+                        _ed_extra_keep: frozenset[str] | None = None
+                        if _is_exec_dashboard and (
+                            post_filter_categories or post_filter_types
+                        ):
+                            _ed_extra_keep = frozenset({"category", "type"})
+
+                        # --- Per-batch flatten + pruning for CVA ---
+                        _is_cva = recipe.name == "Component Vulnerability Analysis"
+                        _cva_pre_flattened = False
+                        if _is_cva and (post_filter_categories or post_filter_types):
+                            _cva_extra_keep = frozenset({"category", "type"})
 
                         # --- NVD pipeline: start background lookups during fetch ---
                         if _is_findings_by_project:
@@ -2624,6 +2856,16 @@ class ReportEngine:
                                             ]
                                             if _drop:
                                                 raw_data = raw_data.drop(columns=_drop)
+                                        # Per-batch column pruning for Executive Summary
+                                        if _is_exec_summary and not raw_data.empty:
+                                            raw_data = _prune_exec_summary(
+                                                raw_data, _exec_extra_keep
+                                            )
+                                        # Per-batch column pruning for Executive Dashboard
+                                        if _is_exec_dashboard and not raw_data.empty:
+                                            raw_data = _prune_exec_dashboard(
+                                                raw_data, _ed_extra_keep
+                                            )
                                         needs_date_postfilter = True
                                     else:
                                         self.logger.warning(
@@ -2656,6 +2898,16 @@ class ReportEngine:
                                     else pd.DataFrame()
                                 )
                                 del _fetched
+                                # Per-batch column pruning for Executive Summary
+                                if _is_exec_summary and not raw_data.empty:
+                                    raw_data = _prune_exec_summary(
+                                        raw_data, _exec_extra_keep
+                                    )
+                                # Per-batch column pruning for Executive Dashboard
+                                if _is_exec_dashboard and not raw_data.empty:
+                                    raw_data = _prune_exec_dashboard(
+                                        raw_data, _ed_extra_keep
+                                    )
                         elif self._folder_project_ids:
                             # Folder scoping active — use folder's project set directly
                             # Sort for deterministic batching (ensures SQLite cache hits across runs)
@@ -2715,6 +2967,16 @@ class ReportEngine:
                                         raw_data = raw_data.drop(columns=_drop)
                                     self.logger.info(
                                         f"Pre-flattened {len(raw_data)} findings ({len(raw_data.columns)} columns after pruning)"
+                                    )
+                                # Per-batch column pruning for Executive Summary
+                                if _is_exec_summary and not raw_data.empty:
+                                    raw_data = _prune_exec_summary(
+                                        raw_data, _exec_extra_keep
+                                    )
+                                # Per-batch column pruning for Executive Dashboard
+                                if _is_exec_dashboard and not raw_data.empty:
+                                    raw_data = _prune_exec_dashboard(
+                                        raw_data, _ed_extra_keep
                                     )
                                 needs_date_postfilter = True
                             else:
@@ -2777,6 +3039,21 @@ class ReportEngine:
                                                 # Feed CVE IDs to NVD pipeline
                                                 if _nvd_on_records is not None:
                                                     _nvd_on_records(batch_data)
+                                                # Per-batch flatten for CVA
+                                                if _is_cva:
+                                                    from fs_report.data_transformer import (
+                                                        flatten_records,
+                                                    )
+
+                                                    batch_data = flatten_records(
+                                                        batch_data,
+                                                        fields_to_flatten=[
+                                                            "component",
+                                                            "project",
+                                                            "finding",
+                                                        ],
+                                                    )
+                                                    _cva_pre_flattened = True
                                                 chunk_df = pd.DataFrame(batch_data)
                                                 total_records += len(batch_data)
                                                 del batch_data  # Free batch memory immediately
@@ -2805,16 +3082,15 @@ class ReportEngine:
                                                         chunk_df,
                                                         weights=_triage_weights,
                                                     )
-                                                    if _low_memory:
-                                                        _drop = [
-                                                            c
-                                                            for c in _TRIAGE_DROP_AFTER_SCORE
-                                                            if c in chunk_df.columns
-                                                        ]
-                                                        if _drop:
-                                                            chunk_df = chunk_df.drop(
-                                                                columns=_drop
-                                                            )
+                                                    _drop = [
+                                                        c
+                                                        for c in _TRIAGE_DROP_AFTER_SCORE
+                                                        if c in chunk_df.columns
+                                                    ]
+                                                    if _drop:
+                                                        chunk_df = chunk_df.drop(
+                                                            columns=_drop
+                                                        )
                                                 # Per-batch flattening for Findings by Project
                                                 if (
                                                     _is_findings_by_project
@@ -2838,6 +3114,21 @@ class ReportEngine:
                                                         chunk_df = chunk_df.drop(
                                                             columns=_drop
                                                         )
+                                                # Per-batch column pruning for Executive Summary
+                                                if _is_exec_summary:
+                                                    chunk_df = _prune_exec_summary(
+                                                        chunk_df, _exec_extra_keep
+                                                    )
+                                                # Per-batch column pruning for Executive Dashboard
+                                                if _is_exec_dashboard:
+                                                    chunk_df = _prune_exec_dashboard(
+                                                        chunk_df, _ed_extra_keep
+                                                    )
+                                                # Per-batch column pruning for CVA
+                                                if _is_cva:
+                                                    chunk_df = _prune_cva(
+                                                        chunk_df, _cva_extra_keep
+                                                    )
                                                 chunks.append(chunk_df)
                                                 del chunk_df
                                             else:
@@ -2857,6 +3148,10 @@ class ReportEngine:
                                     )
                                     del chunks
                                     self._findings_cache[_cache_key] = raw_data
+                                    if _is_exec_summary:
+                                        _es_cache_key = _cache_key
+                                    if _is_exec_dashboard:
+                                        _ed_cache_key = _cache_key
 
                             self.logger.info(
                                 f"Fetched {len(raw_data)} findings for folder scope"
@@ -2957,6 +3252,16 @@ class ReportEngine:
                                     ]
                                     if _drop:
                                         raw_data = raw_data.drop(columns=_drop)
+                                # Per-batch column pruning for Executive Summary
+                                if _is_exec_summary and not raw_data.empty:
+                                    raw_data = _prune_exec_summary(
+                                        raw_data, _exec_extra_keep
+                                    )
+                                # Per-batch column pruning for Executive Dashboard
+                                if _is_exec_dashboard and not raw_data.empty:
+                                    raw_data = _prune_exec_dashboard(
+                                        raw_data, _ed_extra_keep
+                                    )
                                 needs_date_postfilter = True
                             else:
                                 # Get findings for all scanned projects (all versions)
@@ -3011,6 +3316,21 @@ class ReportEngine:
                                             # Feed CVE IDs to NVD pipeline
                                             if _nvd_on_records is not None:
                                                 _nvd_on_records(batch_data)
+                                            # Per-batch flatten for CVA
+                                            if _is_cva:
+                                                from fs_report.data_transformer import (
+                                                    flatten_records,
+                                                )
+
+                                                batch_data = flatten_records(
+                                                    batch_data,
+                                                    fields_to_flatten=[
+                                                        "component",
+                                                        "project",
+                                                        "finding",
+                                                    ],
+                                                )
+                                                _cva_pre_flattened = True
                                             chunk_df = pd.DataFrame(batch_data)
                                             total_records += len(batch_data)
                                             del batch_data  # Free batch memory immediately
@@ -3031,16 +3351,15 @@ class ReportEngine:
                                                 chunk_df = assign_risk_bands(
                                                     chunk_df, weights=_triage_weights
                                                 )
-                                                if _low_memory:
-                                                    _drop = [
-                                                        c
-                                                        for c in _TRIAGE_DROP_AFTER_SCORE
-                                                        if c in chunk_df.columns
-                                                    ]
-                                                    if _drop:
-                                                        chunk_df = chunk_df.drop(
-                                                            columns=_drop
-                                                        )
+                                                _drop = [
+                                                    c
+                                                    for c in _TRIAGE_DROP_AFTER_SCORE
+                                                    if c in chunk_df.columns
+                                                ]
+                                                if _drop:
+                                                    chunk_df = chunk_df.drop(
+                                                        columns=_drop
+                                                    )
                                             # Per-batch flattening for Findings by Project
                                             if (
                                                 _is_findings_by_project
@@ -3058,6 +3377,21 @@ class ReportEngine:
                                                     chunk_df = chunk_df.drop(
                                                         columns=_drop
                                                     )
+                                            # Per-batch column pruning for Executive Summary
+                                            if _is_exec_summary:
+                                                chunk_df = _prune_exec_summary(
+                                                    chunk_df, _exec_extra_keep
+                                                )
+                                            # Per-batch column pruning for Executive Dashboard
+                                            if _is_exec_dashboard:
+                                                chunk_df = _prune_exec_dashboard(
+                                                    chunk_df, _ed_extra_keep
+                                                )
+                                            # Per-batch column pruning for CVA
+                                            if _is_cva:
+                                                chunk_df = _prune_cva(
+                                                    chunk_df, _cva_extra_keep
+                                                )
                                             pv_chunks.append(chunk_df)
                                             del chunk_df
                                         else:
@@ -3182,8 +3516,12 @@ class ReportEngine:
                     )
 
             # --- Apply flattening if needed ---
-            if recipe.name == "Component Vulnerability Analysis":
-                # Flatten nested structures if needed
+            if (
+                recipe.name == "Component Vulnerability Analysis"
+                and not _cva_pre_flattened
+            ):
+                # Flatten nested structures if needed (skipped when already
+                # flattened per-batch during chunked fetch)
                 fields_to_flatten = ["component", "project", "finding"]
                 if not raw_data.empty:
                     from fs_report.data_transformer import flatten_records
@@ -3195,6 +3533,9 @@ class ReportEngine:
                     )
                     raw_data = pd.DataFrame(_records) if _records else pd.DataFrame()
                     del _records
+            # Prune CVA columns for non-batch paths (after post-accumulation flatten)
+            if _is_cva and not _cva_pre_flattened and not raw_data.empty:
+                raw_data = _prune_cva(raw_data, _cva_extra_keep)
             # --- Inject project_name if needed ---
             # Only do this if the recipe uses project-level grouping
             # (via transform group_by or transform_function that needs it)
@@ -3246,6 +3587,8 @@ class ReportEngine:
             additional_data: dict[str, Any] = {}
             # Add config for pandas transform functions
             additional_data["config"] = self.config
+            if self._deployment_context is not None:
+                additional_data["deployment_context"] = self._deployment_context
             # Pass recipe parameters so transforms can access them
             if recipe.parameters:
                 additional_data["recipe_parameters"] = recipe.parameters
@@ -3572,6 +3915,14 @@ class ReportEngine:
                 transformed_data = (
                     pd.DataFrame()
                 )  # Empty for main data since we only need portfolio data
+
+            # Release the Executive Summary/Dashboard _findings_cache entries
+            # early — pruned DataFrames are small enough that cross-report reuse
+            # is not worthwhile and we want to free memory before rendering.
+            if _es_cache_key is not None:
+                self._findings_cache.pop(_es_cache_key, None)
+            if _ed_cache_key is not None:
+                self._findings_cache.pop(_ed_cache_key, None)
 
             # Free raw_data now that all transforms have consumed it.
             # (For folder-scoped paths, _findings_cache may still hold a reference

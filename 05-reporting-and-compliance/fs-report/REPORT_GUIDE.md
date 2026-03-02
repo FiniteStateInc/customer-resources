@@ -630,6 +630,44 @@ NVD results are cached locally (24-hour TTL) so subsequent runs are fast regardl
 
 > **Note:** Per NVD Terms of Use, API keys are per-requestor and must not be shared with other individuals or organisations. This product uses the NVD API but is not endorsed or certified by the NVD.
 
+**Deployment Context (product-aware AI guidance):**
+
+Tailor AI remediation guidance to your product's deployment environment with `--product-type` and `--network-exposure`. This selects a product-specific AI persona and shapes workaround recommendations:
+
+```bash
+# Firmware deployed on air-gapped network
+fs-report run --recipe "Triage Prioritization" --ai \
+  --product-type firmware --network-exposure air_gapped --period 30d
+
+# From a YAML file (includes regulatory and free-text notes)
+fs-report run --recipe "Triage Prioritization" --ai \
+  --context-file deployment.yaml --period 30d
+```
+
+Example `deployment.yaml`:
+
+```yaml
+product_type: firmware
+network_exposure: internal_only
+regulatory: "IEC-62443, FDA"
+deployment_notes: "Edge gateway deployed in hospital network"
+```
+
+| Product Type | AI Persona |
+|---|---|
+| `firmware` | Firmware security analyst specializing in embedded device remediation |
+| `web_app` | Application security analyst specializing in web application remediation |
+| `mobile_app` | Mobile security analyst specializing in mobile application remediation |
+| `container` | Cloud security analyst specializing in container and microservice remediation |
+| `library` | Software security analyst specializing in library and dependency remediation |
+| `device_driver` | Systems security analyst specializing in driver and kernel-level remediation |
+| `desktop_app` | Application security analyst specializing in desktop application remediation |
+| `generic` (default) | Security analyst specializing in vulnerability remediation |
+
+Network exposure levels: `air_gapped`, `internal_only`, `internet_facing`, `mixed`, `unknown` (default).
+
+Deployment context is included in the AI cache key, so different contexts produce distinct cached results. When no context is specified, prompts use the generic persona (existing behaviour).
+
 **VEX Integration:**
 
 The report generates a `vex_recommendations.json` file that can be used to update finding statuses in the platform:
@@ -665,6 +703,9 @@ fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --nvd-api-ke
 
 # Export AI prompts (no API key needed)
 fs-report run --recipe "Triage Prioritization" --ai-prompts --period 30d
+
+# With deployment context (firmware on air-gapped network)
+fs-report run --recipe "Triage Prioritization" --ai --product-type firmware --network-exposure air_gapped --period 30d
 
 # Custom scoring weights
 fs-report run --recipe "Triage Prioritization" --scoring-file custom.yaml --period 30d
@@ -747,6 +788,10 @@ fs-report run --recipe "CVE Impact" --cve CVE-2024-1234,CVE-2024-5678
 
 # Narrow to a specific project
 fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --project "MyFirmware"
+
+# With AI remediation guidance and deployment context
+fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --ai \
+  --product-type firmware --network-exposure air_gapped
 ```
 
 ---
@@ -911,6 +956,8 @@ fs-report run --recipe "Remediation Package" --project "MyProject" --ai
 
 When `--ai` is enabled, each action is enriched with LLM-generated workaround guidance and breaking-change risk assessment. Use `--ai off` to disable AI even if the recipe YAML enables it by default.
 
+Add `--product-type` and `--network-exposure` (or `--context-file`) to get product-specific workaround recommendations tailored to your deployment environment. See the [Deployment Context](#deployment-context-product-aware-ai-guidance) section under Triage Prioritization for full details.
+
 **Formats:** HTML, CSV, XLSX, JSON, Markdown
 
 **Example commands:**
@@ -924,6 +971,10 @@ fs-report run --recipe "Remediation Package" --folder "Product Line A"
 
 # With AI enrichment
 fs-report run --recipe "Remediation Package" --project "MyProject" --ai
+
+# With deployment context (container on internal network)
+fs-report run --recipe "Remediation Package" --project "MyProject" --ai \
+  --product-type container --network-exposure internal_only
 
 # Export as Markdown (agent-optimised)
 fs-report run --recipe "Remediation Package" --project "MyProject" --format md
@@ -962,6 +1013,9 @@ Most reports generate output in multiple formats:
 | `--current-version` | Current version ID | Version Comparison | `--current-version 67890` |
 | `--ai-model-high` | Override the "high" (summary) LLM model | AI-enabled reports | `--ai-model-high claude-sonnet-4-20250514` |
 | `--ai-model-low` | Override the "low" (fast) LLM model | AI-enabled reports | `--ai-model-low claude-haiku-4-5-20251001` |
+| `--product-type` | Product type for AI persona selection | AI-enabled reports | `--product-type firmware` |
+| `--network-exposure` | Network exposure level | AI-enabled reports | `--network-exposure air_gapped` |
+| `--context-file` | Deployment context YAML file | AI-enabled reports | `--context-file deployment.yaml` |
 
 **How `--period` interacts with report categories:**
 

@@ -1,5 +1,26 @@
 # Release Notes
 
+## Version 1.7.0 (March 2026)
+
+### New Features
+
+- **Deployment Context for AI prompts** — New `--product-type`, `--network-exposure`, and `--context-file` flags tailor AI remediation guidance to your product's deployment environment. Selects a product-specific AI persona (e.g. firmware security analyst, cloud security analyst) and shapes workaround recommendations for the target platform. Supported product types: `firmware`, `web_app`, `mobile_app`, `library`, `device_driver`, `container`, `desktop_app`. Network exposure levels: `air_gapped`, `internal_only`, `internet_facing`, `mixed`. Deployment context can also include regulatory frameworks and free-text notes. Context is included in cache keys so different contexts produce distinct AI results.
+- **Scanner Accuracy analysis script** — New `scripts/analysis/scanner_accuracy.py` for evaluating scanner detection accuracy against known-vulnerable SBOMs.
+
+### Improvements
+
+- **Executive Dashboard enhancements** — Additional metrics and visualizations for the Executive Dashboard report.
+- **Findings by Project table improvements** — Richer finding detail columns.
+- **Triage Prioritization rendering** — Bold subject CVE, expand arrows on badges.
+
+### Bug Fixes
+
+- **Web UI SSE JSON escaping** — Replaced hand-rolled JSON escaping with `json.dumps()` to correctly handle tab characters and other control characters in log messages.
+- **Web UI stderr race condition** — Concurrent report runs no longer clobber each other's stderr redirect via a serialization lock.
+- **Deployment context validation** — Unknown fields are rejected and empty strings are normalized to defaults.
+
+---
+
 ## Version 1.5.4 (February 2026)
 
 ### Bug Fixes

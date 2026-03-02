@@ -18,6 +18,7 @@ _CSV_COLUMNS = [
     "Component",
     "Component Version",
     "Status",
+    "Reachability",
     "Detected",
     "# of known exploits",
     "# of known weaponization",
@@ -77,6 +78,7 @@ def findings_by_project_pandas_transform(
         "severity": "Severity",
         "detected": "Detected",
         "status": "Status",
+        "reachability_label": "Reachability",
     }
 
     # Create output DataFrame with required columns
@@ -179,6 +181,7 @@ def findings_by_project_pandas_transform(
             "Severity": "",
             "Detected": "",
             "Status": "",
+            "Reachability": "UNKNOWN",
             "Description": "",
             "CVSS v2 Vector": "",
             "CVSS v3 Vector": "",
@@ -429,6 +432,23 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["exploit_count"] = 0
         df["weaponization_count"] = 0
+
+    # Handle reachability score
+    if "reachabilityScore" in df.columns:
+        raw = pd.to_numeric(df["reachabilityScore"], errors="coerce")
+        df["reachability_label"] = raw.apply(
+            lambda s: (
+                "UNKNOWN"
+                if pd.isna(s)
+                else (
+                    "REACHABLE"
+                    if s > 0
+                    else ("UNREACHABLE" if s < 0 else "INCONCLUSIVE")
+                )
+            )
+        )
+    else:
+        df["reachability_label"] = "UNKNOWN"
 
     # Ensure all required columns exist with defaults
     if "cvss_score" not in df.columns:

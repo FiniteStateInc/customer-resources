@@ -24,6 +24,9 @@ router = APIRouter(tags=["run"])
 
 # In-memory store of active/completed runs
 _runs: dict[str, dict[str, Any]] = {}
+# Serialise sys.stderr redirect so concurrent worker threads cannot clobber
+# each other's save/restore of the process-global file descriptor.
+_stderr_lock = threading.Lock()
 
 # Recipe groups that drive conditional field visibility (mirrors TUI prerun.py)
 CVE_RECIPES = {"cve impact"}
@@ -52,21 +55,11 @@ class SSELogHandler(logging.Handler):
                 self._queue.put_nowait,
                 {
                     "event": "log",
-                    "data": f'{{"level":"{level}","message":"{_escape_json(msg)}"}}',
+                    "data": json.dumps({"level": level, "message": msg}),
                 },
             )
         except Exception:
             pass
-
-
-def _escape_json(s: str) -> str:
-    """Escape a string for safe embedding in JSON."""
-    return (
-        s.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-    )
 
 
 def _execute_run(
@@ -97,7 +90,6 @@ def _execute_run(
         root_logger.setLevel(logging.INFO)
 
     captured_stderr = io.StringIO()
-    old_stderr = sys.stderr
 
     file_handler: logging.FileHandler | None = None
     try:
@@ -165,7 +157,9 @@ def _execute_run(
                 queue.put_nowait,
                 {
                     "event": "progress",
-                    "data": f'{{"completed":{completed},"total":{total_count},"recipe":"{_escape_json(name)}"}}',
+                    "data": json.dumps(
+                        {"completed": completed, "total": total_count, "recipe": name}
+                    ),
                 },
             )
 
@@ -176,12 +170,16 @@ def _execute_run(
 
         loop.call_soon_threadsafe(
             queue.put_nowait,
-            {"event": "progress", "data": f'{{"completed":0,"total":{total}}}'},
+            {"event": "progress", "data": json.dumps({"completed": 0, "total": total})},
         )
 
-        sys.stderr = captured_stderr
-        success = engine.run()
-        sys.stderr = old_stderr
+        with _stderr_lock:
+            old_stderr = sys.stderr
+            sys.stderr = captured_stderr
+            try:
+                success = engine.run()
+            finally:
+                sys.stderr = old_stderr
 
         stderr_output = captured_stderr.getvalue().strip()
         if stderr_output:
@@ -190,13 +188,16 @@ def _execute_run(
                     queue.put_nowait,
                     {
                         "event": "log",
-                        "data": f'{{"level":"info","message":"{_escape_json(line)}"}}',
+                        "data": json.dumps({"level": "info", "message": line}),
                     },
                 )
 
         loop.call_soon_threadsafe(
             queue.put_nowait,
-            {"event": "progress", "data": f'{{"completed":{total},"total":{total}}}'},
+            {
+                "event": "progress",
+                "data": json.dumps({"completed": total, "total": total}),
+            },
         )
 
         status = "success" if success else "error"
@@ -273,7 +274,6 @@ def _execute_run(
         )
 
     except ReportCancelled:
-        sys.stderr = old_stderr
         loop.call_soon_threadsafe(
             queue.put_nowait,
             {
@@ -282,7 +282,6 @@ def _execute_run(
             },
         )
     except SystemExit:
-        sys.stderr = old_stderr
         loop.call_soon_threadsafe(
             queue.put_nowait,
             {
@@ -291,16 +290,14 @@ def _execute_run(
             },
         )
     except Exception as e:
-        sys.stderr = old_stderr
         loop.call_soon_threadsafe(
             queue.put_nowait,
             {
                 "event": "done",
-                "data": f'{{"status":"error","error":"{_escape_json(str(e))}"}}',
+                "data": json.dumps({"status": "error", "error": str(e)}),
             },
         )
     finally:
-        sys.stderr = old_stderr
         root_logger.removeHandler(handler)
         if file_handler is not None:
             root_logger.removeHandler(file_handler)

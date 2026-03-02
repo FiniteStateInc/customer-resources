@@ -728,26 +728,38 @@ class MarkdownRenderer:
         if not findings_df.empty:
             parts.append("## Findings")
             find_cols = [
-                "cve_id",
+                "finding_id",
                 "severity",
                 "risk",
-                "epss_percentile",
                 "priority_band",
-                "gate",
-                "reachability_label",
+                "triage_score",
+                "gate_assignment",
                 "component_name",
+                "component_version",
                 "project_name",
+                "reachability_label",
+                "epss_percentile",
+                "ai_fix_version",
+                "ai_guidance",
+                "ai_workaround",
+                "ai_confidence",
             ]
             find_headers = {
-                "cve_id": "CVE ID",
+                "finding_id": "Finding ID",
                 "severity": "Severity",
                 "risk": "CVSS",
-                "epss_percentile": "EPSS",
-                "priority_band": "Priority Band",
-                "gate": "Gate",
-                "reachability_label": "Reachability",
+                "priority_band": "Band",
+                "triage_score": "Score",
+                "gate_assignment": "Gate",
                 "component_name": "Component",
+                "component_version": "Version",
                 "project_name": "Project",
+                "reachability_label": "Reachability",
+                "epss_percentile": "EPSS",
+                "ai_fix_version": "Fix Version",
+                "ai_guidance": "Guidance",
+                "ai_workaround": "Workaround",
+                "ai_confidence": "Confidence",
             }
             parts.append(
                 self._df_to_table(

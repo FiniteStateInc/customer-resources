@@ -266,7 +266,7 @@ class NVDClient:
     def _cancellable_sleep(self, seconds: float) -> None:
         """Sleep in short intervals, checking for cancellation."""
         if self._cancel_event is None:
-            time.sleep(seconds)
+            time.sleep(max(0, seconds))
             return
         # Sleep in 0.5s chunks so we can respond to cancel quickly
         end = time.monotonic() + seconds
@@ -275,7 +275,7 @@ class NVDClient:
                 from fs_report.report_engine import ReportCancelled
 
                 raise ReportCancelled("Report cancelled by user")
-            time.sleep(min(0.5, end - time.monotonic()))
+            time.sleep(max(0, min(0.5, end - time.monotonic())))
 
     def _rate_limit_wait(self) -> None:
         """Sleep if necessary to respect NVD rate limits."""

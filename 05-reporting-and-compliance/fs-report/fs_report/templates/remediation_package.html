@@ -68,10 +68,19 @@
                       margin: 6px 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
 
         .cve-list { font-size: 0.85rem; margin: 6px 0; }
+        .cve-detail { margin: 3px 0; }
+        .cve-detail summary { cursor: pointer; list-style: none; }
+        .cve-detail summary::-webkit-details-marker { display: none; }
+        .cve-detail summary::before { content: '\25b8'; display: inline-block; margin-right: 4px;
+                    font-size: 0.7rem; transition: transform 0.15s ease; color: var(--muted); }
+        .cve-detail[open] summary::before { transform: rotate(90deg); }
         .cve-item { display: inline-block; margin: 2px 4px 2px 0; padding: 1px 6px; border-radius: 3px;
                     background: var(--code-bg); font-family: monospace; font-size: 0.8rem; }
         .cve-item.critical { background: #fee2e2; color: #991b1b; }
         .cve-item.high { background: #ffedd5; color: #9a3412; }
+        .cve-description { margin: 4px 0 8px 12px; padding: 6px 10px; font-size: 0.82rem;
+                           color: var(--muted); background: var(--code-bg); border-radius: 4px;
+                           line-height: 1.45; }
 
         .guidance { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 4px;
                     padding: 10px 12px; margin: 8px 0; font-size: 0.85rem; }
@@ -303,9 +312,14 @@
 
             <div class="cve-list">
                 {% for r in action.resolves_parsed %}
-                    <span class="cve-item {{ r.severity|lower }}">
-                        {{ r.cve_id }} ({{ r.severity }}, {{ '%.1f' | format(r.cvss) }})
-                    </span>
+                    <details class="cve-detail"{% if scope_label and r.cve_id in scope_label %} open{% endif %}>
+                        <summary class="cve-item {{ r.severity|lower }}"{% if scope_label and r.cve_id in scope_label %} style="font-weight:700;"{% endif %}>
+                            {{ r.cve_id }} ({{ r.severity }}, {{ '%.1f' | format(r.cvss) }})
+                        </summary>
+                        {% if r.description %}
+                        <div class="cve-description">{{ r.description }}</div>
+                        {% endif %}
+                    </details>
                 {% endfor %}
             </div>
 

@@ -1,4 +1,35 @@
 releases:
+  - version: "1.7.0"
+    date: "2026-03-01"
+    changes:
+      - report: ~
+        type: added
+        description: "Deployment context (--product-type, --network-exposure, --context-file) tailors AI prompts to product type and network environment"
+      - report: "Triage Prioritization"
+        type: improved
+        description: "AI prompts use product-specific persona and workaround templates when deployment context is provided"
+      - report: "CVE Impact"
+        type: improved
+        description: "AI prompts use product-specific persona and workaround templates when deployment context is provided"
+      - report: "Remediation Package"
+        type: improved
+        description: "AI prompts use product-specific persona and workaround templates when deployment context is provided"
+      - report: "Executive Dashboard"
+        type: improved
+        description: "Additional metrics and visualizations"
+      - report: "Findings by Project"
+        type: improved
+        description: "Richer finding detail columns in HTML table"
+      - report: ~
+        type: added
+        description: "Scanner accuracy analysis script (scripts/analysis/scanner_accuracy.py)"
+      - report: ~
+        type: fixed
+        description: "Web UI SSE log events use json.dumps() instead of hand-rolled escaping — fixes malformed JSON on tab/control characters"
+      - report: ~
+        type: fixed
+        description: "Web UI stderr redirect is now thread-safe across concurrent report runs"
+
   - version: "1.6.0"
     date: "2026-02-25"
     changes:

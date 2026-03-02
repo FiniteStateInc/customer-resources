@@ -124,6 +124,24 @@
                 <div class="kpi-value">{{ sca_summary.components | default(0) }}</div>
             </div>
             {% endif %}
+            {% if license_kpis and license_kpis.total | default(0) > 0 %}
+            <div class="kpi-card">
+                <div class="kpi-title">Copyleft %</div>
+                <div class="kpi-value" {% if license_kpis.copyleft_pct | default(0) > 20 %}style="color: #d32f2f;"{% endif %}>{{ license_kpis.copyleft_pct | default(0) }}%</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Strong Copyleft</div>
+                <div class="kpi-value" {% if license_kpis.copyleft_strong | default(0) > 0 %}style="color: #d32f2f;"{% endif %}>{{ license_kpis.copyleft_strong | default(0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Permissive</div>
+                <div class="kpi-value" style="color: #388e3c;">{{ license_kpis.permissive | default(0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">No License</div>
+                <div class="kpi-value" {% if license_kpis.no_license | default(0) > 0 %}style="color: #f57c00;"{% endif %}>{{ license_kpis.no_license | default(0) }}</div>
+            </div>
+            {% endif %}
             <div class="kpi-card">
                 <div class="kpi-title">Total Findings</div>
                 <div class="kpi-value">{{ sca_summary.findings | default(0) }}</div>
@@ -152,8 +170,8 @@
         <div class="two-col">
             <!-- Severity Trends (Line) -->
             <div class="chart-container">
-                <h2 class="chart-title">Severity Trends (12 Months)</h2>
-                <p class="chart-description">Critical and High severity findings over the last 12 months.</p>
+                <h2 class="chart-title">Severity Trends ({{ severity_trends.month_count | default(12) }} Months)</h2>
+                <p class="chart-description">Critical and High severity findings over the report period.</p>
                 <div class="chart-wrapper">
                     <canvas id="severityTrendsChart"></canvas>
                 </div>

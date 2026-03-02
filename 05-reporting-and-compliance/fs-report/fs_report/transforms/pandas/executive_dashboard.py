@@ -135,11 +135,11 @@ def _build_severity_trends(
 ) -> dict[str, Any]:
     """Build multi-line chart data for Critical + High over the configured period."""
     if df.empty:
-        return {"labels": [], "datasets": []}
+        return {"labels": [], "datasets": [], "month_count": 0}
 
     dates = df["_detected_dt"].dropna()
     if dates.empty:
-        return {"labels": [], "datasets": []}
+        return {"labels": [], "datasets": [], "month_count": 0}
 
     # Determine month range from config period (fall back to last 12 months)
     now = datetime.now(UTC)
@@ -183,6 +183,7 @@ def _build_severity_trends(
 
     return {
         "labels": month_labels,
+        "month_count": len(month_labels),
         "datasets": [
             {
                 "label": "Critical",
@@ -342,10 +343,16 @@ def _build_license_bar(
             pid = str(pid.get("id", ""))
         else:
             pid = str(pid)
-        if project_ids and pid not in project_ids:
+        # Skip filtering when pid is empty — component was already API-scoped
+        if project_ids and pid and pid not in project_ids:
             continue
 
-        license_name = comp.get("declaredLicense") or comp.get("license") or "Unknown"
+        license_name = (
+            comp.get("declaredLicenses")
+            or comp.get("declaredLicense")
+            or comp.get("license")
+            or "Unknown"
+        )
         if not license_name or license_name.strip() == "":
             license_name = "Unknown"
         license_counts[license_name] += 1
@@ -357,6 +364,80 @@ def _build_license_bar(
     return {
         "labels": [lic for lic, _ in top10],
         "data": [count for _, count in top10],
+    }
+
+
+def _build_license_kpis(
+    components: list[dict[str, Any]], project_ids: set[str]
+) -> dict[str, Any]:
+    """Build license health KPIs: copyleft breakdown, permissive count, etc."""
+    from fs_report.transforms.pandas.component_list import COPYLEFT_LOOKUP
+
+    if not components:
+        return {
+            "total": 0,
+            "copyleft_strong": 0,
+            "copyleft_weak": 0,
+            "permissive": 0,
+            "unknown": 0,
+            "no_license": 0,
+            "unique_licenses": 0,
+            "copyleft_pct": 0.0,
+        }
+
+    strong = 0
+    weak = 0
+    permissive = 0
+    unknown = 0
+    no_license = 0
+    seen_licenses: set[str] = set()
+    total = 0
+
+    for comp in components:
+        pid = comp.get("projectId") or ""
+        if isinstance(pid, dict):
+            pid = str(pid.get("id", ""))
+        else:
+            pid = str(pid)
+        # Skip filtering when pid is empty — component was already API-scoped
+        if project_ids and pid and pid not in project_ids:
+            continue
+
+        total += 1
+        license_name = (
+            comp.get("declaredLicenses")
+            or comp.get("declaredLicense")
+            or comp.get("license")
+            or ""
+        )
+        if not license_name or license_name.strip() == "":
+            no_license += 1
+            continue
+
+        license_name = license_name.strip()
+        seen_licenses.add(license_name)
+
+        classification = COPYLEFT_LOOKUP.get(license_name)
+        if classification == "STRONG_COPYLEFT":
+            strong += 1
+        elif classification == "WEAK_COPYLEFT":
+            weak += 1
+        elif classification == "PERMISSIVE":
+            permissive += 1
+        else:
+            unknown += 1
+
+    copyleft_pct = round(100 * (strong + weak) / total, 1) if total > 0 else 0.0
+
+    return {
+        "total": total,
+        "copyleft_strong": strong,
+        "copyleft_weak": weak,
+        "permissive": permissive,
+        "unknown": unknown,
+        "no_license": no_license,
+        "unique_licenses": len(seen_licenses),
+        "copyleft_pct": copyleft_pct,
     }
 
 
@@ -444,6 +525,32 @@ def _build_findings_by_type(df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+_POLICY_ORDER: dict[str, int] = {"PERMITTED": 0, "WARNING": 1, "VIOLATION": 2}
+
+
+def _extract_policy(comp: dict[str, Any]) -> str:
+    """Extract the most restrictive policy from a component's license details."""
+    best_rank = -1
+    best_policy = ""
+    for field in (
+        "concludedLicenseDetails",
+        "declaredLicenseDetails",
+        "licenseDetails",
+    ):
+        details = comp.get(field)
+        if not isinstance(details, list):
+            continue
+        for ld in details:
+            if not isinstance(ld, dict):
+                continue
+            p = (ld.get("policy") or "").upper()
+            rank = _POLICY_ORDER.get(p, -1)
+            if rank > best_rank:
+                best_rank = rank
+                best_policy = p
+    return best_policy
+
+
 def _build_sca_summary(
     df: pd.DataFrame,
     components: list[dict[str, Any]],
@@ -468,12 +575,11 @@ def _build_sca_summary(
             pid = str(pid.get("id", ""))
         else:
             pid = str(pid)
-        if project_ids and pid not in project_ids:
+        # Skip filtering when pid is empty — component was already API-scoped
+        if project_ids and pid and pid not in project_ids:
             continue
         comp_count += 1
-        policy = str(
-            comp.get("policyStatus") or comp.get("policy_status") or ""
-        ).upper()
+        policy = _extract_policy(comp)
         if policy == "VIOLATION":
             violation_count += 1
         elif policy == "WARNING":
@@ -637,6 +743,7 @@ def executive_dashboard_transform(
     risk_donut, top_risk_products = _build_risk_donut_and_table(df)
     open_issues_pie = _build_open_issues_pie(df)
     license_bar = _build_license_bar(components, project_ids)
+    license_kpis = _build_license_kpis(components, project_ids)
     project_table = _build_project_table(df)
     exploit_intel = _build_exploit_intel(df)
     findings_by_type = _build_findings_by_type(df)
@@ -655,6 +762,7 @@ def executive_dashboard_transform(
         "top_risk_products": top_risk_products,
         "open_issues_pie": open_issues_pie,
         "license_bar": license_bar,
+        "license_kpis": license_kpis,
         "project_table": project_table,
         "exploit_intel": exploit_intel,
         "findings_by_type": findings_by_type,

@@ -302,6 +302,31 @@ fs-report run --recipe "Triage Prioritization" --ai --ai-model-high claude-sonne
 fs-report run --recipe "Triage Prioritization" --ai-prompts --period 30d
 ```
 
+### Deployment Context
+
+Tailor AI prompts to your product's deployment environment with `--product-type` and `--network-exposure`. This selects a product-specific AI persona and shapes workaround recommendations:
+
+```bash
+# Inline deployment context
+fs-report run --recipe "Remediation Package" --project "MyRouter" --ai \
+  --product-type firmware --network-exposure air_gapped
+
+# From a YAML file (can include regulatory and deployment_notes)
+fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --ai \
+  --context-file deployment.yaml
+```
+
+Example `deployment.yaml`:
+
+```yaml
+product_type: firmware
+network_exposure: internal_only
+regulatory: "IEC-62443, FDA"
+deployment_notes: "Edge gateway deployed in hospital network"
+```
+
+Product types: `firmware`, `web_app`, `mobile_app`, `library`, `device_driver`, `container`, `desktop_app`, `generic`. Network exposure: `air_gapped`, `internal_only`, `internet_facing`, `mixed`, `unknown`.
+
 See `REPORT_GUIDE.md` for full AI feature details.
 
 ## Docker Usage

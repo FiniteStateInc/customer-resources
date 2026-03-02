@@ -1042,10 +1042,6 @@ class DataTransformer:
             # This eliminates the triple-copy problem: raw_data -> DF -> list -> DF.
             data_for_transform = df
 
-            # Prepare additional DataFrames if available
-            additional_data.get("projects") if additional_data else None
-            (additional_data.get("components") if additional_data else None)
-
             # Call the transform function with proper arguments
             self.logger.debug(
                 f"Calling pandas transform function: {transform_function_name}"

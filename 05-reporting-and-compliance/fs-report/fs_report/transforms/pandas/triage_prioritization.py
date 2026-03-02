@@ -464,6 +464,42 @@ def _load_gates(
     return gates
 
 
+# Sentinel for "parameter not provided" (distinct from None = NVD unavailable)
+_UNSET: Any = object()
+
+
+def _init_nvd_client(
+    config: Any = None,
+    additional_data: dict[str, Any] | None = None,
+) -> Any:
+    """Initialize NVD client if available, returns None on failure."""
+    try:
+        from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
+
+        cache_dir = None
+        cache_ttl = 0
+        nvd_api_key = None
+        if config and hasattr(config, "cache_dir"):
+            cache_dir = getattr(config, "cache_dir", None)
+            cache_ttl = getattr(config, "cache_ttl", 0) or 0
+            nvd_api_key = getattr(config, "nvd_api_key", None)
+        elif additional_data and "config" in additional_data:
+            cfg = additional_data["config"]
+            cache_dir = getattr(cfg, "cache_dir", None)
+            cache_ttl = getattr(cfg, "cache_ttl", 0) or 0
+            nvd_api_key = getattr(cfg, "nvd_api_key", None)
+        client = NVDClient(
+            api_key=nvd_api_key,
+            cache_dir=cache_dir,
+            cache_ttl=max(cache_ttl, 86400),  # NVD data is stable; cache >= 24 h
+        )
+        logger.info(NVD_ATTRIBUTION)
+        return client
+    except Exception as e:
+        logger.info(f"NVD client unavailable: {e}")
+        return None
+
+
 # =============================================================================
 # Main Entry Point
 # =============================================================================
@@ -562,6 +598,9 @@ def triage_prioritization_transform(
     # Track extra output files (prompts, VEX JSON) for user-visible listing
     extra_generated_files: list[str] = []
 
+    # Create NVD client once for the entire transform (prompts + AI guidance)
+    nvd_client = _init_nvd_client(config, additional_data)
+
     # AI prompt generation (optional, --ai-prompts flag)
     ai_triage_prompts: list[dict[str, str]] = []
     ai_portfolio_prompt: str = ""
@@ -575,30 +614,12 @@ def triage_prioritization_transform(
         want_prompts = bool(getattr(cfg, "ai_prompts", False))
 
     if want_prompts:
-        # --- Initialise NVD client for fix-version enrichment in prompts ---
-        _prompt_nvd = None
-        try:
-            from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
+        _deployment_ctx = (
+            additional_data.get("deployment_context") if additional_data else None
+        )
 
-            _prompt_cache_dir = None
-            _prompt_cache_ttl = 0
-            _prompt_nvd_key = None
-            if config and hasattr(config, "cache_dir"):
-                _prompt_cache_dir = getattr(config, "cache_dir", None)
-                _prompt_cache_ttl = getattr(config, "cache_ttl", 0) or 0
-                _prompt_nvd_key = getattr(config, "nvd_api_key", None)
-            elif additional_data and "config" in additional_data:
-                _pcfg = additional_data["config"]
-                _prompt_cache_dir = getattr(_pcfg, "cache_dir", None)
-                _prompt_cache_ttl = getattr(_pcfg, "cache_ttl", 0) or 0
-                _prompt_nvd_key = getattr(_pcfg, "nvd_api_key", None)
-            _prompt_nvd = NVDClient(
-                api_key=_prompt_nvd_key,
-                cache_dir=_prompt_cache_dir,
-                cache_ttl=max(_prompt_cache_ttl, 86400),
-            )
-            logger.info(NVD_ATTRIBUTION)
-            # Batch-fetch NVD data for top finding CVEs
+        # Batch-fetch NVD data for top finding CVEs (warm the shared client's cache)
+        if nvd_client:
             _prompt_cve_ids = [
                 fid
                 for fid in df.head(100)["finding_id"].dropna().unique()
@@ -609,9 +630,7 @@ def triage_prioritization_transform(
                     f"Fetching NVD fix data for {len(_prompt_cve_ids)} CVEs "
                     f"(prompt enrichment)..."
                 )
-                _prompt_nvd.get_batch(list(_prompt_cve_ids), progress=True)
-        except Exception as _nvd_err:
-            logger.info(f"NVD unavailable for prompt enrichment: {_nvd_err}")
+                nvd_client.get_batch(list(_prompt_cve_ids), progress=True)
 
         # --- Per-finding prompts (top 100 by priority, matching findings table) ---
         prompt_df = df.head(100)
@@ -622,14 +641,15 @@ def triage_prioritization_transform(
         prompts_for_file: list[tuple[str, str, str, str]] = []
         for _, row in prompt_df.iterrows():
             _nvd_snip = ""
-            if _prompt_nvd:
+            if nvd_client:
                 fid = row.get("finding_id", "")
                 if str(fid).startswith("CVE-"):
-                    _nvd_snip = _prompt_nvd.format_for_prompt(str(fid))
+                    _nvd_snip = nvd_client.format_for_prompt(str(fid))
             prompt_text = _build_triage_prompt(
                 row,
                 nvd_snippet=_nvd_snip,
                 scoring_config=scoring_config,
+                deployment_context=_deployment_ctx,
             )
             finding_id = row.get("finding_id", "Unknown")
             component = f"{row.get('component_name', '')} {row.get('component_version', '')}".strip()
@@ -677,7 +697,7 @@ def triage_prioritization_transform(
 
         # --- Build NVD snippets map for portfolio/project prompt enrichment ---
         _prompt_nvd_snippets_map: dict[str, str] = {}
-        if _prompt_nvd and not top_components.empty:
+        if nvd_client and not top_components.empty:
             _prompt_comp_groups = (
                 df.groupby(["component_name", "component_version"])
                 .agg(cve_ids=("finding_id", list))
@@ -685,7 +705,7 @@ def triage_prioritization_transform(
             )
             for _, _cg_row in _prompt_comp_groups.iterrows():
                 _cg_key = f"{_cg_row['component_name']}:{_cg_row['component_version']}"
-                _cg_snippet = _prompt_nvd.format_batch_for_prompt(
+                _cg_snippet = nvd_client.format_batch_for_prompt(
                     _cg_row["cve_ids"][:10]
                 )
                 if _cg_snippet:
@@ -709,6 +729,7 @@ def triage_prioritization_transform(
                 reachability_summary,
                 scoring_config=scoring_config,
                 nvd_snippets_map=_prompt_nvd_snippets_map or None,
+                deployment_context=_deployment_ctx,
             )
             logger.info("Generated portfolio-level AI prompt")
 
@@ -723,6 +744,7 @@ def triage_prioritization_transform(
                 band_counts,
                 scoring_config=scoring_config,
                 nvd_snippets_map=_prompt_nvd_snippets_map or None,
+                deployment_context=_deployment_ctx,
             )
         logger.info(f"Generated {len(ai_project_prompts)} project-level AI prompts")
 
@@ -756,7 +778,7 @@ def triage_prioritization_transform(
                 )
 
             # Batch-fetch NVD data for component CVEs (many already cached)
-            if _prompt_nvd:
+            if nvd_client:
                 _comp_cves: list[str] = []
                 for _, crow in comp_groups.iterrows():
                     ct = (crow["component_name"], crow["component_version"])
@@ -770,7 +792,7 @@ def triage_prioritization_transform(
                         f"Fetching NVD fix data for {len(_comp_cves_unique)} "
                         f"component CVEs (prompt enrichment)..."
                     )
-                    _prompt_nvd.get_batch(_comp_cves_unique, progress=True)
+                    nvd_client.get_batch(_comp_cves_unique, progress=True)
 
             for _, crow in comp_groups.iterrows():
                 comp_tuple = (crow["component_name"], crow["component_version"])
@@ -781,8 +803,8 @@ def triage_prioritization_transform(
                 reach_info = [reach_map[c] for c in cve_ids if c in reach_map] or None
                 # NVD fix snippet for this component's CVEs
                 _comp_nvd_snip = ""
-                if _prompt_nvd:
-                    _comp_nvd_snip = _prompt_nvd.format_batch_for_prompt(cve_ids)
+                if nvd_client:
+                    _comp_nvd_snip = nvd_client.format_batch_for_prompt(cve_ids)
                 # Build per-CVE exploitability signals
                 _cve_sigs: dict[str, dict[str, Any]] = {}
                 for _cid in cve_ids:
@@ -802,6 +824,7 @@ def triage_prioritization_transform(
                     reach_info,
                     nvd_fix_snippet=_comp_nvd_snip,
                     cve_signals=_cve_sigs if _cve_sigs else None,
+                    deployment_context=_deployment_ctx,
                 )
             logger.info(
                 f"Generated {len(ai_component_prompts)} component-level AI prompts"
@@ -845,6 +868,10 @@ def triage_prioritization_transform(
             model_low=ai_config.get("model_low"),
             nvd_api_key=ai_config.get("nvd_api_key"),
             scoring_config=scoring_config,
+            deployment_context=(
+                additional_data.get("deployment_context") if additional_data else None
+            ),
+            nvd_client=nvd_client,
         )
 
     # Enrich VEX IN_TRIAGE recommendations with AI mitigation data
@@ -2110,6 +2137,7 @@ def _build_triage_prompt(
     row: pd.Series,
     nvd_snippet: str = "",
     scoring_config: dict[str, Any] | None = None,
+    deployment_context: Any | None = None,
 ) -> str:
     """Build an LLM prompt for triage guidance for one finding.
 
@@ -2176,7 +2204,17 @@ def _build_triage_prompt(
     if nvd_snippet:
         nvd_section = f"\n{nvd_snippet}\n"
 
-    prompt = f"""You are a security triage advisor. Provide specific triage and remediation guidance for the following vulnerability finding.
+    from fs_report.deployment_context import build_context_section, get_persona
+    from fs_report.llm_client import (
+        _fix_version_block,
+        _verdict_block,
+        _workaround_block,
+    )
+
+    _persona = get_persona(deployment_context)
+    _ctx_section = build_context_section(deployment_context)
+
+    prompt = f"""You are a {_persona}. Provide specific triage and remediation guidance for the following vulnerability finding.
 If a current VEX status is present, factor it into your recommendations — for example, findings already marked NOT_AFFECTED or RESOLVED may only need verification rather than new remediation.
 
 ## Finding: {finding_id}
@@ -2203,15 +2241,15 @@ If a current VEX status is present, factor it into your recommendations — for 
 - Status: {reach_label} (score={reach_score})
 - Vulnerable Functions: {vuln_funcs or 'None identified'}
 {chr(10).join(factor_lines) if factor_lines else '- No reachability factors available'}
-{nvd_section}
+{nvd_section}{_ctx_section}
 Respond in this exact format:
 PRIORITY: <confirm or adjust the priority band with rationale>
-APPLICABILITY: <affected | not_affected | uncertain — IMPORTANT: Check library identity FIRST, before considering reachability or exploit data. (1) Does the NVD Target name a DIFFERENT library than the scanned component? e.g., CVE targets "gnu/glibc" but component is openwrt/libc (musl), or CVE targets "openssl" but component is BoringSSL. If YES → answer "not_affected" and STOP. Reachability of standard functions (getaddrinfo, realpath, glob, strcoll, etc.) does NOT mean the same bug exists — different implementations have completely different code and different bugs. (2) Is this the wrong platform? e.g., Windows-only CVE on Linux. If YES → "not_affected". (3) Is the installed version outside the affected range? If YES → "not_affected". Only answer "affected" when the component is genuinely the SAME library the CVE targets.>
+APPLICABILITY: <affected | not_affected | uncertain — {_verdict_block()}>
 ACTION: <specific recommended action: upgrade component, apply patch, configure mitigation, or accept risk>
 RATIONALE: <1 sentence explaining why this action is recommended, citing NVD data or advisory if available>
-FIX_VERSION: <specific version number. If NVD data says "FIXED in >= X", recommend X. If NVD data says a version is "STILL VULNERABLE", the fix must be AFTER that version — do NOT recommend the vulnerable version. Cross-reference the installed version ({component_ver}) against the NVD affected ranges. Only state "verify latest stable release" if no version data is available.>
-WORKAROUND: <1-3 sentences: if no straightforward upgrade is available, suggest firmware-specific mitigations such as disabling affected services, network segmentation, restricting exposed interfaces, or configuration hardening. If a direct upgrade is available, state "Upgrade recommended.">
-CODE_SEARCH: <grep/search patterns to find affected code in firmware — use specific vulnerable function names if known>
+FIX_VERSION: <{_fix_version_block(component_ver)}>
+WORKAROUND: <{_workaround_block(deployment_context)}>
+CODE_SEARCH: <grep/search patterns to find affected code — use specific vulnerable function names if known>
 CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium (version estimated from known patterns), low (uncertain — verify independently)>"""
 
     return prompt
@@ -2438,6 +2476,7 @@ def _build_portfolio_prompt(
     scoring_config: dict[str, Any] | None = None,
     nvd_snippets_map: dict[str, str] | None = None,
     project_ai_summaries: dict[str, str] | None = None,
+    deployment_context: Any | None = None,
 ) -> str:
     """Build a portfolio-level remediation prompt (offline, no API key needed).
 
@@ -2485,7 +2524,13 @@ Note: "Reachable" means static/binary analysis confirmed the vulnerable function
 These are the most urgent findings. Focus remediation here first.
 """
 
-    return f"""You are a firmware security analyst. Analyze this vulnerability triage data and provide strategic remediation guidance.
+    from fs_report.deployment_context import build_context_section, get_persona
+    from fs_report.llm_client import _applicability_warning
+
+    _persona = get_persona(deployment_context)
+    _ctx_section = build_context_section(deployment_context)
+
+    return f"""You are a {_persona}. Analyze this vulnerability triage data and provide strategic remediation guidance.
 
 ## Portfolio Overview
 - Total findings: {portfolio_summary.get('total', 0)}
@@ -2501,10 +2546,8 @@ These are the most urgent findings. Focus remediation here first.
 {_format_projects_bullet(top_projects)}
 {_build_nvd_section_for_portfolio(top_comps, nvd_snippets_map)}
 {_build_project_ai_section(top_projects, project_ai_summaries)}
-## Applicability Warning
-Some NVD matches may be false positives (e.g., openwrt/libc matched to glibc CVEs, or BoringSSL matched to OpenSSL CVEs).
-When the NVD product name differs from the scanned component, flag it as a potential false positive.
-
+{_applicability_warning()}
+{_ctx_section}
 Provide a concise strategic summary (3-5 paragraphs):
 1. Focus on GATE_1 and GATE_2 findings as the most urgent
 2. Top 3 components to remediate, ranked by exploitability (exploits, KEV, EPSS, reachability)
@@ -2522,6 +2565,7 @@ def _build_project_prompt(
     scoring_config: dict[str, Any] | None = None,
     nvd_snippets_map: dict[str, str] | None = None,
     component_guidance: dict[str, dict[str, Any]] | None = None,
+    deployment_context: Any | None = None,
 ) -> str:
     """Build a project-level remediation prompt (offline, no API key needed).
 
@@ -2622,7 +2666,13 @@ def _build_project_prompt(
 These are the most urgent findings. Focus remediation here first.
 """
 
-    return f"""You are a firmware security analyst. Provide remediation guidance for project "{project_name}".
+    from fs_report.deployment_context import build_context_section, get_persona
+    from fs_report.llm_client import _applicability_warning
+
+    _persona = get_persona(deployment_context)
+    _ctx_section = build_context_section(deployment_context)
+
+    return f"""You are a {_persona}. Provide remediation guidance for project "{project_name}".
 
 ## Risk Band Distribution
 {_json.dumps(band_counts, indent=2)}
@@ -2631,7 +2681,7 @@ These are the most urgent findings. Focus remediation here first.
 {_build_scoring_methodology(scoring_config)}
 {gate_section}
 ## Reachability Summary
-- Reachable: {reachable_total} (vulnerable code confirmed present and callable in firmware)
+- Reachable: {reachable_total} (vulnerable code confirmed present and callable)
 - Unreachable: {unreachable_total} (vulnerable code not reachable — lower risk)
 - Inconclusive: {unknown_total} (reachability not determined)
 
@@ -2639,10 +2689,8 @@ These are the most urgent findings. Focus remediation here first.
 {_format_project_components_bullet(component_summary)}
 {_build_nvd_section_for_project(component_summary, nvd_snippets_map)}
 {_build_component_ai_section(component_summary, component_guidance)}
-## Applicability Warning
-Some NVD matches may be false positives (e.g., openwrt/libc matched to glibc CVEs, or BoringSSL matched to OpenSSL CVEs).
-When the NVD product name differs from the scanned component, flag it as a potential false positive.
-
+{_applicability_warning()}
+{_ctx_section}
 Note: "reachable" indicates CVEs where binary analysis confirmed the vulnerable code path is callable.
 
 Provide a concise project remediation plan (2-3 paragraphs):
@@ -2663,6 +2711,7 @@ def _build_component_prompt(
     exploit_details: list[dict[str, Any]] | None = None,
     nvd_fix_snippet: str = "",
     cve_signals: dict[str, dict[str, Any]] | None = None,
+    deployment_context: Any | None = None,
 ) -> str:
     """Build a component-level remediation prompt (offline, no API key needed).
 
@@ -2763,7 +2812,17 @@ def _build_component_prompt(
     if nvd_fix_snippet:
         nvd_section = f"\n{nvd_fix_snippet}\n"
 
-    return f"""You are a security remediation advisor. Provide specific fix guidance for:
+    from fs_report.deployment_context import build_context_section, get_persona
+    from fs_report.llm_client import (
+        _fix_version_block,
+        _verdict_block,
+        _workaround_block,
+    )
+
+    _persona = get_persona(deployment_context)
+    _ctx_section = build_context_section(deployment_context)
+
+    return f"""You are a {_persona}. Provide specific fix guidance for:
 
 Component: {component_name} version {component_version}
 
@@ -2775,14 +2834,14 @@ CVEs:
 {f"## Exploit Information{exploit_section}" if exploit_section else ""}
 
 {reach_section}
-{nvd_section}
+{nvd_section}{_ctx_section}
 Respond in this exact format:
-VERDICT: <affected | not_affected | uncertain — IMPORTANT: Check library identity FIRST, before considering reachability or exploit data. (1) Does the NVD Target name a DIFFERENT library than the scanned component? e.g., CVE targets "gnu/glibc" but component is openwrt/libc (musl), or CVE targets "openssl" but component is BoringSSL. If YES → answer "not_affected" and STOP. Reachability of standard functions (getaddrinfo, realpath, glob, strcoll, nan, nanf, etc.) does NOT mean the same bug exists — different implementations (glibc vs musl, OpenSSL vs BoringSSL) have completely different source code and different bugs. A function name match is NOT a vulnerability match. (2) Is this the wrong platform? e.g., Windows-only CVE on Linux. If YES → "not_affected". (3) Is the installed version outside the affected range? If YES → "not_affected". Only answer "affected" when the component is genuinely the SAME library the CVE targets.>
-FIX_VERSION: <specific version number. If NVD data says "FIXED in >= X", recommend X. If NVD data says a version is "STILL VULNERABLE", the fix must be AFTER that version — do NOT recommend the vulnerable version. For well-known libraries (OpenSSL, curl, busybox, zlib, etc.), recall the specific patch version from security advisories. Only state "verify latest stable release" if no version data is available.>
+VERDICT: <affected | not_affected | uncertain — {_verdict_block()}>
+FIX_VERSION: <{_fix_version_block(component_version)}>
 RATIONALE: <1 sentence explaining why this fix or version is recommended, citing advisory source if known>
 GUIDANCE: <1-2 sentence upgrade guidance>
-WORKAROUND: <1-3 sentences: if no straightforward upgrade is available, suggest firmware-specific mitigations such as disabling affected services, network segmentation, restricting exposed interfaces, or configuration hardening. If a direct upgrade is available, state "Upgrade recommended.">
-CODE_SEARCH: <grep/search patterns to find affected code in firmware — use specific vulnerable function names if known from reachability analysis>
+WORKAROUND: <{_workaround_block(deployment_context)}>
+CODE_SEARCH: <grep/search patterns to find affected code — use specific vulnerable function names if known from reachability analysis>
 CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium (version estimated from known patterns), low (uncertain — verify independently)>"""
 
 
@@ -2922,6 +2981,8 @@ def _generate_ai_guidance(
     model_low: str | None = None,
     nvd_api_key: str | None = None,
     scoring_config: dict[str, Any] | None = None,
+    deployment_context: Any | None = None,
+    nvd_client: Any = _UNSET,
 ) -> tuple[str, dict[str, str], dict[str, dict[str, Any]], dict[str, dict[str, str]]]:
     """
     Generate AI remediation guidance at all requested scopes.
@@ -2931,6 +2992,9 @@ def _generate_ai_guidance(
         provider: LLM provider override ("anthropic", "openai", "copilot").
         nvd_api_key: Optional NVD API key for faster fix-version lookups.
         scoring_config: Active scoring configuration for dynamic prompt generation.
+        deployment_context: Optional DeploymentContext for prompt customization.
+        nvd_client: Pre-initialized NVD client.  When ``_UNSET`` (default),
+            creates its own client internally (standalone-callable fallback).
 
     Returns:
         Tuple of (portfolio_summary_text, project_summaries_dict,
@@ -2949,32 +3013,37 @@ def _generate_ai_guidance(
             provider=provider,
             model_high=model_high,
             model_low=model_low,
+            deployment_context=deployment_context,
         )
     except (ValueError, ImportError) as e:
         logger.warning(f"LLM client init failed: {e}")
         return "", {}, {}, {}
 
     # --- Initialise NVD client for fix-version enrichment ---
-    nvd = None
-    try:
-        from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
+    if nvd_client is _UNSET:
+        nvd = None
+        try:
+            from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
 
-        nvd = NVDClient(
-            api_key=nvd_api_key,
-            cache_dir=cache_dir,
-            cache_ttl=max(cache_ttl, 86400),  # NVD data is stable; cache ≥ 24 h
-        )
-        # NVD Terms of Use: log required attribution notice
-        logger.info(NVD_ATTRIBUTION)
-        if nvd._api_key:  # noqa: SLF001
-            logger.info("NVD client initialised with API key (50 req/30s)")
-        else:
-            logger.info(
-                "NVD client initialised without API key (5 req/30s). "
-                "Set NVD_API_KEY or use --nvd-api-key for 10x throughput."
+            nvd = NVDClient(
+                api_key=nvd_api_key,
+                cache_dir=cache_dir,
+                cache_ttl=max(cache_ttl, 86400),  # NVD data is stable; cache >= 24 h
             )
-    except Exception as e:
-        logger.info(f"NVD client unavailable (fix-version enrichment disabled): {e}")
+            logger.info(NVD_ATTRIBUTION)
+            if nvd._api_key:  # noqa: SLF001
+                logger.info("NVD client initialised with API key (50 req/30s)")
+            else:
+                logger.info(
+                    "NVD client initialised without API key (5 req/30s). "
+                    "Set NVD_API_KEY or use --nvd-api-key for 10x throughput."
+                )
+        except Exception as e:
+            logger.info(
+                f"NVD client unavailable (fix-version enrichment disabled): {e}"
+            )
+    else:
+        nvd = nvd_client
 
     # --- Build reachability summary for portfolio prompt ---
     reachability_summary = None
@@ -3112,7 +3181,10 @@ def _generate_ai_guidance(
             if fid:
                 nvd_snippet = nvd_finding_snippets.get(fid, "")
                 prompt = _build_triage_prompt(
-                    row, nvd_snippet=nvd_snippet, scoring_config=scoring_config
+                    row,
+                    nvd_snippet=nvd_snippet,
+                    scoring_config=scoring_config,
+                    deployment_context=deployment_context,
                 )
                 finding_prompts.append((fid, prompt))
 
