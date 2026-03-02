@@ -1,0 +1,5 @@
+f3322ebf2167ba84ebe9be350ad6a515514659106bddaea4f431b40e532f01d0  fs-cli-darwin-amd64
+55901ae212d6bc35c4feecefca10d5ce507313f86bb9561dc05756bed67aac69  fs-cli-darwin-arm64
+a0269a00d66fc62adec9ec9e9ee45c09c783cb5f7692045c357c65b821e54b3b  fs-cli-linux-amd64
+89dbcdd6ba44b7b748baf40ad285bd84185086f72bdf97ca960c978fef04d819  fs-cli-linux-arm64
+8d95da9abca78219ce49f4dc2737f3b5d23a5f6f254ff33eea7913af8fe4d70d  fs-cli-windows-amd64.exe
