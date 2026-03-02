@@ -109,6 +109,10 @@ COMPONENT_FIELDS = {
     "source": "source",  # Stored as JSON array
     "status": "status",
     "edited": "edited",
+    # License detail arrays (needed for policy violation/warning extraction)
+    "licenseDetails": "license_details",  # Stored as JSON
+    "declaredLicenseDetails": "declared_license_details",  # Stored as JSON
+    "concludedLicenseDetails": "concluded_license_details",  # Stored as JSON
     # Project context (needed for Component List report)
     "project.id": "project_id",
     "project.name": "project_name",
@@ -249,6 +253,9 @@ CREATE TABLE IF NOT EXISTS components (
     source TEXT,
     status TEXT,
     edited INTEGER,
+    license_details TEXT,
+    declared_license_details TEXT,
+    concluded_license_details TEXT,
     project_id TEXT,
     project_name TEXT,
     project_version_id TEXT,
@@ -656,6 +663,9 @@ class SQLiteCache:
             ("findings", "component_vc_id", "TEXT"),
             ("findings", "title", "TEXT"),
             ("projects", "default_branch_latest_version_id", "TEXT"),
+            ("components", "license_details", "TEXT"),
+            ("components", "declared_license_details", "TEXT"),
+            ("components", "concluded_license_details", "TEXT"),
         ]
         for table, col, col_type in migrations:
             try:
@@ -844,6 +854,9 @@ class SQLiteCache:
                     "affected_projects",
                     "affected_components",
                     "cvss_severity",
+                    "license_details",
+                    "declared_license_details",
+                    "concluded_license_details",
                 ):
                     try:
                         value = json.loads(value) if value else None

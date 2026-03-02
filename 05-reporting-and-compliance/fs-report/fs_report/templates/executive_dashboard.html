@@ -116,7 +116,7 @@
                 <div class="kpi-value" {% if sca_summary.violations | default(0) > 0 %}style="color: #d32f2f;"{% endif %}>{{ sca_summary.violations | default(0) }}</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-title">Warnings</div>
+                <div class="kpi-title">Policy Warnings</div>
                 <div class="kpi-value" {% if sca_summary.warnings | default(0) > 0 %}style="color: #f57c00;"{% endif %}>{{ sca_summary.warnings | default(0) }}</div>
             </div>
             <div class="kpi-card">

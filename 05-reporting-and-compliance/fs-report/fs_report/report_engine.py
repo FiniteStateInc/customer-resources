@@ -34,6 +34,7 @@ except ImportError:
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 import pandas as pd
 from rich.console import Console
 
@@ -3275,8 +3276,8 @@ class ReportEngine:
                                 # a DataFrame immediately so raw list[dict] is freed.
                                 pv_chunks: list[pd.DataFrame] = []
                                 batch_size = (
-                                    20 if len(project_ids) > 200 else 50
-                                )  # Projects per batch
+                                    10 if len(project_ids) > 200 else 25
+                                )  # Projects per batch (kept small — IDs are 20-digit longs)
                                 from tqdm import tqdm
 
                                 total_records = 0
@@ -4445,6 +4446,14 @@ class ReportEngine:
                 result = data
             if result:
                 self.logger.debug(f"  {cve_id}: fetched {len(result)} exploit details")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                self.logger.debug(f"No exploit details for {cve_id} (404)")
+            else:
+                self.logger.warning(
+                    f"Could not fetch exploit details for {cve_id} "
+                    f"(pv={project_version_id}, finding={finding_numeric_id}): {exc}"
+                )
         except Exception as exc:
             self.logger.warning(
                 f"Could not fetch exploit details for {cve_id} "
