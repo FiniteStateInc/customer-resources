@@ -2,7 +2,7 @@
 
 **Finite State CLI** -- scan your project dependencies and upload SBOM-grade package inventories to the Finite State platform.
 
-Single binary, no runtime dependencies. Supports 18 package ecosystems with transitive dependency resolution.
+Single binary, no runtime dependencies. Supports 19 package ecosystems with transitive dependency resolution.
 
 ## Installation
 
@@ -113,7 +113,7 @@ To disable update notifications, set `FS_NO_UPDATE_CHECK=1` or use `--no-update-
 
 ## Supported Ecosystems
 
-Bundler, Cargo, CocoaPods, Composer, Conda, Docker, .NET, Go modules, Gradle, Maven, npm, pip, pnpm, Poetry, sbt, Swift Package Manager, uv, and Yarn.
+Bundler, Cargo, CocoaPods, Composer, Conan, Conda, Docker, .NET, Go modules, Gradle, Maven, npm, pip, pnpm, Poetry, sbt, Swift Package Manager, uv, and Yarn.
 
 ## More Information
 

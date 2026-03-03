@@ -24,7 +24,7 @@
 
 ## Overview
 
-fs-cli is a software composition analysis tool that scans project dependencies and uploads SBOM-grade package inventories to the Finite State platform. It ships as a single binary with no runtime dependencies and supports 18 package ecosystems with transitive dependency resolution.
+fs-cli is a software composition analysis tool that scans project dependencies and uploads SBOM-grade package inventories to the Finite State platform. It ships as a single binary with no runtime dependencies and supports 19 package ecosystems with transitive dependency resolution.
 
 ---
 
@@ -88,6 +88,8 @@ Configuration is resolved in this order (highest precedence first):
 | `FS_ENDPOINT` | `FINITE_STATE_DOMAIN` | API endpoint domain |
 | `FS_PROJECT_NAME` | | Default project name |
 | `FS_BRANCH` | | Git branch override |
+| `FS_FOLDER_ID` | | Folder UUID for project scoping |
+| `FS_PROJECT_ID` | | Project UUID (skips project find/create) |
 | `FS_DEBUG` | | Enable debug logging |
 | `FS_NO_UPDATE_CHECK` | | Set to `1` to disable update notifications |
 
@@ -155,6 +157,8 @@ If no directory is given, scans the current directory. You can also point at a s
 | `--concurrency` | CPU count | Maximum number of parallel ecosystem scans |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
+| `--folder-id` | | Folder UUID — scope project find/create to this folder |
+| `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 
 #### Git Auto-Detection
 
@@ -213,6 +217,8 @@ fs-cli upload <file> [flags]
 | `--timeout` | `30` | Overall timeout in minutes |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
+| `--folder-id` | | Folder UUID — scope project find/create to this folder |
+| `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 
 #### Examples
 
@@ -246,6 +252,8 @@ fs-cli import <sbom-file> [flags]
 | `--format` | (auto-detect) | SBOM format: `cyclonedx`, `cdx`, or `spdx` |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
+| `--folder-id` | | Folder UUID — scope project find/create to this folder |
+| `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 
 The format is auto-detected from file contents if not specified. CycloneDX files are identified by the presence of `"bomFormat"` and SPDX files by `"spdxVersion"`.
 
@@ -279,6 +287,8 @@ fs-cli third-party <file> [flags]
 | `--timeout` | `30` | Overall timeout in minutes |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
+| `--folder-id` | | Folder UUID — scope project find/create to this folder |
+| `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 
 #### Examples
 
@@ -307,6 +317,8 @@ fs-cli deliver <file> [flags]
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
 | `--verify-key` | | PEM-encoded Ed25519 public key for signature verification |
+| `--folder-id` | | Folder UUID — scope project find/create to this folder |
+| `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 | `--timeout` | `5` | Timeout in minutes |
 
 If the file is a signed envelope (created with `--sign-key` during scan), the signature is automatically verified before delivery. Use `--verify-key` to require that the envelope was signed with a specific key.
@@ -411,6 +423,7 @@ These ecosystems are parsed statically from lock/manifest files — no build too
 | .NET | packages.lock.json, .csproj, .sln | Yes | No |
 | CocoaPods | Podfile.lock | Yes | No |
 | SPM | Package.resolved | No | No |
+| Conan | conan.lock | Yes | No |
 | Conda | environment.yml | No | No |
 | Docker | Dockerfile | No | No |
 
