@@ -8,7 +8,7 @@ This section covers integrating scanning into your CI/CD pipelines and automatin
 
 `fs-cli` scans your repo’s dependencies (SCA/SBOM-grade inventory) and uploads results to the Finite State platform. It’s a **single binary** with **no runtime dependencies**.
 
-- **Current bundled version**: `v2.0.3` (see `./fs-cli/latest/VERSION`)
+- **Current bundled version**: `v2.0.4` (see `./fs-cli/latest/VERSION`)
 
 - **Install (recommended)**:
 
