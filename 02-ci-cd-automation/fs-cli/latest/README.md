@@ -101,6 +101,50 @@ fs-cli version
 fs-cli update
 ```
 
+## Project Organization
+
+fs-cli organizes uploads into a three-level hierarchy: **Folders > Projects > Versions**.
+
+### Folders (`--folder-id`)
+
+Folders group related projects on the platform. Provide `--folder-id <uuid>` to scope project lookup/creation to a specific folder. If omitted, fs-cli uses the root folder.
+
+### Projects (`--name` / `--project`)
+
+A project represents a single software component or repository. `--name` and `--project` are interchangeable.
+
+- **By name** (default): fs-cli finds an existing project with that name, or creates one if it doesn't exist.
+- **By ID** (`--project-id <uuid>`): skips the search and uploads directly to a known project.
+
+### Versions (`--version` / `--version-id`)
+
+A version is a point-in-time snapshot of a project — typically a release, build, or scan run.
+
+| Flags | Behavior |
+|---|---|
+| *(neither)* | Auto-generates a date-based name (`2026-03-06`). On conflict, increments: `.1`, `.2`, etc. Each run creates a new version. |
+| `--version <name>` | Finds an existing version with that name, or creates it. Repeated runs with the same value upload to the **same** version. |
+| `--version-id <uuid>` | Uploads directly to a known version UUID. No lookup, no creation. |
+
+### Common Patterns
+
+```sh
+# CI/CD daily builds — auto-generated version per run
+fs-cli scan --name "$REPO_NAME" .
+
+# Release builds — pin version so all artifacts land together
+fs-cli scan --name my-app --version "$RELEASE_TAG" .
+fs-cli upload firmware.bin --name my-app --version "$RELEASE_TAG"
+
+# Multi-team org — use folders to separate projects
+fs-cli scan --name my-app --folder-id "$TEAM_FOLDER_ID" .
+
+# Multiple scan types on one version — --version reuses by name
+fs-cli upload firmware.bin --name my-device --version v3.0.0
+fs-cli third-party coverity.json --name my-device --type coverity --version v3.0.0
+fs-cli import sbom.cdx.json --name my-device --version v3.0.0
+```
+
 ## Updating
 
 fs-cli checks for new versions after each command and will notify you when an update is available. To update in place:
