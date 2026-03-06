@@ -90,6 +90,7 @@ Configuration is resolved in this order (highest precedence first):
 | `FS_BRANCH` | | Git branch override |
 | `FS_FOLDER_ID` | | Folder UUID for project scoping |
 | `FS_PROJECT_ID` | | Project UUID (skips project find/create) |
+| `FS_VERSION_ID` | | Version UUID (skips version creation) |
 | `FS_DEBUG` | | Enable debug logging |
 | `FS_NO_UPDATE_CHECK` | | Set to `1` to disable update notifications |
 
@@ -137,7 +138,7 @@ If no directory is given, scans the current directory. You can also point at a s
 
 | Flag | Default | Description |
 |---|---|---|
-| `--name` | (required) | Project name |
+| `--name` / `--project` | (required) | Project name |
 | `--branch` | (auto-detect) | Git branch |
 | `--version` | | Version string |
 | `--all`, `--deep` | `false` | Recursive monorepo scan — find all ecosystems in subdirectories |
@@ -159,6 +160,7 @@ If no directory is given, scans the current directory. You can also point at a s
 | `--token` | | Finite State API token |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
+| `--version-id` | | Version UUID — skip version creation, upload to this version directly |
 
 #### Git Auto-Detection
 
@@ -211,7 +213,7 @@ fs-cli upload <file> [flags]
 
 | Flag | Default | Description |
 |---|---|---|
-| `--name` | (required) | Project name |
+| `--name` / `--project` | (required) | Project name |
 | `--version` | today's date | Version string |
 | `--type` | `sca` | Scan types, comma-separated: `sca`, `sast`, `config`, `vulnerability_analysis` |
 | `--timeout` | `30` | Overall timeout in minutes |
@@ -219,6 +221,7 @@ fs-cli upload <file> [flags]
 | `--token` | | Finite State API token |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
+| `--version-id` | | Version UUID — skip version creation, upload to this version directly |
 
 #### Examples
 
@@ -247,13 +250,14 @@ fs-cli import <sbom-file> [flags]
 
 | Flag | Default | Description |
 |---|---|---|
-| `--name` | (required) | Project name |
+| `--name` / `--project` | (required) | Project name |
 | `--version` | (auto-generated) | Version string |
 | `--format` | (auto-detect) | SBOM format: `cyclonedx`, `cdx`, or `spdx` |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
+| `--version-id` | | Version UUID — skip version creation, upload to this version directly |
 
 The format is auto-detected from file contents if not specified. CycloneDX files are identified by the presence of `"bomFormat"` and SPDX files by `"spdxVersion"`.
 
@@ -281,7 +285,7 @@ fs-cli third-party <file> [flags]
 
 | Flag | Default | Description |
 |---|---|---|
-| `--name` | (required) | Project name |
+| `--name` / `--project` | (required) | Project name |
 | `--type` | (required) | Third-party tool type (e.g., `snyk`, `coverity`, `checkmarx`) |
 | `--version` | (auto-generated) | Version string |
 | `--timeout` | `30` | Overall timeout in minutes |
@@ -289,6 +293,7 @@ fs-cli third-party <file> [flags]
 | `--token` | | Finite State API token |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
+| `--version-id` | | Version UUID — skip version creation, upload to this version directly |
 
 #### Examples
 
@@ -319,6 +324,7 @@ fs-cli deliver <file> [flags]
 | `--verify-key` | | PEM-encoded Ed25519 public key for signature verification |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
+| `--version-id` | | Version UUID — skip version creation, upload to this version directly |
 | `--timeout` | `5` | Timeout in minutes |
 
 If the file is a signed envelope (created with `--sign-key` during scan), the signature is automatically verified before delivery. Use `--verify-key` to require that the envelope was signed with a specific key.

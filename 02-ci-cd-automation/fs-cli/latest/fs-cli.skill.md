@@ -20,7 +20,7 @@ fs-cli scan --name <project-name> [directory]
 ```
 
 Key flags:
-- `--name` (required): project name
+- `--name` / `--project` (required): project name
 - `--all` or `--deep`: recursive monorepo scan
 - `--scope runtime|all`: filter dev/test deps (default: runtime)
 - `--test`: dry run — print JSON, don't upload
@@ -36,6 +36,7 @@ Key flags:
 - `--pip-file <path>`: custom requirements.txt path
 - `--folder-id <uuid>`: scope project find/create to a folder
 - `--project-id <uuid>`: skip project find/create, use this project ID directly
+- `--version-id <uuid>`: skip version creation, upload to this version ID directly
 
 ### Upload a binary
 
@@ -44,10 +45,12 @@ fs-cli upload <file> --name <project-name>
 ```
 
 Key flags:
+- `--name` / `--project` (required): project name
 - `--type sca,sast,config,vulnerability_analysis`: scan types (default: sca)
 - `--version <string>`: version (default: today's date)
 - `--folder-id <uuid>`: scope project find/create to a folder
 - `--project-id <uuid>`: skip project find/create
+- `--version-id <uuid>`: skip version creation, upload to this version ID directly
 
 ### Import an SBOM
 
@@ -56,9 +59,11 @@ fs-cli import <sbom-file> --name <project-name>
 ```
 
 Key flags:
+- `--name` / `--project` (required): project name
 - `--format cyclonedx|spdx`: auto-detected if omitted
 - `--folder-id <uuid>`: scope project find/create to a folder
 - `--project-id <uuid>`: skip project find/create
+- `--version-id <uuid>`: skip version creation, upload to this version ID directly
 
 ### Upload third-party results
 
@@ -69,8 +74,10 @@ fs-cli third-party <file> --name <project-name> --type <tool>
 The `--type` flag is required (e.g., `snyk`, `coverity`, `checkmarx`).
 
 Key flags:
+- `--name` / `--project` (required): project name
 - `--folder-id <uuid>`: scope project find/create to a folder
 - `--project-id <uuid>`: skip project find/create
+- `--version-id <uuid>`: skip version creation, upload to this version ID directly
 
 ### Deliver a scan file (airgap workflow)
 
@@ -82,6 +89,7 @@ Key flags:
 - `--verify-key <path>`: PEM-encoded Ed25519 public key to verify signed envelopes
 - `--folder-id <uuid>`: scope project find/create to a folder
 - `--project-id <uuid>`: skip project find/create
+- `--version-id <uuid>`: skip version creation, upload to this version ID directly
 - `--timeout <minutes>`: timeout (default: 5)
 
 ### Update
@@ -108,6 +116,7 @@ Credentials are resolved in order: CLI flags > environment variables > credentia
 - `FS_PROJECT_NAME`: default project name
 - `FS_FOLDER_ID`: folder UUID for project scoping
 - `FS_PROJECT_ID`: project UUID (skips project find/create)
+- `FS_VERSION_ID`: version UUID (skips version creation)
 - `FS_NO_UPDATE_CHECK=1`: disable update notifications
 
 **Credential file** at `~/.finitestate/credential`:
@@ -237,6 +246,7 @@ When the user wants to:
 - **Fail CI on scan errors**: use `--strict` flag
 - **Scope project to a folder**: use `--folder-id <uuid>` (all commands)
 - **Skip project lookup**: use `--project-id <uuid>` to go straight to version creation
+- **Skip version creation**: use `--version-id <uuid>` to upload to an existing version directly
 
 ## Error guidance
 
