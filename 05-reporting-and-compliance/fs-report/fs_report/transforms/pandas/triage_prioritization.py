@@ -556,7 +556,22 @@ def triage_prioritization_transform(
         df = calculate_additive_score(df, weights=weights, gates=gates)
 
         # Assign risk bands
-        df = assign_risk_bands(df, weights=weights)
+        df = assign_risk_bands(df, weights=weights, gates=gates)
+
+    # Apply --tp-gate filter if specified (restrict to a single gate tier)
+    tp_gate_filter = None
+    if additional_data and "config" in additional_data:
+        tp_gate_filter = getattr(additional_data["config"], "tp_gate", None)
+    if tp_gate_filter:
+        valid_gates = {"GATE_1", "GATE_2", "NONE"}
+        if tp_gate_filter.upper() in valid_gates:
+            mask = df["gate_assignment"] == tp_gate_filter.upper()
+            logger.info(
+                f"--tp-gate {tp_gate_filter}: keeping {mask.sum()} of {len(df)} findings"
+            )
+            df = df[mask].copy()
+        else:
+            logger.warning(f"Unknown --tp-gate value '{tp_gate_filter}', ignoring")
 
     # Build scoring config (used by template and prompt generation)
     scoring_config = _build_scoring_config(gates, weights)
@@ -568,6 +583,15 @@ def triage_prioritization_transform(
         ["_band_priority", "triage_score"],
         ascending=[True, False],
     ).drop(columns=["_band_priority"])
+
+    # Apply --top N truncation if specified
+    top_n = 0
+    if additional_data and "config" in additional_data:
+        top_n = getattr(additional_data["config"], "top", 0) or 0
+    if top_n > 0:
+        total_before = len(df)
+        df = df.head(top_n)
+        logger.info(f"--top {top_n}: showing {len(df)} of {total_before} findings")
 
     # Build the various aggregation views
     project_summary_df = build_project_summaries(df)
@@ -584,7 +608,12 @@ def triage_prioritization_transform(
     elif additional_data and "config" in additional_data:
         cfg = additional_data["config"]
         vex_override = bool(getattr(cfg, "vex_override", False))
-    vex_recommendations = build_vex_recommendations(df, vex_override=vex_override)
+    triage_n = 0
+    if additional_data and "config" in additional_data:
+        triage_n = getattr(additional_data["config"], "triage", 0) or 0
+    vex_recommendations = build_vex_recommendations(
+        df, vex_override=vex_override, triage_n=triage_n
+    )
 
     logger.info(
         f"Triage complete: {len(df)} findings scored — "
@@ -842,14 +871,90 @@ def triage_prioritization_transform(
             if _prompts_path:
                 extra_generated_files.append(_prompts_path)
 
+        # --- Airgapped AI export (--ai-export) ---
+        _ai_export_path = getattr(config, "ai_export", None) if config else None
+        if not isinstance(_ai_export_path, str):
+            _ai_export_path = None
+        if not _ai_export_path and additional_data and "config" in additional_data:
+            _ai_export_path = getattr(additional_data["config"], "ai_export", None)
+            if not isinstance(_ai_export_path, str):
+                _ai_export_path = None
+
+        if _ai_export_path:
+            from fs_report.airgapped_ai import export_prompts
+
+            _system_prompt = ""
+            if prompts_for_file:
+                # Extract system prompt from first prompt text (before user section)
+                _p0 = prompts_for_file[0][3]
+                if "## System" in _p0:
+                    _system_prompt = _p0.split("## User")[0].strip()
+
+            _export_path = export_prompts(
+                _ai_export_path,
+                portfolio_prompt=ai_portfolio_prompt,
+                project_prompts=ai_project_prompts,
+                component_prompts=ai_component_prompts,
+                finding_prompts=[
+                    (fid, prompt) for fid, _, _, prompt in prompts_for_file
+                ],
+                system_prompt=_system_prompt,
+                metadata={
+                    "start_date": str(getattr(config, "start_date", "")),
+                    "end_date": str(getattr(config, "end_date", "")),
+                },
+            )
+            extra_generated_files.append(_export_path)
+            logger.info(f"Airgapped AI prompts exported to {_export_path}")
+
     # AI remediation guidance (optional, --ai flag)
     ai_portfolio_summary = ""
     ai_project_summaries: dict[str, str] = {}
     ai_component_guidance: dict[str, dict[str, Any]] = {}
     ai_finding_guidance: dict[str, dict[str, str]] = {}
 
+    # --- Airgapped AI import (--ai-import) ---
+    _ai_import_path = getattr(config, "ai_import", None) if config else None
+    if not isinstance(_ai_import_path, str):
+        _ai_import_path = None
+    if not _ai_import_path and additional_data and "config" in additional_data:
+        _ai_import_path = getattr(additional_data["config"], "ai_import", None)
+        if not isinstance(_ai_import_path, str):
+            _ai_import_path = None
+
+    if _ai_import_path:
+        from fs_report.airgapped_ai import import_responses, resolve_imported_responses
+
+        _imported = import_responses(_ai_import_path)
+        _resolved = resolve_imported_responses(_imported)
+        ai_portfolio_summary = _resolved["portfolio"].get("summary", "")
+        ai_project_summaries = _resolved["projects"]
+        # Component guidance: wrap plain text responses in expected dict format
+        for _ck, _cv in _resolved["components"].items():
+            ai_component_guidance[_ck] = {
+                "fix_version": "",
+                "guidance": _cv,
+                "workaround": "",
+                "verdict": "uncertain",
+                "confidence": "medium",
+            }
+        # Finding guidance: wrap plain text responses in expected dict format
+        for _fk, _fv in _resolved["findings"].items():
+            ai_finding_guidance[_fk] = {
+                "priority": "",
+                "action": _fv,
+                "applicability": "uncertain",
+                "confidence": "medium",
+            }
+        logger.info(
+            f"Imported AI responses: portfolio={bool(ai_portfolio_summary)}, "
+            f"projects={len(ai_project_summaries)}, "
+            f"components={len(ai_component_guidance)}, "
+            f"findings={len(ai_finding_guidance)}"
+        )
+
     ai_config = _get_ai_config(config, additional_data)
-    if ai_config.get("enabled"):
+    if ai_config.get("enabled") and not _ai_import_path:
         (
             ai_portfolio_summary,
             ai_project_summaries,
@@ -904,7 +1009,7 @@ def triage_prioritization_transform(
 
             if ai_applicability == "not_affected" or ai_verdict == "not_affected":
                 rec["recommended_vex_status"] = "NOT_AFFECTED"
-                rec["justification"] = "COMPONENT_NOT_PRESENT"
+                rec["justification"] = "CODE_NOT_PRESENT"
                 source = (
                     "finding" if ai_applicability == "not_affected" else "component"
                 )
@@ -935,7 +1040,7 @@ def triage_prioritization_transform(
                 )
                 if has_not_affected and has_mismatch:
                     rec["recommended_vex_status"] = "NOT_AFFECTED"
-                    rec["justification"] = "COMPONENT_NOT_PRESENT"
+                    rec["justification"] = "CODE_NOT_PRESENT"
                     rec["reason"] = (
                         f"AI guidance indicates component is not affected "
                         f"(library mismatch detected). {rec.get('reason', '')}"
@@ -1055,6 +1160,12 @@ def triage_prioritization_transform(
         "component_id",
         "project_id",
         "project_version_id",
+        # Score breakdown (for tooltip display)
+        "_pts_reachability",
+        "_pts_exploit",
+        "_pts_vector",
+        "_pts_epss",
+        "_pts_cvss",
     ]
     # Only keep columns that exist
     output_columns = [c for c in output_columns if c in df.columns]
@@ -1567,13 +1678,15 @@ def calculate_additive_score(
         + df["_pts_cvss"]
     ).round(1)
 
-    # Override gated findings with fixed scores from gate definitions
+    # Gate-assigned findings get their gate "score" added as a bonus on top
+    # of the additive total so they always sort above non-gated findings
+    # while still differentiating among themselves.
     for gate_def in g:
         gate_name = gate_def.get("name", "")
-        gate_score = float(gate_def.get("score", 0))
+        gate_bonus = float(gate_def.get("score", 0))
         mask = df["gate_assignment"] == gate_name
         if mask.any():
-            df.loc[mask, "triage_score"] = gate_score
+            df.loc[mask, "triage_score"] += gate_bonus
 
     # VEX status penalty: demote findings already marked as resolved/not-affected
     vex_penalty = w.get("vex_resolved", POINTS_VEX_RESOLVED)
@@ -1602,6 +1715,7 @@ def calculate_additive_score(
 def assign_risk_bands(
     df: pd.DataFrame,
     weights: dict[str, int | float] | None = None,
+    gates: list[dict[str, Any]] | None = None,
 ) -> pd.DataFrame:
     """Map gate assignments and additive scores to priority bands."""
     w = weights or DEFAULT_WEIGHTS
@@ -1610,11 +1724,16 @@ def assign_risk_bands(
     low_threshold = w.get("band_low_threshold", BAND_LOW_THRESHOLD)
     df = df.copy()
 
+    # Build gate-name → band mapping from gate definitions
+    gate_list = gates if gates is not None else DEFAULT_GATES
+    gate_band_map: dict[str, str] = {
+        g["name"]: g.get("band", "HIGH") for g in gate_list if "name" in g
+    }
+
     def _band(row: pd.Series) -> str:
-        if row["gate_assignment"] == "GATE_1":
-            return "CRITICAL"
-        if row["gate_assignment"] == "GATE_2":
-            return "HIGH"
+        gate = row["gate_assignment"]
+        if gate in gate_band_map:
+            return gate_band_map[gate]
         score = row["triage_score"]
         if score >= high_threshold:
             return "HIGH"
@@ -2006,6 +2125,7 @@ def build_factor_radar_data(df: pd.DataFrame, top_n: int = 5) -> dict[str, Any]:
 def build_vex_recommendations(
     df: pd.DataFrame,
     vex_override: bool = False,
+    triage_n: int = 0,
 ) -> list[dict[str, Any]]:
     """
     Build VEX triage status recommendations based on priority bands.
@@ -2018,14 +2138,16 @@ def build_vex_recommendations(
     If a finding already has a VEX status (current_vex_status is set),
     it is skipped unless vex_override=True.
 
-    Includes reachability evidence (score, label, vulnerable functions,
-    factor summaries) in the reason field when available.
+    Args:
+        triage_n: If > 0, only generate recommendations for the top N findings
+            (by score order). The caller's DataFrame should already be sorted.
     """
     if df.empty:
         return []
 
+    target_df = df.head(triage_n) if triage_n > 0 else df
     recommendations = []
-    for _, row in df.iterrows():
+    for _, row in target_df.iterrows():
         band = row.get("priority_band", "INFO")
         reach_score = row.get("reachability_score", 0)
         reach_label = (

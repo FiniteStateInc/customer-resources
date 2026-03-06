@@ -37,6 +37,20 @@ COMPONENT_RECIPES = {"component list"}
 REMEDIATION_RECIPES = {"remediation package"}
 
 
+def _parse_cache_ttl(value: Any) -> int:
+    """Parse cache TTL from form input, supporting '4h', '2d', '30m', or bare int."""
+    from fs_report.sqlite_cache import parse_ttl
+
+    s = str(value).strip()
+    if not s:
+        return 0
+    try:
+        return parse_ttl(s)
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid cache TTL '{s}', defaulting to 4h")
+        return 4 * 3600
+
+
 class SSELogHandler(logging.Handler):
     """Captures Python logging records and pushes them into an asyncio queue."""
 
@@ -134,7 +148,7 @@ def _execute_run(
             project_filter=effective.get("project_filter") or None,
             folder_filter=effective.get("folder_filter") or None,
             version_filter=effective.get("version_filter") or None,
-            cache_ttl=int(effective.get("cache_ttl", 4)),
+            cache_ttl=_parse_cache_ttl(effective.get("cache_ttl", "4")),
             cache_dir=effective.get("cache_dir") or None,
             current_version_only=bool(effective.get("current_version_only", True)),
             overwrite=bool(effective.get("overwrite", False)),
@@ -142,10 +156,16 @@ def _execute_run(
             ai_depth=str(effective.get("ai_depth", "summary")),
             ai_prompts=bool(effective.get("ai_prompts", False)),
             ai_analysis=bool(effective.get("ai_analysis", False)),
+            product_type=effective.get("product_type") or None,
+            network_exposure=effective.get("network_exposure") or None,
+            regulatory=effective.get("regulatory") or None,
+            deployment_notes=effective.get("deployment_notes") or None,
             cve_filter=effective.get("cve_filter") or None,
             component_filter=effective.get("component_filter") or None,
             baseline_version=effective.get("baseline_version") or None,
             current_version=effective.get("current_version") or None,
+            top=int(effective.get("top", 0)),
+            triage=int(effective.get("triage", 0)),
             verbose=bool(effective.get("verbose", False)),
             logo=effective.get("logo") or None,
         )
@@ -322,6 +342,7 @@ async def prerun_form(
     selected = {r.lower() for r in recipe_names}
     show_cve = bool(selected & (CVE_RECIPES | REMEDIATION_RECIPES))
     show_ai = bool(selected & (CVE_RECIPES | TRIAGE_RECIPES | REMEDIATION_RECIPES))
+    show_triage = bool(selected & TRIAGE_RECIPES)
     show_finding_types = bool(selected & FINDINGS_RECIPES)
     show_version_fields = bool(selected & VERSION_RECIPES)
     show_project_required = bool(selected & REMEDIATION_RECIPES)
@@ -337,6 +358,7 @@ async def prerun_form(
             "workflow_title": workflow_title,
             "show_cve": show_cve,
             "show_ai": show_ai,
+            "show_triage": show_triage,
             "show_finding_types": show_finding_types,
             "show_version_fields": show_version_fields,
             "show_project_required": show_project_required,
@@ -373,6 +395,10 @@ async def start_run(
         "baseline_version",
         "current_version",
         "ai_depth",
+        "product_type",
+        "network_exposure",
+        "regulatory",
+        "deployment_notes",
     ):
         val = form.get(key)
         if val:
@@ -382,6 +408,15 @@ async def start_run(
         val = form.get(key)
         if val is not None:
             overrides[key] = str(val).lower() in ("true", "on", "1", "yes")
+
+    # Integer overrides
+    for key in ("top", "triage"):
+        val = form.get(key)
+        if val:
+            try:
+                overrides[key] = int(str(val))
+            except (ValueError, TypeError):
+                pass
 
     # Persist selected recipes for next visit
     state["selected_recipes"] = recipe_names

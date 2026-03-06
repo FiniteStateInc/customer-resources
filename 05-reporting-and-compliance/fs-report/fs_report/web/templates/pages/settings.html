@@ -50,9 +50,10 @@
                 </label>
             </div>
             <div class="form-group">
-                <label for="cfg-cache-ttl">Cache TTL (hours, 0=off)</label>
+                <label for="cfg-cache-ttl">Cache TTL (0=off)</label>
                 <input type="text" id="cfg-cache-ttl" name="cache_ttl"
                        value="{{ state.get('cache_ttl', '4') }}">
+                <small class="form-hint">Examples: 4h, 2d, 30m, 1h30m, or bare number (hours)</small>
             </div>
             <div class="form-group form-row">
                 <label for="cfg-verbose">Verbose logging</label>
@@ -193,6 +194,49 @@
             </div>
         </details>
 
+        <!-- Deployment Context -->
+        <details class="form-section">
+            <summary class="form-section-title">Deployment Context</summary>
+            <div class="form-group">
+                <label for="cfg-product-type">Product type</label>
+                <select id="cfg-product-type" name="product_type">
+                    <option value="generic" {% if state.get('product_type', 'generic') == 'generic' %}selected{% endif %}>Generic</option>
+                    <option value="firmware" {% if state.get('product_type') == 'firmware' %}selected{% endif %}>Firmware</option>
+                    <option value="web_app" {% if state.get('product_type') == 'web_app' %}selected{% endif %}>Web App</option>
+                    <option value="mobile_app" {% if state.get('product_type') == 'mobile_app' %}selected{% endif %}>Mobile App</option>
+                    <option value="library" {% if state.get('product_type') == 'library' %}selected{% endif %}>Library</option>
+                    <option value="device_driver" {% if state.get('product_type') == 'device_driver' %}selected{% endif %}>Device Driver</option>
+                    <option value="container" {% if state.get('product_type') == 'container' %}selected{% endif %}>Container</option>
+                    <option value="desktop_app" {% if state.get('product_type') == 'desktop_app' %}selected{% endif %}>Desktop App</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="cfg-network-exposure">Network exposure</label>
+                <select id="cfg-network-exposure" name="network_exposure">
+                    <option value="unknown" {% if state.get('network_exposure', 'unknown') == 'unknown' %}selected{% endif %}>Unknown</option>
+                    <option value="air_gapped" {% if state.get('network_exposure') == 'air_gapped' %}selected{% endif %}>Air-gapped</option>
+                    <option value="internal_only" {% if state.get('network_exposure') == 'internal_only' %}selected{% endif %}>Internal Only</option>
+                    <option value="internet_facing" {% if state.get('network_exposure') == 'internet_facing' %}selected{% endif %}>Internet-facing</option>
+                    <option value="mixed" {% if state.get('network_exposure') == 'mixed' %}selected{% endif %}>Mixed</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="cfg-regulatory">Regulatory frameworks</label>
+                <input type="text" id="cfg-regulatory" name="regulatory"
+                       value="{{ state.get('regulatory', '') }}"
+                       placeholder="e.g. IEC-62443, FDA, NIST 800-53">
+            </div>
+            <div class="form-group">
+                <label for="cfg-deploy-notes">Deployment notes</label>
+                <textarea id="cfg-deploy-notes" name="deployment_notes"
+                          maxlength="500" rows="3"
+                          placeholder="Additional context about the deployment environment...">{{ state.get('deployment_notes', '') }}</textarea>
+                <small class="form-hint char-counter">
+                    <span id="cfg-deploy-notes-count">{{ state.get('deployment_notes', '') | length }}</span>/500
+                </small>
+            </div>
+        </details>
+
         <div class="form-actions">
             <button type="submit" class="btn btn-primary">Save Settings</button>
             <a href="/" class="btn btn-default">Cancel</a>
@@ -272,6 +316,17 @@ initScopeDropdowns({
     versionId: 'cfg-version',
     cvoId: 'cfg-cvo',
 });
+
+/* Deployment notes character counter */
+(function() {
+    var ta = document.getElementById('cfg-deploy-notes');
+    var counter = document.getElementById('cfg-deploy-notes-count');
+    if (ta && counter) {
+        ta.addEventListener('input', function() {
+            counter.textContent = ta.value.length;
+        });
+    }
+})();
 
 /* Logo picker */
 (function() {

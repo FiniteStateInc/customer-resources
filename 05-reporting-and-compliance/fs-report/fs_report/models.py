@@ -408,6 +408,16 @@ class Config(BaseModel):
         False,
         description="Export AI prompts to file and HTML for use with any LLM (no API key required)",
     )
+    ai_export: str | None = Field(
+        None,
+        description="Export AI prompts to a JSON file for offline/airgapped LLM processing. "
+        "Each prompt includes an ID, system prompt, user prompt, and context.",
+    )
+    ai_import: str | None = Field(
+        None,
+        description="Import AI responses from a JSON file (produced by processing --ai-export "
+        "output through an LLM). Maps prompt IDs to response text.",
+    )
     ai_analysis: bool = Field(
         False,
         description="Generate deep AI analysis per action using the summary model. "
@@ -425,6 +435,14 @@ class Config(BaseModel):
     network_exposure: str | None = Field(
         None,
         description="Network exposure level (air_gapped, internal_only, internet_facing, etc.).",
+    )
+    regulatory: str | None = Field(
+        None,
+        description="Regulatory frameworks for AI prompts (e.g. 'IEC-62443, FDA').",
+    )
+    deployment_notes: str | None = Field(
+        None,
+        description="Free-text deployment notes for AI prompts (max 500 chars).",
     )
     nvd_api_key: str | None = Field(
         None,
@@ -483,6 +501,22 @@ class Config(BaseModel):
         None,
         description="Path to a YAML file with custom scoring weights for Triage Prioritization. "
         "Overrides weights defined in the recipe parameters.",
+    )
+    tp_gate: str | None = Field(
+        None,
+        description="Triage Prioritization gate filter. Restricts findings to a specific "
+        "gate tier: GATE_1 (critical), GATE_2 (high), or NONE (additive only). "
+        "Applied after gate assignment, before rendering.",
+    )
+    top: int = Field(
+        0,
+        description="Limit Triage Prioritization output to the top N findings by score. "
+        "0 = show all (default).",
+    )
+    triage: int = Field(
+        0,
+        description="Limit Triage Prioritization VEX recommendations to the top N findings "
+        "by score. The full findings list is still displayed. 0 = all eligible (default).",
     )
     vex_override: bool = Field(
         False,

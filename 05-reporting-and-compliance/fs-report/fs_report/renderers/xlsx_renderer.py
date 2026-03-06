@@ -76,9 +76,15 @@ class XLSXRenderer:
             safe_name = self.safe_sheet_name(sheet_name)
 
             # Export to XLSX (suppress xlsxwriter URL-limit warnings for edge cases)
+            # Disable strings_to_formulas to prevent formula injection from
+            # untrusted data (e.g. component names starting with '=').
             with (
                 warnings.catch_warnings(),
-                pd.ExcelWriter(output_path, engine="xlsxwriter") as writer,
+                pd.ExcelWriter(
+                    output_path,
+                    engine="xlsxwriter",
+                    engine_kwargs={"options": {"strings_to_formulas": False}},
+                ) as writer,
             ):
                 warnings.filterwarnings(
                     "ignore",
@@ -142,7 +148,11 @@ class XLSXRenderer:
 
             with (
                 warnings.catch_warnings(),
-                pd.ExcelWriter(output_path, engine="xlsxwriter") as writer,
+                pd.ExcelWriter(
+                    output_path,
+                    engine="xlsxwriter",
+                    engine_kwargs={"options": {"strings_to_formulas": False}},
+                ) as writer,
             ):
                 warnings.filterwarnings(
                     "ignore",

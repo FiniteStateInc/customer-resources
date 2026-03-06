@@ -639,9 +639,9 @@ def apply_single_project_filter(df: pd.DataFrame, project_filter: str) -> pd.Dat
     """
     try:
         project_id = int(project_filter)
-        # Check if it's a project ID
+        # Check if it's a project ID — compare as strings to handle mixed types
         if "project.id" in df.columns:
-            project_match = df[df["project.id"] == str(project_id)]
+            project_match = df[df["project.id"].astype(str) == str(project_id)]
             if not project_match.empty:
                 return project_match
         return pd.DataFrame()

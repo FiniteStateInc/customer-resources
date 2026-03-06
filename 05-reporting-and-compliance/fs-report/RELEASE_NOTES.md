@@ -1,23 +1,76 @@
 # Release Notes
 
+## Version 1.8.0 (March 2026)
+
+### New Reports
+
+- **License Report** — New recipe that analyzes component licenses and classifies them into risk categories: Permissive, Weak Copyleft, Strong Copyleft, Proprietary/Restricted, and Unknown. Includes KPI cards, a risk distribution doughnut chart, and a tabular breakdown by license name with component counts and affected projects. Outputs in HTML, CSV, and XLSX. Run with `fs-report run --recipe "license report"`.
+
+### New Features
+
+- **Airgapped AI workflow (`--ai-export` / `--ai-import`)** — Generate AI-powered triage reports in environments without internet access. Phase 1 exports all AI prompts to a JSON file (`--ai-export prompts.json`); Phase 2 imports responses from a completed JSON file (`--ai-import responses.json`) and injects them into the report. No API key required for either phase. Works with portfolio, project, component, and finding-level prompts.
+- **`--top N` flag** — Limit Triage Prioritization output to the top N findings by score. Applied after scoring and sorting. Available via CLI and web UI. `0` = show all (default).
+- **`--triage N` flag** — Limit VEX triage recommendation generation to the top N findings while still displaying the full findings list. Available via CLI and web UI. `0` = all eligible (default).
+- **`--tp-gate` flag** — Filter Triage Prioritization findings to a specific gate tier (`GATE_1`, `GATE_2`, or `NONE`) before rendering. Useful for scoping triage sessions to a single priority tier.
+- **KEV column in Findings by Project** — The `inKev` field from the API is now mapped to a "KEV" column (Yes/empty) in all output formats.
+- **KEV indicators in Executive Dashboard** — "Top Risk Products" and "Project Findings Summary" tables now include a KEV column showing Known Exploited Vulnerability counts per project with critical badges.
+- **Executive Dashboard CSV/XLSX export** — The Executive Dashboard now supports CSV and XLSX output formats. Exports the aggregated project summary table with sortable columns. XLSX includes multi-sheet output (Project Summary + Top Risk Products).
+- **Component List HTML format** — The Component List recipe now supports HTML output with KPI cards, charts, and a tabular view (truncated to 500 rows with a notice directing to CSV/XLSX for full data).
+- **Deployment Context in web UI** — The pre-run form and settings page now include a Deployment Context section for setting product type, network exposure, regulatory frameworks, and deployment notes directly in the browser.
+
+### Improvements
+
+- **Executive Summary pivot table** — The Executive Summary table now shows severity counts as pivoted columns (Critical | High | Medium | Low | Total) per project instead of one row per project-severity combination, matching the chart layout.
+- **Executive Dashboard layout** — The Project Findings Summary table is now positioned at the bottom of the report, below charts and analysis sections, putting high-level visuals first.
+- **Executive Dashboard auto-logarithmic scale** — The Findings by Group bar chart automatically switches to a logarithmic Y-axis when the ratio between largest and smallest group totals exceeds 100x, preventing small groups from being invisible.
+- **Executive Dashboard configurable grouping** — New `max_projects` recipe parameter controls how many groups are shown in the Findings by Group chart. Set to `0` (default) to show all groups with no binning.
+- **Executive Dashboard license chart** — The license distribution chart now shows all licenses instead of only the top 10.
+- **Triage score breakdown tooltip** — Hovering over a finding's triage score in the Findings Detail table shows a tooltip with the scoring breakdown: Reachability, Exploit/KEV, Attack Vector, EPSS, CVSS, and Gate Bonus. Adapts to custom scoring weights.
+- **Triage scoring: additive gate bonus** — Gate-assigned findings now receive the gate score as an additive bonus on top of their computed score, allowing differentiation among findings within the same gate tier. Previously all GATE_1 findings had an identical score of 100.
+- **Collapsible tables in Triage Prioritization** — Tables with more than 10 rows are collapsed by default with a "Show N more..." button. Affects AI Component Guidance, AI Finding Guidance, Project Risk Summary, Top Riskiest Components, and Findings Detail tables. All rows expand in print mode.
+- **Version Comparison project column** — The progression table now always shows the Project column regardless of comparison mode.
+- **Cache TTL duration strings in web UI** — The Cache TTL input in the web UI now accepts human-readable durations (`4h`, `2d`, `30m`, `1h30m`) matching CLI behavior, instead of requiring a bare integer.
+- **GHSA/PYSEC advisory links** — GHSA and PYSEC findings in Findings by Project now link to `github.com/advisories/` instead of incorrectly linking to NVD.
+- **Formula injection protection** — XLSX exports now disable `strings_to_formulas` to prevent formula injection from untrusted data.
+
+### Bug Fixes
+
+- Resolved 25+ bugs across report engine, transforms, and renderers including: HTML renderer DataFrame mutation, API `risk` field scaling (0–100 → 0–10), `type=cve` URL parameter omitting reachability scores, Executive Dashboard exploit intelligence and findings-by-type chart data, SQLite cache table initialization errors, and large-folder HTTP 414 URL-too-long errors.
+
+---
+
+## Version 1.7.1 (March 2026)
+
+### Bug Fixes
+
+- **Executive Dashboard policy violations/warnings** — Policy violation and warning KPI counts were always 0 because the SQLite cache stripped `licenseDetails` arrays from component records. License detail fields are now preserved through the cache.
+- **Batch fetch HTTP 400** — Large portfolios (100+ projects) could exceed URL length limits when fetching findings. Reduced project batch size from 50 to 25 (10 for 200+ projects) to keep URLs under server limits.
+- **Exploit detail 404 noise** — Suppressed noisy warnings when the API returns 404 for findings without exploit data (expected and harmless).
+- **"Warnings" label** — Renamed to "Policy Warnings" in the Executive Dashboard for clarity.
+
+---
+
 ## Version 1.7.0 (March 2026)
 
 ### New Features
 
 - **Deployment Context for AI prompts** — New `--product-type`, `--network-exposure`, and `--context-file` flags tailor AI remediation guidance to your product's deployment environment. Selects a product-specific AI persona (e.g. firmware security analyst, cloud security analyst) and shapes workaround recommendations for the target platform. Supported product types: `firmware`, `web_app`, `mobile_app`, `library`, `device_driver`, `container`, `desktop_app`. Network exposure levels: `air_gapped`, `internal_only`, `internet_facing`, `mixed`. Deployment context can also include regulatory frameworks and free-text notes. Context is included in cache keys so different contexts produce distinct AI results.
 - **Scanner Accuracy analysis script** — New `scripts/analysis/scanner_accuracy.py` for evaluating scanner detection accuracy against known-vulnerable SBOMs.
+- **Project glob patterns** — `--project` now accepts `*`, `?`, and `[…]` wildcards for matching multiple projects by name (case-insensitive). A single match scopes to that project; multiple matches scope to all matched projects. Cannot be combined with `--version`.
 
 ### Improvements
 
 - **Executive Dashboard enhancements** — Additional metrics and visualizations for the Executive Dashboard report.
 - **Findings by Project table improvements** — Richer finding detail columns.
-- **Triage Prioritization rendering** — Bold subject CVE, expand arrows on badges.
+- **Triage & Remediation Package rendering** — Bold subject CVE and expand arrow indicators on clickable CVE detail badges in both Triage Prioritization and Remediation Package reports.
+- **Docker base image upgraded to Python 3.13** — Eliminates active CPython 3.11 CVEs. Added `Pillow >=11.1.0` lower-bound pin to prevent vulnerable transitive versions.
 
 ### Bug Fixes
 
 - **Web UI SSE JSON escaping** — Replaced hand-rolled JSON escaping with `json.dumps()` to correctly handle tab characters and other control characters in log messages.
 - **Web UI stderr race condition** — Concurrent report runs no longer clobber each other's stderr redirect via a serialization lock.
 - **Deployment context validation** — Unknown fields are rejected and empty strings are normalized to defaults.
+- **Markdown renderer Triage table** — Corrected column alignment in the Triage Prioritization findings table for Markdown output.
 
 ---
 

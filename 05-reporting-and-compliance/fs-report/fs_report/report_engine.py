@@ -36,7 +36,6 @@ from typing import Any
 
 import httpx
 import pandas as pd
-from rich.console import Console
 
 from fs_report.api_client import APIClient
 from fs_report.data_cache import DataCache
@@ -129,9 +128,12 @@ _EXEC_DASHBOARD_KEEP: frozenset[str] = frozenset(
         "status",
         "detected",
         "category",
+        "type",
         "projectId",
         "inKev",
+        "in_kev",
         "hasKnownExploit",
+        "has_known_exploit",
     }
 )
 
@@ -1604,7 +1606,6 @@ class ReportEngine:
         all_succeeded = True
         generated_files = []
         total = len(recipes)
-        Console()
         for idx, recipe in enumerate(recipes, 1):
             self._check_cancel()
             try:
@@ -2436,9 +2437,43 @@ class ReportEngine:
                         del _fetched
                     elif recipe.name == "Scan Analysis":
                         # Apply project and version filtering to scans
-                        scan_query = self._apply_scan_filters(recipe.query)
-                        # Use early termination to avoid fetching old scans
-                        _fetched = self._fetch_scans_with_early_termination(scan_query)
+                        # Batch folder project IDs to avoid 414 URL Too Long
+                        if (
+                            self._folder_project_ids
+                            and not self.config.project_filter
+                            and len(self._folder_project_ids) > 25
+                        ):
+                            folder_pids = sorted(self._folder_project_ids)
+                            batch_size = 15 if len(folder_pids) > 200 else 25
+                            all_scans: list[dict] = []
+                            saved_pids = self._folder_project_ids
+                            self.logger.info(
+                                f"Batching Scan Analysis fetch: "
+                                f"{len(folder_pids)} projects, batch_size={batch_size}"
+                            )
+                            try:
+                                for i in range(0, len(folder_pids), batch_size):
+                                    scan_batch_pids = set(
+                                        folder_pids[i : i + batch_size]
+                                    )
+                                    self._folder_project_ids = scan_batch_pids
+                                    scan_query = self._apply_scan_filters(recipe.query)
+                                    batch_data = (
+                                        self._fetch_scans_with_early_termination(
+                                            scan_query
+                                        )
+                                    )
+                                    if batch_data:
+                                        all_scans.extend(batch_data)
+                            finally:
+                                self._folder_project_ids = saved_pids
+                            _fetched = all_scans
+                        else:
+                            scan_query = self._apply_scan_filters(recipe.query)
+                            # Use early termination to avoid fetching old scans
+                            _fetched = self._fetch_scans_with_early_termination(
+                                scan_query
+                            )
                         raw_data = (
                             pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
                         )
@@ -2554,7 +2589,7 @@ class ReportEngine:
                                     self._cve_impact_nvd_missing,
                                 ) = self._fetch_cve_reachability(raw_data)
 
-                    elif recipe.name == "Component List":
+                    elif recipe.name in ("Component List", "License Report"):
                         # Assessment report: shows current component inventory
                         # No date filtering by default (current state, not period-bound)
                         filters = []
@@ -3082,6 +3117,7 @@ class ReportEngine:
                                                     chunk_df = assign_risk_bands(
                                                         chunk_df,
                                                         weights=_triage_weights,
+                                                        gates=_triage_gates,
                                                     )
                                                     _drop = [
                                                         c
@@ -3350,7 +3386,9 @@ class ReportEngine:
                                                     gates=_triage_gates,
                                                 )
                                                 chunk_df = assign_risk_bands(
-                                                    chunk_df, weights=_triage_weights
+                                                    chunk_df,
+                                                    weights=_triage_weights,
+                                                    gates=_triage_gates,
                                                 )
                                                 _drop = [
                                                     c
@@ -3503,15 +3541,32 @@ class ReportEngine:
 
             if raw_data.empty:
                 self.logger.warning(f"No data returned for recipe: {recipe.name}")
+                _operational_recipes = {
+                    "Executive Summary",
+                    "Scan Analysis",
+                    "User Activity",
+                }
+                if self.config.project_filter and recipe.name in _operational_recipes:
+                    self.logger.warning(
+                        f"'{recipe.name}' is an operational report that only "
+                        f"shows activity within the reporting period "
+                        f"({self.config.start_date} to {self.config.end_date}). "
+                        f"The project '{self.config.project_filter}' may have "
+                        f"no activity in this window. Try a longer --period or "
+                        f"use an assessment recipe (e.g. Triage Prioritization, "
+                        f"CVE Impact) for point-in-time analysis."
+                    )
 
             # --- Enrich with CVE details for Findings by Project ---
             # If NVD pipeline was started during fetch, collect results now.
             # Otherwise fall back to synchronous fetch for non-batched paths
             # (e.g. single project without --current-version-only).
-            if recipe.name == "Findings by Project" and not raw_data.empty:
+            if recipe.name == "Findings by Project":
                 if _nvd_collect is not None:
+                    # Always call collect() to send termination sentinel and
+                    # avoid leaking the background consumer thread.
                     self._findings_by_project_cve_details = _nvd_collect()
-                else:
+                elif not raw_data.empty:
                     self._findings_by_project_cve_details = (
                         self._fetch_findings_cve_details(raw_data)
                     )
@@ -3552,10 +3607,10 @@ class ReportEngine:
                 project_query = QueryConfig(
                     endpoint="/public/v0/projects",
                     params=QueryParams(
-                        limit=1000, offset=0, archived=False, excluded=False
+                        limit=10000, offset=0, archived=False, excluded=False
                     ),
                 )
-                projects = self.api_client.fetch_data(project_query)
+                projects = self.api_client.fetch_all_with_resume(project_query)
 
                 # Build project mapping, handling different ID formats
                 project_map = {}
@@ -3568,6 +3623,8 @@ class ReportEngine:
 
                 # Inject project_name using vectorized DataFrame helper
                 if not raw_data.empty:
+                    # Copy to avoid mutating cached DataFrame
+                    raw_data = raw_data.copy()
                     _inject_project_names_df(raw_data, project_map)
 
             # --- Inject folder_name into raw records ---
@@ -3582,6 +3639,9 @@ class ReportEngine:
                 pf_map = {}
 
             if pf_map and not raw_data.empty and "folder_name" not in raw_data.columns:
+                # Copy to avoid mutating cached DataFrame (if not already copied above)
+                if "project_name" not in raw_data.columns:
+                    raw_data = raw_data.copy()
                 _inject_folder_names_df(raw_data, pf_map)
 
             # Handle additional data for multiple charts
@@ -3677,34 +3737,74 @@ class ReportEngine:
                         comp_filters.append(f"project=={self.config.project_filter}")
                 elif self._folder_project_ids:
                     folder_pids = sorted(self._folder_project_ids)
-                    comp_filters.append(
-                        f"project=in=({','.join(str(p) for p in folder_pids)})"
+                    # Batch folder project IDs to avoid 414 URL Too Long
+                    batch_size = 15 if len(folder_pids) > 200 else 25
+                    all_components: list[dict] = []
+                    base_filter = ";".join(comp_filters)
+                    self.logger.info(
+                        f"Fetching scoped components for Executive Dashboard "
+                        f"in {len(range(0, len(folder_pids), batch_size))} batches "
+                        f"({len(folder_pids)} projects, batch_size={batch_size})"
                     )
-                comp_query = QueryConfig(
-                    endpoint="/public/v0/components",
-                    params=QueryParams(
-                        limit=10000,
-                        filter=";".join(comp_filters),
-                    ),
-                )
-                self.logger.info(
-                    f"Fetching scoped components for Executive Dashboard "
-                    f"(filter: {comp_query.params.filter})"
-                )
-                try:
-                    additional_data["components"] = (
-                        self.api_client.fetch_all_with_resume(
-                            comp_query, show_progress=True
+                    try:
+                        for i in range(0, len(folder_pids), batch_size):
+                            batch_ids = folder_pids[i : i + batch_size]
+                            pid_filter = (
+                                f"project=in=({','.join(str(p) for p in batch_ids)})"
+                            )
+                            batch_filter = (
+                                f"{base_filter};{pid_filter}"
+                                if base_filter
+                                else pid_filter
+                            )
+                            batch_query = QueryConfig(
+                                endpoint="/public/v0/components",
+                                params=QueryParams(
+                                    limit=10000,
+                                    filter=batch_filter,
+                                ),
+                            )
+                            batch_data = self.api_client.fetch_all_with_resume(
+                                batch_query, show_progress=True
+                            )
+                            if batch_data:
+                                all_components.extend(batch_data)
+                        additional_data["components"] = all_components
+                        self.logger.info(f"Fetched {len(all_components)} components")
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Could not fetch components for Executive Dashboard: {e}"
                         )
+                        additional_data["components"] = []
+                    # Skip the single-query path below
+                    comp_filters = None  # type: ignore[assignment]
+
+                if comp_filters is not None:
+                    comp_query = QueryConfig(
+                        endpoint="/public/v0/components",
+                        params=QueryParams(
+                            limit=10000,
+                            filter=";".join(comp_filters),
+                        ),
                     )
                     self.logger.info(
-                        f"Fetched {len(additional_data['components'])} components"
+                        f"Fetching scoped components for Executive Dashboard "
+                        f"(filter: {comp_query.params.filter})"
                     )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Could not fetch components for Executive Dashboard: {e}"
-                    )
-                    additional_data["components"] = []
+                    try:
+                        additional_data["components"] = (
+                            self.api_client.fetch_all_with_resume(
+                                comp_query, show_progress=True
+                            )
+                        )
+                        self.logger.info(
+                            f"Fetched {len(additional_data['components'])} components"
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Could not fetch components for Executive Dashboard: {e}"
+                        )
+                        additional_data["components"] = []
 
             if recipe.additional_queries:
                 for query_name, query_config in recipe.additional_queries.items():
@@ -4061,7 +4161,42 @@ class ReportEngine:
                 comp_filters.append(f"project=={self.config.project_filter}")
         elif self._folder_project_ids:
             folder_pids = sorted(self._folder_project_ids)
-            comp_filters.append(f"project=in=({','.join(str(p) for p in folder_pids)})")
+            # Batch folder project IDs to avoid 414 URL Too Long
+            batch_size = 15 if len(folder_pids) > 200 else 25
+            all_components: list[dict] = []
+            base_filter = ";".join(comp_filters)
+            self.logger.info(
+                f"Fetching component details for Remediation Package "
+                f"in {len(range(0, len(folder_pids), batch_size))} batches "
+                f"({len(folder_pids)} projects, batch_size={batch_size})"
+            )
+            try:
+                for i in range(0, len(folder_pids), batch_size):
+                    batch_ids = folder_pids[i : i + batch_size]
+                    pid_filter = f"project=in=({','.join(str(p) for p in batch_ids)})"
+                    batch_filter = (
+                        f"{base_filter};{pid_filter}" if base_filter else pid_filter
+                    )
+                    batch_query = QueryConfig(
+                        endpoint="/public/v0/components",
+                        params=QueryParams(
+                            limit=10000,
+                            filter=batch_filter,
+                        ),
+                    )
+                    batch_data = self.api_client.fetch_all_with_resume(
+                        batch_query, show_progress=True
+                    )
+                    if batch_data:
+                        all_components.extend(batch_data)
+                additional_data["component_details"] = all_components
+                self.logger.info(f"Fetched {len(all_components)} component details")
+            except Exception as e:
+                self.logger.warning(
+                    f"Could not fetch component details for Remediation Package: {e}"
+                )
+                additional_data["component_details"] = []
+            return
 
         comp_query = QueryConfig(
             endpoint="/public/v0/components",
@@ -4550,9 +4685,11 @@ class ReportEngine:
         import random
 
         max_retries = 8
+        max_pages = 500  # Hard upper bound to prevent infinite loops
+        pages_fetched = 0
 
         with tqdm(desc="Fetching scans", unit=" records", leave=False) as pbar:
-            while not done:
+            while not done and pages_fetched < max_pages:
                 # Update query with current offset
                 page_query = QueryConfig(
                     endpoint=sorted_query.endpoint,
@@ -4589,6 +4726,7 @@ class ReportEngine:
                             )
                             raise
 
+                pages_fetched += 1
                 if not page_data:
                     break
 
@@ -4662,6 +4800,11 @@ class ReportEngine:
 
                 offset += limit
 
+        if pages_fetched >= max_pages:
+            self.logger.warning(
+                f"Scan fetch hit max_pages limit ({max_pages}). "
+                f"Results may be incomplete."
+            )
         self.logger.info(
             f"Fetched {len(all_scans)} scans (early termination saved fetching older scans)"
         )

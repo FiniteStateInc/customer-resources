@@ -18,9 +18,14 @@ transform:
       keys: ["project.name", severity]
       aggs:
         finding_count: "count:id"
-  # Sort by project name and severity
+  # Pivot severity into columns: Critical | High | Medium | Low
+  - pivot:
+      index: "project.name"
+      columns: severity
+      values: finding_count
+  # Sort by project name
   - sort:
-      sort: ["project.name", severity]
+      sort: ["project.name"]
       ascending: true
 
 # Transform for open issues pie chart

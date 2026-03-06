@@ -43,7 +43,7 @@ _DETAIL_FINDINGS_COLUMNS = [
     "Severity",
     "Component Name",
     "Component Version",
-    "Risk",
+    "Score",
     "Title",
 ]
 
@@ -56,7 +56,7 @@ _DETAIL_CHURN_COLUMNS = [
     "Severity",
     "Component Name",
     "Component Version",
-    "Risk",
+    "Score",
     "Title",
 ]
 
@@ -154,7 +154,11 @@ def version_comparison_transform(
                         "Severity": row.get("severity", ""),
                         "Component Name": row.get("component_name", ""),
                         "Component Version": row.get("component_version", ""),
-                        "Risk": row.get("risk", ""),
+                        "Score": (
+                            round(row.get("risk", 0) / 10.0, 1)
+                            if row.get("risk")
+                            else ""
+                        ),
                         "Title": row.get("title", ""),
                     }
                 )
@@ -174,7 +178,11 @@ def version_comparison_transform(
                         "Severity": row.get("severity", ""),
                         "Component Name": row.get("component_name", ""),
                         "Component Version": row.get("component_version", ""),
-                        "Risk": row.get("risk", ""),
+                        "Score": (
+                            round(row.get("risk", 0) / 10.0, 1)
+                            if row.get("risk")
+                            else ""
+                        ),
                         "Title": row.get("title", ""),
                     }
                 )
@@ -189,7 +197,11 @@ def version_comparison_transform(
                         "Severity": row.get("severity", ""),
                         "Component Name": row.get("component_name", ""),
                         "Component Version": row.get("component_version", ""),
-                        "Risk": row.get("risk", ""),
+                        "Score": (
+                            round(row.get("risk", 0) / 10.0, 1)
+                            if row.get("risk")
+                            else ""
+                        ),
                         "Title": row.get("title", ""),
                     }
                 )
@@ -727,8 +739,8 @@ def _classify_components(baseline: pd.DataFrame, current: pd.DataFrame) -> pd.Da
         )
 
     merged = pd.merge(
-        baseline[["name", "version"]].drop_duplicates("name"),
-        current[["name", "version"]].drop_duplicates("name"),
+        baseline[["name", "version"]].drop_duplicates(["name", "version"]),
+        current[["name", "version"]].drop_duplicates(["name", "version"]),
         on="name",
         how="outer",
         suffixes=("_baseline", "_current"),

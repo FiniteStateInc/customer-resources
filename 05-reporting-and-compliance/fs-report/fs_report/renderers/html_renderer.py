@@ -481,7 +481,9 @@ class HTMLRenderer:
             "table_data": table_data,
             "portfolio_table_data": portfolio_table_data,
             "metadata": slim_metadata,
-            "generated_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "generated_at": pd.Timestamp.now(tz="UTC").strftime(
+                "%Y-%m-%d %H:%M:%S UTC"
+            ),
             "stacked": is_stacked,
             "is_mttr_chart": is_mttr_chart,
             "y_axis_max": y_axis_max,
@@ -508,11 +510,36 @@ class HTMLRenderer:
         # Merge additional_data into template context.  Convert DataFrames
         # and Series to native Python types up-front so that the later
         # convert_to_native_types pass doesn't recurse through large tables.
+        _reserved_keys = frozenset(
+            {
+                "recipe_name",
+                "slide_title",
+                "chart_data",
+                "chart_data_json",
+                "charts",
+                "table_data",
+                "portfolio_table_data",
+                "metadata",
+                "generated_at",
+                "stacked",
+                "is_mttr_chart",
+                "y_axis_max",
+                "start_date",
+                "end_date",
+                "data",
+            }
+        )
         additional_data = report_data.metadata.get("additional_data", {})
         if additional_data:
             for key, value in additional_data.items():
                 if key == "config":
                     continue  # Config object is not template-safe
+                if key in _reserved_keys:
+                    self.logger.warning(
+                        f"additional_data key '{key}' collides with reserved "
+                        f"template variable — skipping"
+                    )
+                    continue
                 # Convert top-level DataFrames/Series to native types
                 if isinstance(value, pd.DataFrame):
                     value = value.to_dict("records")
@@ -955,7 +982,7 @@ class HTMLRenderer:
         seen = set()
         unique_cols = []
         for col in df.columns:
-            if col not in seen and not col.endswith(" 2"):
+            if col not in seen:
                 unique_cols.append(col)
                 seen.add(col)
         df = df[unique_cols]
@@ -1124,7 +1151,7 @@ class HTMLRenderer:
             """Get color based on logarithmic risk score (green to red)"""
             # Use logarithmic scale for color mapping
             log_min = math.log(max(1, min_risk))
-            log_max = math.log(max_risk)
+            log_max = math.log(max(1, max_risk))
             log_value = math.log(max(1, risk_score))
 
             # Handle case where log_max == log_min (single data point or same values)

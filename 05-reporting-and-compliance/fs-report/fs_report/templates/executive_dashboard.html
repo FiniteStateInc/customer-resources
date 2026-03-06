@@ -187,7 +187,7 @@
                 {% if top_risk_products and top_risk_products | length > 0 %}
                 <table style="margin-top: 10px;">
                     <thead>
-                        <tr><th>#</th><th>Product</th><th>Risk Score</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th></tr>
+                        <tr><th>#</th><th>Product</th><th>Risk Score</th><th>KEV</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th></tr>
                     </thead>
                     <tbody>
                         {% for p in top_risk_products[:10] %}
@@ -195,6 +195,7 @@
                             <td>{{ loop.index }}</td>
                             <td>{{ p.project }}</td>
                             <td class="num"><strong>{{ p.risk_score }}</strong></td>
+                            <td class="num">{% if p.kev|default(0) > 0 %}<span class="sev-badge sev-critical">{{ p.kev }}</span>{% else %}0{% endif %}</td>
                             <td class="num">{% if p.critical > 0 %}<span class="sev-badge sev-critical">{{ p.critical }}</span>{% else %}0{% endif %}</td>
                             <td class="num">{% if p.high > 0 %}<span class="sev-badge sev-high">{{ p.high }}</span>{% else %}0{% endif %}</td>
                             <td class="num">{% if p.medium > 0 %}<span class="sev-badge sev-medium">{{ p.medium }}</span>{% else %}0{% endif %}</td>
@@ -220,7 +221,7 @@
             </div>
             <div class="chart-container">
                 <h2 class="chart-title">License Distribution</h2>
-                <p class="chart-description">Top 10 software licenses by component count.</p>
+                <p class="chart-description">Software licenses by component count.</p>
                 <div class="chart-wrapper">
                     <canvas id="licenseBarChart"></canvas>
                 </div>
@@ -233,37 +234,6 @@
             <div class="chart-wrapper">
                 <canvas id="openIssuesPieChart"></canvas>
             </div>
-        </div>
-        {% endif %}
-
-        <!-- Project Findings Table (full width) -->
-        {% if project_table and project_table | length > 0 %}
-        <div class="table-container">
-            <h2>Project Findings Summary</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Project</th>
-                        <th>Critical</th>
-                        <th>High</th>
-                        <th>Medium</th>
-                        <th>Low</th>
-                        <th>Total</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for row in project_table %}
-                    <tr>
-                        <td>{{ row.project }}</td>
-                        <td class="num">{% if (row.critical|default(0)) > 0 %}<span class="sev-badge sev-critical">{{ row.critical }}</span>{% else %}0{% endif %}</td>
-                        <td class="num">{% if (row.high|default(0)) > 0 %}<span class="sev-badge sev-high">{{ row.high }}</span>{% else %}0{% endif %}</td>
-                        <td class="num">{% if (row.medium|default(0)) > 0 %}<span class="sev-badge sev-medium">{{ row.medium }}</span>{% else %}0{% endif %}</td>
-                        <td class="num">{{ row.low }}</td>
-                        <td class="num"><strong>{{ row.total }}</strong></td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
         </div>
         {% endif %}
 
@@ -307,6 +277,39 @@
         </div>
         {% endif %}
 
+        <!-- Project Findings Table (full width) -->
+        {% if project_table and project_table | length > 0 %}
+        <div class="table-container">
+            <h2>Project Findings Summary</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Project</th>
+                        <th>KEV</th>
+                        <th>Critical</th>
+                        <th>High</th>
+                        <th>Medium</th>
+                        <th>Low</th>
+                        <th>Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in project_table %}
+                    <tr>
+                        <td>{{ row.project }}</td>
+                        <td class="num">{% if (row.kev|default(0)) > 0 %}<span class="sev-badge sev-critical">{{ row.kev }}</span>{% else %}0{% endif %}</td>
+                        <td class="num">{% if (row.critical|default(0)) > 0 %}<span class="sev-badge sev-critical">{{ row.critical }}</span>{% else %}0{% endif %}</td>
+                        <td class="num">{% if (row.high|default(0)) > 0 %}<span class="sev-badge sev-high">{{ row.high }}</span>{% else %}0{% endif %}</td>
+                        <td class="num">{% if (row.medium|default(0)) > 0 %}<span class="sev-badge sev-medium">{{ row.medium }}</span>{% else %}0{% endif %}</td>
+                        <td class="num">{{ row.low }}</td>
+                        <td class="num"><strong>{{ row.total }}</strong></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
         <div class="footer">
             <p>Generated by <span class="finite-state-logo">Finite State</span> | {{ generated_at }}</p>
             <p style="font-size: 0.8em; margin-top: 4px;">Copyright &copy; 2026 Finite State, Inc.</p>
@@ -332,6 +335,18 @@
             const chartData = {{ findings_by_group | tojson }};
             if (!chartData.labels || chartData.labels.length === 0) return;
 
+            // Use logarithmic scale when data range exceeds 100x between
+            // smallest and largest group totals (avoids small projects
+            // being invisible next to large ones).
+            var totals = chartData.labels.map(function(_, i) {
+                return chartData.datasets.reduce(function(sum, ds) {
+                    return sum + (ds.data[i] || 0);
+                }, 0);
+            }).filter(function(v) { return v > 0; });
+            var maxTotal = Math.max.apply(null, totals.length ? totals : [0]);
+            var minTotal = Math.min.apply(null, totals.length ? totals : [0]);
+            var useLog = minTotal > 0 && maxTotal / minTotal > 100;
+
             new Chart(ctx.getContext('2d'), {
                 type: 'bar',
                 data: chartData,
@@ -346,8 +361,17 @@
                         },
                         y: {
                             stacked: true,
-                            beginAtZero: true,
-                            title: { display: true, text: 'Number of Findings' }
+                            type: useLog ? 'logarithmic' : 'linear',
+                            beginAtZero: !useLog,
+                            title: { display: true, text: 'Number of Findings' + (useLog ? ' (log scale)' : '') },
+                            ticks: useLog ? {
+                                callback: function(value) {
+                                    if (value >= 10000) return (value/1000) + 'K';
+                                    if (value >= 1000) return (value/1000) + 'K';
+                                    if ([1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000].indexOf(value) >= 0) return value.toLocaleString();
+                                    return '';
+                                }
+                            } : {}
                         }
                     },
                     plugins: {

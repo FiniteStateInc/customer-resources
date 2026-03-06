@@ -87,9 +87,14 @@ def _severity_sort_key(sev: str) -> int:
 
 
 def _build_findings_by_group(
-    df: pd.DataFrame, folder_filter: str | None
+    df: pd.DataFrame, folder_filter: str | None, max_projects: int = 0
 ) -> tuple[dict[str, Any], str]:
-    """Build stacked bar chart data grouped by folder or project."""
+    """Build stacked bar chart data grouped by folder or project.
+
+    Args:
+        max_projects: When > 0, limit to top N groups and bin remainder as
+            "Other".  When 0 (default), show all groups with no binning.
+    """
     if folder_filter:
         group_col = "project_name"
         group_label = "Project"
@@ -108,10 +113,10 @@ def _build_findings_by_group(
     pivot = pivot.sort_values("_total", ascending=False)
     pivot = pivot.drop(columns=["_total"])
 
-    # Limit to top 30, group rest as "Other"
-    if len(pivot) > 30:
-        top = pivot.iloc[:30]
-        rest = pivot.iloc[30:].sum()
+    # Optionally limit to top N, group rest as "Other"
+    if max_projects > 0 and len(pivot) > max_projects:
+        top = pivot.iloc[:max_projects]
+        rest = pivot.iloc[max_projects:].sum()
         rest.name = "Other"
         pivot = pd.concat([top, rest.to_frame().T])
 
@@ -217,6 +222,10 @@ def _build_risk_donut_and_table(
             "total_artifacts": 0,
         }, []
 
+    # Determine KEV column name
+    kev_col = "inKev" if "inKev" in df.columns else "in_kev"
+    has_kev = kev_col in df.columns
+
     # Score per project: min(100, critical*10 + high*5 + medium*2 + low*0.5)
     project_scores: dict[str, dict[str, Any]] = {}
     for project, grp in df.groupby("project_name"):
@@ -225,6 +234,7 @@ def _build_risk_donut_and_table(
         h = int(sev_counts.get("high", 0))
         m = int(sev_counts.get("medium", 0))
         lo = int(sev_counts.get("low", 0))
+        kev = int(grp[kev_col].fillna(False).astype(bool).sum()) if has_kev else 0
         score = min(100, c * 10 + h * 5 + m * 2 + lo * 0.5)
         max_sev = "low"
         if c > 0:
@@ -241,6 +251,7 @@ def _build_risk_donut_and_table(
             "medium": m,
             "low": lo,
             "total": c + h + m + lo,
+            "kev": kev,
         }
 
     # Donut: bucket projects by risk score range
@@ -298,6 +309,7 @@ def _build_risk_donut_and_table(
                 "medium": info["medium"],
                 "low": info["low"],
                 "total": info["total"],
+                "kev": info["kev"],
             }
         )
 
@@ -331,7 +343,7 @@ def _build_open_issues_pie(df: pd.DataFrame) -> dict[str, Any]:
 def _build_license_bar(
     components: list[dict[str, Any]], project_ids: set[str]
 ) -> dict[str, Any]:
-    """Build vertical bar chart for top 10 licenses from components."""
+    """Build vertical bar chart for all licenses from components."""
     if not components:
         return {"labels": [], "data": []}
 
@@ -360,10 +372,10 @@ def _build_license_bar(
     if not license_counts:
         return {"labels": [], "data": []}
 
-    top10 = license_counts.most_common(10)
+    ranked = license_counts.most_common()
     return {
-        "labels": [lic for lic, _ in top10],
-        "data": [count for _, count in top10],
+        "labels": [lic for lic, _ in ranked],
+        "data": [count for _, count in ranked],
     }
 
 
@@ -446,6 +458,10 @@ def _build_project_table(df: pd.DataFrame) -> list[dict[str, Any]]:
     if df.empty or "project_name" not in df.columns:
         return []
 
+    # Determine KEV column name
+    kev_col = "inKev" if "inKev" in df.columns else "in_kev"
+    has_kev = kev_col in df.columns
+
     table = []
     for project, grp in df.groupby("project_name"):
         sev_counts = grp["severity"].str.lower().value_counts()
@@ -453,6 +469,7 @@ def _build_project_table(df: pd.DataFrame) -> list[dict[str, Any]]:
         h = int(sev_counts.get("high", 0))
         m = int(sev_counts.get("medium", 0))
         lo = int(sev_counts.get("low", 0))
+        kev = int(grp[kev_col].fillna(False).astype(bool).sum()) if has_kev else 0
         table.append(
             {
                 "project": str(project),
@@ -461,6 +478,7 @@ def _build_project_table(df: pd.DataFrame) -> list[dict[str, Any]]:
                 "medium": m,
                 "low": lo,
                 "total": c + h + m + lo,
+                "kev": kev,
             }
         )
 
@@ -509,6 +527,9 @@ def _build_findings_by_type(df: pd.DataFrame) -> dict[str, Any]:
     type_counts: Counter = Counter()
     for _, row in df.iterrows():
         category = str(row.get("category", "") or "").lower().strip()
+        # Fall back to 'type' column when category is empty (e.g. type=cve API responses)
+        if not category:
+            category = str(row.get("type", "") or "").lower().strip()
         label = CATEGORY_MAP.get(
             category, category.replace("_", " ").title() if category else "Other"
         )
@@ -737,8 +758,16 @@ def executive_dashboard_transform(
         folder_name = getattr(cfg, "folder_filter", None)
     scope_label = folder_name if folder_filter else "All Folders"
 
+    # Read max_projects from recipe parameters (0 = show all, no binning)
+    max_projects = 0
+    recipe_params = additional_data.get("recipe_parameters") or {}
+    if isinstance(recipe_params, dict):
+        max_projects = int(recipe_params.get("max_projects", 0))
+
     # Build all sections
-    findings_by_group, group_label = _build_findings_by_group(df, folder_filter)
+    findings_by_group, group_label = _build_findings_by_group(
+        df, folder_filter, max_projects
+    )
     severity_trends = _build_severity_trends(df, start_date, end_date)
     risk_donut, top_risk_products = _build_risk_donut_and_table(df)
     open_issues_pie = _build_open_issues_pie(df)
@@ -750,8 +779,8 @@ def executive_dashboard_transform(
     sca_summary = _build_sca_summary(df, components, project_ids, start_date)
     finding_age = _build_finding_age(df)
 
-    # Build main DataFrame for CSV/XLSX fallback
-    main_df = df.drop(columns=["_detected_dt"], errors="ignore")
+    # Build main DataFrame for CSV/XLSX export (aggregated project table)
+    main_df = pd.DataFrame(project_table) if project_table else pd.DataFrame()
 
     result = {
         "main": main_df,

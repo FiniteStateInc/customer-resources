@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>License Report - Finite State Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6; color: #333; background-color: #f8f9fa;
+        }
+        .container { margin: 0 auto; padding: 20px; background-color: white; border: 1px solid #dee2e6; min-height: 100%; }
+        .header { text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid #e9ecef; }
+        .company-logo { max-height: 50px; width: auto; margin: 0 auto; display: block; }
+        .header h1 { color: #2c3e50; font-size: 2.5em; margin-bottom: 10px; }
+        .header .subtitle { color: #6c757d; font-size: 1.1em; }
+        .metadata { background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 30px; font-size: 0.9em; color: #6c757d; }
+
+        .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .kpi-card {
+            background: white; border: 1px solid #dee2e6; border-radius: 8px;
+            padding: 20px; text-align: center;
+        }
+        .kpi-card .kpi-title { font-size: 0.85em; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .kpi-card .kpi-value { font-size: 2.2em; font-weight: 700; color: #2c3e50; line-height: 1; }
+
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; }
+        @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+        .chart-container { background-color: white; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #dee2e6; }
+        .chart-wrapper { position: relative; height: 400px; margin: 20px 0; }
+        .chart-title { color: #2c3e50; font-size: 1.5em; margin-bottom: 10px; }
+        .chart-description { color: #6c757d; font-size: 0.95em; margin-bottom: 20px; }
+
+        .table-container { background-color: white; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #dee2e6; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #dee2e6; }
+        th { background-color: #f8f9fa; font-weight: 600; color: #495057; position: sticky; top: 0; z-index: 10; }
+        tr:hover { background-color: #f8f9fa; }
+        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+        .risk-badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.8em; font-weight: 600; color: white; }
+        .risk-strong-copyleft { background-color: #d32f2f; }
+        .risk-weak-copyleft { background-color: #f57c00; }
+        .risk-proprietary { background-color: #7b1fa2; }
+        .risk-unknown { background-color: #757575; }
+        .risk-permissive { background-color: #388e3c; }
+
+        .footer { text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e9ecef; color: #6c757d; font-size: 0.9em; }
+        .finite-state-logo { color: #007bff; font-weight: bold; }
+
+        @media print {
+            body { background-color: white; }
+            .container { max-width: none; }
+        }
+    </style>
+</head>
+<body>
+    <span id="fsConnectionBadge"></span>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            {% if logo_path %}
+            <div class="logo-container">
+                <img src="{{ logo_path }}" alt="Company Logo" class="company-logo">
+            </div>
+            {% else %}
+            <div class="logo-container">
+                <img src="data:image/webp;base64,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"
+                     alt="Finite State Logo" class="company-logo">
+            </div>
+            {% endif %}
+            <h1>License Risk Report</h1>
+            <div class="subtitle">
+                {{ scope_label | default('All Projects') }} — Software License Analysis
+            </div>
+        </div>
+
+        <!-- Metadata -->
+        <div class="metadata">
+            <strong>Report:</strong> License Report |
+            <strong>Generated:</strong> {{ generated_at }} |
+            <strong>Scope:</strong> {{ scope_label | default('All Projects') }} |
+            <strong>Components:</strong> {{ total_components | default(0) }}
+        </div>
+
+        <!-- KPI Cards -->
+        <div class="kpi-row">
+            <div class="kpi-card">
+                <div class="kpi-title">Total Components</div>
+                <div class="kpi-value">{{ total_components | default(0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Unique Licenses</div>
+                <div class="kpi-value">{{ total_licenses | default(0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Strong Copyleft</div>
+                <div class="kpi-value" {% if category_summary.get('Strong Copyleft', 0) > 0 %}style="color: #d32f2f;"{% endif %}>{{ category_summary.get('Strong Copyleft', 0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Weak Copyleft</div>
+                <div class="kpi-value" {% if category_summary.get('Weak Copyleft', 0) > 0 %}style="color: #f57c00;"{% endif %}>{{ category_summary.get('Weak Copyleft', 0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Permissive</div>
+                <div class="kpi-value" style="color: #388e3c;">{{ category_summary.get('Permissive', 0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">No License</div>
+                <div class="kpi-value" {% if no_license_count | default(0) > 0 %}style="color: #f57c00;"{% endif %}>{{ no_license_count | default(0) }}</div>
+            </div>
+        </div>
+
+        <!-- Risk Distribution Chart -->
+        {% if risk_pie and risk_pie.labels | default([]) | length > 0 %}
+        <div class="two-col">
+            <div class="chart-container">
+                <h2 class="chart-title">License Risk Distribution</h2>
+                <p class="chart-description">Components grouped by license risk category.</p>
+                <div class="chart-wrapper">
+                    <canvas id="riskPieChart"></canvas>
+                </div>
+            </div>
+            <div class="chart-container">
+                <h2 class="chart-title">Risk Summary</h2>
+                <p class="chart-description">Breakdown of license risk categories across all components.</p>
+                <table style="margin-top: 20px;">
+                    <thead>
+                        <tr><th>Category</th><th class="num">Count</th><th class="num">%</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for cat in ['Strong Copyleft', 'Weak Copyleft', 'Proprietary/Restricted', 'Unknown', 'Permissive'] %}
+                        {% set count = category_summary.get(cat, 0) %}
+                        {% if count > 0 %}
+                        <tr>
+                            <td>
+                                <span class="risk-badge {% if cat == 'Strong Copyleft' %}risk-strong-copyleft{% elif cat == 'Weak Copyleft' %}risk-weak-copyleft{% elif cat == 'Proprietary/Restricted' %}risk-proprietary{% elif cat == 'Unknown' %}risk-unknown{% else %}risk-permissive{% endif %}">{{ cat }}</span>
+                            </td>
+                            <td class="num">{{ count }}</td>
+                            <td class="num">{{ ((count / total_components) * 100) | round(1) }}%</td>
+                        </tr>
+                        {% endif %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- License Table -->
+        {% if license_table and license_table | length > 0 %}
+        <div class="table-container">
+            <h2>License Breakdown</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>License</th>
+                        <th>Risk Category</th>
+                        <th class="num">Components</th>
+                        <th>Projects</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in license_table %}
+                    <tr>
+                        <td>{{ row.license_name if row.license_name else '(No License)' }}</td>
+                        <td>
+                            <span class="risk-badge {% if row.risk_category == 'Strong Copyleft' %}risk-strong-copyleft{% elif row.risk_category == 'Weak Copyleft' %}risk-weak-copyleft{% elif row.risk_category == 'Proprietary/Restricted' %}risk-proprietary{% elif row.risk_category == 'Unknown' %}risk-unknown{% else %}risk-permissive{% endif %}">{{ row.risk_category }}</span>
+                        </td>
+                        <td class="num"><strong>{{ row.component_count }}</strong></td>
+                        <td>{{ row.projects }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        <div class="footer">
+            <p>Generated by <span class="finite-state-logo">Finite State</span> | {{ generated_at }}</p>
+            <p style="font-size: 0.8em; margin-top: 4px;">Copyright &copy; 2026 Finite State, Inc.</p>
+        </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        {% if risk_pie and risk_pie.labels | default([]) | length > 0 %}
+        (function() {
+            const ctx = document.getElementById('riskPieChart');
+            if (!ctx) return;
+            const pie = {{ risk_pie | tojson }};
+            if (!pie.labels || pie.labels.length === 0) return;
+
+            new Chart(ctx.getContext('2d'), {
+                type: 'doughnut',
+                data: {
+                    labels: pie.labels,
+                    datasets: [{
+                        data: pie.data,
+                        backgroundColor: pie.backgroundColor,
+                        borderWidth: 2,
+                        borderColor: '#fff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'bottom' },
+                        datalabels: {
+                            color: '#fff',
+                            font: { weight: 'bold', size: 13 },
+                            formatter: function(value, ctx) {
+                                if (value === 0) return '';
+                                var total = ctx.dataset.data.reduce(function(a, b) { return a + b; }, 0);
+                                var pct = ((value / total) * 100).toFixed(1);
+                                return value + '\n(' + pct + '%)';
+                            }
+                        }
+                    }
+                },
+                plugins: [ChartDataLabels]
+            });
+        })();
+        {% endif %}
+    });
+    </script>
+
+    {% include '_action_buttons.html' %}
+</body>
+</html>

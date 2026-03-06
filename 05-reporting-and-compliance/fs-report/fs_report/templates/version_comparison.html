@@ -461,7 +461,7 @@
                     <table class="data-table progression-table">
                         <thead>
                             <tr>
-                                {% if is_pair %}<th>Project</th>{% endif %}
+                                <th>Project</th>
                                 <th>Version</th>
                                 <th>Date</th>
                                 <th class="num">Total</th>
@@ -477,7 +477,7 @@
                         <tbody>
                             {% for step in proj.progression %}
                             <tr>
-                                {% if is_pair %}<td>{{ step.version_project_name }}</td>{% endif %}
+                                <td>{{ step.version_project_name or proj.project_name }}</td>
                                 <td><strong>{{ step.version }}</strong></td>
                                 <td>{{ step.created }}</td>
                                 <td class="num">{{ step.total }}</td>
@@ -519,7 +519,7 @@
                                         <th>ID</th>
                                         <th>Severity</th>
                                         <th>Component</th>
-                                        <th class="num">Risk</th>
+                                        <th class="num">Score</th>
                                         <th>Title</th>
                                     </tr>
                                 </thead>
@@ -529,7 +529,7 @@
                                         <td>{{ row.display_id if row.display_id else '—' }}</td>
                                         <td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td>
                                         <td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td>
-                                        <td class="num">{{ "%.1f"|format(row.risk) if row.risk else '—' }}</td>
+                                        <td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk else '—' }}</td>
                                         <td>{{ row.title if row.title else '—' }}</td>
                                     </tr>
                                     {% endfor %}
@@ -557,7 +557,7 @@
                                         <th>ID</th>
                                         <th>Severity</th>
                                         <th>Component</th>
-                                        <th class="num">Risk</th>
+                                        <th class="num">Score</th>
                                         <th>Title</th>
                                     </tr>
                                 </thead>
@@ -567,7 +567,7 @@
                                         <td>{{ row.display_id if row.display_id else '—' }}</td>
                                         <td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td>
                                         <td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td>
-                                        <td class="num">{{ "%.1f"|format(row.risk) if row.risk else '—' }}</td>
+                                        <td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk else '—' }}</td>
                                         <td>{{ row.title if row.title else '—' }}</td>
                                     </tr>
                                     {% endfor %}
@@ -659,11 +659,11 @@
                                     {% if step.fixed_findings and step.fixed_findings|length > 0 %}
                                     <table class="data-table">
                                         <thead>
-                                            <tr><th>ID</th><th>Severity</th><th>Component</th><th class="num">Risk</th><th>Title</th></tr>
+                                            <tr><th>ID</th><th>Severity</th><th>Component</th><th class="num">Score</th><th>Title</th></tr>
                                         </thead>
                                         <tbody>
                                             {% for row in step.fixed_findings %}
-                                            <tr><td>{{ row.display_id if row.display_id else '—' }}</td><td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td><td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td><td class="num">{{ "%.1f"|format(row.risk) if row.risk else '—' }}</td><td>{{ row.title if row.title else '—' }}</td></tr>
+                                            <tr><td>{{ row.display_id if row.display_id else '—' }}</td><td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td><td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td><td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk else '—' }}</td><td>{{ row.title if row.title else '—' }}</td></tr>
                                             {% endfor %}
                                         </tbody>
                                     </table>
@@ -676,11 +676,11 @@
                                     {% if step.new_findings and step.new_findings|length > 0 %}
                                     <table class="data-table">
                                         <thead>
-                                            <tr><th>ID</th><th>Severity</th><th>Component</th><th class="num">Risk</th><th>Title</th></tr>
+                                            <tr><th>ID</th><th>Severity</th><th>Component</th><th class="num">Score</th><th>Title</th></tr>
                                         </thead>
                                         <tbody>
                                             {% for row in step.new_findings %}
-                                            <tr><td>{{ row.display_id if row.display_id else '—' }}</td><td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td><td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td><td class="num">{{ "%.1f"|format(row.risk) if row.risk else '—' }}</td><td>{{ row.title if row.title else '—' }}</td></tr>
+                                            <tr><td>{{ row.display_id if row.display_id else '—' }}</td><td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td><td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td><td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk else '—' }}</td><td>{{ row.title if row.title else '—' }}</td></tr>
                                             {% endfor %}
                                         </tbody>
                                     </table>

@@ -31,24 +31,34 @@
     </div>
 </div>
 
-<!-- Data Table -->
-{% if table_data %}
+<!-- Pivoted Project Summary Table -->
+{% if table_data and table_data.rows %}
 <div class="table-container">
-    <h2>Data Table</h2>
+    <h2>Findings by Project</h2>
     <table>
         <thead>
             <tr>
-                {% for header in table_data.headers %}
-                <th>{{ header }}</th>
-                {% endfor %}
+                <th>Project</th>
+                <th class="num">Critical</th>
+                <th class="num">High</th>
+                <th class="num">Medium</th>
+                <th class="num">Low</th>
+                <th class="num">Total</th>
             </tr>
         </thead>
         <tbody>
             {% for row in table_data.rows %}
+            {% set crit = row.get('critical', 0) | default(0, true) | int %}
+            {% set high = row.get('high', 0) | default(0, true) | int %}
+            {% set med = row.get('medium', 0) | default(0, true) | int %}
+            {% set low = row.get('low', 0) | default(0, true) | int %}
             <tr>
-                {% for cell in row.values() %}
-                <td>{{ cell }}</td>
-                {% endfor %}
+                <td>{{ row.get('project.name', '') }}</td>
+                <td class="num">{% if crit > 0 %}<span style="color:#d32f2f;font-weight:600;">{{ crit }}</span>{% else %}0{% endif %}</td>
+                <td class="num">{% if high > 0 %}<span style="color:#f57c00;font-weight:600;">{{ high }}</span>{% else %}0{% endif %}</td>
+                <td class="num">{% if med > 0 %}<span style="color:#e6a800;font-weight:600;">{{ med }}</span>{% else %}0{% endif %}</td>
+                <td class="num">{{ low }}</td>
+                <td class="num"><strong>{{ crit + high + med + low }}</strong></td>
             </tr>
             {% endfor %}
         </tbody>
@@ -66,23 +76,13 @@ const severityColors = {
     'low': '#388e3c'      // green
 };
 
-// Prepare grouped bar chart data (project x severity, no 'none')
+// Prepare stacked bar chart from pivoted table data
 (function() {
-    const raw = {{ chart_data_json.project_breakdown | safe }};
     const tableRows = {{ table_data.rows | tojson if table_data else '[]' }};
-    const projectSeverity = {};
-    tableRows.forEach(row => {
-        const project = row['project.name'];
-        const severity = row['severity'];
-        const count = row['finding_count'];
-        if (severity === 'none') return; // skip 'none'
-        if (!projectSeverity[project]) projectSeverity[project] = {};
-        projectSeverity[project][severity] = count;
-    });
-    const projects = Object.keys(projectSeverity);
+    const projects = tableRows.map(r => r['project.name'] || '');
     const datasets = severityOrder.map(sev => ({
         label: sev.charAt(0).toUpperCase() + sev.slice(1),
-        data: projects.map(p => projectSeverity[p][sev] || 0),
+        data: tableRows.map(r => r[sev] || 0),
         backgroundColor: severityColors[sev],
         stack: true
     }));
@@ -108,7 +108,7 @@ const severityColors = {
                 }
             },
             plugins: {
-                legend: { display: false },
+                legend: { position: 'top' },
                 title: { display: false }
             }
         }

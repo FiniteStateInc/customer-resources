@@ -116,6 +116,10 @@ async def save_settings(
         "finding_types",
         "ai_depth",
         "logo",
+        "product_type",
+        "network_exposure",
+        "regulatory",
+        "deployment_notes",
     ):
         val = form.get(key)
         if val is not None:

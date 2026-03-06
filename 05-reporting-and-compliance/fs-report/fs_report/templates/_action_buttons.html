@@ -752,16 +752,22 @@
 
         const pvId = _triageContext.projectVersionId;
         const intId = _triageContext.internalId;
+        if (!pvId || !intId) {
+            showError('fsTriageError', 'Missing project version or finding ID.');
+            setLoading('fsTriageConfirmBtn', false);
+            return;
+        }
         const url = apiBase() + '/public/v0/findings/' + pvId + '/' + intId + '/status';
 
+        var defaults = _vexDefaults('IN_TRIAGE', _triageContext.reachabilityLabel || 'INCONCLUSIVE');
         try {
             const res = await fetch(url, {
                 method: 'PUT',
                 headers: apiHeaders(),
                 body: JSON.stringify({
                     status: 'IN_TRIAGE',
-                    response: 'WILL_NOT_FIX',
-                    justification: 'CODE_NOT_PRESENT',
+                    response: defaults.response,
+                    justification: defaults.justification,
                     reason: _triageContext.reason || '',
                 }),
             });
@@ -815,6 +821,15 @@
     // Accept Recommendation
     // =========================================================================
 
+    // Smart defaults matching Python vex_applier.get_smart_defaults()
+    function _vexDefaults(status, reachLabel) {
+        var justification = 'CODE_NOT_PRESENT';
+        if (status === 'NOT_AFFECTED' && reachLabel === 'UNREACHABLE') {
+            justification = 'CODE_NOT_REACHABLE';
+        }
+        return { response: 'WILL_NOT_FIX', justification: justification };
+    }
+
     window.fsAcceptRecommendation = async function() {
         hideError('fsTriageError');
         setLoading('fsTriageAcceptBtn', true);
@@ -828,18 +843,30 @@
 
         const pvId = _triageContext.projectVersionId;
         const intId = _triageContext.internalId;
+        if (!pvId || !intId) {
+            showError('fsTriageError', 'Missing project version or finding ID.');
+            setLoading('fsTriageAcceptBtn', false);
+            return;
+        }
         const url = apiBase() + '/public/v0/findings/' + pvId + '/' + intId + '/status';
+
+        // Build body with smart defaults (mirrors Python vex_applier logic)
+        var defaults = _vexDefaults(
+            rec.recommended_vex_status,
+            _triageContext.reachabilityLabel || 'INCONCLUSIVE'
+        );
+        var body = {
+            status: rec.recommended_vex_status,
+            response: defaults.response,
+            justification: rec.justification || defaults.justification,
+            reason: rec.reason || '',
+        };
 
         try {
             const res = await fetch(url, {
                 method: 'PUT',
                 headers: apiHeaders(),
-                body: JSON.stringify({
-                    status: rec.recommended_vex_status,
-                    response: 'WILL_NOT_FIX',
-                    justification: rec.justification || 'CODE_NOT_PRESENT',
-                    reason: rec.reason || '',
-                }),
+                body: JSON.stringify(body),
             });
             if (!res.ok) {
                 const text = await res.text();

@@ -273,6 +273,14 @@ function _initPrerunWidgets() {
         versionSelId: 'pre-cv-version',
         inputId: 'pre-cv',
     });
+    /* Character counter for deployment notes textarea */
+    var ta = document.getElementById('pre-deploy-notes');
+    var counter = document.getElementById('pre-deploy-notes-count');
+    if (ta && counter) {
+        ta.addEventListener('input', function() {
+            counter.textContent = ta.value.length;
+        });
+    }
 }
 
 /* ── Sync side column heights to workflow column ───────────── */

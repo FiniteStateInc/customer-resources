@@ -48,7 +48,7 @@ def user_activity_pandas_transform(
         if data.empty:
             logger.warning("User activity transform: No data provided")
             return _empty
-        df = data
+        df = data.copy()
     elif not data:
         logger.warning("User activity transform: No data provided")
         return _empty

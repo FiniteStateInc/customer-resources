@@ -150,14 +150,14 @@
                 </thead>
                 <tbody>
                     {% set current_project = namespace(value=None) %}
-                    {% for row in data %}
+                    {% for row in data[:2000] %}
                         {% if row['Project Name'] != current_project.value %}
                             {% set current_project.value = row['Project Name'] %}
                             <tr class="project-group-row">
                                 <td colspan="{% if folder_path %}16{% else %}15{% endif %}">{{ row['Project Name'] }}</td>
                             </tr>
                         {% endif %}
-                        <tr class="{% if loop.index > 100 %}hidden-row{% endif %}">
+                        <tr>
                             <td><strong>{{ row['Component'] }}</strong></td>
                             <td>{{ row['Version'] }}</td>
                             <td>
@@ -229,12 +229,10 @@
                             <td>{{ row.get('Release Date', '') if row.get('Release Date', '') else '-' }}</td>
                         </tr>
                     {% endfor %}
-                    {% if data|length > 100 %}
-                    <tr class="show-more-row">
-                        <td colspan="{% if folder_path %}16{% else %}15{% endif %}">
-                            <button class="show-more-btn" onclick="toggleAllRows()">
-                                Show {{ data|length - 100 }} more rows...
-                            </button>
+                    {% if data|length > 2000 %}
+                    <tr>
+                        <td colspan="{% if folder_path %}16{% else %}15{% endif %}" style="text-align: center; padding: 16px; color: #6c757d; font-style: italic;">
+                            Showing 2,000 of {{ data|length }} rows. See CSV/XLSX export for full data.
                         </td>
                     </tr>
                     {% endif %}
@@ -255,14 +253,6 @@
     </div>
 
     <script>
-    // Toggle hidden rows
-    function toggleAllRows() {
-        const rows = document.querySelectorAll('.hidden-row');
-        const btn = document.querySelector('.show-more-row');
-        rows.forEach(r => r.classList.remove('hidden-row'));
-        if (btn) btn.style.display = 'none';
-    }
-
     document.addEventListener('DOMContentLoaded', function() {
         const POLICY_COLORS = {
             'PERMITTED': '#28a745',

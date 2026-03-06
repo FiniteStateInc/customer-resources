@@ -28,6 +28,7 @@
         <thead>
             <tr>
                 <th>CVSS</th>
+                <th>KEV</th>
                 <th>Severity</th>
                 <th>Reachability</th>
                 <th>CVE ID</th>
@@ -51,7 +52,7 @@
                 {% if row['Project Name'] != current_project.value %}
                     {% set current_project.value = row['Project Name'] %}
                     <tr style="background-color: #f8f9fa; font-weight: bold;">
-                        <td colspan="{% if folder_path %}16{% else %}15{% endif %}">{{ row['Project Name'] }}</td>
+                        <td colspan="{% if folder_path %}17{% else %}16{% endif %}">{{ row['Project Name'] }}</td>
                     </tr>
                 {% endif %}
                 <tr>
@@ -78,6 +79,7 @@
                             {{ "%.1f"|format(row.get('CVSS', 0)) if row.get('CVSS', 0) is number else row.get('CVSS', 0) }}
                         </span>
                     </td>
+                    <td>{% if row.get('KEV') == 'Yes' %}<span style="color:#c62828;font-weight:bold;">Yes</span>{% endif %}</td>
                     <td>
                         {% set sev = row.get('Severity', '') %}
                         {% if sev %}
@@ -108,10 +110,22 @@
                     </td>
                     <td>
                         {% if row['CVE ID'] and row['CVE ID'] != 'N/A' %}
+                            {% if row['CVE ID'].startswith('GHSA-') %}
+                            <a href="https://github.com/advisories/{{ row['CVE ID'] }}"
+                                target="_blank" style="color: #007bff; text-decoration: none;">
+                                {{ row['CVE ID'] }}
+                            </a>
+                            {% elif row['CVE ID'].startswith('PYSEC-') %}
+                            <a href="https://osv.dev/vulnerability/{{ row['CVE ID'] }}"
+                                target="_blank" style="color: #007bff; text-decoration: none;">
+                                {{ row['CVE ID'] }}
+                            </a>
+                            {% else %}
                             <a href="https://nvd.nist.gov/vuln/detail/{{ row['CVE ID'] }}"
                                target="_blank" style="color: #007bff; text-decoration: none;">
                                 {{ row['CVE ID'] }}
                             </a>
+                            {% endif %}
                         {% else %}
                             {{ row['CVE ID'] }}
                         {% endif %}

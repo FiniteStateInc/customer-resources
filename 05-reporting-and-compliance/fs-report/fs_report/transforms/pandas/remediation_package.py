@@ -396,7 +396,7 @@ def _apply_triage_scoring(df: pd.DataFrame, recipe_params: dict) -> pd.DataFrame
     # and weights dict to calculate_additive_score and assign_risk_bands.
     df = apply_tiered_gates(df, gates=gates)
     df = calculate_additive_score(df, weights=weights, gates=gates)
-    df = assign_risk_bands(df, weights=weights)
+    df = assign_risk_bands(df, weights=weights, gates=gates)
 
     logger.info(
         f"Triage scoring complete: "

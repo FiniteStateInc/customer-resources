@@ -63,6 +63,8 @@ def create_config(
     ai_model_low: Union[str, None] = None,
     ai_depth: str = "summary",
     ai_prompts: bool = False,
+    ai_export: Union[str, None] = None,
+    ai_import: Union[str, None] = None,
     ai_analysis: bool = False,
     nvd_api_key: Union[str, None] = None,
     baseline_date: Union[str, None] = None,
@@ -74,6 +76,9 @@ def create_config(
     cve_filter: Union[str, None] = None,
     component_filter: Union[str, None] = None,
     scoring_file: Union[str, None] = None,
+    tp_gate: Union[str, None] = None,
+    top: int = 0,
+    triage: int = 0,
     vex_override: bool = False,
     overwrite: bool = False,
     logo: Union[str, None] = None,
@@ -85,6 +90,8 @@ def create_config(
     context_file: Union[str, None] = None,
     product_type: Union[str, None] = None,
     network_exposure: Union[str, None] = None,
+    regulatory: Union[str, None] = None,
+    deployment_notes: Union[str, None] = None,
     compare_domain: Union[str, None] = None,
     compare_token: Union[str, None] = None,
     compare_project: Union[str, None] = None,
@@ -248,6 +255,10 @@ def create_config(
     network_exposure = merge_config(
         network_exposure, None, "network_exposure", None, config_data=cfg
     )
+    regulatory = merge_config(regulatory, None, "regulatory", None, config_data=cfg)
+    deployment_notes = merge_config(
+        deployment_notes, None, "deployment_notes", None, config_data=cfg
+    )
 
     # Validate AI options
     if ai:
@@ -347,10 +358,14 @@ def create_config(
         ai_model_low=ai_model_low,
         ai_depth=ai_depth,
         ai_prompts=ai_prompts,
+        ai_export=ai_export,
+        ai_import=ai_import,
         ai_analysis=ai_analysis,
         context_file=context_file,
         product_type=product_type,
         network_exposure=network_exposure,
+        regulatory=regulatory,
+        deployment_notes=deployment_notes,
         nvd_api_key=nvd_api_key,
         baseline_date=baseline_date,
         baseline_version=baseline_version,
@@ -361,6 +376,9 @@ def create_config(
         cve_filter=cve_filter,
         component_filter=component_filter,
         scoring_file=scoring_file,
+        tp_gate=tp_gate,
+        top=top,
+        triage=triage,
         vex_override=vex_override,
         overwrite=overwrite,
         logo=logo,
@@ -405,6 +423,8 @@ def run_reports(
     ai_model_low: Union[str, None] = None,
     ai_depth: str = "summary",
     ai_prompts: bool = False,
+    ai_export: Union[str, None] = None,
+    ai_import: Union[str, None] = None,
     ai_analysis: bool = False,
     nvd_api_key: Union[str, None] = None,
     baseline_date: Union[str, None] = None,
@@ -416,6 +436,9 @@ def run_reports(
     cve_filter: Union[str, None] = None,
     component_filter: Union[str, None] = None,
     scoring_file: Union[str, None] = None,
+    tp_gate: Union[str, None] = None,
+    top: int = 0,
+    triage: int = 0,
     vex_override: bool = False,
     overwrite: bool = False,
     logo: Union[str, None] = None,
@@ -470,6 +493,8 @@ def run_reports(
             ai_model_low=ai_model_low,
             ai_depth=ai_depth,
             ai_prompts=ai_prompts,
+            ai_export=ai_export,
+            ai_import=ai_import,
             ai_analysis=ai_analysis,
             context_file=context_file,
             product_type=product_type,
@@ -550,6 +575,8 @@ def run_reports(
             logger.info("  Low-memory mode: Enabled")
         if config.scoring_file:
             logger.info(f"  Scoring file: {config.scoring_file}")
+        if config.tp_gate:
+            logger.info(f"  TP gate filter: {config.tp_gate}")
         if config.ai:
             provider_info = (
                 f", provider: {config.ai_provider}" if config.ai_provider else ""
@@ -610,7 +637,13 @@ def run_reports(
 
         # Build deployment context from context file + CLI overrides
         deployment_ctx = None
-        if config.context_file or config.product_type or config.network_exposure:
+        if (
+            config.context_file
+            or config.product_type
+            or config.network_exposure
+            or config.regulatory
+            or config.deployment_notes
+        ):
             from pydantic import ValidationError
 
             from fs_report.deployment_context import (
@@ -627,12 +660,16 @@ def run_reports(
             else:
                 deployment_ctx = DeploymentContext()
 
-            # CLI flags override context file values
+            # CLI flags / config values override context file values
             try:
                 if config.product_type:
                     deployment_ctx.product_type = config.product_type
                 if config.network_exposure:
                     deployment_ctx.network_exposure = config.network_exposure
+                if config.regulatory:
+                    deployment_ctx.regulatory = config.regulatory
+                if config.deployment_notes:
+                    deployment_ctx.deployment_notes = config.deployment_notes
             except (ValueError, ValidationError) as e:
                 console.print(f"[red]Invalid deployment context: {e}[/red]")
                 raise typer.Exit(1) from e
@@ -1028,6 +1065,20 @@ def run_command(
         "Expensive — uses the high-capability model. Implies --ai-prompts.",
         rich_help_panel=_AI,
     ),
+    ai_export: Union[str, None] = typer.Option(
+        None,
+        "--ai-export",
+        help="Export AI prompts to a JSON file for offline/airgapped LLM processing. "
+        "No API key required.",
+        rich_help_panel=_AI,
+    ),
+    ai_import: Union[str, None] = typer.Option(
+        None,
+        "--ai-import",
+        help="Import AI responses from a JSON file (from --ai-export output "
+        "processed through an LLM). No API key required.",
+        rich_help_panel=_AI,
+    ),
     context_file: Union[str, None] = typer.Option(
         None,
         "--context-file",
@@ -1111,6 +1162,27 @@ def run_command(
         None,
         "--scoring-file",
         help="Path to YAML with custom scoring weights for Triage Prioritization.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    tp_gate: Union[str, None] = typer.Option(
+        None,
+        "--tp-gate",
+        help="Filter findings to a specific Triage Prioritization gate tier: "
+        "GATE_1 (critical), GATE_2 (high), or NONE (additive only).",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    top: int = typer.Option(
+        0,
+        "--top",
+        help="Limit Triage Prioritization output to the top N findings by score. "
+        "0 = show all (default).",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    triage: int = typer.Option(
+        0,
+        "--triage",
+        help="Limit VEX triage recommendations to the top N findings by score. "
+        "The full findings list is still displayed. 0 = all eligible (default).",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
     vex_override: bool = typer.Option(
@@ -1256,6 +1328,8 @@ def run_command(
         ai_model_low=ai_model_low,
         ai_depth=ai_depth,
         ai_prompts=ai_prompts,
+        ai_export=ai_export,
+        ai_import=ai_import,
         ai_analysis=ai_analysis,
         context_file=context_file,
         product_type=product_type,
@@ -1270,6 +1344,9 @@ def run_command(
         cve_filter=cve_filter,
         component_filter=component_filter,
         scoring_file=scoring_file,
+        tp_gate=tp_gate,
+        top=top,
+        triage=triage,
         vex_override=vex_override,
         overwrite=overwrite,
         logo=logo,

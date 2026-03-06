@@ -17,10 +17,19 @@ query:
 
 transform_function: executive_dashboard_transform
 
+# Recipe parameters accessible by the transform function
+parameters:
+  # max_projects: 0 = show all projects/folders (no binning).
+  # Set to a positive integer to limit the "Findings by Group" chart
+  # to the top N groups, binning the rest into "Other".
+  max_projects: 0
+
 output:
   table: true
   formats:
     - html
+    - csv
+    - xlsx
   charts:
     - name: findings_by_group
       chart: bar

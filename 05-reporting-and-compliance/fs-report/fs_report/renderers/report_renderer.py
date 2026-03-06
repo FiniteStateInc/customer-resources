@@ -227,6 +227,29 @@ class ReportRenderer:
                     ):
                         sheets.append(("Component Churn", detail_component_churn_df))
                     self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
+                elif recipe.name == "Executive Dashboard":
+                    # Executive Dashboard: multi-sheet with Project Summary + Top Risk Products
+                    transform_result = additional_data.get("transform_result", {})
+                    if isinstance(transform_result, dict):
+                        project_table_data = transform_result.get("project_table")
+                        top_risk_data = transform_result.get("top_risk_products")
+                        ed_sheets: list[tuple[str, Any]] = []
+                        if project_table_data:
+                            ed_sheets.append(
+                                ("Project Summary", pd.DataFrame(project_table_data))
+                            )
+                        if top_risk_data:
+                            ed_sheets.append(
+                                ("Top Risk Products", pd.DataFrame(top_risk_data))
+                            )
+                        if ed_sheets:
+                            self.xlsx_renderer.render_multi_sheet(ed_sheets, xlsx_path)
+                        else:
+                            self.xlsx_renderer.render(
+                                table_data, xlsx_path, recipe.name
+                            )
+                    else:
+                        self.xlsx_renderer.render(table_data, xlsx_path, recipe.name)
                 elif recipe.name == "Component List":
                     # Component List: multi-sheet with Summary + Detail
                     transform_result = additional_data.get("transform_result", {})
@@ -336,6 +359,7 @@ class ReportRenderer:
                     generated_files.append(str(raw_xlsx_path))
         except Exception as e:
             self.logger.error(f"Error generating table formats: {e}")
+            raise
         return generated_files
 
     def _render_chart_formats(
@@ -351,6 +375,7 @@ class ReportRenderer:
             generated_files.append(str(html_path))
         except Exception as e:
             self.logger.error(f"Error generating chart formats: {e}")
+            raise
         return generated_files
 
     def _render_json(
@@ -378,6 +403,7 @@ class ReportRenderer:
                 generated_files.append(str(json_path))
         except Exception as e:
             self.logger.error(f"Error generating JSON: {e}")
+            raise
         return generated_files
 
     def _render_markdown(
@@ -395,6 +421,7 @@ class ReportRenderer:
             generated_files.append(str(md_path))
         except Exception as e:
             self.logger.error(f"Error generating Markdown: {e}")
+            raise
         return generated_files
 
     def _sanitize_filename(self, filename: str) -> str:

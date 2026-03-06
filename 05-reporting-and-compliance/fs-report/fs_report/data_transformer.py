@@ -129,13 +129,11 @@ class DataTransformer:
         # Final cleanup: handle problematic columns that slipped through from DuckDB failures
         if "i_d" in df.columns:
             if "finding_count" in df.columns:
-                # If both exist, drop the unwanted i_d column
                 self.logger.debug(
                     "Dropping duplicate 'i_d' column in favor of 'finding_count'"
                 )
                 df = df.drop(columns=["i_d"])
             else:
-                # If only i_d exists, rename it to finding_count
                 self.logger.debug(
                     "Renaming 'i_d' column to 'finding_count' for better readability"
                 )
@@ -260,8 +258,21 @@ class DataTransformer:
 
         # Only use pandas fallback aggregation logic for group by operations
         agg_dict: dict[str, Any] = {}
+        # named_aggs uses pd.NamedAgg to support multiple aggs on the same
+        # source column and to preserve the desired output column name.
+        named_aggs: dict[str, pd.NamedAgg] = {}
         # Add custom aggregations to pandas fallback
         if custom_aggs:
+            _agg_func_map: dict[str, Any] = {
+                "SUM": "sum",
+                "AVG": "mean",
+                "COUNT": "count",
+                "COUNT_DISTINCT": pd.Series.nunique,
+                "LIST_DISTINCT": lambda x: list(pd.unique(x)),
+                "MIN": "min",
+                "MAX": "max",
+                "ANY": lambda x: x.any(),
+            }
             for col, agg_func in custom_aggs.items():
                 # Parse aggregation functions like "sum:risk", "COUNT_DISTINCT:project_name", etc.
                 if ":" in agg_func:
@@ -269,39 +280,28 @@ class DataTransformer:
                     func_name = func_name.strip().upper()
                     column_name = column_name.strip()
                     if column_name in df_clean.columns:
-                        if func_name == "SUM":
-                            agg_dict[column_name] = "sum"
-                        elif func_name == "AVG":
-                            agg_dict[column_name] = "mean"
-                        elif func_name == "COUNT":
-                            agg_dict[column_name] = "count"
-                        elif func_name == "COUNT_DISTINCT":
-                            agg_dict[column_name] = pd.Series.nunique
-                        elif func_name == "LIST_DISTINCT":
-                            agg_dict[column_name] = lambda x: list(pd.unique(x))
-                        elif func_name == "MIN":
-                            agg_dict[column_name] = "min"
-                        elif func_name == "MAX":
-                            agg_dict[column_name] = "max"
-                        elif func_name == "ANY":
-                            agg_dict[column_name] = lambda x: x.any()
+                        pandas_func = _agg_func_map.get(func_name)
+                        if pandas_func is not None:
+                            named_aggs[col] = pd.NamedAgg(
+                                column=column_name, aggfunc=pandas_func
+                            )
+                        else:
+                            self.logger.warning(
+                                f"Unknown aggregation function '{func_name}' "
+                                f"for '{agg_func}'"
+                            )
                     else:
                         self.logger.warning(
                             f"Column '{column_name}' not found for aggregation '{agg_func}'"
                         )
                 else:
-                    # Handle simple function names
+                    # Handle simple function names (col is both source and output)
                     if col in df_clean.columns:
-                        if agg_func.upper() == "SUM":
-                            agg_dict[col] = "sum"
-                        elif agg_func.upper() == "AVG":
-                            agg_dict[col] = "mean"
-                        elif agg_func.upper() == "COUNT":
-                            agg_dict[col] = "count"
-                        elif agg_func.upper() == "MIN":
-                            agg_dict[col] = "min"
-                        elif agg_func.upper() == "MAX":
-                            agg_dict[col] = "max"
+                        pandas_func = _agg_func_map.get(agg_func.upper())
+                        if pandas_func is not None:
+                            named_aggs[col] = pd.NamedAgg(
+                                column=col, aggfunc=pandas_func
+                            )
         else:
             # Default aggregations for backward compatibility
             if "risk" in df_clean.columns and df_clean["risk"].dtype in [
@@ -310,10 +310,18 @@ class DataTransformer:
             ]:
                 agg_dict["risk"] = ["mean", "sum"]
 
-        if agg_dict:
+        if named_aggs:
+            # Use pd.NamedAgg for custom aggregations — preserves output
+            # column names and supports multiple aggs on the same source column.
+            grouped = df_clean.groupby(columns).agg(**named_aggs).reset_index()
+            return grouped
+        elif agg_dict:
             grouped = df_clean.groupby(columns).agg(agg_dict)
-            # Flatten column names
-            grouped.columns = ["_".join(col).strip() for col in grouped.columns.values]
+            # Flatten column names (only join tuples from MultiIndex, not chars from flat Index)
+            if isinstance(grouped.columns, pd.MultiIndex):
+                grouped.columns = [
+                    "_".join(col).strip() for col in grouped.columns.values
+                ]
             grouped = grouped.reset_index()
             # Rename columns to match expected names and convert to integers
             if "risk_mean" in grouped.columns:
@@ -456,48 +464,23 @@ class DataTransformer:
             elif "DATEDIFF" in calc_config.expr.upper():
                 return self._apply_datediff(df_copy, calc_config)
 
-            # Try DuckDB first
+            # Try pandas eval
             try:
-                # Build the SELECT clause with aggregations
-                select_parts = [f'"{col}"' for col in df_copy.columns]
-                select_parts.append(f"{calc_config.expr} as {calc_config.name}")
-
-                query = f"""
-                SELECT {', '.join(select_parts)}
-                FROM df
-                """
-
-                self.logger.debug(f"Executing DuckDB query: {query}")
-                result = pd.read_sql_query(query, df_copy.to_sql("df"))  # type: ignore[call-arg]
-
-                return result
-
+                df_copy[calc_config.name] = df_copy.eval(calc_config.expr)
+                return df_copy
             except Exception as e:
-                self.logger.error(f"DuckDB calculation failed: {e}")
+                self.logger.error(f"Pandas eval failed: {e}")
 
-                # Fallback to pandas eval
-                try:
-                    df_copy[calc_config.name] = df_copy.eval(calc_config.expr)
+                # Final fallback: handle specific expressions manually
+                if calc_config.name == "month_year" and "detected" in calc_config.expr:
+                    df_copy[calc_config.name] = df_copy["detected"].astype(str).str[:7]
                     return df_copy
-                except Exception as e2:
-                    self.logger.error(f"Pandas eval also failed: {e2}")
-
-                    # Final fallback: handle specific expressions manually
-                    if (
-                        calc_config.name == "month_year"
-                        and "detected" in calc_config.expr
-                    ):
-                        # Extract year-month from detected column
-                        df_copy[calc_config.name] = (
-                            df_copy["detected"].astype(str).str[:7]
-                        )
-                        return df_copy
-                    elif "CASE WHEN" in calc_config.expr.upper():
-                        return self._apply_case_when(df_copy, calc_config)
-                    elif "DATEDIFF" in calc_config.expr.upper():
-                        return self._apply_datediff(df_copy, calc_config)
-                    else:
-                        raise ValueError(f"Calculation failed: {calc_config.expr}")
+                elif "CASE WHEN" in calc_config.expr.upper():
+                    return self._apply_case_when(df_copy, calc_config)
+                elif "DATEDIFF" in calc_config.expr.upper():
+                    return self._apply_datediff(df_copy, calc_config)
+                else:
+                    raise ValueError(f"Calculation failed: {calc_config.expr}")
 
         except Exception as e:
             self.logger.error(f"Error applying transform: {e}")
@@ -548,8 +531,8 @@ class DataTransformer:
             df_copy["detected"] = pd.to_datetime(df_copy["detected"])
             df_copy["updated"] = pd.to_datetime(df_copy["updated"])
             df_copy[calc_config.name] = (
-                df_copy["updated"] - df_copy["detected"]
-            ).dt.days.astype(int)
+                (df_copy["updated"] - df_copy["detected"]).dt.days.fillna(0).astype(int)
+            )
         elif "DATEDIFF('DAY', DETECTED, NOW())" in calc_config.expr.upper():
             # Calculate days between detected and now
             df_copy["detected"] = pd.to_datetime(df_copy["detected"])
@@ -558,7 +541,9 @@ class DataTransformer:
             now = pd.Timestamp.now()
             df_copy[calc_config.name] = (
                 df_copy["detected"]
-                .apply(lambda d: (now - d).total_seconds() / 86400)
+                .apply(
+                    lambda d: (now - d).total_seconds() / 86400 if pd.notna(d) else 0
+                )
                 .astype(int)
             )
 
@@ -590,7 +575,12 @@ class DataTransformer:
             try:
                 # Handle common DuckDB casting issues by using pandas query
                 # Replace DuckDB-style string literals with pandas-compatible ones
-                pandas_expr = filter_expr.replace("'", "'").replace('"', '"')
+                pandas_expr = (
+                    filter_expr.replace("\u2018", "'")
+                    .replace("\u2019", "'")
+                    .replace("\u201c", '"')
+                    .replace("\u201d", '"')
+                )
                 return df.query(pandas_expr)
             except Exception as e2:
                 self.logger.error(f"Pandas query also failed: {e2}")
@@ -802,16 +792,11 @@ class DataTransformer:
         if "detected" not in df.columns or "resolved_time" not in df.columns:
             raise ValueError("Data must contain 'detected' and 'resolved_time' columns")
 
-        # Convert to datetime
-        df["detected"] = pd.to_datetime(df["detected"])
-        df["resolved_time"] = pd.to_datetime(df["resolved_time"])
+        detected = pd.to_datetime(df["detected"])
+        resolved = pd.to_datetime(df["resolved_time"])
+        resolution_days = (resolved - detected).dt.total_seconds() / 86400
 
-        # Calculate time difference in days
-        df["resolution_time"] = (
-            df["resolved_time"] - df["detected"]
-        ).dt.total_seconds() / 86400
-
-        return float(df["resolution_time"].mean())
+        return float(resolution_days.mean())
 
     def _apply_join(
         self, df: pd.DataFrame, join_config: Any, additional_data: dict[str, Any]

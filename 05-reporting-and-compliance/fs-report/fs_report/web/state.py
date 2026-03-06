@@ -31,6 +31,10 @@ DEFAULTS: dict[str, Any] = {
     "ai_prompts": False,
     "ai_analysis": False,
     "logo": "",
+    "product_type": "generic",
+    "network_exposure": "unknown",
+    "regulatory": "",
+    "deployment_notes": "",
 }
 
 

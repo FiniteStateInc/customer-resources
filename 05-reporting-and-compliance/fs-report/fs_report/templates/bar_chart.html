@@ -33,7 +33,7 @@
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const ctx = document.getElementById('barChart').getContext('2d');
-    const chartData = {{ chart_data.main | safe }};
+    const chartData = {{ chart_data_json.main | safe }};
     
     new Chart(ctx, {
         type: 'bar',

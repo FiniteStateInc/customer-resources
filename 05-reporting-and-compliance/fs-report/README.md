@@ -132,12 +132,16 @@ fs-report run --period 7d                              # Last 7 days
 
 ```bash
 fs-report run --project "MyProject"                    # By project name or ID
+fs-report run --project "Router*"                      # Glob pattern (matches all Router… projects)
+fs-report run --project "Sensor_[AB]"                  # Glob with character class
 fs-report run --version "1234567890"                   # By version ID (no project needed)
 fs-report run --project "MyProject" --version "v1.2.3" # Version name (needs project)
 fs-report run --finding-types cve                      # CVE only (default)
 fs-report run --finding-types cve,credentials          # CVE + credentials
 fs-report run --finding-types all                      # All finding types
 ```
+
+> **Project glob patterns:** `--project` accepts `*`, `?`, and `[…]` wildcards (case-insensitive). A single match scopes to that project; multiple matches scope to all matched projects (like `--folder`). Glob cannot be combined with `--version`.
 
 **Version scope** — by default only the latest version of each project is analysed:
 

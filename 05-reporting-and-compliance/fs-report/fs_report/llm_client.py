@@ -515,124 +515,160 @@ class LLMClient:
 
     def get_cached_remediation(self, cve_id: str) -> dict[str, Any] | None:
         """Look up cached remediation guidance for a CVE (respects TTL)."""
-        with sqlite3.connect(str(self.db_path)) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT * FROM cve_remediations WHERE cve_id = ?", (cve_id,)
-            ).fetchone()
-            if row:
-                row_dict = dict(row)
-                if self._is_fresh(row_dict.get("generated_at")):
-                    # Backwards compat: old cache entries may lack verdict/rationale
-                    row_dict.setdefault("verdict", "affected")
-                    row_dict.setdefault("rationale", "")
-                    return row_dict
-                logger.debug(f"Cache expired for {cve_id}")
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT * FROM cve_remediations WHERE cve_id = ?", (cve_id,)
+                ).fetchone()
+                if row:
+                    row_dict = dict(row)
+                    if self._is_fresh(row_dict.get("generated_at")):
+                        # Backwards compat: old cache entries may lack verdict/rationale
+                        row_dict.setdefault("verdict", "affected")
+                        row_dict.setdefault("rationale", "")
+                        return row_dict
+                    logger.debug(f"Cache expired for {cve_id}")
+        except sqlite3.OperationalError:
+            # Table may not exist yet (e.g. shared DB without LLM tables)
+            self._init_cache_tables()
         return None
 
     def cache_remediation(self, cve_id: str, remediation: dict[str, Any]) -> None:
         """Store remediation guidance in the cache."""
-        with sqlite3.connect(str(self.db_path)) as conn:
-            conn.execute(
-                """INSERT OR REPLACE INTO cve_remediations
-                   (cve_id, component_name, fix_version, guidance, workaround,
-                    code_search_hints, generated_by, generated_at, confidence,
-                    project_notes, verdict, rationale)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    cve_id,
-                    remediation.get("component_name", ""),
-                    remediation.get("fix_version", ""),
-                    remediation.get("guidance", ""),
-                    remediation.get("workaround", ""),
-                    remediation.get("code_search_hints", ""),
-                    remediation.get("generated_by", self._component_model),
-                    datetime.now(UTC).isoformat(),
-                    remediation.get("confidence", "medium"),
-                    remediation.get("project_notes", ""),
-                    remediation.get("verdict", "affected"),
-                    remediation.get("rationale", ""),
-                ),
-            )
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO cve_remediations
+                       (cve_id, component_name, fix_version, guidance, workaround,
+                        code_search_hints, generated_by, generated_at, confidence,
+                        project_notes, verdict, rationale)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        cve_id,
+                        remediation.get("component_name", ""),
+                        remediation.get("fix_version", ""),
+                        remediation.get("guidance", ""),
+                        remediation.get("workaround", ""),
+                        remediation.get("code_search_hints", ""),
+                        remediation.get("generated_by", self._component_model),
+                        datetime.now(UTC).isoformat(),
+                        remediation.get("confidence", "medium"),
+                        remediation.get("project_notes", ""),
+                        remediation.get("verdict", "affected"),
+                        remediation.get("rationale", ""),
+                    ),
+                )
+        except sqlite3.OperationalError:
+            self._init_cache_tables()
+            # Retry once after creating tables
+            self.cache_remediation(cve_id, remediation)
 
     def get_cached_summary(self, cache_key: str) -> str | None:
         """Look up cached AI summary (portfolio or project level, respects TTL)."""
-        with sqlite3.connect(str(self.db_path)) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT * FROM ai_summary_cache WHERE cache_key = ?", (cache_key,)
-            ).fetchone()
-            if row:
-                row_dict = dict(row)
-                if self._is_fresh(row_dict.get("generated_at")):
-                    logger.debug(f"AI summary cache hit: {cache_key}")
-                    return row_dict.get("summary_text")
-                logger.debug(f"AI summary cache expired: {cache_key}")
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT * FROM ai_summary_cache WHERE cache_key = ?", (cache_key,)
+                ).fetchone()
+                if row:
+                    row_dict = dict(row)
+                    if self._is_fresh(row_dict.get("generated_at")):
+                        logger.debug(f"AI summary cache hit: {cache_key}")
+                        return row_dict.get("summary_text")
+                    logger.debug(f"AI summary cache expired: {cache_key}")
+        except sqlite3.OperationalError:
+            self._init_cache_tables()
         return None
 
     def cache_summary(
         self, cache_key: str, scope: str, summary_text: str, model: str
     ) -> None:
         """Store an AI summary in the cache."""
-        with sqlite3.connect(str(self.db_path)) as conn:
-            conn.execute(
-                """INSERT OR REPLACE INTO ai_summary_cache
-                   (cache_key, scope, summary_text, generated_by, generated_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (cache_key, scope, summary_text, model, datetime.now(UTC).isoformat()),
-            )
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO ai_summary_cache
+                       (cache_key, scope, summary_text, generated_by, generated_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        cache_key,
+                        scope,
+                        summary_text,
+                        model,
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+        except sqlite3.OperationalError:
+            self._init_cache_tables()
+            self.cache_summary(cache_key, scope, summary_text, model)
 
     def get_cached_cve_detail(self, finding_id: str) -> dict[str, Any] | None:
         """Look up cached CVE detail metadata."""
-        with sqlite3.connect(str(self.db_path)) as conn:
-            row = conn.execute(
-                "SELECT cve_metadata FROM cve_detail_cache WHERE finding_id = ?",
-                (finding_id,),
-            ).fetchone()
-            if row and row[0]:
-                result: dict[str, Any] = json.loads(row[0])
-                return result
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                row = conn.execute(
+                    "SELECT cve_metadata FROM cve_detail_cache WHERE finding_id = ?",
+                    (finding_id,),
+                ).fetchone()
+                if row and row[0]:
+                    result: dict[str, Any] = json.loads(row[0])
+                    return result
+        except sqlite3.OperationalError:
+            self._init_cache_tables()
         return None
 
     def cache_cve_detail(self, finding_id: str, metadata: Any) -> None:
         """Store CVE detail metadata in the cache."""
-        with sqlite3.connect(str(self.db_path)) as conn:
-            conn.execute(
-                """INSERT OR REPLACE INTO cve_detail_cache
-                   (finding_id, cve_metadata, fetched_at)
-                   VALUES (?, ?, ?)""",
-                (
-                    finding_id,
-                    json.dumps(metadata, default=str),
-                    datetime.now(UTC).isoformat(),
-                ),
-            )
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO cve_detail_cache
+                       (finding_id, cve_metadata, fetched_at)
+                       VALUES (?, ?, ?)""",
+                    (
+                        finding_id,
+                        json.dumps(metadata, default=str),
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+        except sqlite3.OperationalError:
+            self._init_cache_tables()
+            self.cache_cve_detail(finding_id, metadata)
 
     def get_cached_exploit_detail(self, finding_id: str) -> dict[str, Any] | None:
         """Look up cached exploit detail metadata."""
-        with sqlite3.connect(str(self.db_path)) as conn:
-            row = conn.execute(
-                "SELECT exploit_metadata FROM exploit_detail_cache WHERE finding_id = ?",
-                (finding_id,),
-            ).fetchone()
-            if row and row[0]:
-                result: dict[str, Any] = json.loads(row[0])
-                return result
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                row = conn.execute(
+                    "SELECT exploit_metadata FROM exploit_detail_cache WHERE finding_id = ?",
+                    (finding_id,),
+                ).fetchone()
+                if row and row[0]:
+                    result: dict[str, Any] = json.loads(row[0])
+                    return result
+        except sqlite3.OperationalError:
+            self._init_cache_tables()
         return None
 
     def cache_exploit_detail(self, finding_id: str, metadata: Any) -> None:
         """Store exploit detail metadata in the cache."""
-        with sqlite3.connect(str(self.db_path)) as conn:
-            conn.execute(
-                """INSERT OR REPLACE INTO exploit_detail_cache
-                   (finding_id, exploit_metadata, fetched_at)
-                   VALUES (?, ?, ?)""",
-                (
-                    finding_id,
-                    json.dumps(metadata, default=str),
-                    datetime.now(UTC).isoformat(),
-                ),
-            )
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO exploit_detail_cache
+                       (finding_id, exploit_metadata, fetched_at)
+                       VALUES (?, ?, ?)""",
+                    (
+                        finding_id,
+                        json.dumps(metadata, default=str),
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+        except sqlite3.OperationalError:
+            self._init_cache_tables()
+            self.cache_exploit_detail(finding_id, metadata)
 
     # =========================================================================
     # Bullet-point formatters (replace verbose JSON dumps in prompts)

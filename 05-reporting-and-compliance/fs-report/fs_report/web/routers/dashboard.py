@@ -73,6 +73,13 @@ WORKFLOWS = [
         "description": "What changed between two firmware versions?",
         "recipes": ["version comparison"],
     },
+    {
+        "id": "license",
+        "title": "License Report",
+        "icon": "\U0001f4dc",
+        "description": "License risk classification across your components",
+        "recipes": ["license report"],
+    },
 ]
 
 

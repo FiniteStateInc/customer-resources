@@ -1,0 +1,29 @@
+name: "License Report"
+category: assessment
+template: "license_report.html"
+description: >
+  License risk analysis report showing component licenses grouped by risk
+  category (Permissive, Weak Copyleft, Strong Copyleft, Proprietary/Restricted,
+  Unknown). Includes pie chart of risk distribution and tabular breakdown.
+  Works at both project and folder level.
+execution_order: 35
+auto_run: false
+
+query:
+  endpoint: "/public/v0/components"
+  params:
+    limit: 10000
+
+transform_function: license_report_transform
+
+output:
+  table: true
+  formats:
+    - html
+    - csv
+    - xlsx
+  charts:
+    - name: risk_pie
+      chart: pie
+      title: "License Risk Distribution"
+      description: "Components grouped by license risk category"

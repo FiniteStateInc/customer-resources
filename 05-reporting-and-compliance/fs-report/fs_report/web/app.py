@@ -51,12 +51,11 @@ def create_app(*, port: int = 8321) -> FastAPI:
     static_dir = Path(str(web_package.joinpath("static")))
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
-    # Mount output directory for serving generated reports
+    # Output directory for generated reports (served via reports router,
+    # not StaticFiles, to avoid Content-Length race conditions when files
+    # are regenerated while being served).
     output_dir = Path(state.get("output_dir", "./output")).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    app.mount(
-        "/output", StaticFiles(directory=str(output_dir), html=True), name="output"
-    )
 
     # ── Templates ─────────────────────────────────────────────────
     templates_dir = Path(str(web_package.joinpath("templates")))

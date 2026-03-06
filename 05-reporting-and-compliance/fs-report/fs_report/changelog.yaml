@@ -1,4 +1,99 @@
 releases:
+  - version: "1.8.0"
+    date: "2026-03-06"
+    changes:
+      - report: "License Report"
+        type: added
+        description: "New recipe classifying component licenses into risk categories (Permissive, Weak Copyleft, Strong Copyleft, Proprietary/Restricted, Unknown) with HTML, CSV, and XLSX output"
+      - report: "Triage Prioritization"
+        type: added
+        description: "Airgapped AI workflow — --ai-export exports prompts to JSON, --ai-import ingests responses, no API key required"
+      - report: "Triage Prioritization"
+        type: added
+        description: "--top N flag limits output to the top N findings by score (CLI and web UI)"
+      - report: "Triage Prioritization"
+        type: added
+        description: "--triage N flag limits VEX recommendation generation to top N findings while showing full list (CLI and web UI)"
+      - report: "Triage Prioritization"
+        type: added
+        description: "--tp-gate flag filters findings to a specific gate tier (GATE_1, GATE_2, or NONE)"
+      - report: "Triage Prioritization"
+        type: improved
+        description: "Score breakdown tooltip on hover shows Reachability, Exploit/KEV, Attack Vector, EPSS, CVSS, and Gate Bonus factors"
+      - report: "Triage Prioritization"
+        type: improved
+        description: "Gate scores are now additive bonuses on top of computed score, allowing differentiation among findings within the same gate"
+      - report: "Triage Prioritization"
+        type: improved
+        description: "Tables with more than 10 rows are collapsed by default with a Show more button"
+      - report: "Triage Prioritization"
+        type: fixed
+        description: "VEX justification uses CODE_NOT_PRESENT (API enum) instead of COMPONENT_NOT_PRESENT (CycloneDX enum)"
+      - report: "Findings by Project"
+        type: added
+        description: "KEV column showing Known Exploited Vulnerability indicator in all output formats including HTML"
+      - report: "Executive Dashboard"
+        type: added
+        description: "CSV and XLSX export formats with aggregated project summary table"
+      - report: "Executive Dashboard"
+        type: added
+        description: "KEV indicators in Top Risk Products and Project Findings Summary tables"
+      - report: "Executive Dashboard"
+        type: improved
+        description: "Project Summary table moved to bottom of report; auto-logarithmic scale on Findings by Group chart"
+      - report: "Executive Dashboard"
+        type: improved
+        description: "Configurable project grouping via max_projects recipe parameter (0 = show all, no binning)"
+      - report: "Executive Dashboard"
+        type: improved
+        description: "License distribution chart shows all licenses instead of top 10"
+      - report: "Executive Summary"
+        type: improved
+        description: "Severity counts shown as pivoted columns (Critical, High, Medium, Low, Total) per project"
+      - report: "Component List"
+        type: added
+        description: "HTML output format with KPI cards, charts, and tabular view"
+      - report: "Version Comparison"
+        type: improved
+        description: "Project column always shown regardless of comparison mode"
+      - report: ~
+        type: added
+        description: "Deployment Context UI in web pre-run form and settings page (product type, network exposure, regulatory, deployment notes)"
+      - report: ~
+        type: improved
+        description: "Cache TTL input in web UI accepts duration strings (4h, 2d, 30m) matching CLI behavior"
+      - report: ~
+        type: improved
+        description: "GHSA and PYSEC findings link to github.com/advisories instead of NVD"
+      - report: ~
+        type: improved
+        description: "XLSX formula injection protection via disabled strings_to_formulas"
+      - report: ~
+        type: fixed
+        description: "Serve UI no longer crashes with Content-Length mismatch when reports are regenerated"
+      - report: ~
+        type: fixed
+        description: "SQLite cache tables auto-created on first access, preventing no such table errors"
+      - report: ~
+        type: fixed
+        description: "Batch API request sizes reduced to avoid HTTP 414 URL-too-long on large folders"
+
+  - version: "1.7.1"
+    date: "2026-03-03"
+    changes:
+      - report: "Executive Dashboard"
+        type: fixed
+        description: "Policy violation and warning KPI counts restored — licenseDetails arrays preserved through SQLite cache"
+      - report: ~
+        type: fixed
+        description: "Batch fetch HTTP 400 on large portfolios — reduced project batch sizes to keep URLs under server limits"
+      - report: ~
+        type: fixed
+        description: "Suppressed noisy 404 warnings for findings without exploit data"
+      - report: "Executive Dashboard"
+        type: changed
+        description: "Warnings label renamed to Policy Warnings for clarity"
+
   - version: "1.7.0"
     date: "2026-03-01"
     changes:
@@ -23,12 +118,21 @@ releases:
       - report: ~
         type: added
         description: "Scanner accuracy analysis script (scripts/analysis/scanner_accuracy.py)"
+      - report: "Remediation Package"
+        type: improved
+        description: "Bold subject CVE and expand arrow indicators on clickable CVE detail badges"
+      - report: ~
+        type: improved
+        description: "Docker base image upgraded to Python 3.13; Pillow >=11.1.0 lower-bound pin"
       - report: ~
         type: fixed
         description: "Web UI SSE log events use json.dumps() instead of hand-rolled escaping — fixes malformed JSON on tab/control characters"
       - report: ~
         type: fixed
         description: "Web UI stderr redirect is now thread-safe across concurrent report runs"
+      - report: "Triage Prioritization"
+        type: fixed
+        description: "Markdown renderer findings table column alignment corrected"
 
   - version: "1.6.0"
     date: "2026-02-25"

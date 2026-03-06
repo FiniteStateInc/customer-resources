@@ -22,7 +22,7 @@ def executive_scan_frequency_transform(
             df = pd.DataFrame()
             df.period_label = "Day"  # type: ignore[attr-defined]
             return df
-        df = data
+        df = data.copy()
     elif not data:
         df = pd.DataFrame()
         df.period_label = "Day"  # type: ignore[attr-defined]

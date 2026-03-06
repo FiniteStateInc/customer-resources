@@ -111,10 +111,24 @@
         .action-btn.btn-remediation:hover { background: #eff6ff; }
         .no-data { text-align: center; color: #6c757d; font-style: italic; padding: 40px; }
 
+        .show-more-btn {
+            background: none;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 6px 16px;
+            color: #495057;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+        .show-more-btn:hover { background-color: #f8f9fa; }
+        .hidden-row { display: none; }
+
         @media print {
             body { background-color: white; }
             .container { max-width: none; }
             .chart-container, .narrative-section, .table-container { border: 1px solid #dee2e6; }
+            .hidden-row { display: table-row; }
+            .show-more-row { display: none; }
         }
     </style>
 </head>
@@ -325,7 +339,7 @@
         <div class="table-container" style="border-left: 4px solid #6f42c1;">
             <h2>🤖 AI Component Remediation Guidance</h2>
             <p style="color: #6c757d; margin-bottom: 15px;">Detailed fix guidance for Critical and High priority components. Fix version data derived from NVD API where available.</p>
-            <table>
+            <table id="tbl-ai-component">
                 <thead>
                     <tr>
                         <th>Component</th>
@@ -339,7 +353,7 @@
                 </thead>
                 <tbody>
                     {% for comp_key, guidance in ai_component_guidance.items() %}
-                    <tr>
+                    <tr class="{% if loop.index > 10 %}hidden-row{% endif %}">
                         <td><strong>{{ comp_key }}</strong></td>
                         <td>{{ guidance.fix_version|default('—') }}</td>
                         <td>{{ guidance.rationale|default('—') }}</td>
@@ -349,6 +363,15 @@
                         <td>{{ guidance.confidence|default('—') }}</td>
                     </tr>
                     {% endfor %}
+                    {% if ai_component_guidance|length > 10 %}
+                    <tr class="show-more-row">
+                        <td colspan="7">
+                            <button class="show-more-btn" onclick="toggleRows('tbl-ai-component')">
+                                Show {{ ai_component_guidance|length - 10 }} more...
+                            </button>
+                        </td>
+                    </tr>
+                    {% endif %}
                 </tbody>
             </table>
         </div>
@@ -358,7 +381,7 @@
         <div class="table-container" style="border-left: 4px solid #e83e8c;">
             <h2>🤖 AI Finding Triage Guidance</h2>
             <p style="color: #6c757d; margin-bottom: 15px;">Per-finding triage and remediation guidance for Critical and High priority findings. Fix version data derived from NVD API where available.</p>
-            <table>
+            <table id="tbl-ai-finding">
                 <thead>
                     <tr>
                         <th>Finding</th>
@@ -373,7 +396,7 @@
                 </thead>
                 <tbody>
                     {% for finding_id, guidance in ai_finding_guidance.items() %}
-                    <tr>
+                    <tr class="{% if loop.index > 10 %}hidden-row{% endif %}">
                         <td><strong>{{ finding_id }}</strong></td>
                         <td>{{ guidance.priority|default('—') }}</td>
                         <td>{{ guidance.action|default('—') }}</td>
@@ -384,6 +407,15 @@
                         <td>{{ guidance.confidence|default('—') }}</td>
                     </tr>
                     {% endfor %}
+                    {% if ai_finding_guidance|length > 10 %}
+                    <tr class="show-more-row">
+                        <td colspan="8">
+                            <button class="show-more-btn" onclick="toggleRows('tbl-ai-finding')">
+                                Show {{ ai_finding_guidance|length - 10 }} more...
+                            </button>
+                        </td>
+                    </tr>
+                    {% endif %}
                 </tbody>
             </table>
         </div>
@@ -393,7 +425,7 @@
         {% if project_summary_df is defined and project_summary_df|length > 0 %}
         <div class="table-container">
             <h2>Project Risk Summary</h2>
-            <table>
+            <table id="tbl-project-summary">
                 <thead>
                     <tr>
                         {% if folder_path %}<th>Folder</th>{% endif %}
@@ -410,7 +442,7 @@
                 </thead>
                 <tbody>
                     {% for row in project_summary_df %}
-                    <tr>
+                    <tr class="{% if loop.index > 10 %}hidden-row{% endif %}">
                         {% if folder_path %}<td>{{ row.folder_name if row.folder_name is defined else '' }}</td>{% endif %}
                         <td>
                             {% if domain and row.project_id %}
@@ -441,6 +473,15 @@
                         {% endif %}
                     </tr>
                     {% endfor %}
+                    {% if project_summary_df|length > 10 %}
+                    <tr class="show-more-row">
+                        <td colspan="20">
+                            <button class="show-more-btn" onclick="toggleRows('tbl-project-summary')">
+                                Show {{ project_summary_df|length - 10 }} more...
+                            </button>
+                        </td>
+                    </tr>
+                    {% endif %}
                 </tbody>
             </table>
         </div>
@@ -450,7 +491,7 @@
         {% if top_components is defined and top_components|length > 0 %}
         <div class="table-container">
             <h2>Top Riskiest Components</h2>
-            <table>
+            <table id="tbl-top-components">
                 <thead>
                     <tr>
                         <th>Component</th>
@@ -468,7 +509,7 @@
                 </thead>
                 <tbody>
                     {% for row in top_components %}
-                    <tr>
+                    <tr class="{% if loop.index > 10 %}hidden-row{% endif %}">
                         <td>{{ row.component_name }}</td>
                         <td>{{ row.component_version }}</td>
                         <td>{% if row.CRITICAL|default(0) > 0 %}<span class="band-badge band-CRITICAL">{{ row.CRITICAL }}</span>{% else %}0{% endif %}</td>
@@ -511,6 +552,15 @@
                         </td>
                     </tr>
                     {% endfor %}
+                    {% if top_components|length > 10 %}
+                    <tr class="show-more-row">
+                        <td colspan="20">
+                            <button class="show-more-btn" onclick="toggleRows('tbl-top-components')">
+                                Show {{ top_components|length - 10 }} more...
+                            </button>
+                        </td>
+                    </tr>
+                    {% endif %}
                 </tbody>
             </table>
         </div>
@@ -520,7 +570,7 @@
         {% if findings_df is defined and findings_df|length > 0 %}
         <div class="table-container">
             <h2>Findings Detail (Top 100 by Priority)</h2>
-            <table>
+            <table id="tbl-findings-detail">
                 <thead>
                     <tr>
                         <th>Finding ID</th>
@@ -546,7 +596,7 @@
                 </thead>
                 <tbody>
                     {% for row in findings_df[:100] %}
-                    <tr>
+                    <tr class="{% if loop.index > 10 %}hidden-row{% endif %}">
                         <td>
                             {% if domain and row.project_id and row.project_version_id and row.internal_id %}
                             <a href="https://{{ domain }}/projects/{{ row.project_id }}/versions/{{ row.project_version_id }}/findings?findingId={{ row.internal_id }}" target="_blank" class="entity-link entity-link-cve" title="View finding in Finite State">{{ row.finding_id }}</a>
@@ -556,7 +606,9 @@
                         </td>
                         <td>{{ row.severity }}</td>
                         <td><span class="band-badge band-{{ row.priority_band }}">{{ row.priority_band }}</span></td>
-                        <td>{{ row.triage_score }}</td>
+                        {% set _additive = (row._pts_reachability|default(0) + row._pts_exploit|default(0) + row._pts_vector|default(0) + row._pts_epss|default(0) + row._pts_cvss|default(0))|round(1) %}
+                        {% set _gate_bonus = (row.triage_score - _additive)|round(1) if row.gate_assignment != 'NONE' else 0 %}
+                        <td title="Reachability: {{ row._pts_reachability|default(0) }}&#10;Exploit/KEV: {{ row._pts_exploit|default(0) }}&#10;Attack Vector: {{ row._pts_vector|default(0) }}&#10;EPSS: {{ row._pts_epss|default(0)|round(1) }}&#10;CVSS: {{ row._pts_cvss|default(0)|round(1) }}{% if _gate_bonus %}&#10;Gate Bonus ({{ row.gate_assignment }}): {{ _gate_bonus }}{% endif %}" style="cursor:help">{{ row.triage_score }}</td>
                         <td>{{ row.gate_assignment if row.gate_assignment != 'NONE' else '—' }}</td>
                         <td>
                             {% if domain and row.project_id and row.project_version_id and row.component_id %}
@@ -629,7 +681,7 @@
                             {% set vex_reason = vex_reason_lookup.get(row.finding_id, '') if vex_reason_lookup is defined and vex_reason_lookup else '' %}
                             {% set rec_data = vex_rec_lookup.get(row.finding_id) if vex_rec_lookup is defined and vex_rec_lookup else None %}
                             <button class="action-btn btn-triage" title="Set status to IN_TRIAGE"
-                                data-action="{{ {'findingId': row.finding_id, 'internalId': row.internal_id, 'projectVersionId': row.project_version_id, 'reason': vex_reason, 'recommendation': rec_data} | tojson | forceescape }}"
+                                data-action="{{ {'findingId': row.finding_id, 'internalId': row.internal_id, 'projectVersionId': row.project_version_id, 'reason': vex_reason, 'recommendation': rec_data, 'reachabilityLabel': row.reachability_label if row.reachability_label is string else 'INCONCLUSIVE'} | tojson | forceescape }}"
                                 onclick="fsOpenTriageModal(Object.assign(JSON.parse(this.dataset.action), {sourceBtn: this, currentStatus: this.dataset.currentStatus || ''}))">&#x2691; Triage</button>
                             {% endif %}
                             <button class="action-btn btn-remediation" title="Generate Remediation Package for this CVE"
@@ -639,6 +691,15 @@
                         </td>
                     </tr>
                     {% endfor %}
+                    {% if findings_df[:100]|length > 10 %}
+                    <tr class="show-more-row">
+                        <td colspan="20">
+                            <button class="show-more-btn" onclick="toggleRows('tbl-findings-detail')">
+                                Show {{ findings_df[:100]|length - 10 }} more...
+                            </button>
+                        </td>
+                    </tr>
+                    {% endif %}
                 </tbody>
             </table>
         </div>
@@ -651,6 +712,15 @@
     </div>
 
     <script>
+        function toggleRows(tableId) {
+            const table = document.getElementById(tableId);
+            if (!table) return;
+            const hiddenRows = table.querySelectorAll('.hidden-row');
+            const showMoreRow = table.querySelector('.show-more-row');
+            hiddenRows.forEach(row => row.classList.toggle('hidden-row'));
+            if (showMoreRow) showMoreRow.style.display = 'none';
+        }
+
         function copyPrompt(btn) {
             const pre = btn.parentElement.querySelector('pre');
             navigator.clipboard.writeText(pre.textContent).then(function() {

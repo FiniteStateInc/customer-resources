@@ -309,6 +309,40 @@ async def report_history_api() -> JSONResponse:
         return JSONResponse([])
 
 
+@router.get("/output/{path:path}")
+async def serve_output_file(
+    path: str,
+    state: WebAppState = Depends(get_state),
+) -> StreamingResponse:
+    """Serve a report file from the output directory.
+
+    Uses StreamingResponse (no Content-Length) to avoid race conditions
+    when a report is regenerated while being served.
+    """
+    output_dir = Path(state.get("output_dir", "./output")).expanduser().resolve()
+    abs_path = (output_dir / path).resolve()
+
+    # Path traversal guard
+    if not str(abs_path).startswith(str(output_dir)):
+        return JSONResponse({"error": "Invalid path"}, status_code=400)  # type: ignore[return-value]
+
+    # If path is a directory, try index.html
+    if abs_path.is_dir():
+        abs_path = abs_path / "index.html"
+
+    if not abs_path.exists() or not abs_path.is_file():
+        return JSONResponse({"error": "File not found"}, status_code=404)  # type: ignore[return-value]
+
+    media_type = mimetypes.guess_type(str(abs_path))[0] or "application/octet-stream"
+
+    def _iter_file():  # type: ignore[no-untyped-def]
+        with open(abs_path, "rb") as f:
+            while chunk := f.read(64 * 1024):
+                yield chunk
+
+    return StreamingResponse(_iter_file(), media_type=media_type)
+
+
 @router.get("/setup")
 async def setup_page(
     request: Request,

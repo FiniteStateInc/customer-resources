@@ -12,6 +12,7 @@ _CSV_COLUMNS = [
     "CVE ID",
     "Severity",
     "CVSS",
+    "KEV",
     "Project Name",
     "Project Version",
     "Folder",
@@ -79,6 +80,7 @@ def findings_by_project_pandas_transform(
         "detected": "Detected",
         "status": "Status",
         "reachability_label": "Reachability",
+        "kev_label": "KEV",
     }
 
     # Create output DataFrame with required columns
@@ -122,10 +124,21 @@ def findings_by_project_pandas_transform(
         )
     )
 
-    # NVD URL — constructed from CVE ID
+    # NVD URL — constructed from CVE ID (GHSA IDs link to GitHub Advisories,
+    # PYSEC IDs link to OSV)
     output_df["NVD URL"] = output_df["CVE ID"].apply(
         lambda cve: (
-            f"https://nvd.nist.gov/vuln/detail/{cve}" if cve and cve != "N/A" else ""
+            f"https://github.com/advisories/{cve}"
+            if isinstance(cve, str) and cve.startswith("GHSA-")
+            else (
+                f"https://osv.dev/vulnerability/{cve}"
+                if isinstance(cve, str) and cve.startswith("PYSEC-")
+                else (
+                    f"https://nvd.nist.gov/vuln/detail/{cve}"
+                    if isinstance(cve, str) and cve and cve != "N/A"
+                    else ""
+                )
+            )
         )
     )
 
@@ -182,6 +195,7 @@ def findings_by_project_pandas_transform(
             "Detected": "",
             "Status": "",
             "Reachability": "UNKNOWN",
+            "KEV": "",
             "Description": "",
             "CVSS v2 Vector": "",
             "CVSS v3 Vector": "",
@@ -225,9 +239,9 @@ def apply_single_project_filter(df: pd.DataFrame, project_filter: str) -> pd.Dat
     """
     try:
         project_id = int(project_filter)
-        # Check if it's a project ID
+        # Check if it's a project ID — compare as strings to handle mixed types
         if "project.id" in df.columns:
-            project_match = df[df["project.id"] == project_id]
+            project_match = df[df["project.id"].astype(str) == str(project_id)]
             if not project_match.empty:
                 return project_match
         return pd.DataFrame()
@@ -449,6 +463,14 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
         )
     else:
         df["reachability_label"] = "UNKNOWN"
+
+    # Handle KEV (Known Exploited Vulnerabilities) indicator
+    if "inKev" in df.columns:
+        df["kev_label"] = (
+            df["inKev"].fillna(False).astype(bool).map({True: "Yes", False: ""})
+        )
+    else:
+        df["kev_label"] = ""
 
     # Ensure all required columns exist with defaults
     if "cvss_score" not in df.columns:
