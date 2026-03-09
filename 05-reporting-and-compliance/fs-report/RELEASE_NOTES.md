@@ -1,5 +1,29 @@
 # Release Notes
 
+## Version 1.8.2 (March 2026)
+
+### New Features
+
+- **Google Gemini AI provider** — Use `--ai-provider gemini` with `GEMINI_API_KEY` or `GOOGLE_API_KEY` for AI-powered triage and remediation guidance.
+- **GitHub Copilot interactive OAuth** — `--ai-provider copilot` now supports device flow authentication. Run the command and follow the browser prompt — no `GITHUB_TOKEN` environment variable required.
+- **`list components` subcommand** — Browse SBOM components for a project with `--search` substring filter and `--json` machine-readable output. Example: `fs-report list components openwrt --search busybox`.
+- **`--json` on all list subcommands** — `list projects`, `list folders`, and `list versions` now support `--json` for machine-readable output, completing `--json` coverage across all list commands.
+- **`--component` filtering** — Filter findings to specific components on Findings by Project, Triage Prioritization, and Component Vulnerability Analysis. Pair with `--component-match` (`contains` for case-insensitive substring, `exact` for exact name match). Discover available components with `fs-report list components`.
+- **`--no-nvd` flag** — Skip NVD enrichment for faster runs when CVE descriptions and reference data aren't needed.
+- **Headless JSON summary** — `--headless` mode now prints a JSON summary to stdout with output paths, generated files, and stats for CI/CD integration.
+- **Folder-scoped Remediation Package** — Running Remediation Package with `--folder` generates per-project subdirectories under the output directory.
+- **JSON output format** — Findings by Project and Triage Prioritization now support `--format json` for programmatic consumption.
+
+### Improvements
+
+- **Executive Dashboard performance** — Vectorized iterrows loops and batched portfolio component fetch reduce generation time on large portfolios.
+
+### Bug Fixes
+
+- 15 fixes across CLI parameter wiring, report engine (NVD pipeline, RunResult, folder failure propagation), transforms (component filter, JSON serialization), and renderers.
+
+---
+
 ## Version 1.8.0 (March 2026)
 
 ### New Reports
