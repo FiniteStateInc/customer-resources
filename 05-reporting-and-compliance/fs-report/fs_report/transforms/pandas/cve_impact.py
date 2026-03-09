@@ -1012,26 +1012,31 @@ def _enrich_dossiers_with_ai(
 
     # --- Initialise NVD client for fix-version enrichment ---
     nvd = None
-    try:
-        from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
+    if getattr(config, "skip_nvd", False):
+        logger.info("NVD enrichment skipped (--no-nvd)")
+    else:
+        try:
+            from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
 
-        cache_dir = getattr(config, "cache_dir", None)
-        cache_ttl = getattr(config, "cache_ttl", 0) or 0
-        nvd_api_key = getattr(config, "nvd_api_key", None)
-        nvd = NVDClient(
-            api_key=nvd_api_key,
-            cache_dir=cache_dir,
-            cache_ttl=max(cache_ttl, 86400),
-        )
-        logger.info(NVD_ATTRIBUTION)
+            cache_dir = getattr(config, "cache_dir", None)
+            cache_ttl = getattr(config, "cache_ttl", 0) or 0
+            nvd_api_key = getattr(config, "nvd_api_key", None)
+            nvd = NVDClient(
+                api_key=nvd_api_key,
+                cache_dir=cache_dir,
+                cache_ttl=max(cache_ttl, 86400),
+            )
+            logger.info(NVD_ATTRIBUTION)
 
-        # Batch-fetch NVD data for all dossier CVEs upfront
-        cve_ids = [d["cve_id"] for d in dossiers if d.get("cve_id")]
-        if cve_ids:
-            logger.info(f"Fetching NVD fix data for {len(cve_ids)} CVEs...")
-            nvd.get_batch(cve_ids, progress=True)
-    except Exception as e:
-        logger.info(f"NVD client unavailable (fix-version enrichment disabled): {e}")
+            # Batch-fetch NVD data for all dossier CVEs upfront
+            cve_ids = [d["cve_id"] for d in dossiers if d.get("cve_id")]
+            if cve_ids:
+                logger.info(f"Fetching NVD fix data for {len(cve_ids)} CVEs...")
+                nvd.get_batch(cve_ids, progress=True)
+        except Exception as e:
+            logger.info(
+                f"NVD client unavailable (fix-version enrichment disabled): {e}"
+            )
 
     # --- Initialise LLM client (once, outside the loop) ---
     llm = None

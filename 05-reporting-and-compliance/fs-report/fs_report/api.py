@@ -132,4 +132,4 @@ def run_report(
     if recipe:
         engine.recipe_loader.recipe_filter = [recipe.lower()]
 
-    return engine.run()
+    return engine.run().success

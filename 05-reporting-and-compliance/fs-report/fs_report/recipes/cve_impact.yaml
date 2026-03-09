@@ -4,6 +4,7 @@ template: "cve_impact.html"
 description: "CVE-centric dossier showing affected projects, reachability, exploits, and risk details per CVE"
 execution_order: 20
 auto_run: false
+requires_cve: true
 
 query:
   endpoint: "/public/v0/cves"

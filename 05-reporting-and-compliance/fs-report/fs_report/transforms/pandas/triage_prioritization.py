@@ -51,6 +51,11 @@ CVSS_MAX_POINTS = 10  # 10 × (score/10)
 
 POINTS_VEX_RESOLVED = -50  # NOT_AFFECTED, RESOLVED, RESOLVED_WITH_PEDIGREE
 
+# VEX statuses that indicate a finding has been resolved — these are excluded
+# from gate eligibility so that previously-triaged findings don't keep appearing
+# as GATE_1/GATE_2 on subsequent runs.
+VEX_RESOLVED_STATUSES = {"NOT_AFFECTED", "RESOLVED", "RESOLVED_WITH_PEDIGREE"}
+
 # Band thresholds for additive scoring
 BAND_HIGH_THRESHOLD = 70
 BAND_MEDIUM_THRESHOLD = 40
@@ -473,6 +478,13 @@ def _init_nvd_client(
     additional_data: dict[str, Any] | None = None,
 ) -> Any:
     """Initialize NVD client if available, returns None on failure."""
+    # Check skip_nvd on config or additional_data["config"]
+    skip = getattr(config, "skip_nvd", False) if config else False
+    if not skip and additional_data and "config" in additional_data:
+        skip = getattr(additional_data["config"], "skip_nvd", False)
+    if skip:
+        logger.info("NVD enrichment skipped (--no-nvd)")
+        return None
     try:
         from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
 
@@ -540,6 +552,21 @@ def triage_prioritization_transform(
     weights = _load_weights(config, additional_data)
     gates = _load_gates(config, additional_data)
 
+    # Apply component filter if specified (before scoring for efficiency)
+    _component_filter = None
+    if additional_data and "config" in additional_data:
+        _component_filter = getattr(additional_data["config"], "component_filter", None)
+    if not _component_filter and config and hasattr(config, "component_filter"):
+        _component_filter = getattr(config, "component_filter", None)
+
+    # Resolve vex_override early — needed for both gate exclusion and VEX recs
+    vex_override = False
+    if config and hasattr(config, "vex_override"):
+        vex_override = bool(config.vex_override)
+    elif additional_data and "config" in additional_data:
+        cfg = additional_data["config"]
+        vex_override = bool(getattr(cfg, "vex_override", False))
+
     # Detect pre-scored input from per-batch scoring in report_engine.
     # If triage_score already exists, skip normalize/score phases.
     if "triage_score" in df.columns:
@@ -550,13 +577,37 @@ def triage_prioritization_transform(
         logger.debug(f"After normalization: {df.shape}, columns: {list(df.columns)}")
 
         # Apply tiered gates scoring (DSL-driven)
-        df = apply_tiered_gates(df, gates=gates)
+        df = apply_tiered_gates(df, gates=gates, vex_override=vex_override)
 
         # Apply additive scoring for findings that didn't hit any gate
         df = calculate_additive_score(df, weights=weights, gates=gates)
 
         # Assign risk bands
         df = assign_risk_bands(df, weights=weights, gates=gates)
+
+    # Apply component filter after normalization/scoring
+    if _component_filter:
+        from fs_report.transforms.pandas._component_filter import (
+            apply_component_filter,
+        )
+
+        _match_mode = "contains"
+        if additional_data and "config" in additional_data:
+            _match_mode = getattr(
+                additional_data["config"], "component_match", "contains"
+            )
+        elif config and hasattr(config, "component_match"):
+            _match_mode = getattr(config, "component_match", "contains")
+        df = apply_component_filter(
+            df,
+            _component_filter,
+            match_mode=_match_mode,
+            name_col="component_name",
+            version_col="component_version",
+        )
+        if df.empty:
+            logger.warning("Component filter returned 0 findings")
+            return _empty_result()
 
     # Apply --tp-gate filter if specified (restrict to a single gate tier)
     tp_gate_filter = None
@@ -601,13 +652,7 @@ def triage_prioritization_transform(
     top_components = build_top_components(df)
     factor_radar = build_factor_radar_data(df)
 
-    # Build VEX triage recommendations
-    vex_override = False
-    if config and hasattr(config, "vex_override"):
-        vex_override = bool(config.vex_override)
-    elif additional_data and "config" in additional_data:
-        cfg = additional_data["config"]
-        vex_override = bool(getattr(cfg, "vex_override", False))
+    # Build VEX triage recommendations (vex_override resolved earlier)
     triage_n = 0
     if additional_data and "config" in additional_data:
         triage_n = getattr(additional_data["config"], "triage", 0) or 0
@@ -1568,16 +1613,25 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 def apply_tiered_gates(
     df: pd.DataFrame,
     gates: list[dict[str, Any]] | None = None,
+    vex_override: bool = False,
 ) -> pd.DataFrame:
     """Apply tiered gate classification using DSL-defined gate conditions.
 
     Gates are evaluated in order.  Once a finding matches a gate it is
     excluded from subsequent gates.
 
+    Findings with a resolved VEX status (NOT_AFFECTED, RESOLVED,
+    RESOLVED_WITH_PEDIGREE) are excluded from gate eligibility so that
+    previously-triaged findings don't keep appearing as GATE_1/GATE_2
+    on subsequent runs.  Use ``vex_override=True`` to bypass this
+    exclusion and re-evaluate all findings.
+
     Args:
         df: Normalized findings DataFrame.
         gates: List of gate definition dicts (DSL format).
                Falls back to DEFAULT_GATES if not provided.
+        vex_override: If True, ignore current VEX status and allow
+            resolved findings into gates.
 
     Each gate dict must have:
         name:       Gate identifier (e.g. "GATE_1")
@@ -1590,14 +1644,28 @@ def apply_tiered_gates(
 
     gates = gates if gates is not None else DEFAULT_GATES
 
+    # Determine which findings are gate-eligible based on VEX status.
+    # Resolved findings are excluded unless vex_override is set.
+    if not vex_override and "status" in df.columns:
+        resolved_mask = df["status"].astype(str).isin(VEX_RESOLVED_STATUSES)
+        gate_eligible = ~resolved_mask
+        excluded_count = resolved_mask.sum()
+        if excluded_count:
+            logger.info(
+                f"Gate exclusion: {excluded_count} findings with resolved VEX "
+                f"status excluded from gate eligibility"
+            )
+    else:
+        gate_eligible = pd.Series(True, index=df.index)
+
     for gate in gates:
         name = gate.get("name", "UNKNOWN")
         conditions = gate.get("conditions", {})
 
-        # Evaluate condition tree; only consider findings not yet assigned
+        # Evaluate condition tree; only consider eligible, unassigned findings
         unassigned = df["gate_assignment"] == "NONE"
         condition_mask = _evaluate_condition(df, conditions)
-        gate_mask = unassigned & condition_mask
+        gate_mask = unassigned & gate_eligible & condition_mask
 
         df.loc[gate_mask, "gate_assignment"] = name
         band = gate.get("band", "?")
@@ -1691,18 +1759,13 @@ def calculate_additive_score(
     # VEX status penalty: demote findings already marked as resolved/not-affected
     vex_penalty = w.get("vex_resolved", POINTS_VEX_RESOLVED)
     if "status" in df.columns:
-        resolved_statuses = {"NOT_AFFECTED", "RESOLVED", "RESOLVED_WITH_PEDIGREE"}
-        vex_mask = df["status"].astype(str).isin(resolved_statuses)
+        vex_mask = df["status"].astype(str).isin(VEX_RESOLVED_STATUSES)
         df.loc[vex_mask, "triage_score"] += vex_penalty
         if vex_mask.any():
             logger.debug(
                 f"VEX resolved penalty ({vex_penalty}): "
                 f"applied to {vex_mask.sum()} findings"
             )
-
-    # Clean up temporary columns
-    temp_cols = [c for c in df.columns if c.startswith("_pts_")]
-    df = df.drop(columns=temp_cols)
 
     return df
 

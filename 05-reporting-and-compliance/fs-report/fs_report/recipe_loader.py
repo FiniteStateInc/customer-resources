@@ -40,6 +40,7 @@ import logging
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 
 from fs_report.models import Recipe
 
@@ -191,6 +192,33 @@ class RecipeLoader:
 
         except yaml.YAMLError as e:
             self.logger.error(f"YAML parsing error in {file_path}: {e}")
+            raise
+        except ValidationError as e:
+            missing = [
+                err["loc"][-1]
+                for err in e.errors()
+                if err["type"] == "missing" and err.get("loc")
+            ]
+            msg = f"Invalid recipe YAML in {file_path}"
+            if missing:
+                msg += (
+                    f" — missing required fields: {', '.join(str(f) for f in missing)}"
+                )
+            self.logger.error(msg)
+            self.logger.error(
+                "A minimal custom recipe YAML requires:\n"
+                "\n"
+                '  name: "My Report"\n'
+                "  query:\n"
+                '    endpoint: "/public/v0/findings"\n'
+                "    params:\n"
+                "      limit: 10000\n"
+                "  transform_function: my_transform_function\n"
+                "  output:\n"
+                "    table: true\n"
+                "    charts: []\n"
+                '    formats: ["csv", "html"]\n'
+            )
             raise
         except Exception as e:
             self.logger.error(f"Error loading recipe from {file_path}: {e}")

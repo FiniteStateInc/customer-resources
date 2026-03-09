@@ -197,7 +197,7 @@ def _execute_run(
             old_stderr = sys.stderr
             sys.stderr = captured_stderr
             try:
-                success = engine.run()
+                success = engine.run().success
             finally:
                 sys.stderr = old_stderr
 

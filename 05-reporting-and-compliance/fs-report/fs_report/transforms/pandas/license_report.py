@@ -126,6 +126,24 @@ def license_report_transform(
         rows.append(flat)
 
     df = pd.DataFrame(rows)
+
+    # Apply component filter if configured
+    cfg = config or (additional_data.get("config") if additional_data else None)
+    component_filter = getattr(cfg, "component_filter", None) if cfg else None
+    if component_filter:
+        from fs_report.transforms.pandas._component_filter import (
+            apply_component_filter,
+        )
+
+        match_mode = getattr(cfg, "component_match", "contains")
+        df = apply_component_filter(
+            df,
+            component_filter,
+            match_mode=match_mode,
+            name_col="component_name",
+            version_col="component_version",
+        )
+
     logger.info(f"License report: {len(df)} components")
 
     # --- License table: group by license ---

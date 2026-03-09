@@ -9,7 +9,6 @@ description: >
   NVD patch URLs, and optional LLM-generated guidance.
 execution_order: 30
 auto_run: false
-requires_project: true
 
 parameters:
   # LLM guidance modes

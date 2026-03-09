@@ -25,5 +25,6 @@ output:
     - csv
     - xlsx
     - html
+    - json
     - md
   charts: []

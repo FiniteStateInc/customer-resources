@@ -21,7 +21,7 @@
 """Pydantic models for recipe validation and configuration."""
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -299,6 +299,11 @@ class Recipe(BaseModel):
         description="Whether this recipe requires a --project filter. "
         "When true, the engine will refuse to run without one.",
     )
+    requires_cve: bool = Field(
+        False,
+        description="Whether this recipe requires a --cve filter. "
+        "When true, the engine will refuse to run without one.",
+    )
     output: OutputConfig = Field(..., description="Output configuration")
 
     @field_validator("name")
@@ -383,11 +388,11 @@ class Config(BaseModel):
     # AI remediation guidance options
     ai: bool = Field(
         False,
-        description="Enable AI remediation guidance (requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, or GITHUB_TOKEN)",
+        description="Enable AI remediation guidance (requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, GEMINI_API_KEY, or GITHUB_TOKEN)",
     )
     ai_provider: str | None = Field(
         None,
-        description="LLM provider override (anthropic, openai, copilot). "
+        description="LLM provider override (anthropic, openai, copilot, gemini). "
         "Auto-detected from environment variables if not set.",
     )
     ai_model_high: str | None = Field(
@@ -495,7 +500,18 @@ class Config(BaseModel):
         None,
         description="Comma-separated component names (e.g. busybox@1.36.1-r2,dropbear). "
         "Use name@version for exact match, name alone for all versions. "
-        "Used by Remediation Package to scope remediation to specific components.",
+        "Used by Remediation Package, Findings by Project, Triage Prioritization, "
+        "and Component Vulnerability Analysis to scope to specific components.",
+    )
+    component_match: Literal["contains", "exact"] = Field(
+        "contains",
+        description="Match mode for --component: 'contains' (default, case-insensitive "
+        "substring) or 'exact' (exact name match). name@version specs always use exact.",
+    )
+    skip_nvd: bool = Field(
+        False,
+        description="Skip NVD enrichment entirely. Useful for faster runs when NVD "
+        "data is not needed.",
     )
     scoring_file: str | None = Field(
         None,

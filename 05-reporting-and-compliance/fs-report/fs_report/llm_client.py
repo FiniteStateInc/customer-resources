@@ -29,7 +29,8 @@ Provides LLM-generated remediation summaries at three scopes:
 Supports multiple LLM providers:
 - Anthropic Claude (default): Opus for summaries, Sonnet for bulk guidance
 - OpenAI: GPT-4o for summaries, GPT-4o-mini for bulk guidance
-- GitHub Copilot: Uses OpenAI SDK with Copilot endpoint
+- GitHub Copilot: Uses OpenAI SDK with Copilot endpoint (OAuth device flow supported)
+- Google Gemini: Uses OpenAI-compatible endpoint
 
 Provider is auto-detected from environment variables or set explicitly
 via the ``provider`` parameter.
@@ -65,16 +66,37 @@ MODEL_MAP: dict[str, tuple[str, str]] = {
     "anthropic": ("claude-opus-4-6", "claude-sonnet-4-6"),
     "openai": ("gpt-4o", "gpt-4o-mini"),
     "copilot": ("gpt-4o", "gpt-4o-mini"),
+    "gemini": ("gemini-2.5-pro", "gemini-2.5-flash"),
 }
 
 # Env var detection order
 _PROVIDER_ENV_VARS: list[tuple[str, str]] = [
     ("anthropic", "ANTHROPIC_AUTH_TOKEN"),
     ("openai", "OPENAI_API_KEY"),
+    ("gemini", "GEMINI_API_KEY"),
     ("copilot", "GITHUB_TOKEN"),
 ]
 
-COPILOT_BASE_URL = "https://api.githubcopilot.com"
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+# Canonical list of env vars that indicate AI provider credentials are available.
+# Import this instead of duplicating the list.
+AI_ENV_VARS: tuple[str, ...] = (
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GITHUB_TOKEN",
+)
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """Return True if *exc* looks like a 401/403 authentication error."""
+    # openai.AuthenticationError (status_code 401)
+    if type(exc).__name__ in ("AuthenticationError", "PermissionDeniedError"):
+        return True
+    status = getattr(exc, "status_code", None)
+    return status in (401, 403)
 
 
 # ── Shared prompt blocks ────────────────────────────────────────────
@@ -281,8 +303,8 @@ class LLMClient:
     """
     LLM client for generating remediation guidance.
 
-    Supports Anthropic, OpenAI, and GitHub Copilot providers with
-    SQLite-backed result caching. Model tiering: a rich model for
+    Supports Anthropic, OpenAI, GitHub Copilot, and Google Gemini providers
+    with SQLite-backed result caching. Model tiering: a rich model for
     summaries and a fast model for bulk component guidance.
     """
 
@@ -301,7 +323,7 @@ class LLMClient:
         Args:
             cache_dir: Directory for SQLite cache. Defaults to ~/.fs-report/
             cache_ttl: Cache TTL in seconds. 0 = no caching (always regenerate).
-            provider: LLM provider override ("anthropic", "openai", "copilot").
+            provider: LLM provider override ("anthropic", "openai", "copilot", "gemini").
                       Auto-detected from env vars if not set.
             model_high: Override for the summary model (high-capability tier).
             model_low: Override for the component model (fast/cheap tier).
@@ -402,6 +424,18 @@ class LLMClient:
                     f"Unknown AI provider '{override}'. "
                     f"Choose from: {', '.join(MODEL_MAP)}"
                 )
+            # Copilot handles auth via device flow — no env var required
+            if override == "copilot":
+                return "copilot", os.getenv("GITHUB_TOKEN", "")
+            # Gemini supports GOOGLE_API_KEY as fallback
+            if override == "gemini":
+                api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
+                if not api_key:
+                    raise ValueError(
+                        "AI provider 'gemini' requires GEMINI_API_KEY or "
+                        "GOOGLE_API_KEY environment variable to be set."
+                    )
+                return "gemini", api_key
             env_map = dict(_PROVIDER_ENV_VARS)
             env_var = env_map[override]
             api_key = os.getenv(env_var, "")
@@ -417,6 +451,10 @@ class LLMClient:
             api_key = os.getenv(env_var, "")
             if api_key:
                 return provider, api_key
+        # Also check GOOGLE_API_KEY as Gemini fallback
+        google_key = os.getenv("GOOGLE_API_KEY", "")
+        if google_key:
+            return "gemini", google_key
 
         raise ValueError(
             "No AI provider credentials found. Set one of: "
@@ -435,17 +473,33 @@ class LLMClient:
                     "The 'anthropic' package is required for Anthropic AI features. "
                     "Install it with: pip install anthropic"
                 )
-        elif self._provider in ("openai", "copilot"):
+        elif self._provider == "copilot":
+            try:
+                import openai
+            except ImportError:
+                raise ImportError(
+                    "The 'openai' package is required for Copilot AI features. "
+                    "Install it with: pip install openai"
+                )
+            from fs_report.copilot_auth import get_copilot_token
+
+            # Preserve the original GitHub token for re-exchange on refresh
+            self._github_token = self.api_key or None
+            copilot_token, base_url = get_copilot_token(self._github_token)
+            self.api_key = copilot_token
+            self._copilot_base_url = base_url
+            return openai.OpenAI(api_key=copilot_token, base_url=base_url)
+        elif self._provider in ("openai", "gemini"):
             try:
                 import openai
 
                 kwargs: dict[str, Any] = {"api_key": self.api_key}
-                if self._provider == "copilot":
-                    kwargs["base_url"] = COPILOT_BASE_URL
+                if self._provider == "gemini":
+                    kwargs["base_url"] = GEMINI_BASE_URL
                 return openai.OpenAI(**kwargs)
             except ImportError:
                 raise ImportError(
-                    "The 'openai' package is required for OpenAI/Copilot AI features. "
+                    "The 'openai' package is required for OpenAI/Gemini AI features. "
                     "Install it with: pip install openai"
                 )
         raise ValueError(f"Unsupported provider: {self._provider}")
@@ -478,17 +532,38 @@ class LLMClient:
             self._call_count += 1
             return response.content[0].text  # type: ignore[no-any-return]
         else:
-            # OpenAI / Copilot
-            response = self.client.chat.completions.create(
-                model=model,
-                max_tokens=max_tokens,
-                messages=[
+            # OpenAI / Copilot / Gemini
+            oai_kwargs = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": [
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": prompt},
                 ],
-            )
+            }
+            try:
+                response = self.client.chat.completions.create(**oai_kwargs)
+            except Exception as exc:
+                # Copilot tokens expire — retry once with a fresh token
+                if self._provider == "copilot" and _is_auth_error(exc):
+                    logger.info("Copilot token expired, refreshing…")
+                    self._refresh_copilot_client()
+                    response = self.client.chat.completions.create(**oai_kwargs)
+                else:
+                    raise
             self._call_count += 1
             return response.choices[0].message.content or ""
+
+    def _refresh_copilot_client(self) -> None:
+        """Re-exchange credentials and rebuild the OpenAI client for Copilot."""
+        import openai
+
+        from fs_report.copilot_auth import get_copilot_token
+
+        copilot_token, base_url = get_copilot_token(self._github_token)
+        self.api_key = copilot_token
+        self._copilot_base_url = base_url
+        self.client = openai.OpenAI(api_key=copilot_token, base_url=base_url)
 
     def _context_section(self) -> str:
         """Return deployment context section for prompts, or empty string."""

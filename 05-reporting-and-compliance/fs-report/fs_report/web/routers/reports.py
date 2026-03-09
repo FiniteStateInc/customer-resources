@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.responses import StreamingResponse
 
 from fs_report.web.dependencies import get_nonce, get_state
@@ -174,8 +174,12 @@ async def reports_page(
 
 
 @router.get("/reports/file/{run_id}/{path:path}")
-async def serve_history_file(run_id: str, path: str) -> FileResponse:
-    """Serve a report file from any historically-recorded output directory."""
+async def serve_history_file(run_id: str, path: str) -> StreamingResponse:
+    """Serve a report file from any historically-recorded output directory.
+
+    Uses StreamingResponse (no Content-Length) to avoid race conditions
+    when a report is regenerated while being served.
+    """
     from fs_report.report_history import get_run
 
     # Look up run in history DB
@@ -194,7 +198,13 @@ async def serve_history_file(run_id: str, path: str) -> FileResponse:
         return JSONResponse({"error": "File not found"}, status_code=404)  # type: ignore[return-value]
 
     media_type = mimetypes.guess_type(str(abs_path))[0] or "application/octet-stream"
-    return FileResponse(abs_path, media_type=media_type)
+
+    def _iter_file():  # type: ignore[no-untyped-def]
+        with open(abs_path, "rb") as f:
+            while chunk := f.read(64 * 1024):
+                yield chunk
+
+    return StreamingResponse(_iter_file(), media_type=media_type)
 
 
 @router.get("/reports/bundle/output")

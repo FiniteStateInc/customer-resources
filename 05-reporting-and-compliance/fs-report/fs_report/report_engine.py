@@ -26,6 +26,8 @@ import logging
 import platform
 import threading
 import time
+from dataclasses import dataclass, field
+from pathlib import Path
 
 try:
     import resource  # Unix only; not available on Windows
@@ -44,6 +46,25 @@ from fs_report.models import Config, QueryConfig, Recipe, ReportData
 from fs_report.recipe_loader import RecipeLoader
 from fs_report.renderers import ReportRenderer
 from fs_report.sqlite_cache import _trim_factors
+
+
+@dataclass
+class RecipeResult:
+    """Per-recipe result data for headless JSON summary."""
+
+    recipe: str
+    output_dir: str
+    files: list[str] = field(default_factory=list)
+    stats: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RunResult:
+    """Overall run result returned by ``ReportEngine.run()``."""
+
+    success: bool
+    recipes: list[RecipeResult] = field(default_factory=list)
+
 
 # [REMOVED] All DuckDB-related logic and imports. Only pandas transformer is used.
 
@@ -1444,15 +1465,16 @@ class ReportEngine:
 
         return all_results
 
-    def run(self) -> bool:
-        """Run the complete report generation process. Returns True if all recipes succeeded."""
+    def run(self) -> "RunResult":
+        """Run the complete report generation process. Returns RunResult with success status."""
+        _fail = RunResult(success=False)
         self.logger.info("Starting report generation...")
 
         # Load recipes
         recipes = self.recipe_loader.load_recipes()
         if not recipes:
             self.logger.warning("No recipes found in recipes directory")
-            return False
+            return _fail
 
         # Filter recipes if specific recipe is requested
         # Check both config.recipe_filter and recipe_loader.recipe_filter
@@ -1470,7 +1492,7 @@ class ReportEngine:
                 self.logger.error(
                     f"Recipe '{self.config.recipe_filter}' not found. Available recipes: {[r.name for r in recipes]}"
                 )
-                return False
+                return _fail
             recipes = filtered_recipes
             self.logger.info(f"Filtered to {len(recipes)} recipe(s)")
         elif not explicit_recipe_requested:
@@ -1492,7 +1514,7 @@ class ReportEngine:
         # Resolve folder scope first (may narrow down project set)
         if self.config.folder_filter and not self.data_override:
             if not self._resolve_folder_scope():
-                return False
+                return _fail
 
         # Resolve project name to numeric ID if needed (API filters require numeric IDs)
         if self.config.project_filter and not self.data_override:
@@ -1507,7 +1529,7 @@ class ReportEngine:
                         "--baseline-version / --current-version instead.\n"
                         "Use 'fs-report list-projects' to see available projects."
                     )
-                    return False
+                    return _fail
                 # Resolve numeric ID to project name for display
                 self.resolved_project_name = self._resolve_project_id_to_name(pid)
             except ValueError:
@@ -1519,7 +1541,7 @@ class ReportEngine:
                             f"No projects matched glob pattern '{filter_value}'. "
                             "Use 'fs-report list-projects' to see available projects."
                         )
-                        return False
+                        return _fail
                     elif len(matches) == 1:
                         mid, mname = matches[0]
                         self.logger.info(
@@ -1549,7 +1571,7 @@ class ReportEngine:
                             f"Could not resolve project name '{filter_value}'. "
                             "Use 'fs-report list-projects' to see available projects."
                         )
-                        return False
+                        return _fail
 
         # Reject version filter with multi-project glob
         if (
@@ -1563,7 +1585,7 @@ class ReportEngine:
                 "Version filter is not supported with project glob patterns. "
                 "Use an exact project name or ID with --version."
             )
-            return False
+            return _fail
 
         # Resolve version name to numeric ID if needed (API filters require numeric IDs)
         if self.config.version_filter and not self.data_override:
@@ -1572,7 +1594,7 @@ class ReportEngine:
                     "Version filter requires a project filter. "
                     "Use --project-filter to specify the project."
                 )
-                return False
+                return _fail
             try:
                 int(self.config.version_filter)
                 # Already a numeric ID — no resolution needed
@@ -1585,7 +1607,7 @@ class ReportEngine:
                         f"Cannot resolve version name '{self.config.version_filter}': "
                         f"project filter '{self.config.project_filter}' is not a numeric ID."
                     )
-                    return False
+                    return _fail
                 resolved_id = self._resolve_version_name(
                     project_id, self.config.version_filter
                 )
@@ -1600,11 +1622,12 @@ class ReportEngine:
                         f"in project {self.config.project_filter}. "
                         "Use 'fs-report list-versions <project>' to see available versions."
                     )
-                    return False
+                    return _fail
 
         # Process each recipe
         all_succeeded = True
-        generated_files = []
+        generated_files: list[str] = []
+        recipe_results: list[RecipeResult] = []
         total = len(recipes)
         for idx, recipe in enumerate(recipes, 1):
             self._check_cancel()
@@ -1623,19 +1646,58 @@ class ReportEngine:
                     all_succeeded = False
                     continue
 
-                # Scoped Remediation Package: override recipe name for output dir
-                # (applied after _process_recipe so internal name checks still work)
+                # Require --cve for recipes that declare requires_cve
+                if getattr(recipe, "requires_cve", False) is True and not getattr(
+                    self.config, "cve_filter", None
+                ):
+                    self.logger.error(
+                        f"'{recipe.name}' requires a --cve filter. "
+                        "Use --cve <CVE-ID> to specify one or more CVEs."
+                    )
+                    all_succeeded = False
+                    continue
+
+                # Folder-scoped Remediation Package: iterate over projects
+                if (
+                    recipe.name == "Remediation Package"
+                    and not self.config.project_filter
+                    and self._folder_project_ids
+                ):
+                    folder_ok = self._run_remediation_folder(
+                        recipe,
+                        sorted(self._folder_project_ids),
+                        generated_files,
+                        recipe_results,
+                    )
+                    if not folder_ok:
+                        all_succeeded = False
+                    continue
+
+                # Remediation Package without --project or --folder
+                if (
+                    recipe.name == "Remediation Package"
+                    and not self.config.project_filter
+                    and not self._folder_project_ids
+                ):
+                    self.logger.error(
+                        "'Remediation Package' requires --project or --folder. "
+                        "Use --project <name-or-id> or --folder <name-or-id>."
+                    )
+                    all_succeeded = False
+                    continue
+
+                # Scoped output naming: when --component or --cve is set, suffix
+                # the recipe name for the output directory.
                 _scoped_recipe = recipe
-                if recipe.name == "Remediation Package":
-                    scope_suffix = ""
-                    if getattr(self.config, "component_filter", None):
-                        scope_suffix = str(self.config.component_filter)
-                    elif getattr(self.config, "cve_filter", None):
-                        scope_suffix = str(self.config.cve_filter)
-                    if scope_suffix:
-                        _scoped_recipe = recipe.model_copy(
-                            update={"name": f"Remediation Package - {scope_suffix}"}
-                        )
+                scope_suffix = ""
+                if getattr(self.config, "component_filter", None):
+                    scope_suffix = str(self.config.component_filter)
+                elif getattr(self.config, "cve_filter", None):
+                    scope_suffix = str(self.config.cve_filter)
+                if scope_suffix:
+                    _scoped_recipe = recipe.model_copy(
+                        update={"name": f"{recipe.name} - {scope_suffix}"}
+                    )
                 self.renderer.check_output_guard(_scoped_recipe)
                 report_data = self._process_recipe(recipe)
                 if report_data:
@@ -1648,13 +1710,47 @@ class ReportEngine:
                     )
                     if extra:
                         generated_files.extend(extra)
+
+                    # Build per-recipe result
+                    recipe_output_dir = str(
+                        self.renderer.output_dir
+                        / self.renderer._sanitize_filename(_scoped_recipe.name)
+                    )
+                    row_count = 0
+                    data = report_data.data
+                    if hasattr(data, "__len__"):
+                        row_count = len(data)
+                    recipe_results.append(
+                        RecipeResult(
+                            recipe=_scoped_recipe.name,
+                            output_dir=recipe_output_dir,
+                            files=files + (extra or []),
+                            stats={"finding_count": row_count},
+                        )
+                    )
                 else:
                     self.logger.error(
                         f"No report data generated for recipe: {recipe.name}"
                     )
+                    recipe_results.append(
+                        RecipeResult(
+                            recipe=recipe.name,
+                            output_dir="",
+                            files=[],
+                            stats={"error": "no report data"},
+                        )
+                    )
                     all_succeeded = False
             except Exception as e:
                 self.logger.error(f"Failed to process recipe {recipe.name}: {e}")
+                recipe_results.append(
+                    RecipeResult(
+                        recipe=recipe.name,
+                        output_dir="",
+                        files=[],
+                        stats={"error": str(e)},
+                    )
+                )
                 all_succeeded = False
             finally:
                 if self._on_recipe_complete:
@@ -1667,7 +1763,96 @@ class ReportEngine:
             print("\nReports generated:")
             for f in generated_files:
                 print(f"  - {f}")
-        return all_succeeded
+        return RunResult(success=all_succeeded, recipes=recipe_results)
+
+    # ------------------------------------------------------------------
+    # Folder-scoped Remediation Package helper
+    # ------------------------------------------------------------------
+
+    def _run_remediation_folder(
+        self,
+        recipe: Recipe,
+        project_ids: list[str],
+        generated_files: list[str],
+        recipe_results: list[RecipeResult],
+    ) -> bool:
+        """Run Remediation Package for each project in a folder.
+
+        Creates per-project subdirectories under ``Remediation Package/``.
+        Returns ``True`` if at least one project succeeded.
+        """
+        total_projects = len(project_ids)
+        any_succeeded = False
+        self.logger.info(
+            f"Remediation Package: folder scope with {total_projects} project(s)"
+        )
+
+        base_output = Path(self.config.output_dir) / "Remediation Package"
+        base_output.mkdir(parents=True, exist_ok=True)
+
+        for pi, pid in enumerate(project_ids, 1):
+            project_name = self._resolve_project_id_to_name(int(pid))
+            if not project_name:
+                project_name = pid
+            self.logger.info(
+                f"Remediation Package: project {pi}/{total_projects} — {project_name}"
+            )
+
+            # Create a scoped config with project_filter set to this project
+            scoped_config = self.config.model_copy(update={"project_filter": pid})
+
+            # Create a sub-engine for this project
+            try:
+                sub_engine = ReportEngine(
+                    scoped_config,
+                    deployment_context=self._deployment_context,
+                )
+                # Share the API client to reuse connections/cache
+                sub_engine.api_client = self.api_client
+
+                # Override the renderer to write to a per-project subdirectory
+                safe_name = self.renderer._sanitize_filename(project_name)
+                project_output_dir = str(base_output / safe_name)
+                sub_engine.renderer = ReportRenderer(
+                    project_output_dir,
+                    config=scoped_config,
+                    overwrite=self.renderer.overwrite,
+                )
+
+                report_data = sub_engine._process_recipe(recipe)
+                if report_data:
+                    # Render with the original recipe name (not scoped)
+                    # since the per-project dir already provides scoping
+                    files = sub_engine.renderer.render(recipe, report_data)
+                    if files:
+                        generated_files.extend(files)
+                    extra = report_data.metadata.get("additional_data", {}).get(
+                        "_extra_generated_files", []
+                    )
+                    if extra:
+                        generated_files.extend(extra)
+
+                    row_count = 0
+                    data = report_data.data
+                    if hasattr(data, "__len__"):
+                        row_count = len(data)
+                    recipe_results.append(
+                        RecipeResult(
+                            recipe=f"Remediation Package/{project_name}",
+                            output_dir=project_output_dir,
+                            files=files + (extra or []),
+                            stats={"finding_count": row_count, "project": project_name},
+                        )
+                    )
+                    any_succeeded = True
+                else:
+                    self.logger.warning(
+                        f"No report data for Remediation Package — {project_name}"
+                    )
+            except Exception as e:
+                self.logger.error(f"Remediation Package failed for {project_name}: {e}")
+
+        return any_succeeded
 
     # ------------------------------------------------------------------
     # Cross-server Version Comparison helper
@@ -2805,7 +2990,9 @@ class ReportEngine:
                             _cva_extra_keep = frozenset({"category", "type"})
 
                         # --- NVD pipeline: start background lookups during fetch ---
-                        if _is_findings_by_project:
+                        if _is_findings_by_project and not getattr(
+                            self.config, "skip_nvd", False
+                        ):
                             _nvd_on_records, _nvd_collect = self._start_nvd_pipeline()
 
                         # Build filter list for non-entity-cached paths
@@ -2928,6 +3115,9 @@ class ReportEngine:
                                 _fetched = self.api_client.fetch_all_with_resume(
                                     unified_query
                                 )
+                                # Feed NVD pipeline before converting to DataFrame
+                                if _nvd_on_records is not None and _fetched:
+                                    _nvd_on_records(_fetched)
                                 raw_data = (
                                     pd.DataFrame(_fetched)
                                     if _fetched
@@ -3505,6 +3695,32 @@ class ReportEngine:
                         f"{before_count} -> {len(raw_data)} findings"
                     )
 
+            # --- Status post-filtering for entity-cached paths ---
+            # Entity cache stores ALL findings per version (no status filter).
+            # When --open-only is set, exclude resolved/suppressed statuses here.
+            if (
+                needs_date_postfilter
+                and getattr(self.config, "open_only", False)
+                and isinstance(raw_data, pd.DataFrame)
+                and not raw_data.empty
+            ):
+                _RESOLVED_STATUSES = {
+                    "NOT_AFFECTED",
+                    "FALSE_POSITIVE",
+                    "RESOLVED",
+                    "RESOLVED_WITH_PEDIGREE",
+                }
+                before_count = len(raw_data)
+                status_col = (
+                    raw_data.get("status", pd.Series("", index=raw_data.index))
+                    .fillna("")
+                    .str.upper()
+                )
+                raw_data = raw_data[~status_col.isin(_RESOLVED_STATUSES)]
+                self.logger.debug(
+                    f"Open-only post-filter: {before_count} -> {len(raw_data)} findings"
+                )
+
             # --- Category/type post-filtering for multi-type requests ---
             # When --finding-types has multiple types (e.g. cve,sast), we fetch
             # all findings (no type param) and post-filter here.
@@ -3566,7 +3782,7 @@ class ReportEngine:
                     # Always call collect() to send termination sentinel and
                     # avoid leaking the background consumer thread.
                     self._findings_by_project_cve_details = _nvd_collect()
-                elif not raw_data.empty:
+                elif not raw_data.empty and not getattr(self.config, "skip_nvd", False):
                     self._findings_by_project_cve_details = (
                         self._fetch_findings_cve_details(raw_data)
                     )
@@ -3780,31 +3996,90 @@ class ReportEngine:
                     comp_filters = None  # type: ignore[assignment]
 
                 if comp_filters is not None:
-                    comp_query = QueryConfig(
-                        endpoint="/public/v0/components",
-                        params=QueryParams(
-                            limit=10000,
-                            filter=";".join(comp_filters),
-                        ),
-                    )
-                    self.logger.info(
-                        f"Fetching scoped components for Executive Dashboard "
-                        f"(filter: {comp_query.params.filter})"
-                    )
-                    try:
-                        additional_data["components"] = (
-                            self.api_client.fetch_all_with_resume(
-                                comp_query, show_progress=True
+                    # For portfolio-wide (no project, no folder), extract
+                    # project IDs from already-fetched findings to batch.
+                    _portfolio_pids: list[int] = []
+                    if (
+                        not self.config.project_filter
+                        and not self._folder_project_ids
+                        and isinstance(raw_data, pd.DataFrame)
+                        and not raw_data.empty
+                    ):
+                        for col in ("projectId", "project_id"):
+                            if col in raw_data.columns:
+                                _portfolio_pids = sorted(
+                                    int(float(p))
+                                    for p in raw_data[col].dropna().unique()
+                                    if str(p).replace(".", "", 1).isdigit()
+                                )
+                                break
+
+                    if _portfolio_pids:
+                        # Batch like folder-scoped path
+                        batch_size = 15 if len(_portfolio_pids) > 200 else 25
+                        all_comps: list[dict] = []
+                        base_filter = ";".join(comp_filters)
+                        self.logger.info(
+                            f"Fetching portfolio components for Executive Dashboard "
+                            f"in {len(range(0, len(_portfolio_pids), batch_size))} batches "
+                            f"({len(_portfolio_pids)} projects)"
+                        )
+                        try:
+                            for i in range(0, len(_portfolio_pids), batch_size):
+                                p_batch = _portfolio_pids[i : i + batch_size]
+                                pid_filter = (
+                                    f"project=in=({','.join(str(p) for p in p_batch)})"
+                                )
+                                batch_filter = (
+                                    f"{base_filter};{pid_filter}"
+                                    if base_filter
+                                    else pid_filter
+                                )
+                                batch_query = QueryConfig(
+                                    endpoint="/public/v0/components",
+                                    params=QueryParams(
+                                        limit=10000,
+                                        filter=batch_filter,
+                                    ),
+                                )
+                                batch_data = self.api_client.fetch_all_with_resume(
+                                    batch_query, show_progress=True
+                                )
+                                if batch_data:
+                                    all_comps.extend(batch_data)
+                            additional_data["components"] = all_comps
+                            self.logger.info(f"Fetched {len(all_comps)} components")
+                        except Exception as e:
+                            self.logger.warning(
+                                f"Could not fetch components for Executive Dashboard: {e}"
                             )
+                            additional_data["components"] = []
+                    else:
+                        comp_query = QueryConfig(
+                            endpoint="/public/v0/components",
+                            params=QueryParams(
+                                limit=10000,
+                                filter=";".join(comp_filters),
+                            ),
                         )
                         self.logger.info(
-                            f"Fetched {len(additional_data['components'])} components"
+                            f"Fetching scoped components for Executive Dashboard "
+                            f"(filter: {comp_query.params.filter})"
                         )
-                    except Exception as e:
-                        self.logger.warning(
-                            f"Could not fetch components for Executive Dashboard: {e}"
-                        )
-                        additional_data["components"] = []
+                        try:
+                            additional_data["components"] = (
+                                self.api_client.fetch_all_with_resume(
+                                    comp_query, show_progress=True
+                                )
+                            )
+                            self.logger.info(
+                                f"Fetched {len(additional_data['components'])} components"
+                            )
+                        except Exception as e:
+                            self.logger.warning(
+                                f"Could not fetch components for Executive Dashboard: {e}"
+                            )
+                            additional_data["components"] = []
 
             if recipe.additional_queries:
                 for query_name, query_config in recipe.additional_queries.items():
@@ -3951,7 +4226,6 @@ class ReportEngine:
                             )
                         if vex_recs:
                             import json
-                            from pathlib import Path as _Path
 
                             # Use the same sanitized directory name as the report renderer
                             sanitized_name = (
@@ -3966,7 +4240,7 @@ class ReportEngine:
                                 .replace("|", "_")
                                 .strip(" .")
                             )
-                            vex_dir = _Path(self.config.output_dir) / sanitized_name
+                            vex_dir = Path(self.config.output_dir) / sanitized_name
                             vex_dir.mkdir(parents=True, exist_ok=True)
                             vex_path = vex_dir / "vex_recommendations.json"
                             with open(vex_path, "w") as f:
@@ -4080,8 +4354,6 @@ class ReportEngine:
         logo = getattr(self.config, "logo", None)
         if not logo:
             return None
-
-        from pathlib import Path
 
         path = Path(logo)
         if not path.is_absolute():
@@ -4271,24 +4543,29 @@ class ReportEngine:
             f"Enriching {len(cve_ids_ordered)} CVEs with reachability data from /findings"
         )
 
-        # Batch-fetch NVD descriptions upfront
-        self._check_cancel()
-        nvd = NVDClient(
-            api_key=getattr(self.config, "nvd_api_key", None),
-            cache_dir=getattr(self.config, "cache_dir", None),
-            cache_ttl=max(getattr(self.config, "cache_ttl", 0) or 0, 86400),
-            cancel_event=self._cancel_event,
-        )
-        self.logger.info(NVD_ATTRIBUTION)
-        nvd_results = nvd.get_batch(cve_ids_ordered, progress=True)
-        nvd_missing_cves: list[str] = list(nvd.last_batch_missing)
-        if nvd_missing_cves:
-            self.logger.info(
-                f"NVD: {len(nvd_results)}/{len(cve_ids_ordered)} CVEs resolved"
+        # Batch-fetch NVD descriptions upfront (unless --no-nvd)
+        nvd_missing_cves: list[str] = []
+        if not getattr(self.config, "skip_nvd", False):
+            self._check_cancel()
+            nvd = NVDClient(
+                api_key=getattr(self.config, "nvd_api_key", None),
+                cache_dir=getattr(self.config, "cache_dir", None),
+                cache_ttl=max(getattr(self.config, "cache_ttl", 0) or 0, 86400),
+                cancel_event=self._cancel_event,
             )
-        for nvd_cve_id, nvd_rec in nvd_results.items():
-            if nvd_rec.description:
-                descriptions_map[nvd_cve_id] = nvd_rec.description
+            self.logger.info(NVD_ATTRIBUTION)
+            nvd_results = nvd.get_batch(cve_ids_ordered, progress=True)
+            nvd_missing_cves = list(nvd.last_batch_missing)
+            if nvd_missing_cves:
+                self.logger.info(
+                    f"NVD: {len(nvd_results)}/{len(cve_ids_ordered)} CVEs resolved"
+                )
+            for nvd_cve_id, nvd_rec in nvd_results.items():
+                if nvd_rec.description:
+                    descriptions_map[nvd_cve_id] = nvd_rec.description
+        else:
+            self.logger.info("Skipping NVD enrichment for CVE Impact (--no-nvd)")
+            nvd_missing_cves = list(cve_ids_ordered)
 
         # Pre-fetch authoritative latest version IDs (from
         # defaultBranch.latestVersion.id) so we can filter per-CVE

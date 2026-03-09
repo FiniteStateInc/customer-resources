@@ -22,6 +22,8 @@
 
 import json
 import logging
+import math
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -384,7 +386,12 @@ class ReportRenderer:
         report_data: ReportData,
         output_dir: Path,
     ) -> list[str]:
-        """Render JSON remediation package. Returns list of generated file paths."""
+        """Render JSON output. Returns list of generated file paths.
+
+        Handles two cases:
+        1. Recipes with a dedicated ``json_package`` (e.g. Remediation Package)
+        2. Generic table-based recipes — wraps DataFrame as JSON with metadata
+        """
         generated_files = []
         try:
             additional_data = report_data.metadata.get("additional_data", {})
@@ -392,11 +399,56 @@ class ReportRenderer:
             if json_package is None:
                 tr = additional_data.get("transform_result", {})
                 json_package = tr.get("json_package") if isinstance(tr, dict) else None
+
+            base_filename = self._sanitize_filename(recipe.name)
+
             if json_package and isinstance(json_package, dict):
-                base_filename = self._sanitize_filename(recipe.name)
+                # Case 1: dedicated json_package (Remediation Package, etc.)
                 json_path = output_dir / f"{base_filename}.json"
                 json_path.write_text(
                     json.dumps(json_package, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                self.logger.debug(f"Generated JSON: {json_path}")
+                generated_files.append(str(json_path))
+            elif (
+                isinstance(report_data.data, pd.DataFrame)
+                and not report_data.data.empty
+            ):
+                # Case 2: generic DataFrame → JSON with metadata wrapper
+                from datetime import datetime
+
+                metadata: dict[str, Any] = {
+                    "recipe": recipe.name,
+                    "generated_at": datetime.now(UTC).isoformat(),
+                }
+                if self.config:
+                    if getattr(self.config, "project_filter", None):
+                        metadata["project"] = self.config.project_filter
+                    if getattr(self.config, "folder_filter", None):
+                        metadata["folder"] = self.config.folder_filter
+                    filters: dict[str, str] = {}
+                    if getattr(self.config, "component_filter", None):
+                        filters["component"] = self.config.component_filter
+                    if getattr(self.config, "cve_filter", None):
+                        filters["cve"] = self.config.cve_filter
+                    if filters:
+                        metadata["filters"] = filters
+
+                records = report_data.data.to_dict(orient="records")
+                # Replace float NaN with None for valid JSON output
+                for rec in records:
+                    for k, v in rec.items():
+                        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                            rec[k] = None
+                output_obj = {
+                    "metadata": metadata,
+                    "data": records,
+                    "count": len(records),
+                }
+                json_path = output_dir / f"{base_filename}.json"
+                json_path.write_text(
+                    json.dumps(output_obj, indent=2, default=str),
                     encoding="utf-8",
                 )
                 self.logger.debug(f"Generated JSON: {json_path}")

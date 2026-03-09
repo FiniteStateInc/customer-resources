@@ -91,7 +91,7 @@ def remediation_package_transform(
 
     # Step 1b: Apply scope filters (component and/or CVE)
     if cfg and getattr(cfg, "component_filter", None):
-        df = _apply_component_filter(df, cfg.component_filter)
+        df = _apply_component_filter(df, cfg.component_filter, cfg=cfg)
         if df.empty:
             logger.info("Remediation Package: no findings match component filter")
             return _empty_result()
@@ -315,34 +315,25 @@ def remediation_package_transform(
 # ---------------------------------------------------------------------------
 
 
-def _apply_component_filter(df: pd.DataFrame, component_filter: str) -> pd.DataFrame:
+def _apply_component_filter(
+    df: pd.DataFrame, component_filter: str, cfg: object | None = None
+) -> pd.DataFrame:
     """Filter findings to only those matching the component filter.
 
-    Supports ``name@version`` for exact match and ``name`` for all versions.
-    Multiple specs are comma-separated.
+    Delegates to the shared ``apply_component_filter`` utility.
     """
-    specs = [s.strip() for s in component_filter.split(",") if s.strip()]
-    if not specs:
-        return df
+    from fs_report.transforms.pandas._component_filter import (
+        apply_component_filter,
+    )
 
-    masks = []
-    for spec in specs:
-        if "@" in spec:
-            name, version = spec.rsplit("@", 1)
-            masks.append(
-                (df["component_name"] == name) & (df["component_version"] == version)
-            )
-        else:
-            masks.append(df["component_name"] == spec)
-
-    combined = masks[0]
-    for m in masks[1:]:
-        combined = combined | m
-
-    before = len(df)
-    result = df[combined].copy()
-    logger.info(f"Component filter: {before} → {len(result)} findings")
-    return result
+    match_mode = getattr(cfg, "component_match", "contains") if cfg else "contains"
+    return apply_component_filter(
+        df,
+        component_filter,
+        match_mode=match_mode,
+        name_col="component_name",
+        version_col="component_version",
+    )
 
 
 def _build_scope_label(cfg: object | None) -> str:
@@ -1029,6 +1020,9 @@ def _build_remediation_options(actions_df: pd.DataFrame) -> pd.DataFrame:
 
 def _init_nvd_client(cfg: Any) -> Any:
     """Initialize NVD client if available, returns None on failure."""
+    if getattr(cfg, "skip_nvd", False):
+        logger.info("NVD enrichment skipped (--no-nvd)")
+        return None
     try:
         from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
 
@@ -1495,9 +1489,11 @@ def _enrich_with_llm_guidance(
     # Check for AI credentials
     import os
 
-    has_creds = any(
-        os.getenv(v) for v in ("ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN")
-    )
+    from fs_report.llm_client import AI_ENV_VARS
+
+    # Copilot supports device flow — no env var required
+    _is_copilot = getattr(cfg, "ai_provider", None) == "copilot"
+    has_creds = _is_copilot or any(os.getenv(v) for v in AI_ENV_VARS)
     if not has_creds:
         logger.info("No AI provider credentials found, skipping live guidance")
         df["llm_guidance"] = ""
@@ -1605,7 +1601,14 @@ def _enrich_with_ai_analysis(
     import os
 
     has_creds = any(
-        os.getenv(v) for v in ("ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN")
+        os.getenv(v)
+        for v in (
+            "ANTHROPIC_AUTH_TOKEN",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GITHUB_TOKEN",
+        )
     )
     if not has_creds:
         logger.info("No AI provider credentials found, skipping AI analysis")
@@ -1777,7 +1780,14 @@ def _enrich_with_combined_analysis(
     import os
 
     has_creds = any(
-        os.getenv(v) for v in ("ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN")
+        os.getenv(v)
+        for v in (
+            "ANTHROPIC_AUTH_TOKEN",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GITHUB_TOKEN",
+        )
     )
     if not has_creds:
         logger.info("No AI provider credentials found, skipping combined analysis")

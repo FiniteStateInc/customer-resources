@@ -8,7 +8,7 @@ with 11 visualization sections.
 from __future__ import annotations
 
 import logging
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
@@ -172,19 +172,18 @@ def _build_severity_trends(
 
     month_labels = [f"{y}-{m:02d}" for y, m in months]
 
-    # Count critical and high per month
-    critical_counts: dict[str, int] = defaultdict(int)
-    high_counts: dict[str, int] = defaultdict(int)
-    for _, row in df.iterrows():
-        dt = row.get("_detected_dt")
-        sev = str(row.get("severity", "")).lower()
-        if dt is None:
-            continue
-        key = f"{dt.year}-{dt.month:02d}"
-        if sev == "critical":
-            critical_counts[key] += 1
-        elif sev == "high":
-            high_counts[key] += 1
+    # Count critical and high per month (vectorized)
+    valid = df[df["_detected_dt"].notna()].copy()
+    if not valid.empty:
+        valid["_ym"] = valid["_detected_dt"].dt.strftime("%Y-%m")
+        sev_lower = valid["severity"].fillna("").str.lower()
+        critical_counts = (
+            valid.loc[sev_lower == "critical", "_ym"].value_counts().to_dict()
+        )
+        high_counts = valid.loc[sev_lower == "high", "_ym"].value_counts().to_dict()
+    else:
+        critical_counts = {}
+        high_counts = {}
 
     return {
         "labels": month_labels,
@@ -524,16 +523,14 @@ def _build_findings_by_type(df: pd.DataFrame) -> dict[str, Any]:
     if df.empty:
         return {"labels": [], "data": []}
 
-    type_counts: Counter = Counter()
-    for _, row in df.iterrows():
-        category = str(row.get("category", "") or "").lower().strip()
-        # Fall back to 'type' column when category is empty (e.g. type=cve API responses)
-        if not category:
-            category = str(row.get("type", "") or "").lower().strip()
-        label = CATEGORY_MAP.get(
-            category, category.replace("_", " ").title() if category else "Other"
-        )
-        type_counts[label] += 1
+    # Vectorized category resolution
+    cat = df["category"].fillna("").str.lower().str.strip()
+    typ = df["type"].fillna("").str.lower().str.strip() if "type" in df.columns else cat
+    resolved = cat.where(cat != "", typ)
+    labels_series = resolved.map(
+        lambda c: CATEGORY_MAP.get(c, c.replace("_", " ").title() if c else "Other")
+    )
+    type_counts: Counter = Counter(labels_series)
 
     if not type_counts:
         return {"labels": [], "data": []}
@@ -654,20 +651,16 @@ def _build_finding_age(df: pd.DataFrame) -> dict[str, Any]:
     if open_df.empty:
         return {"labels": [], "data": []}
 
-    buckets = {"0-30 days": 0, "30-90 days": 0, "90-180 days": 0, "180+ days": 0}
-    for _, row in open_df.iterrows():
-        dt = row.get("_detected_dt")
-        if dt is None:
-            continue
-        days = (now - dt).days
-        if days <= 30:
-            buckets["0-30 days"] += 1
-        elif days <= 90:
-            buckets["30-90 days"] += 1
-        elif days <= 180:
-            buckets["90-180 days"] += 1
-        else:
-            buckets["180+ days"] += 1
+    valid_open = open_df[open_df["_detected_dt"].notna()]
+    if valid_open.empty:
+        return {"labels": [], "data": []}
+    days = (now - valid_open["_detected_dt"]).dt.days
+    buckets = {
+        "0-30 days": int((days <= 30).sum()),
+        "30-90 days": int(((days > 30) & (days <= 90)).sum()),
+        "90-180 days": int(((days > 90) & (days <= 180)).sum()),
+        "180+ days": int((days > 180).sum()),
+    }
 
     labels = list(buckets.keys())
     data = list(buckets.values())

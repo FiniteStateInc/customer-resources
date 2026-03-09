@@ -62,7 +62,23 @@ def findings_by_project_pandas_transform(
     # Flatten nested data structures first
     df = flatten_findings_data(df)
 
-    # Note: Project filtering is already applied at the API level, so we don't need to filter again here
+    # Apply component filter if specified
+    component_filter = getattr(config, "component_filter", None)
+    if component_filter:
+        from fs_report.transforms.pandas._component_filter import (
+            apply_component_filter,
+        )
+
+        match_mode = getattr(config, "component_match", "contains")
+        df = apply_component_filter(
+            df,
+            component_filter,
+            match_mode=match_mode,
+            name_col="component.name",
+            version_col="component.version",
+        )
+        if df.empty:
+            return pd.DataFrame()
 
     # Select and rename required columns
     required_columns = {

@@ -4,7 +4,7 @@ import json
 import logging
 import tempfile
 from pathlib import Path
-from typing import Union
+from typing import Any, Union
 
 import typer
 from rich.console import Console
@@ -382,6 +382,11 @@ def versions(
         "-d",
         help="Finite State domain (e.g., customer.finitestate.io)",
     ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output as JSON instead of a table.",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -491,10 +496,12 @@ def versions(
 
         if project:
             _list_single_project_versions(
-                project, all_projects, config, console, logger
+                project, all_projects, config, console, logger, json_output
             )
         else:
-            _list_portfolio_versions(all_projects, config, console, logger, show_top)
+            _list_portfolio_versions(
+                all_projects, config, console, logger, show_top, json_output
+            )
 
     except typer.Exit:
         raise
@@ -510,11 +517,15 @@ def _list_single_project_versions(
     config: Config,
     console: Console,
     logger: logging.Logger,
+    json_output: bool = False,
 ) -> None:
     """List versions for a single project."""
     import httpx
 
-    console.print(f"[bold cyan]Fetching versions for project: {project}[/bold cyan]")
+    if not json_output:
+        console.print(
+            f"[bold cyan]Fetching versions for project: {project}[/bold cyan]"
+        )
 
     target_project = None
     try:
@@ -538,7 +549,10 @@ def _list_single_project_versions(
     project_id = target_project["id"]
     project_name = target_project["name"]
 
-    console.print(f"[green]Found project: {project_name} (ID: {project_id})[/green]")
+    if not json_output:
+        console.print(
+            f"[green]Found project: {project_name} (ID: {project_id})[/green]"
+        )
 
     default_branch = target_project.get("defaultBranch")
     if not default_branch:
@@ -558,11 +572,11 @@ def _list_single_project_versions(
         )
         return
 
-    console.print(
-        f"[green]Using default branch: {branch_name} (ID: {branch_id})[/green]"
-    )
-
-    console.print(f"[dim]Fetching versions for project: {project_name}[/dim]")
+    if not json_output:
+        console.print(
+            f"[green]Using default branch: {branch_name} (ID: {branch_id})[/green]"
+        )
+        console.print(f"[dim]Fetching versions for project: {project_name}[/dim]")
     try:
         url = (
             f"https://{config.domain}/api/public/v0/projects/" f"{project_id}/versions"
@@ -610,6 +624,31 @@ def _list_single_project_versions(
     if version_list and config.verbose:
         console.print(f"[dim]Debug: First version structure: {version_list[0]}[/dim]")
 
+    if json_output:
+        import json as json_mod
+        from datetime import datetime
+
+        output = []
+        for version in version_list:
+            created = version.get("created", None)
+            if created:
+                try:
+                    dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    created = dt.strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    pass
+            output.append(
+                {
+                    "id": version.get("id"),
+                    "name": version.get("version", "N/A"),
+                    "created": created,
+                    "project": project_name,
+                    "project_id": project_id,
+                }
+            )
+        print(json_mod.dumps(output, indent=2))
+        return
+
     table = Table(
         title=(
             f"Versions for '{project_name}' - Branch: '{branch_name}' "
@@ -648,6 +687,7 @@ def _list_portfolio_versions(
     console: Console,
     logger: logging.Logger,
     show_top: int,
+    json_output: bool = False,
 ) -> None:
     """List version counts across all projects (parallel fetch)."""
     import time
@@ -656,12 +696,16 @@ def _list_portfolio_versions(
     import httpx
     from tqdm import tqdm
 
-    console.print(
-        "[bold cyan]Fetching version counts across all projects...[/bold cyan]"
-    )
+    if not json_output:
+        console.print(
+            "[bold cyan]Fetching version counts across all projects...[/bold cyan]"
+        )
 
     if not all_projects:
-        console.print("[yellow]No projects found.[/yellow]")
+        if not json_output:
+            console.print("[yellow]No projects found.[/yellow]")
+        else:
+            print("[]")
         return
 
     rate_limit_backoff = 5.0
@@ -709,6 +753,7 @@ def _list_portfolio_versions(
             total=len(futures),
             desc="Fetching version counts",
             unit="project",
+            disable=json_output,
         ):
             name, count, pid = future.result()
             if count is not None:
@@ -721,6 +766,17 @@ def _list_portfolio_versions(
                 )
             else:
                 skipped_projects.append(name)
+
+    project_version_counts.sort(key=lambda x: x["version_count"], reverse=True)
+
+    if json_output:
+        import json as json_mod
+
+        display_counts = project_version_counts
+        if show_top > 0:
+            display_counts = project_version_counts[:show_top]
+        print(json_mod.dumps(display_counts, indent=2))
+        return
 
     total_versions = sum(p["version_count"] for p in project_version_counts)
     projects_with_versions = sum(
@@ -735,8 +791,6 @@ def _list_portfolio_versions(
         console.print(
             f"[yellow]({len(skipped_projects)} project(s) skipped due to errors)[/yellow]"
         )
-
-    project_version_counts.sort(key=lambda x: x["version_count"], reverse=True)
 
     display_counts = project_version_counts
     if show_top > 0:
@@ -772,3 +826,220 @@ def _list_portfolio_versions(
         "\n[dim]Use 'fs-report list versions <project>' to see detailed "
         "versions for a specific project.[/dim]"
     )
+
+
+@list_app.command()
+def components(
+    project: str = typer.Argument(
+        ...,
+        help="Project name or ID to list components for.",
+    ),
+    search: Union[str, None] = typer.Option(
+        None,
+        "--search",
+        "-s",
+        help="Filter components by substring (case-insensitive, matches name or purl).",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output as JSON array.",
+    ),
+    token: Union[str, None] = typer.Option(
+        None,
+        "--token",
+        "-t",
+        help="Finite State API token",
+        hide_input=True,
+    ),
+    domain: Union[str, None] = typer.Option(
+        None,
+        "--domain",
+        "-d",
+        help="Finite State domain (e.g., customer.finitestate.io)",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose logging",
+    ),
+) -> None:
+    """List software components (SBOM) for a project's latest version."""
+    setup_logging(verbose)
+    logger = logging.getLogger(__name__)
+
+    try:
+        auth_token, domain_value = resolve_auth(token, domain)
+
+        config = Config(
+            auth_token=auth_token,
+            domain=domain_value,
+            output_dir=tempfile.gettempdir(),
+            start_date="2025-01-01",
+            end_date="2025-01-31",
+            verbose=verbose,
+        )
+
+        from fs_report.api_client import APIClient
+        from fs_report.models import QueryConfig, QueryParams
+
+        api_client = APIClient(config)
+
+        # Resolve project
+        projects_query = QueryConfig(
+            endpoint="/public/v0/projects",
+            params=QueryParams(limit=1000, archived=False),
+        )
+        all_projects = api_client.fetch_all_with_resume(projects_query)
+
+        target_project = None
+        try:
+            project_id = int(project)
+            target_project = next(
+                (p for p in all_projects if p.get("id") == project_id), None
+            )
+        except ValueError:
+            target_project = next(
+                (
+                    p
+                    for p in all_projects
+                    if p.get("name", "").lower() == project.lower()
+                ),
+                None,
+            )
+
+        if not target_project:
+            console.print(f"[red]Error: Project '{project}' not found.[/red]")
+            console.print(
+                "[yellow]Use 'fs-report list projects' to see available projects.[/yellow]"
+            )
+            raise typer.Exit(1)
+
+        proj_id = target_project["id"]
+        proj_name = target_project["name"]
+
+        # Get latest version
+        import httpx
+
+        url = f"https://{config.domain}/api/public/v0/projects/{proj_id}/versions"
+        headers = {"X-Authorization": config.auth_token}
+
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.get(url, headers=headers)
+                response.raise_for_status()
+                version_list = response.json()
+        except httpx.TimeoutException:
+            console.print("[red]Timed out fetching versions. Try again later.[/red]")
+            raise typer.Exit(1)
+        except httpx.HTTPStatusError as e:
+            console.print(
+                f"[red]Failed to fetch versions: {e.response.status_code}[/red]"
+            )
+            raise typer.Exit(1)
+
+        if not isinstance(version_list, list) or not version_list:
+            console.print(
+                f"[yellow]No versions found for project '{proj_name}'.[/yellow]"
+            )
+            return
+
+        # Sort by created date (newest first) and take the first
+        version_list.sort(key=lambda v: v.get("created", ""), reverse=True)
+        latest_version = version_list[0]
+        version_id = latest_version.get("id")
+        version_name = latest_version.get("version", "Unknown")
+
+        if not json_output:
+            console.print(
+                f"[bold cyan]Components for {proj_name} "
+                f"(version: {version_name})[/bold cyan]"
+            )
+
+        # Fetch components via /public/v0/components with version filter
+        components_query = QueryConfig(
+            endpoint="/public/v0/components",
+            params=QueryParams(
+                limit=10000,
+                filter=f"projectVersion=={version_id}",
+            ),
+        )
+        raw_components = api_client.fetch_data(components_query)
+
+        # Parse component list
+        component_list: list[dict[str, Any]] = []
+        for item in raw_components:
+            license_name = (
+                item.get("declaredLicenses")
+                or item.get("declaredLicense")
+                or item.get("license")
+                or ""
+            )
+            if isinstance(license_name, float):
+                license_name = ""
+            comp: dict[str, Any] = {
+                "name": item.get("name", item.get("component_name", "Unknown")),
+                "version": item.get("version", item.get("component_version", "")),
+                "purl": item.get("purl", ""),
+                "license": str(license_name).strip(),
+                "findings": item.get("findings", 0) or 0,
+            }
+            component_list.append(comp)
+
+        # Apply search filter
+        if search:
+            search_lower = search.lower()
+            component_list = [
+                c
+                for c in component_list
+                if search_lower in c["name"].lower()
+                or search_lower in c.get("purl", "").lower()
+            ]
+
+        # Sort by name
+        component_list.sort(key=lambda c: c["name"].lower())
+
+        if json_output:
+            import json as json_mod
+
+            print(json_mod.dumps(component_list, indent=2))
+            return
+
+        if not component_list:
+            msg = "No components found"
+            if search:
+                msg += f" matching '{search}'"
+            console.print(f"[yellow]{msg}.[/yellow]")
+            return
+
+        table = Table(title=f"Components ({len(component_list)} found)")
+        table.add_column("Name", style="cyan")
+        table.add_column("Version", style="green")
+        table.add_column("License", style="yellow")
+        table.add_column("Findings", style="red", justify="right")
+        table.add_column("PURL", style="dim", max_width=50)
+
+        for comp in component_list:
+            findings = comp.get("findings", 0)
+            findings_str = str(findings) if findings else ""
+            table.add_row(
+                comp["name"],
+                comp["version"],
+                comp.get("license", ""),
+                findings_str,
+                comp.get("purl", ""),
+            )
+
+        console.print(table)
+        console.print(
+            f"\n[dim]Use --component '{component_list[0]['name']}' with 'fs-report run' "
+            f"to filter reports to this component.[/dim]"
+        )
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        logger.exception("Error fetching components")
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from e

@@ -4,11 +4,12 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any, Literal, Union, cast
 
 if TYPE_CHECKING:
     from fs_report.vex_applier import VexApplyResult
 
+import click
 import typer
 from rich.console import Console
 
@@ -75,6 +76,8 @@ def create_config(
     batch_size: int = 5,
     cve_filter: Union[str, None] = None,
     component_filter: Union[str, None] = None,
+    component_match: str = "contains",
+    skip_nvd: bool = False,
     scoring_file: Union[str, None] = None,
     tp_gate: Union[str, None] = None,
     top: int = 0,
@@ -98,6 +101,10 @@ def create_config(
     compare_version: Union[str, None] = None,
 ) -> Config:
     """Build a Config object from CLI args, config file, and env vars."""
+    _component_match: Literal["contains", "exact"] = cast(
+        Literal["contains", "exact"], component_match
+    )
+
     cfg = load_config_file()
 
     # Merge config-file values for common options
@@ -262,19 +269,22 @@ def create_config(
 
     # Validate AI options
     if ai:
-        _ai_env_vars = ["ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN"]
-        has_any_key = any(os.getenv(v) for v in _ai_env_vars)
-        if not has_any_key:
+        from fs_report.llm_client import AI_ENV_VARS, MODEL_MAP
+
+        # Copilot supports interactive device flow — no env var required
+        if ai_provider != "copilot":
+            has_any_key = any(os.getenv(v) for v in AI_ENV_VARS)
+            if not has_any_key:
+                console.print(
+                    "[red]Error: --ai requires one of these environment variables: "
+                    + ", ".join(AI_ENV_VARS)
+                    + "[/red]"
+                )
+                raise typer.Exit(2)
+        if ai_provider and ai_provider not in MODEL_MAP:
             console.print(
-                "[red]Error: --ai requires one of these environment variables: "
-                + ", ".join(_ai_env_vars)
-                + "[/red]"
-            )
-            raise typer.Exit(2)
-        if ai_provider and ai_provider not in ("anthropic", "openai", "copilot"):
-            console.print(
-                f"[red]Error: --ai-provider must be 'anthropic', 'openai', or "
-                f"'copilot', got '{ai_provider}'[/red]"
+                f"[red]Error: --ai-provider must be one of "
+                f"{', '.join(MODEL_MAP)}, got '{ai_provider}'[/red]"
             )
             raise typer.Exit(1)
         if ai_depth not in ("summary", "full"):
@@ -375,6 +385,8 @@ def create_config(
         batch_size=batch_size,
         cve_filter=cve_filter,
         component_filter=component_filter,
+        component_match=_component_match,
+        skip_nvd=skip_nvd,
         scoring_file=scoring_file,
         tp_gate=tp_gate,
         top=top,
@@ -435,6 +447,8 @@ def run_reports(
     batch_size: int = 5,
     cve_filter: Union[str, None] = None,
     component_filter: Union[str, None] = None,
+    component_match: str = "contains",
+    skip_nvd: bool = False,
     scoring_file: Union[str, None] = None,
     tp_gate: Union[str, None] = None,
     top: int = 0,
@@ -456,7 +470,7 @@ def run_reports(
     compare_token: Union[str, None] = None,
     compare_project: Union[str, None] = None,
     compare_version: Union[str, None] = None,
-) -> None:
+) -> Any:
     """Execute the report generation pipeline."""
     run_id = setup_logging(verbose)
     logger = logging.getLogger(__name__)
@@ -508,7 +522,12 @@ def run_reports(
             batch_size=batch_size,
             cve_filter=cve_filter,
             component_filter=component_filter,
+            component_match=component_match,
+            skip_nvd=skip_nvd,
             scoring_file=scoring_file,
+            tp_gate=tp_gate,
+            top=top,
+            triage=triage,
             vex_override=vex_override,
             overwrite=overwrite,
             logo=logo,
@@ -566,7 +585,12 @@ def run_reports(
         if config.cve_filter:
             logger.info(f"  CVE filter: {config.cve_filter}")
         if config.component_filter:
-            logger.info(f"  Component filter: {config.component_filter}")
+            logger.info(
+                f"  Component filter: {config.component_filter} "
+                f"(match: {config.component_match})"
+            )
+        if config.skip_nvd:
+            logger.info("  NVD enrichment: Skipped (--no-nvd)")
         if config.scan_types:
             logger.info(f"  Scan types: {config.scan_types}")
         if config.scan_statuses:
@@ -717,7 +741,9 @@ def run_reports(
                 recipe_list = recipe
             engine.recipe_loader.recipe_filter = [r.lower() for r in recipe_list]
 
-        success = engine.run()
+        run_result = engine.run()
+        success = run_result.success
+
         if success:
             # Record run in history DB
             if engine.generated_files:
@@ -812,6 +838,8 @@ def run_reports(
         else:
             console.print("[red]Report generation failed![/red]")
             raise typer.Exit(1)
+
+        return run_result
 
     except typer.Exit:
         raise
@@ -1019,13 +1047,13 @@ def run_command(
         False,
         "--ai",
         help="Enable AI remediation guidance "
-        "(requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, or GITHUB_TOKEN)",
+        "(requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, GEMINI_API_KEY, or GITHUB_TOKEN)",
         rich_help_panel=_AI,
     ),
     ai_provider: Union[str, None] = typer.Option(
         None,
         "--ai-provider",
-        help="LLM provider: 'anthropic', 'openai', or 'copilot'. "
+        help="LLM provider: 'anthropic', 'openai', 'copilot', or 'gemini'. "
         "Auto-detected from env vars if not set.",
         rich_help_panel=_AI,
     ),
@@ -1153,10 +1181,27 @@ def run_command(
     component_filter: Union[str, None] = typer.Option(
         None,
         "--component",
-        help="Component(s) for scoped Remediation Package. "
-        "name@version for exact match, name alone for all versions. "
-        "Comma-separated (e.g. busybox@1.36.1-r2,dropbear).",
+        help="Filter by component name(s). "
+        "name@version for exact match, name alone uses --component-match mode. "
+        "Comma-separated (e.g. busybox@1.36.1-r2,dropbear). "
+        "Works on Findings by Project, Triage Prioritization, "
+        "Component Vulnerability Analysis, and Remediation Package.",
         rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    component_match: str = typer.Option(
+        "contains",
+        "--component-match",
+        click_type=click.Choice(["contains", "exact"]),
+        help="Match mode for --component: 'contains' (default, case-insensitive "
+        "substring) or 'exact' (exact name match). "
+        "name@version specs always use exact.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    skip_nvd: bool = typer.Option(
+        False,
+        "--no-nvd",
+        help="Skip NVD enrichment entirely for faster runs.",
+        rich_help_panel=_PERFORMANCE,
     ),
     scoring_file: Union[str, None] = typer.Option(
         None,
@@ -1302,7 +1347,7 @@ def run_command(
             console.print(f"[red]Error: Invalid cache TTL format: {e}[/red]")
             raise typer.Exit(1)
 
-    run_reports(
+    run_result = run_reports(
         recipes=recipes,
         recipe=recipe,
         output=output,
@@ -1343,6 +1388,8 @@ def run_command(
         batch_size=batch_size,
         cve_filter=cve_filter,
         component_filter=component_filter,
+        component_match=component_match,
+        skip_nvd=skip_nvd,
         scoring_file=scoring_file,
         tp_gate=tp_gate,
         top=top,
@@ -1362,6 +1409,22 @@ def run_command(
         compare_project=compare_project,
         compare_version=compare_version,
     )
+
+    # In headless mode, print a structured JSON summary to stdout
+    if headless and run_result is not None:
+        summary = {
+            "success": run_result.success,
+            "recipes": [
+                {
+                    "recipe": r.recipe,
+                    "output_dir": r.output_dir,
+                    "files": r.files,
+                    "stats": r.stats,
+                }
+                for r in run_result.recipes
+            ],
+        }
+        print(json.dumps(summary))
 
     # Launch local HTTP server if requested
     if serve and not headless:

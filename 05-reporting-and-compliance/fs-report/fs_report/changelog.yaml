@@ -1,4 +1,44 @@
 releases:
+  - version: "1.8.1"
+    date: "2026-03-08"
+    changes:
+      - report: ~
+        type: added
+        description: "Google Gemini AI provider (--ai-provider gemini) with GEMINI_API_KEY / GOOGLE_API_KEY support"
+      - report: ~
+        type: added
+        description: "GitHub Copilot interactive OAuth device flow — no GITHUB_TOKEN required for --ai-provider copilot"
+      - report: ~
+        type: added
+        description: "--json output on list projects, list folders, and list versions (completes --json across all list subcommands)"
+      - report: ~
+        type: added
+        description: "list components subcommand with --search and --json flags"
+      - report: ~
+        type: added
+        description: "--component filtering on Findings by Project, Triage Prioritization, and Component Vulnerability Analysis with --component-match (contains/exact)"
+      - report: ~
+        type: added
+        description: "--no-nvd flag to skip NVD enrichment for faster runs"
+      - report: ~
+        type: added
+        description: "Headless mode JSON summary to stdout (output paths, files, stats)"
+      - report: "Findings by Project"
+        type: added
+        description: "JSON output format"
+      - report: "Triage Prioritization"
+        type: added
+        description: "JSON output format"
+      - report: "Remediation Package"
+        type: added
+        description: "Folder-scoped operation — --folder generates per-project subdirectories"
+      - report: "Executive Dashboard"
+        type: improved
+        description: "Vectorized iterrows loops and batched portfolio component fetch for better performance"
+      - report: ~
+        type: fixed
+        description: "15 fixes across CLI parameter wiring, report engine (NVD pipeline, RunResult, folder failure propagation), transforms (component filter, JSON serialization), and renderers"
+
   - version: "1.8.0"
     date: "2026-03-06"
     changes:

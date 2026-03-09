@@ -25,8 +25,9 @@ import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
+import click
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
@@ -105,6 +106,9 @@ def create_config(
     request_delay: float = 0.5,
     batch_size: int = 5,
     cve_filter: str | None = None,
+    component_filter: str | None = None,
+    component_match: str = "contains",
+    skip_nvd: bool = False,
     scoring_file: str | None = None,
     tp_gate: str | None = None,
     top: int = 0,
@@ -171,18 +175,22 @@ def create_config(
 
     # Validate AI options
     if ai:
-        _ai_env_vars = ["ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "GITHUB_TOKEN"]
-        has_any_key = any(os.getenv(v) for v in _ai_env_vars)
-        if not has_any_key:
+        from fs_report.llm_client import AI_ENV_VARS, MODEL_MAP
+
+        # Copilot supports interactive device flow — no env var required
+        if ai_provider != "copilot":
+            has_any_key = any(os.getenv(v) for v in AI_ENV_VARS)
+            if not has_any_key:
+                console.print(
+                    "[red]Error: --ai requires one of these environment variables: "
+                    + ", ".join(AI_ENV_VARS)
+                    + "[/red]"
+                )
+                raise typer.Exit(2)
+        if ai_provider and ai_provider not in MODEL_MAP:
             console.print(
-                "[red]Error: --ai requires one of these environment variables: "
-                + ", ".join(_ai_env_vars)
-                + "[/red]"
-            )
-            raise typer.Exit(2)
-        if ai_provider and ai_provider not in ("anthropic", "openai", "copilot"):
-            console.print(
-                f"[red]Error: --ai-provider must be 'anthropic', 'openai', or 'copilot', got '{ai_provider}'[/red]"
+                f"[red]Error: --ai-provider must be one of "
+                f"{', '.join(MODEL_MAP)}, got '{ai_provider}'[/red]"
             )
             raise typer.Exit(1)
         if ai_depth not in ("summary", "full"):
@@ -201,6 +209,9 @@ def create_config(
             )
             raise typer.Exit(1)
 
+    _component_match: Literal["contains", "exact"] = cast(
+        Literal["contains", "exact"], component_match
+    )
     return Config(
         auth_token=auth_token,
         domain=domain_value,
@@ -235,6 +246,9 @@ def create_config(
         request_delay=request_delay,
         batch_size=batch_size,
         cve_filter=cve_filter,
+        component_filter=component_filter,
+        component_match=_component_match,
+        skip_nvd=skip_nvd,
         scoring_file=scoring_file,
         tp_gate=tp_gate,
         top=top,
@@ -995,6 +1009,9 @@ def run_reports(
     request_delay: float = 0.5,
     batch_size: int = 5,
     cve_filter: str | None = None,
+    component_filter: str | None = None,
+    component_match: str = "contains",
+    skip_nvd: bool = False,
     scoring_file: str | None = None,
     tp_gate: str | None = None,
     top: int = 0,
@@ -1046,9 +1063,13 @@ def run_reports(
             request_delay=request_delay,
             batch_size=batch_size,
             cve_filter=cve_filter,
+            component_filter=component_filter,
+            component_match=component_match,
+            skip_nvd=skip_nvd,
             scoring_file=scoring_file,
             tp_gate=tp_gate,
             top=top,
+            triage=triage,
             vex_override=vex_override,
             overwrite=overwrite,
             logo=logo,
@@ -1071,6 +1092,13 @@ def run_reports(
             logger.info(f"  Folder scope: {config.folder_filter}")
         if config.cve_filter:
             logger.info(f"  CVE filter: {config.cve_filter}")
+        if config.component_filter:
+            logger.info(
+                f"  Component filter: {config.component_filter} "
+                f"(match: {config.component_match})"
+            )
+        if config.skip_nvd:
+            logger.info("  NVD enrichment: Skipped (--no-nvd)")
         if config.ai:
             provider_info = (
                 f", provider: {config.ai_provider}" if config.ai_provider else ""
@@ -1114,7 +1142,8 @@ def run_reports(
             else:
                 recipe_list = recipe
             engine.recipe_loader.recipe_filter = [r.lower() for r in recipe_list]
-        success = engine.run()
+        result = engine.run()
+        success = result.success
         if success:
             console.print("[green]Report generation completed successfully![/green]")
         else:
@@ -1262,12 +1291,12 @@ def main(
         False,
         "--ai",
         help="Enable AI remediation guidance for Triage Prioritization and CVE Impact "
-        "(requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, or GITHUB_TOKEN)",
+        "(requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, GEMINI_API_KEY, or GITHUB_TOKEN)",
     ),
     ai_provider: str | None = typer.Option(
         None,
         "--ai-provider",
-        help="LLM provider: 'anthropic', 'openai', or 'copilot'. Auto-detected from env vars if not set.",
+        help="LLM provider: 'anthropic', 'openai', 'copilot', or 'gemini'. Auto-detected from env vars if not set.",
     ),
     ai_model_high: str | None = typer.Option(
         None,
@@ -1351,6 +1380,24 @@ def main(
         "Comma-separated (e.g. CVE-2024-1234,CVE-2024-5678). "
         "Produces detailed dossiers for the specified CVEs. "
         "Optionally combine with --project to narrow results to one project.",
+    ),
+    component_filter: str | None = typer.Option(
+        None,
+        "--component",
+        help="Filter by component name(s). "
+        "name@version for exact match, name alone uses --component-match mode. "
+        "Comma-separated (e.g. busybox@1.36.1-r2,dropbear).",
+    ),
+    component_match: str = typer.Option(
+        "contains",
+        "--component-match",
+        click_type=click.Choice(["contains", "exact"]),
+        help="Match mode for --component: 'contains' (default) or 'exact'.",
+    ),
+    skip_nvd: bool = typer.Option(
+        False,
+        "--no-nvd",
+        help="Skip NVD enrichment entirely for faster runs.",
     ),
     scoring_file: str | None = typer.Option(
         None,
@@ -1493,6 +1540,9 @@ def main(
         request_delay=request_delay,
         batch_size=batch_size,
         cve_filter=cve_filter,
+        component_filter=component_filter,
+        component_match=component_match,
+        skip_nvd=skip_nvd,
         scoring_file=scoring_file,
         tp_gate=tp_gate,
         top=top,

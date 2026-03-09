@@ -149,6 +149,22 @@ def component_list_pandas_transform(
     # Flatten nested data structures (project, version, branch, legacy license)
     df = flatten_component_data(df)
 
+    # Apply component filter if configured
+    component_filter = getattr(config, "component_filter", None)
+    if component_filter:
+        from fs_report.transforms.pandas._component_filter import (
+            apply_component_filter,
+        )
+
+        match_mode = getattr(config, "component_match", "contains")
+        df = apply_component_filter(
+            df,
+            component_filter,
+            match_mode=match_mode,
+            name_col="name",
+            version_col="version",
+        )
+
     # Enrich with license detail fields (copyleft, policy, URL)
     df = _enrich_license_details(df)
 
