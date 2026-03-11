@@ -34,7 +34,8 @@ Key flags:
 - `--tool-options <string>`: pass-through options to build tools
 - `--include-only`, `--exclude`, `--configuration`: Gradle-specific filters
 - `--pip-file <path>`: custom requirements.txt path
-- `--folder-id <uuid>`: scope project find/create to a folder
+- `--folder <name>`: scope project find/create to a folder by name (supports globs)
+- `--folder-id <uuid>`: scope project find/create to a folder by UUID
 - `--project-id <uuid>`: skip project find/create, use this project ID directly
 - `--version-id <uuid>`: skip version creation, upload to this version ID directly
 
@@ -48,7 +49,8 @@ Key flags:
 - `--name` / `--project` (required): project name
 - `--type sca,sast,config,vulnerability_analysis`: scan types (default: sca)
 - `--version <string>`: version (default: today's date)
-- `--folder-id <uuid>`: scope project find/create to a folder
+- `--folder <name>`: scope project find/create to a folder by name (supports globs)
+- `--folder-id <uuid>`: scope project find/create to a folder by UUID
 - `--project-id <uuid>`: skip project find/create
 - `--version-id <uuid>`: skip version creation, upload to this version ID directly
 
@@ -61,7 +63,8 @@ fs-cli import <sbom-file> --name <project-name>
 Key flags:
 - `--name` / `--project` (required): project name
 - `--format cyclonedx|spdx`: auto-detected if omitted
-- `--folder-id <uuid>`: scope project find/create to a folder
+- `--folder <name>`: scope project find/create to a folder by name (supports globs)
+- `--folder-id <uuid>`: scope project find/create to a folder by UUID
 - `--project-id <uuid>`: skip project find/create
 - `--version-id <uuid>`: skip version creation, upload to this version ID directly
 
@@ -75,7 +78,8 @@ The `--type` flag is required (e.g., `snyk`, `coverity`, `checkmarx`).
 
 Key flags:
 - `--name` / `--project` (required): project name
-- `--folder-id <uuid>`: scope project find/create to a folder
+- `--folder <name>`: scope project find/create to a folder by name (supports globs)
+- `--folder-id <uuid>`: scope project find/create to a folder by UUID
 - `--project-id <uuid>`: skip project find/create
 - `--version-id <uuid>`: skip version creation, upload to this version ID directly
 
@@ -87,7 +91,8 @@ fs-cli deliver <file> --endpoint <endpoint> --token <token>
 
 Key flags:
 - `--verify-key <path>`: PEM-encoded Ed25519 public key to verify signed envelopes
-- `--folder-id <uuid>`: scope project find/create to a folder
+- `--folder <name>`: scope project find/create to a folder by name (supports globs)
+- `--folder-id <uuid>`: scope project find/create to a folder by UUID
 - `--project-id <uuid>`: skip project find/create
 - `--version-id <uuid>`: skip version creation, upload to this version ID directly
 - `--timeout <minutes>`: timeout (default: 5)
@@ -114,6 +119,7 @@ Credentials are resolved in order: CLI flags > environment variables > credentia
 - `FS_TOKEN` (or `FINITE_STATE_AUTH_TOKEN`): API token
 - `FS_ENDPOINT` (or `FINITE_STATE_DOMAIN`): API endpoint
 - `FS_PROJECT_NAME`: default project name
+- `FS_FOLDER`: folder name for project scoping (resolved to UUID, supports globs)
 - `FS_FOLDER_ID`: folder UUID for project scoping
 - `FS_PROJECT_ID`: project UUID (skips project find/create)
 - `FS_VERSION_ID`: version UUID (skips version creation)
@@ -244,7 +250,7 @@ When the user wants to:
 - **Include dev dependencies**: use `--scope all`
 - **Debug scan issues**: use `--debug` flag
 - **Fail CI on scan errors**: use `--strict` flag
-- **Scope project to a folder**: use `--folder-id <uuid>` (all commands)
+- **Scope project to a folder**: use `--folder <name>` or `--folder-id <uuid>` (all commands)
 - **Skip project lookup**: use `--project-id <uuid>` to go straight to version creation
 - **Skip version creation**: use `--version-id <uuid>` to upload to an existing version directly
 
