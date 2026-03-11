@@ -105,9 +105,13 @@ fs-cli update
 
 fs-cli organizes uploads into a three-level hierarchy: **Folders > Projects > Versions**.
 
-### Folders (`--folder-id`)
+### Folders (`--folder` / `--folder-id`)
 
-Folders group related projects on the platform. Provide `--folder-id <uuid>` to scope project lookup/creation to a specific folder. If omitted, fs-cli uses the root folder.
+Folders group related projects on the platform. Use `--folder <name>` to look up a folder by name, or `--folder-id <uuid>` if you already have the UUID. If neither is provided, fs-cli uses the root folder.
+
+`--folder` supports glob patterns (`*`, `?`, `[...]`) for matching folder names. If multiple folders match, the CLI prints all matches with their IDs so you can switch to `--folder-id`.
+
+Set the `FS_FOLDER` environment variable as an alternative to `--folder`.
 
 ### Projects (`--name` / `--project`)
 
@@ -136,7 +140,10 @@ fs-cli scan --name "$REPO_NAME" .
 fs-cli scan --name my-app --version "$RELEASE_TAG" .
 fs-cli upload firmware.bin --name my-app --version "$RELEASE_TAG"
 
-# Multi-team org — use folders to separate projects
+# Multi-team org — use folders by name
+fs-cli scan --name my-app --folder "IoT Cloud" .
+
+# Or by UUID
 fs-cli scan --name my-app --folder-id "$TEAM_FOLDER_ID" .
 
 # Multiple scan types on one version — --version reuses by name

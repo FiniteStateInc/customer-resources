@@ -88,6 +88,7 @@ Configuration is resolved in this order (highest precedence first):
 | `FS_ENDPOINT` | `FINITE_STATE_DOMAIN` | API endpoint domain |
 | `FS_PROJECT_NAME` | | Default project name |
 | `FS_BRANCH` | | Git branch override |
+| `FS_FOLDER` | | Folder name for project scoping (resolved to UUID) |
 | `FS_FOLDER_ID` | | Folder UUID for project scoping |
 | `FS_PROJECT_ID` | | Project UUID (skips project find/create) |
 | `FS_VERSION_ID` | | Version UUID (skips version creation) |
@@ -158,6 +159,7 @@ If no directory is given, scans the current directory. You can also point at a s
 | `--concurrency` | CPU count | Maximum number of parallel ecosystem scans |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
+| `--folder` | | Folder name — scope project find/create to this folder (supports globs) |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 | `--version-id` | | Version UUID — skip version creation, upload to this version directly |
@@ -219,6 +221,7 @@ fs-cli upload <file> [flags]
 | `--timeout` | `30` | Overall timeout in minutes |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
+| `--folder` | | Folder name — scope project find/create to this folder (supports globs) |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 | `--version-id` | | Version UUID — skip version creation, upload to this version directly |
@@ -255,6 +258,7 @@ fs-cli import <sbom-file> [flags]
 | `--format` | (auto-detect) | SBOM format: `cyclonedx`, `cdx`, or `spdx` |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
+| `--folder` | | Folder name — scope project find/create to this folder (supports globs) |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 | `--version-id` | | Version UUID — skip version creation, upload to this version directly |
@@ -291,6 +295,7 @@ fs-cli third-party <file> [flags]
 | `--timeout` | `30` | Overall timeout in minutes |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
+| `--folder` | | Folder name — scope project find/create to this folder (supports globs) |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 | `--version-id` | | Version UUID — skip version creation, upload to this version directly |
@@ -322,6 +327,7 @@ fs-cli deliver <file> [flags]
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
 | `--verify-key` | | PEM-encoded Ed25519 public key for signature verification |
+| `--folder` | | Folder name — scope project find/create to this folder (supports globs) |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 | `--version-id` | | Version UUID — skip version creation, upload to this version directly |
