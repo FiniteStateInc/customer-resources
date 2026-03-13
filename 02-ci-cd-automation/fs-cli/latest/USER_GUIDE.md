@@ -92,6 +92,7 @@ Configuration is resolved in this order (highest precedence first):
 | `FS_FOLDER_ID` | | Folder UUID for project scoping |
 | `FS_PROJECT_ID` | | Project UUID (skips project find/create) |
 | `FS_VERSION_ID` | | Version UUID (skips version creation) |
+| `FS_RELEASE` | | Enable release mode (equivalent to `--release`) |
 | `FS_DEBUG` | | Enable debug logging |
 | `FS_NO_UPDATE_CHECK` | | Set to `1` to disable update notifications |
 
@@ -156,6 +157,7 @@ If no directory is given, scans the current directory. You can also point at a s
 | `--timeout` | `30` | Overall timeout in minutes |
 | `--scan-timeout` | `5` | Per-ecosystem scan timeout in minutes |
 | `--test` | `false` | Dry run: print JSON to stdout, do not upload |
+| `--release` | `false` | Release mode: upload to a clean snapshot (requires `--version`, mutually exclusive with `--test` and `--version-id`) |
 | `--concurrency` | CPU count | Maximum number of parallel ecosystem scans |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
@@ -199,7 +201,26 @@ fs-cli scan --name myproject --configuration runtimeClasspath --exclude ":docs" 
 
 # Pass options through to the build tool
 fs-cli scan --name myproject --tool-options="-s settings.xml" .
+
+# Release scan — clean snapshot, previous state archived as checkpoint
+fs-cli scan --name myproject --version v2.1.0 --release .
 ```
+
+#### Release Mode
+
+`--release` creates a clean version snapshot at release time, preventing component accumulation from repeated scans to the same version name.
+
+**Workflow:**
+
+1. Finds the existing version by name.
+2. Creates a temporary version and uploads to it.
+3. Polls until the platform scan completes.
+4. Renames the old version to a checkpoint: `{version}-checkpoint-{YYYY-MM-DD}` (auto-increments on conflict, e.g. `-checkpoint-2026-03-12.1`).
+5. Renames the temporary version to the original name.
+
+If the final rename fails, the checkpoint rename is rolled back automatically.
+
+**Constraints:** requires `--version`; mutually exclusive with `--test` and `--version-id`. Set via `FS_RELEASE` env var as an alternative to the flag.
 
 ---
 
@@ -217,6 +238,7 @@ fs-cli upload <file> [flags]
 |---|---|---|
 | `--name` / `--project` | (required) | Project name |
 | `--version` | today's date | Version string |
+| `--release` | `false` | Release mode: upload to a clean snapshot (requires `--version`, mutually exclusive with `--version-id`) |
 | `--type` | `sca` | Scan types, comma-separated: `sca`, `sast`, `config`, `vulnerability_analysis` |
 | `--timeout` | `30` | Overall timeout in minutes |
 | `--endpoint` | | Finite State API endpoint |
@@ -255,6 +277,7 @@ fs-cli import <sbom-file> [flags]
 |---|---|---|
 | `--name` / `--project` | (required) | Project name |
 | `--version` | (auto-generated) | Version string |
+| `--release` | `false` | Release mode: upload to a clean snapshot (requires `--version`, mutually exclusive with `--version-id`) |
 | `--format` | (auto-detect) | SBOM format: `cyclonedx`, `cdx`, or `spdx` |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |

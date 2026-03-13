@@ -24,6 +24,7 @@ Key flags:
 - `--all` or `--deep`: recursive monorepo scan
 - `--scope runtime|all`: filter dev/test deps (default: runtime)
 - `--test`: dry run — print JSON, don't upload
+- `--release`: release mode — upload to a clean snapshot (requires `--version`, mutually exclusive with `--test` and `--version-id`; env: `FS_RELEASE`)
 - `--output platform|legacy|file`: output adapter (default: platform)
 - `--output-file <path>`: required when `--output=file`
 - `--strict`: fail immediately on any scanner error instead of continuing to the next ecosystem
@@ -49,6 +50,7 @@ Key flags:
 - `--name` / `--project` (required): project name
 - `--type sca,sast,config,vulnerability_analysis`: scan types (default: sca)
 - `--version <string>`: version (default: today's date)
+- `--release`: release mode — upload to a clean snapshot (requires `--version`, mutually exclusive with `--version-id`; env: `FS_RELEASE`)
 - `--folder <name>`: scope project find/create to a folder by name (supports globs)
 - `--folder-id <uuid>`: scope project find/create to a folder by UUID
 - `--project-id <uuid>`: skip project find/create
@@ -63,6 +65,7 @@ fs-cli import <sbom-file> --name <project-name>
 Key flags:
 - `--name` / `--project` (required): project name
 - `--format cyclonedx|spdx`: auto-detected if omitted
+- `--release`: release mode — upload to a clean snapshot (requires `--version`, mutually exclusive with `--version-id`; env: `FS_RELEASE`)
 - `--folder <name>`: scope project find/create to a folder by name (supports globs)
 - `--folder-id <uuid>`: scope project find/create to a folder by UUID
 - `--project-id <uuid>`: skip project find/create
@@ -123,6 +126,7 @@ Credentials are resolved in order: CLI flags > environment variables > credentia
 - `FS_FOLDER_ID`: folder UUID for project scoping
 - `FS_PROJECT_ID`: project UUID (skips project find/create)
 - `FS_VERSION_ID`: version UUID (skips version creation)
+- `FS_RELEASE`: enable release mode (equivalent to `--release`)
 - `FS_NO_UPDATE_CHECK=1`: disable update notifications
 
 **Credential file** at `~/.finitestate/credential`:
@@ -253,6 +257,7 @@ When the user wants to:
 - **Scope project to a folder**: use `--folder <name>` or `--folder-id <uuid>` (all commands)
 - **Skip project lookup**: use `--project-id <uuid>` to go straight to version creation
 - **Skip version creation**: use `--version-id <uuid>` to upload to an existing version directly
+- **Create a clean release snapshot**: use `--version <name> --release` — archives the previous state as a checkpoint and replaces it with fresh scan results
 
 ## Error guidance
 
