@@ -1,4 +1,32 @@
 releases:
+  - version: "1.8.3"
+    date: "2026-03-12"
+    changes:
+      - report: ~
+        type: added
+        description: "'latest' indicator in list versions output marks the latest version for each project"
+      - report: ~
+        type: added
+        description: "--project scoping for --apply-vex-triage limits VEX application to a single project"
+      - report: "Component List"
+        type: added
+        description: "Group/Namespace column for clearer component identification"
+      - report: "Findings by Project"
+        type: added
+        description: "Group/Namespace column for clearer component identification"
+      - report: ~
+        type: added
+        description: "Smart cache invalidation after --apply-vex-triage; --refresh flag for manual re-fetch"
+      - report: ~
+        type: added
+        description: "Deployment context example YAML (examples/deployment-context.yaml) for customer use"
+      - report: "Triage Prioritization"
+        type: fixed
+        description: "VEX recommendations now built before --top N truncation so all eligible findings are included"
+      - report: ~
+        type: fixed
+        description: "AI analysis token budget scales with CVE count to prevent truncation on large finding sets"
+
   - version: "1.8.2"
     date: "2026-03-09"
     changes:

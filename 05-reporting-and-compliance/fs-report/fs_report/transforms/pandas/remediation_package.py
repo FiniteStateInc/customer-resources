@@ -1814,7 +1814,7 @@ def _enrich_with_combined_analysis(
     )
     _ctx_hash = _deployment_ctx.context_hash() if _deployment_ctx else ""
 
-    actions: list[tuple[str, str]] = []
+    actions: list[tuple[str, str, int]] = []
     action_keys_by_idx: dict[int, str] = {}
     for idx, (_, row) in enumerate(df.iterrows()):
         comp = str(row.get("component_name", ""))
@@ -1831,7 +1831,8 @@ def _enrich_with_combined_analysis(
         comp_key = f"{comp}:{ver}"
         nvd_snippet = nvd_snippets_map.get(comp_key, "")
         context_prompt = _build_combined_context_prompt(row, nvd_snippet)
-        actions.append((action_key, context_prompt))
+        cve_count = int(row.get("cve_count", 1))
+        actions.append((action_key, context_prompt, cve_count))
 
     if not actions:
         df["ai_analysis"] = ""

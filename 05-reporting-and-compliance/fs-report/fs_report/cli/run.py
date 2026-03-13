@@ -27,12 +27,37 @@ from fs_report.report_engine import ReportEngine
 from fs_report.sqlite_cache import parse_ttl
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 run_app = typer.Typer(
     name="run",
     help="Generate reports from recipes.",
     add_completion=False,
 )
+
+
+# ── helpers ──────────────────────────────────────────────────────────
+
+
+def _invalidate_findings_cache_for_versions(domain: str, results: list[dict]) -> None:
+    """Invalidate cached findings for versions affected by VEX apply."""
+    version_ids = {
+        str(r["project_version_id"])
+        for r in results
+        if r.get("success") and r.get("project_version_id")
+    }
+    if not version_ids:
+        return
+    try:
+        from fs_report.sqlite_cache import SQLiteCache
+
+        cache = SQLiteCache(domain=domain)
+        cache.invalidate_versions(version_ids)
+    except Exception:
+        logger.warning(
+            "Failed to invalidate findings cache after VEX apply",
+            exc_info=True,
+        )
 
 
 # ── create_config ────────────────────────────────────────────────────
@@ -57,6 +82,7 @@ def create_config(
     current_version_only: bool = True,
     cache_ttl: int = 0,
     cache_dir: Union[str, None] = None,
+    cache_refresh: bool = False,
     detected_after: Union[str, None] = None,
     ai: bool = False,
     ai_provider: Union[str, None] = None,
@@ -361,6 +387,7 @@ def create_config(
         current_version_only=current_version_only,
         cache_ttl=cache_ttl,
         cache_dir=cache_dir,
+        cache_refresh=cache_refresh,
         detected_after=detected_after,
         ai=ai,
         ai_provider=ai_provider,
@@ -428,6 +455,7 @@ def run_reports(
     no_bundled_recipes: bool = False,
     cache_ttl: int = 0,
     cache_dir: Union[str, None] = None,
+    refresh: bool = False,
     detected_after: Union[str, None] = None,
     ai: bool = False,
     ai_provider: Union[str, None] = None,
@@ -500,6 +528,7 @@ def run_reports(
             current_version_only=current_version_only,
             cache_ttl=cache_ttl,
             cache_dir=cache_dir,
+            cache_refresh=refresh,
             detected_after=detected_after,
             ai=ai,
             ai_provider=ai_provider,
@@ -648,15 +677,19 @@ def run_reports(
                 f"[cyan]Applying VEX triage from "
                 f"{config.apply_vex_triage}...[/cyan]"
             )
+            filter_projects = [config.project_filter] if config.project_filter else None
             applier = VexApplier(
                 auth_token=config.auth_token,
                 domain=config.domain,
                 concurrency=vex_concurrency,
                 dry_run=dry_run,
                 vex_override=config.vex_override,
+                filter_projects=filter_projects,
             )
             result = applier.apply_file(config.apply_vex_triage)
             _print_vex_summary(result)
+            if not dry_run:
+                _invalidate_findings_cache_for_versions(config.domain, result.results)
             return
 
         # Build deployment context from context file + CLI overrides
@@ -822,6 +855,10 @@ def run_reports(
                     try:
                         vex_result = applier.apply_file(vex_path)
                         _print_vex_summary(vex_result)
+                        if not dry_run:
+                            _invalidate_findings_cache_for_versions(
+                                config.domain, vex_result.results
+                            )
                     except Exception:
                         logger.exception(
                             "VEX auto-triage failed (reports already written)"
@@ -1035,6 +1072,13 @@ def run_command(
         False,
         "--no-cache",
         help="Force fresh data fetch, ignore any cached data.",
+        rich_help_panel=_PERFORMANCE,
+    ),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh",
+        help="Force fresh API fetch this run but still update the cache "
+        "for future runs.",
         rich_help_panel=_PERFORMANCE,
     ),
     detected_after: Union[str, None] = typer.Option(
@@ -1347,6 +1391,13 @@ def run_command(
             console.print(f"[red]Error: Invalid cache TTL format: {e}[/red]")
             raise typer.Exit(1)
 
+    if refresh and cache_ttl_seconds <= 0:
+        logger.warning(
+            "--refresh has no effect without --cache-ttl " "(no cache to refresh)"
+        )
+    elif refresh:
+        console.print("[cyan]Cache refresh: fetching fresh data this run[/cyan]")
+
     run_result = run_reports(
         recipes=recipes,
         recipe=recipe,
@@ -1366,6 +1417,7 @@ def run_command(
         no_bundled_recipes=no_bundled_recipes,
         cache_ttl=cache_ttl_seconds,
         cache_dir=str(Path.home() / ".fs-report") if cache_ttl_seconds > 0 else None,
+        refresh=refresh,
         detected_after=detected_after,
         ai=ai,
         ai_provider=ai_provider,

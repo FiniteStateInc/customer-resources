@@ -70,6 +70,16 @@ def clear(
         "--nvd",
         help="Clear NVD CVE description cache.",
     ),
+    findings: bool = typer.Option(
+        False,
+        "--findings",
+        help="Clear findings data from API cache.",
+    ),
+    versions: Union[str, None] = typer.Option(
+        None,
+        "--versions",
+        help="Comma-separated version IDs to invalidate (use with --findings).",
+    ),
     all_caches: bool = typer.Option(
         False,
         "--all",
@@ -93,14 +103,30 @@ def clear(
         api = ai = nvd = True
 
     # No flags → show status and usage hint
-    if not api and not ai and not nvd:
+    if not api and not ai and not nvd and not findings:
         _print_status_table(domain)
         console.print()
         console.print(
-            "To clear caches, use [bold]--api[/bold], [bold]--ai[/bold], "
-            "[bold]--nvd[/bold] (any combination), or [bold]--all[/bold]."
+            "To clear caches, use [bold]--api[/bold], [bold]--findings[/bold], "
+            "[bold]--ai[/bold], [bold]--nvd[/bold] (any combination), or [bold]--all[/bold]."
         )
         return
+
+    if findings and not api:
+        cache_domain = domain or os.getenv("FINITE_STATE_DOMAIN")
+        cache = SQLiteCache(domain=cache_domain)
+        if versions:
+            vid_set = {v.strip() for v in versions.split(",") if v.strip()}
+            removed = cache.invalidate_versions(vid_set)
+            console.print(
+                f"[green]Invalidated {removed} cache entries "
+                f"for {len(vid_set)} version(s).[/green]"
+            )
+        else:
+            cache.clear(endpoint="/findings")
+            console.print("[green]Findings cache cleared.[/green]")
+        if cache_domain:
+            console.print(f"[dim]Domain: {cache_domain}[/dim]")
 
     if api:
         cache_domain = domain or os.getenv("FINITE_STATE_DOMAIN")

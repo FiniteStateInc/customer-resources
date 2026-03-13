@@ -1,5 +1,22 @@
 # Release Notes
 
+## Version 1.8.3 (March 2026)
+
+### New Features
+
+- **`latest` indicator in `list versions`** — The latest version for each project is now marked with a `(latest)` tag, making it easy to identify current versions at a glance.
+- **`--project` scoping for `--apply-vex-triage`** — Limit VEX triage application to a single project instead of applying across all projects in the recommendation file. Example: `fs-report run --apply-vex-triage vex_recommendations.json --project "My Device"`.
+- **Group/Namespace column** — Component List and Findings by Project now include the component group/namespace for clearer identification of scoped packages (e.g., `@angular/core`, `org.apache.commons`).
+- **Smart cache invalidation for VEX triage** — Cache entries for projects affected by `--apply-vex-triage` are automatically invalidated so subsequent report runs reflect the updated triage statuses. Use `--refresh` to force a re-fetch after making VEX changes outside of fs-report.
+- **Deployment context example** — Added an annotated `examples/deployment-context.yaml` showing all available fields (`product_type`, `network_exposure`, `regulatory`, `deployment_notes`) for customizing AI-powered remediation guidance.
+
+### Bug Fixes
+
+- **VEX recommendations built before `--top N` truncation** — The VEX recommendation JSON file now includes all eligible findings, not just the top N displayed in the report. Previously, using `--top 10` would also limit recommendations to 10.
+- **AI analysis token budget scaling** — The token budget for AI remediation analysis now scales with CVE count, preventing truncation of guidance text when analyzing large finding sets.
+
+---
+
 ## Version 1.8.2 (March 2026)
 
 ### New Features

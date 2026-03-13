@@ -114,9 +114,30 @@ def filter_recommendations(
     recs: list[dict],
     filter_bands: list[str] | None = None,
     filter_statuses: list[str] | None = None,
+    filter_projects: list[str] | None = None,
 ) -> list[dict]:
-    """Filter recommendations by priority band and/or VEX status."""
+    """Filter recommendations by priority band, VEX status, and/or project.
+
+    ``filter_projects`` accepts project names or project IDs — a
+    recommendation is kept if its ``project_name`` or ``project_id``
+    matches any entry (case-insensitive for names).
+    """
     filtered = recs
+
+    if filter_projects:
+        names_lower = {p.lower() for p in filter_projects}
+        ids_set = set(filter_projects)
+        filtered = [
+            r
+            for r in filtered
+            if str(r.get("project_name", "")).lower() in names_lower
+            or str(r.get("project_id", "")) in ids_set
+        ]
+        logger.info(
+            "Filtered to %d recommendations for projects: %s",
+            len(filtered),
+            filter_projects,
+        )
 
     if filter_bands:
         bands_upper = [b.upper() for b in filter_bands]
@@ -296,6 +317,7 @@ class VexApplier:
         vex_override: bool = False,
         filter_bands: list[str] | None = None,
         filter_statuses: list[str] | None = None,
+        filter_projects: list[str] | None = None,
     ) -> None:
         # Normalize domain
         domain = domain.replace("https://", "").replace("http://", "").rstrip("/")
@@ -306,6 +328,7 @@ class VexApplier:
         self.vex_override = vex_override
         self.filter_bands = filter_bands
         self.filter_statuses = filter_statuses
+        self.filter_projects = filter_projects
 
     # ── public API ───────────────────────────────────────────────────
 
@@ -337,7 +360,9 @@ class VexApplier:
             )
 
         # Filter
-        recs = filter_recommendations(recs, self.filter_bands, self.filter_statuses)
+        recs = filter_recommendations(
+            recs, self.filter_bands, self.filter_statuses, self.filter_projects
+        )
 
         # Skip existing
         skipped_existing = 0

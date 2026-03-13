@@ -1,0 +1,35 @@
+# Deployment Context — Example
+#
+# This file customizes AI-powered remediation guidance to match your product's
+# deployment environment. Pass it to fs-report with:
+#
+#   fs-report run --recipe "Triage Prioritization" --ai \
+#     --context-file deployment-context.yaml
+#
+#   fs-report run --recipe "Remediation Package" --ai \
+#     --context-file deployment-context.yaml --project "My Device"
+#
+# All fields are optional. Omitted fields use sensible defaults.
+
+# Product type — determines the AI analyst persona and workaround style.
+# Allowed values:
+#   firmware, web_app, mobile_app, library, device_driver,
+#   container, desktop_app, generic (default)
+product_type: firmware
+
+# Network exposure — influences severity weighting and workaround suggestions.
+# Allowed values:
+#   air_gapped, internal_only, internet_facing, mixed, unknown (default)
+network_exposure: air_gapped
+
+# Regulatory frameworks — free text. The AI will factor these into its
+# remediation priorities and call out compliance-relevant findings.
+# Examples: "IEC-62443", "FDA 510(k)", "NIST 800-53", "EU CRA"
+regulatory: "IEC-62443, FDA"
+
+# Deployment notes — free text (max 500 chars). Add any context that helps
+# the AI tailor its guidance: OS, architecture, update constraints, etc.
+deployment_notes: >
+  ARM Cortex-M4 gateway running OpenWrt 23.05.
+  OTA updates available but require signed firmware images.
+  Device is deployed behind a corporate firewall with no direct internet access.

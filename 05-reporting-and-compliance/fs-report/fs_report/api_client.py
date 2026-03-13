@@ -62,6 +62,7 @@ class APIClient:
         cache: DataCache | None = None,
         sqlite_cache: SQLiteCache | None = None,
         cache_ttl: int = 0,
+        cache_refresh: bool = False,
     ) -> None:
         """
         Initialize the API client.
@@ -71,11 +72,14 @@ class APIClient:
             cache: Legacy in-memory cache (for backwards compatibility)
             sqlite_cache: SQLite-based cache with TTL support [BETA]
             cache_ttl: Cache TTL in seconds. 0 = no cross-run caching (default)
+            cache_refresh: If True, bypass cache reads but still write fresh
+                data to cache for future runs.
         """
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.cache = cache or DataCache()
         self.cache_ttl = cache_ttl
+        self.cache_refresh = cache_refresh
         self.request_delay = getattr(config, "request_delay", 0.5)
         # Track retries in the most recent fetch call so callers (e.g. the
         # version-batching loop) can adapt cooldowns after server errors.
@@ -280,8 +284,10 @@ class APIClient:
         }
         params = {k: v for k, v in params.items() if v is not None}
 
-        # Check if we have valid cached data
-        if self.sqlite_cache.is_cache_valid(endpoint, params, self.cache_ttl):
+        # Check if we have valid cached data (skip when refreshing)
+        if not self.cache_refresh and self.sqlite_cache.is_cache_valid(
+            endpoint, params, self.cache_ttl
+        ):
             cached_data = self.sqlite_cache.get_cached_data(endpoint, params)
             if cached_data:
                 self.logger.info(

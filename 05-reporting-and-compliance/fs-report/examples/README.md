@@ -65,6 +65,19 @@ Sample output reports demonstrating the Finite State Reporting Kit capabilities.
 - **Description:** Full version and component changelog showing fixed/new findings and component churn for every version pair. Produces summary + detail CSV/XLSX exports.
 - **Note:** This report must be run explicitly with `--recipe "Version Comparison"`. Sample output is not pre-generated.
 
+## Configuration Examples
+
+### Deployment Context (`deployment-context.yaml`)
+
+An annotated YAML file showing all available deployment context fields. Use this to customize AI-powered remediation guidance for your product's environment:
+
+```bash
+fs-report run --recipe "Triage Prioritization" --ai \
+  --context-file examples/deployment-context.yaml --period 30d
+```
+
+Fields: `product_type`, `network_exposure`, `regulatory`, `deployment_notes` — all optional, with sensible defaults.
+
 ## Generating Your Own Reports
 
 These examples demonstrate the output formats available. To generate reports from your own Finite State instance, see the [main README](../README.md) for setup and usage instructions.

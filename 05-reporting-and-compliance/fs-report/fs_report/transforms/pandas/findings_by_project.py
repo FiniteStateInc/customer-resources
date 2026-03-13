@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 from fs_report.models import Config
+from fs_report.purl_utils import parse_purl
 
 _CSV_COLUMNS = [
     "CVE ID",
@@ -16,6 +17,7 @@ _CSV_COLUMNS = [
     "Project Name",
     "Project Version",
     "Folder",
+    "Component Group",
     "Component",
     "Component Version",
     "Status",
@@ -85,6 +87,7 @@ def findings_by_project_pandas_transform(
         "cvss_score": "CVSS",
         "exploit_count": "# of known exploits",
         "weaponization_count": "# of known weaponization",
+        "component.group": "Component Group",
         "component.name": "Component",
         "component.version": "Component Version",
         "cwe_id": "CWE",
@@ -202,6 +205,7 @@ def findings_by_project_pandas_transform(
             "CVSS": 0,
             "# of known exploits": 0,
             "# of known weaponization": 0,
+            "Component Group": "",
             "Component": "Unknown",
             "Component Version": "Unknown",
             "CWE": "Unknown",
@@ -310,8 +314,18 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
                     pass
             return "Unknown"
 
+        def extract_component_group(component: Any) -> str:
+            if isinstance(component, dict):
+                purl = component.get("purl", "")
+                if purl:
+                    info = parse_purl(purl)
+                    if info and info.namespace:
+                        return info.namespace
+            return ""
+
         df["component.name"] = df["component"].apply(extract_component_name)
         df["component.version"] = df["component"].apply(extract_component_version)
+        df["component.group"] = df["component"].apply(extract_component_group)
 
     # Handle project data
     if "project" in df.columns:
@@ -495,6 +509,8 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
         df["cve_id"] = "N/A"
     if "cwe_id" not in df.columns:
         df["cwe_id"] = "Unknown"
+    if "component.group" not in df.columns:
+        df["component.group"] = ""
     if "component.name" not in df.columns:
         df["component.name"] = "Unknown"
     if "component.version" not in df.columns:

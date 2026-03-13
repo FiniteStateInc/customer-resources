@@ -635,7 +635,16 @@ def triage_prioritization_transform(
         ascending=[True, False],
     ).drop(columns=["_band_priority"])
 
-    # Apply --top N truncation if specified
+    # Build VEX triage recommendations from the FULL scored DataFrame
+    # BEFORE --top N truncation. --top should only control display, not triage scope.
+    triage_n = 0
+    if additional_data and "config" in additional_data:
+        triage_n = getattr(additional_data["config"], "triage", 0) or 0
+    vex_recommendations = build_vex_recommendations(
+        df, vex_override=vex_override, triage_n=triage_n
+    )
+
+    # Apply --top N truncation if specified (display only)
     top_n = 0
     if additional_data and "config" in additional_data:
         top_n = getattr(additional_data["config"], "top", 0) or 0
@@ -644,21 +653,13 @@ def triage_prioritization_transform(
         df = df.head(top_n)
         logger.info(f"--top {top_n}: showing {len(df)} of {total_before} findings")
 
-    # Build the various aggregation views
+    # Build the various aggregation views (from display-truncated DataFrame)
     project_summary_df = build_project_summaries(df)
     portfolio_summary = build_portfolio_summary(df)
     cvss_band_matrix = build_cvss_vs_band_matrix(df)
     gate_funnel = build_gate_funnel_data(df)
     top_components = build_top_components(df)
     factor_radar = build_factor_radar_data(df)
-
-    # Build VEX triage recommendations (vex_override resolved earlier)
-    triage_n = 0
-    if additional_data and "config" in additional_data:
-        triage_n = getattr(additional_data["config"], "triage", 0) or 0
-    vex_recommendations = build_vex_recommendations(
-        df, vex_override=vex_override, triage_n=triage_n
-    )
 
     logger.info(
         f"Triage complete: {len(df)} findings scored — "

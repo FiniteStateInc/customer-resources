@@ -57,6 +57,8 @@ MAX_PORTFOLIO_TOKENS = 2000
 MAX_PROJECT_TOKENS = 1500
 MAX_COMPONENT_TOKENS = 800
 MAX_ANALYSIS_TOKENS = 4000
+TOKENS_PER_CVE = 500  # extra budget per CVE for combined analysis
+MAX_ANALYSIS_TOKENS_CAP = 16000  # hard ceiling for a single call
 
 # Provider -> (summary_model, component_model)
 # Use alias IDs (e.g. "claude-opus-4-6") rather than date-pinned IDs
@@ -1926,6 +1928,7 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
         self,
         action_key: str,
         context_prompt: str,
+        cve_count: int = 1,
     ) -> tuple[dict[str, str], str]:
         """Single high-model call: structured verdict + deep analysis."""
         cached = self.get_cached_summary(action_key)
@@ -1934,8 +1937,12 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
             return self._parse_combined_response(cached)
 
         wrapped = build_combined_analysis_wrapper(self._deployment_ctx) + context_prompt
+        max_tokens = min(
+            MAX_ANALYSIS_TOKENS + max(cve_count - 1, 0) * TOKENS_PER_CVE,
+            MAX_ANALYSIS_TOKENS_CAP,
+        )
         try:
-            text = self._call_llm(wrapped, "summary", MAX_ANALYSIS_TOKENS)
+            text = self._call_llm(wrapped, "summary", max_tokens)
             self.cache_summary(action_key, "action_combined", text, self._summary_model)
             return self._parse_combined_response(text)
         except Exception as e:
@@ -1944,18 +1951,21 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
 
     def generate_batch_combined_analysis(
         self,
-        actions: list[tuple[str, str]],
+        actions: list[tuple[str, str, int]],
     ) -> dict[str, tuple[dict[str, str], str]]:
-        """Batch combined analysis with rate limiting."""
+        """Batch combined analysis with rate limiting.
+
+        Each action is a tuple of (action_key, context_prompt, cve_count).
+        """
         results: dict[str, tuple[dict[str, str], str]] = {}
         from tqdm import tqdm
 
         with tqdm(actions, desc="Generating AI analysis", unit=" actions") as pbar:
-            for action_key, context_prompt in pbar:
+            for action_key, context_prompt, cve_count in pbar:
                 pbar.set_postfix_str(action_key[:40])
                 prev = self._cached_count
                 results[action_key] = self.generate_combined_action_analysis(
-                    action_key, context_prompt
+                    action_key, context_prompt, cve_count=cve_count
                 )
                 if self._cached_count == prev:
                     time.sleep(0.5)

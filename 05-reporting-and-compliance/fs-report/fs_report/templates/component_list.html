@@ -130,6 +130,7 @@
             <table class="data-table">
                 <thead>
                     <tr>
+                        <th>Group</th>
                         <th>Component</th>
                         <th>Version</th>
                         <th>Type</th>
@@ -154,10 +155,11 @@
                         {% if row['Project Name'] != current_project.value %}
                             {% set current_project.value = row['Project Name'] %}
                             <tr class="project-group-row">
-                                <td colspan="{% if folder_path %}16{% else %}15{% endif %}">{{ row['Project Name'] }}</td>
+                                <td colspan="{% if folder_path %}17{% else %}16{% endif %}">{{ row['Project Name'] }}</td>
                             </tr>
                         {% endif %}
                         <tr>
+                            <td>{{ row.get('Group', '') }}</td>
                             <td><strong>{{ row['Component'] }}</strong></td>
                             <td>{{ row['Version'] }}</td>
                             <td>

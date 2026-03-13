@@ -5,13 +5,16 @@ Includes license enrichment: copyleft classification, policy status,
 license URL, source type mapping, and release date extraction.
 """
 
+import re
 from typing import Any
 
 import pandas as pd
 
 from fs_report.models import Config
+from fs_report.purl_utils import parse_purl
 
 _CSV_COLUMNS = [
+    "Group",
     "Component",
     "Version",
     "Type",
@@ -173,6 +176,7 @@ def component_list_pandas_transform(
 
     # Select and rename required columns
     required_columns = {
+        "group": "Group",
         "name": "Component",
         "version": "Version",
         "type": "Type",
@@ -216,6 +220,7 @@ def component_list_pandas_transform(
     # Handle missing data gracefully
     output_df = output_df.fillna(
         {
+            "Group": "",
             "Component": "Unknown",
             "Version": "Unknown",
             "Type": "Unknown",
@@ -507,6 +512,38 @@ def _empty_summary() -> dict[str, Any]:
 
 
 # =============================================================================
+# GROUP EXTRACTION FROM bomRef
+# =============================================================================
+
+_HEX_RE = re.compile(r"^[0-9a-f]{16,}$")
+
+
+def _extract_group(bom_ref: Any) -> str:
+    """Extract a group/namespace from a bomRef string.
+
+    Handles PURL format (``pkg:maven/group/name@version``) and Maven
+    colon-delimited format (``group:artifact:version``).  Returns an
+    empty string for hashes, paths, NuGet-style refs, and other
+    unrecognised formats.
+    """
+    if not isinstance(bom_ref, str) or not bom_ref:
+        return ""
+    # 1. Try as PURL first (handles pkg:maven/group/name@version)
+    info = parse_purl(bom_ref)
+    if info and info.namespace:
+        return info.namespace
+    # 2. Try Maven colon format (group:artifact:version)
+    #    Skip if it looks like a hash, path, or random ID
+    if ":" in bom_ref and "/" not in bom_ref:
+        parts = bom_ref.split(":")
+        # Must have at least group:artifact, and group must contain a dot
+        # (e.g. org.springframework) to avoid matching nuget:Name:Version
+        if len(parts) >= 2 and "." in parts[0] and not _HEX_RE.match(parts[0]):
+            return parts[0]
+    return ""
+
+
+# =============================================================================
 # FLATTEN COMPONENT DATA  (shared with other consumers)
 # =============================================================================
 
@@ -572,6 +609,10 @@ def flatten_component_data(df: pd.DataFrame) -> pd.DataFrame:
 
         df["branch.name"] = df["branch"].apply(extract_branch_name)
 
+    # Extract group/namespace from bomRef
+    if "bomRef" in df.columns:
+        df["group"] = df["bomRef"].apply(_extract_group)
+
     # Handle license details - extract to declaredLicenses if not present
     if "declaredLicenses" not in df.columns and "licenseDetails" in df.columns:
 
@@ -592,6 +633,7 @@ def flatten_component_data(df: pd.DataFrame) -> pd.DataFrame:
 
     # Ensure all required columns exist with defaults
     default_columns = {
+        "group": "",
         "name": "Unknown",
         "version": "Unknown",
         "type": "Unknown",

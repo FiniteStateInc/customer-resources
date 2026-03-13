@@ -413,6 +413,7 @@ class ReportEngine:
             config,
             cache=self.cache,
             cache_ttl=getattr(config, "cache_ttl", 0),
+            cache_refresh=getattr(config, "cache_refresh", False),
         )
         # Secondary API client for cross-server version comparison
         if config.compare_domain and config.compare_auth_token:
@@ -1158,8 +1159,12 @@ class ReportEngine:
         if cache_key in self._version_findings_cache:
             return self._version_findings_cache[cache_key]
 
-        # 2. SQLite cache
-        if self.api_client.sqlite_cache and self.api_client.cache_ttl > 0:
+        # 2. SQLite cache (skip when refreshing)
+        if (
+            self.api_client.sqlite_cache
+            and self.api_client.cache_ttl > 0
+            and not self.api_client.cache_refresh
+        ):
             endpoint = f"/public/v0/{entity_type}"
             filter_str = f"projectVersion=={vid}"
             if category_filter:
@@ -3860,6 +3865,63 @@ class ReportEngine:
                     raw_data = raw_data.copy()
                 _inject_folder_names_df(raw_data, pf_map)
 
+            # --- SBOM-based group enrichment for Component List ---
+            if (
+                recipe.name in ("Component List", "License Report")
+                and not raw_data.empty
+            ):
+                raw_data = raw_data.copy()
+                # Extract version IDs from nested projectVersion dict before enrichment
+                if (
+                    "projectVersion" in raw_data.columns
+                    and "projectVersion.id" not in raw_data.columns
+                ):
+                    raw_data["projectVersion.id"] = raw_data["projectVersion"].apply(
+                        lambda pv: pv.get("id", "") if isinstance(pv, dict) else ""
+                    )
+                raw_data = self._enrich_group_from_sbom(
+                    raw_data,
+                    version_id_col="projectVersion.id",
+                    name_col="name",
+                    version_col="version",
+                    group_col="group",
+                )
+
+            # --- SBOM-based group enrichment for Findings by Project ---
+            if recipe.name == "Findings by Project" and not raw_data.empty:
+                raw_data = raw_data.copy()
+                # Extract version ID from nested dict if not already flattened
+                if (
+                    "projectVersion.id" not in raw_data.columns
+                    and "projectVersion" in raw_data.columns
+                ):
+                    raw_data["projectVersion.id"] = raw_data["projectVersion"].apply(
+                        lambda pv: pv.get("id", "") if isinstance(pv, dict) else ""
+                    )
+                # Extract component name/version from nested dict if not already flattened
+                if (
+                    "component.name" not in raw_data.columns
+                    and "component" in raw_data.columns
+                ):
+                    raw_data["component.name"] = raw_data["component"].apply(
+                        lambda c: c.get("name", "") if isinstance(c, dict) else ""
+                    )
+                if (
+                    "component.version" not in raw_data.columns
+                    and "component" in raw_data.columns
+                ):
+                    raw_data["component.version"] = raw_data["component"].apply(
+                        lambda c: c.get("version", "") if isinstance(c, dict) else ""
+                    )
+                if "projectVersion.id" in raw_data.columns:
+                    raw_data = self._enrich_group_from_sbom(
+                        raw_data,
+                        version_id_col="projectVersion.id",
+                        name_col="component.name",
+                        version_col="component.version",
+                        group_col="component.group",
+                    )
+
             # Handle additional data for multiple charts
             additional_data: dict[str, Any] = {}
             # Add config for pandas transform functions
@@ -4913,6 +4975,7 @@ class ReportEngine:
         if (
             self.api_client.sqlite_cache
             and self.api_client.cache_ttl > 0
+            and not self.api_client.cache_refresh
             and self.api_client.sqlite_cache.is_cache_valid(
                 "/public/v0/scans", sqlite_params, self.api_client.cache_ttl
             )
@@ -5179,6 +5242,104 @@ class ReportEngine:
 
         # No additional filters, return original query
         return query_config
+
+    # ------------------------------------------------------------------
+    # SBOM-based group enrichment
+    # ------------------------------------------------------------------
+
+    def _enrich_group_from_sbom(
+        self,
+        raw_data: pd.DataFrame,
+        *,
+        version_id_col: str,
+        name_col: str,
+        version_col: str,
+        group_col: str,
+    ) -> pd.DataFrame:
+        """Enrich a DataFrame with component group/namespace from SBOMs.
+
+        Downloads CycloneDX SBOMs for each unique version ID in *raw_data*,
+        parses them, and builds a ``(name, version) → group`` lookup.  The
+        *group_col* in *raw_data* is then filled where it was previously
+        empty.
+
+        Args:
+            raw_data: DataFrame to enrich (returned as-is if empty).
+            version_id_col: Column containing numeric project-version IDs.
+            name_col: Column containing component names.
+            version_col: Column containing component versions.
+            group_col: Column to populate with group values.
+
+        Returns:
+            The enriched DataFrame (modified in-place when possible).
+        """
+        if raw_data.empty or version_id_col not in raw_data.columns:
+            return raw_data
+
+        from fs_report.sbom_parser import parse_cyclonedx
+
+        # Collect unique version IDs (drop unknowns / empty strings)
+        vid_series = pd.to_numeric(raw_data[version_id_col], errors="coerce").dropna()
+        version_ids = sorted({int(v) for v in vid_series})
+
+        if not version_ids:
+            return raw_data
+
+        self.logger.info(
+            f"Fetching SBOMs for group enrichment ({len(version_ids)} versions)"
+        )
+
+        # Build lookup: (lower_name, lower_version) → group
+        group_lookup: dict[tuple[str, str], str] = {}
+        for vid in version_ids:
+            try:
+                sbom_raw = self.api_client.fetch_sbom(
+                    vid, sbom_format="cyclonedx", include_vex=False
+                )
+                sbom = parse_cyclonedx(sbom_raw)
+                for comp in sbom.components.values():
+                    if comp.group:
+                        key = (comp.name.lower(), comp.version.lower())
+                        group_lookup[key] = comp.group
+            except Exception:
+                self.logger.debug(
+                    f"SBOM fetch failed for version {vid}, skipping group enrichment"
+                )
+
+        if not group_lookup:
+            return raw_data
+
+        self.logger.info(
+            f"SBOM group lookup built: {len(group_lookup)} components with group info"
+        )
+
+        # Ensure group column exists
+        if group_col not in raw_data.columns:
+            raw_data[group_col] = ""
+
+        # Vectorised fill: only overwrite where current group is empty
+        needs_fill = raw_data[group_col].fillna("").eq("")
+        if not needs_fill.any():
+            return raw_data
+
+        # Build lookup keys for rows needing a fill
+        if name_col in raw_data.columns and version_col in raw_data.columns:
+            keys = list(
+                zip(
+                    raw_data.loc[needs_fill, name_col].fillna("").str.lower(),
+                    raw_data.loc[needs_fill, version_col].fillna("").str.lower(),
+                    strict=True,
+                )
+            )
+            filled = [group_lookup.get(k, "") for k in keys]
+            raw_data.loc[needs_fill, group_col] = filled
+
+        filled_count = (raw_data[group_col].fillna("") != "").sum()
+        self.logger.info(
+            f"Group enrichment complete: {filled_count} components have group info"
+        )
+
+        return raw_data
 
     def clear_cache(self) -> None:
         """Clear the data cache."""

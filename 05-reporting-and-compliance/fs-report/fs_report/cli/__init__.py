@@ -218,34 +218,44 @@ def list_versions_compat(
     )
 
 
-# ── Bare-invocation deprecation bridge ────────────────────────────────
-# When users run ``fs-report --recipe ...`` (old syntax), Typer rejects
-# the unknown flags before the callback fires.  Detect this and
-# transparently inject the ``run`` subcommand.
+# ── Bare-flag detection ───────────────────────────────────────────────
+# When users run ``fs-report --recipe ...`` (old syntax without the
+# ``run`` subcommand), Typer rejects the unknown flags before the
+# callback fires.  Detect this and show a clear error message.
 
 _RUN_FLAGS = {
+    # Long flags — synced with cli/run.py run() parameters
+    "--recipes",
     "--recipe",
-    "--project",
+    "--output",
     "--start",
     "--end",
     "--period",
     "--token",
     "--domain",
-    "--output",
+    "--verbose",
     "--data-file",
-    "--project-filter",
-    "--version-filter",
-    "--folder-filter",
+    "--project",
     "--folder",
+    "--version",
     "--finding-types",
+    "--scan-type",
+    "--scan-status",
+    "--current-version-only",
+    "--all-versions",
     "--cache-ttl",
-    "--cache-dir",
     "--no-cache",
+    "--refresh",
     "--detected-after",
     "--ai",
     "--ai-provider",
+    "--ai-model-high",
+    "--ai-model-low",
     "--ai-depth",
     "--ai-prompts",
+    "--ai-analysis",
+    "--ai-export",
+    "--ai-import",
     "--context-file",
     "--product-type",
     "--network-exposure",
@@ -256,37 +266,40 @@ _RUN_FLAGS = {
     "--open-only",
     "--request-delay",
     "--batch-size",
-    "--cve-filter",
     "--cve",
+    "--component",
+    "--component-match",
+    "--no-nvd",
     "--scoring-file",
+    "--tp-gate",
+    "--top",
+    "--triage",
     "--vex-override",
-    "--overwrite",
-    "--no-bundled-recipes",
-    "--current-version-only",
-    "--all-versions",
     "--apply-vex-triage",
     "--autotriage",
     "--dry-run",
     "--vex-concurrency",
+    "--low-memory",
+    "--overwrite",
+    "--logo",
+    "--no-bundled-recipes",
     "--serve",
     "--serve-port",
     "--headless",
-    "--verbose",
+    "--compare-domain",
+    "--compare-token",
+    "--compare-project",
+    "--compare-version",
+    # Short flags
     "-r",
     "-o",
+    "-s",
+    "-e",
+    "-p",
     "-t",
     "-d",
     "-v",
-    "-p",
-    "-s",
-    "-e",
-    "-pr",
-    "-fl",
     "-V",
-    "-ft",
-    "-cvo",
-    "-av",
-    "-df",
 }
 
 
@@ -294,7 +307,7 @@ _GLOBAL_FLAGS = {"--version", "--help", "-h"}
 
 
 def _main() -> None:
-    """Entry point that bridges old bare-flag invocations to ``run``."""
+    """Entry point — requires an explicit subcommand for all operations."""
     args = sys.argv[1:]
 
     # Check: no subcommand present but run-style flags are
@@ -311,11 +324,11 @@ def _main() -> None:
                 if a.startswith("-")
             )
             if has_run_flag:
-                deprecation_warning(
-                    "fs-report <run-flags>",
-                    "fs-report run <run-flags>",
+                _console.print(
+                    "[red]Error: bare flags are no longer supported. "
+                    "Use 'fs-report run <flags>' instead.[/red]"
                 )
-                sys.argv = [sys.argv[0], "run"] + args
+                raise SystemExit(2)
 
     try:
         app(prog_name="fs-report")

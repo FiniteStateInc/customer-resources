@@ -379,6 +379,11 @@ class Config(BaseModel):
     cache_dir: str | None = Field(
         None, description="Directory for SQLite cache. Defaults to ~/.fs-report/"
     )
+    cache_refresh: bool = Field(
+        False,
+        description="Force fresh API fetch, bypassing cache reads. "
+        "Fresh data is still written to cache for future runs.",
+    )
     # Optional date filter for assessment reports
     detected_after: str | None = Field(
         None,

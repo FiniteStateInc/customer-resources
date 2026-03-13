@@ -38,6 +38,7 @@ import os
 import re
 import sqlite3
 import time
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1138,6 +1139,62 @@ class SQLiteCache:
         logger.info(
             f"Cache cleared and schema reset{f' for {endpoint}' if endpoint else ''}"
         )
+
+    def invalidate_versions(self, version_ids: Collection[str]) -> int:
+        """Invalidate cached findings for specific project versions.
+
+        Deletes finding rows matching the given version IDs, then removes
+        any cache_meta entries whose findings are now empty.
+
+        Returns the number of cache_meta entries removed.
+        """
+        if not version_ids:
+            return 0
+
+        vid_list = list(version_ids)
+        placeholders = ",".join("?" * len(vid_list))
+
+        with self._get_connection() as conn:
+            # Find query hashes that contain findings for these versions
+            cursor = conn.execute(
+                f"SELECT DISTINCT query_hash FROM findings "
+                f"WHERE project_version_id IN ({placeholders})",
+                vid_list,
+            )
+            affected_hashes = [row[0] for row in cursor.fetchall()]
+
+            if not affected_hashes:
+                return 0
+
+            # Delete affected finding rows
+            conn.execute(
+                f"DELETE FROM findings "
+                f"WHERE project_version_id IN ({placeholders})",
+                vid_list,
+            )
+
+            # Remove cache_meta entries that now have zero findings
+            removed = 0
+            for qh in affected_hashes:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM findings WHERE query_hash = ?",
+                    (qh,),
+                ).fetchone()[0]
+                if count == 0:
+                    conn.execute(
+                        "DELETE FROM cache_meta WHERE query_hash = ?",
+                        (qh,),
+                    )
+                    removed += 1
+
+            conn.commit()
+
+        logger.info(
+            "Invalidated %d cache entries for %d version(s)",
+            removed,
+            len(vid_list),
+        )
+        return removed
 
     def get_stats(self) -> dict:
         """

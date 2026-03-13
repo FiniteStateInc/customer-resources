@@ -33,6 +33,7 @@
                 <th>Reachability</th>
                 <th>CVE ID</th>
                 <th>Description</th>
+                <th>Component Group</th>
                 <th>Component</th>
                 <th>Version</th>
                 {% if folder_path %}<th>Folder</th>{% endif %}
@@ -52,7 +53,7 @@
                 {% if row['Project Name'] != current_project.value %}
                     {% set current_project.value = row['Project Name'] %}
                     <tr style="background-color: #f8f9fa; font-weight: bold;">
-                        <td colspan="{% if folder_path %}17{% else %}16{% endif %}">{{ row['Project Name'] }}</td>
+                        <td colspan="{% if folder_path %}18{% else %}17{% endif %}">{{ row['Project Name'] }}</td>
                     </tr>
                 {% endif %}
                 <tr>
@@ -134,6 +135,7 @@
                         title="{{ row.get('Description', '') }}">
                         {{ row.get('Description', '') }}
                     </td>
+                    <td>{{ row.get('Component Group', '') }}</td>
                     <td>{{ row['Component'] }}</td>
                     <td>{{ row['Component Version'] }}</td>
                     {% if folder_path %}<td>{{ row.get('Folder', '') }}</td>{% endif %}

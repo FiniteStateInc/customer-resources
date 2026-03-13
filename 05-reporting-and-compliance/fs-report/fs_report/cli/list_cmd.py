@@ -564,6 +564,7 @@ def _list_single_project_versions(
 
     branch_id = default_branch.get("id")
     branch_name = default_branch.get("name", "Unknown")
+    latest_version_id = (default_branch.get("latestVersion") or {}).get("id")
 
     if not branch_id:
         console.print(
@@ -637,13 +638,17 @@ def _list_single_project_versions(
                     created = dt.strftime("%Y-%m-%d %H:%M")
                 except Exception:
                     pass
+            vid = version.get("id")
             output.append(
                 {
-                    "id": version.get("id"),
+                    "id": vid,
                     "name": version.get("version", "N/A"),
                     "created": created,
                     "project": project_name,
                     "project_id": project_id,
+                    "latest": vid is not None
+                    and latest_version_id is not None
+                    and str(vid) == str(latest_version_id),
                 }
             )
         print(json_mod.dumps(output, indent=2))
@@ -658,6 +663,7 @@ def _list_single_project_versions(
     table.add_column("ID", style="cyan", no_wrap=True)
     table.add_column("Name", style="green")
     table.add_column("Created", style="dim")
+    table.add_column("Latest", style="bold yellow", no_wrap=True)
 
     for version in version_list:
         version_id = version.get("id", "N/A")
@@ -673,7 +679,12 @@ def _list_single_project_versions(
             except Exception:
                 pass
 
-        table.add_row(str(version_id), version_name, created)
+        is_latest = (
+            version_id != "N/A"
+            and latest_version_id is not None
+            and str(version_id) == str(latest_version_id)
+        )
+        table.add_row(str(version_id), version_name, created, "✓" if is_latest else "")
 
     console.print(table)
     console.print(
