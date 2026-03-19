@@ -1,0 +1,649 @@
+{% extends "base.html" %}
+
+{% block title %}Assessment Overview — {{ scan_metadata.project_name if scan_metadata else recipe_name }}{% endblock %}
+
+{% block content %}
+<style>
+  .kpi-row { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+  .kpi-card {
+    flex: 1; min-width: 120px; background: #fff; border: 1px solid #dee2e6;
+    border-radius: 6px; padding: 14px 12px; text-align: center;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+  .kpi-card.border-critical { border-top: 4px solid #d32f2f; }
+  .kpi-card.border-high     { border-top: 4px solid #f57c00; }
+  .kpi-card.border-medium   { border-top: 4px solid #ff8f00; }
+  .kpi-card.border-blue     { border-top: 4px solid #1976d2; }
+  .kpi-card.border-green    { border-top: 4px solid #388e3c; }
+  .kpi-card.border-purple   { border-top: 4px solid #6a1b9a; }
+  .kpi-card.border-orange   { border-top: 4px solid #e65100; }
+  .kpi-card.border-lowgreen { border-top: 4px solid #66bb6a; }
+  .kpi-card.border-exploit  { border-top: 4px solid #bf360c; }
+  .kpi-value { font-size: 1.7em; font-weight: 700; line-height: 1.2; }
+  .kpi-label { font-size: 0.75em; color: #666; margin-top: 4px; }
+  .kpi-critical .kpi-value { color: #d32f2f; }
+  .kpi-high     .kpi-value { color: #f57c00; }
+  .kpi-medium   .kpi-value { color: #ff8f00; }
+  .kpi-blue     .kpi-value { color: #1976d2; }
+  .kpi-green    .kpi-value { color: #388e3c; }
+  .kpi-purple   .kpi-value { color: #6a1b9a; }
+  .kpi-orange   .kpi-value { color: #e65100; }
+  .kpi-lowgreen .kpi-value { color: #66bb6a; }
+  .kpi-exploit  .kpi-value { color: #bf360c; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }
+  .badge-CRITICAL { background: #d32f2f; color: #fff; }
+  .badge-HIGH     { background: #f57c00; color: #fff; }
+  .badge-MEDIUM   { background: #fbc02d; color: #333; }
+  .badge-LOW      { background: #388e3c; color: #fff; }
+  .badge-INFO     { background: #0288d1; color: #fff; }
+  .badge-INFORMATIONAL { background: #0288d1; color: #fff; }
+  .badge-UNKNOWN  { background: #9e9e9e; color: #fff; }
+
+  .pill { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 0.7em; font-weight: 600; }
+  .pill-kev     { background: #6a1b9a; color: #fff; }
+  .pill-exploit { background: #bf360c; color: #fff; }
+  .pill-none    { background: #e0e0e0; color: #666; }
+
+  .panel {
+    border: 1px solid #dee2e6; border-radius: 6px; padding: 16px 18px;
+    margin-bottom: 20px; background: #fff;
+  }
+  .panel-danger { border-left: 4px solid #d32f2f; background: #fff8f8; }
+  .panel h3 { font-size: 0.95em; margin: 0 0 10px; color: #2c3e50; }
+
+  .intel-grid { display: flex; gap: 20px; flex-wrap: wrap; }
+  .intel-item { text-align: center; padding: 10px 20px; background: #fff3e0; border-radius: 6px; }
+  .intel-item .val { font-size: 1.5em; font-weight: 700; color: #e65100; }
+  .intel-item .lbl { font-size: 0.75em; color: #666; }
+  .intel-item.kev  { background: #f3e5f5; }
+  .intel-item.kev .val { color: #6a1b9a; }
+  .intel-item.epss { background: #e3f2fd; }
+  .intel-item.epss .val { color: #1565c0; }
+
+  .status-grid { display: flex; gap: 16px; flex-wrap: wrap; }
+  .status-item { text-align: center; padding: 10px 18px; background: #f5f5f5; border-radius: 6px; min-width: 90px; }
+  .status-item .val { font-size: 1.4em; font-weight: 700; }
+  .status-item.intriage .val { color: #f57c00; }
+  .status-item.affected .val { color: #7b1fa2; }
+  .status-item.exploitable .val { color: #d32f2f; }
+  .status-item .lbl { font-size: 0.75em; color: #666; }
+
+  .banner-info { background: #e3f2fd; border: 1px solid #90caf9; border-radius: 6px; padding: 10px 14px; margin-top: 10px; font-size: 0.85em; color: #1565c0; }
+
+  .exploit-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; }
+  .exploit-cell {
+    border-radius: 6px; padding: 12px; text-align: center; font-size: 0.85em;
+    border: 1px solid #dee2e6;
+  }
+  .exploit-cell .cell-count { font-size: 1.8em; font-weight: 700; line-height: 1.2; }
+  .exploit-cell .cell-label { font-size: 0.78em; color: #555; margin-top: 2px; }
+  .heat-0 { background: #f5f5f5; color: #999; }
+  .heat-1 { background: #fff3e0; color: #e65100; }
+  .heat-2 { background: #ffe0b2; color: #bf360c; }
+  .heat-3 { background: #ffcc80; color: #bf360c; }
+
+  .reach-cards { display: flex; gap: 16px; margin: 12px 0; flex-wrap: wrap; }
+  .reach-card {
+    flex: 1; min-width: 120px; background: #fff; border: 1px solid #dee2e6;
+    border-radius: 8px; padding: 16px; text-align: center;
+  }
+  .reach-card .reach-value { font-size: 1.8em; font-weight: 700; line-height: 1.2; }
+  .reach-card .reach-label { font-size: 0.78em; color: #666; margin-top: 4px; }
+  .reach-reachable .reach-value { color: #d32f2f; }
+  .reach-unreachable .reach-value { color: #388e3c; }
+  .reach-inconclusive .reach-value { color: #f57c00; }
+
+  .p0-table { font-size: 0.88em; }
+  .p0-table th { font-size: 0.82em; }
+
+  .meta-row { display: flex; gap: 24px; flex-wrap: wrap; font-size: 0.85em; color: #555; margin-top: 6px; }
+  .meta-row span strong { color: #333; }
+
+  .days-badge { display: inline-block; background: #e8f5e9; color: #2e7d32; border-radius: 4px; padding: 2px 8px; font-weight: 600; font-size: 0.85em; }
+  .days-badge.stale { background: #fff3e0; color: #e65100; }
+
+  section.report-section { margin-bottom: 28px; }
+  section.report-section > h2 { font-size: 1.1em; color: #2c3e50; border-bottom: 2px solid #e9ecef; padding-bottom: 5px; margin-bottom: 12px; }
+
+  .scope-badge { display: inline-block; background: #e3f2fd; color: #1565c0; border-radius: 4px; padding: 2px 9px; font-size: 0.8em; font-weight: 600; margin-left: 6px; }
+
+  details { margin-bottom: 10px; }
+  details summary { cursor: pointer; font-weight: 600; font-size: 0.95em; color: #2c3e50; padding: 6px 0; }
+  details summary:hover { color: #1976d2; }
+
+  .tier-table { font-size: 0.85em; width: 100%; }
+  .tier-table th { font-size: 0.8em; }
+
+  .proj-card-body { padding: 8px 0; }
+  .proj-sev-line { font-size: 0.85em; color: #555; margin-bottom: 8px; }
+  .proj-table { font-size: 0.85em; }
+  .proj-table th { font-size: 0.8em; }
+</style>
+
+{# ── 1. Header ── #}
+<div style="margin-bottom:20px;">
+  <h2>
+    Assessment Overview
+    {% if scan_metadata and scan_metadata.project_name %}
+      <span class="scope-badge">{{ scan_metadata.project_name }}</span>
+    {% elif folder_filter %}
+      <span class="scope-badge">Folder: {{ folder_filter }}</span>
+    {% elif project_filter %}
+      <span class="scope-badge">Project: {{ project_filter }}</span>
+    {% endif %}
+    {% if scan_metadata and scan_metadata.version_name %}
+      <span class="scope-badge" style="background:#f3e5f5;color:#6a1b9a;">v{{ scan_metadata.version_name }}</span>
+    {% endif %}
+  </h2>
+  <div style="font-size:0.82em;color:#888;">Generated: {{ generated_at }}</div>
+</div>
+
+{# ── 2. Executive KPIs ── #}
+<section class="report-section">
+  <h2>Executive KPIs</h2>
+  <div class="kpi-row">
+    {% if summary %}
+    <div class="kpi-card border-blue kpi-blue">
+      <div class="kpi-value">{{ summary.total_findings | default(0) }}</div>
+      <div class="kpi-label">Total Findings</div>
+    </div>
+    <div class="kpi-card border-critical kpi-critical">
+      <div class="kpi-value">{{ summary.critical_count | default(0) }}</div>
+      <div class="kpi-label">Critical Findings</div>
+    </div>
+    <div class="kpi-card border-high kpi-high">
+      <div class="kpi-value">{{ summary.high_count | default(0) }}</div>
+      <div class="kpi-label">High Findings</div>
+    </div>
+    <div class="kpi-card border-medium kpi-medium">
+      <div class="kpi-value">{{ summary.medium_count | default(0) }}</div>
+      <div class="kpi-label">Medium Findings</div>
+    </div>
+    <div class="kpi-card border-lowgreen kpi-lowgreen">
+      <div class="kpi-value">{{ summary.low_count | default(0) }}</div>
+      <div class="kpi-label">Low Findings</div>
+    </div>
+    <div class="kpi-card border-orange kpi-orange">
+      <div class="kpi-value">{{ summary.open_count | default(0) }}</div>
+      <div class="kpi-label">Open Findings</div>
+    </div>
+    <div class="kpi-card border-green kpi-green">
+      <div class="kpi-value">{{ summary.triaged_count | default(0) }}</div>
+      <div class="kpi-label">Triaged Findings</div>
+    </div>
+    <div class="kpi-card border-exploit kpi-exploit">
+      <div class="kpi-value">{{ summary.exploit_count | default(0) }}</div>
+      <div class="kpi-label">With Known Exploits</div>
+    </div>
+    <div class="kpi-card border-purple kpi-purple">
+      <div class="kpi-value">{{ summary.epss_high_count | default(0) }}</div>
+      <div class="kpi-label">High Exploit Likelihood</div>
+    </div>
+    <div class="kpi-card border-blue kpi-blue">
+      <div class="kpi-value">{{ summary.total_components | default(0) }}</div>
+      <div class="kpi-label">Components</div>
+    </div>
+    {% else %}
+    <div class="kpi-card"><div class="kpi-value">&mdash;</div><div class="kpi-label">No data</div></div>
+    {% endif %}
+  </div>
+</section>
+
+{# ── 3. Severity Distribution Chart ── #}
+{% if severity_distribution %}
+<section class="report-section">
+  <h2>Severity Distribution</h2>
+  <div style="max-width:400px;margin:0 auto;">
+    <canvas id="severityChart" width="400" height="400"></canvas>
+  </div>
+  <script>
+    (function() {
+      var ctx = document.getElementById('severityChart').getContext('2d');
+      var data = {{ severity_distribution | tojson }};
+      var values = [data.CRITICAL || 0, data.HIGH || 0, data.MEDIUM || 0, data.LOW || 0, data.INFORMATIONAL || 0];
+      new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+          labels: ['Critical', 'High', 'Medium', 'Low', 'Informational'],
+          datasets: [{
+            data: values,
+            backgroundColor: ['#d32f2f', '#f57c00', '#fbc02d', '#388e3c', '#0288d1'],
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { position: 'bottom' }
+          }
+        },
+        plugins: [{
+          id: 'datalabels',
+          afterDatasetsDraw: function(chart) {
+            var meta = chart.getDatasetMeta(0);
+            var ctx2 = chart.ctx;
+            meta.data.forEach(function(arc, i) {
+              if (values[i] === 0) return;
+              var pos = arc.tooltipPosition();
+              ctx2.save();
+              ctx2.font = 'bold 14px sans-serif';
+              ctx2.fillStyle = '#fff';
+              ctx2.textAlign = 'center';
+              ctx2.textBaseline = 'middle';
+              ctx2.fillText(values[i], pos.x, pos.y);
+              ctx2.restore();
+            });
+          }
+        }]
+      });
+    })();
+  </script>
+</section>
+{% endif %}
+
+{# ── 4. Top Security Risks ── #}
+{% if top_security_risks %}
+<section class="report-section">
+  <h2>Top Security Risks</h2>
+  <div class="table-container" style="padding:0;border:none;">
+    <table>
+      <thead>
+        <tr>
+          <th>CVE ID</th>
+          <th>Severity</th>
+          <th>Component</th>
+          <th>Version</th>
+          <th>CVSS</th>
+          <th>EPSS %ile</th>
+          <th>KEV</th>
+          <th>Exploit</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in top_security_risks %}
+        <tr>
+          <td>
+            {% if domain and f.project_id and f.project_version_id and f.finding_id %}
+            <a href="https://{{ domain }}/projects/{{ f.project_id }}/versions/{{ f.project_version_id }}/findings?findingId={{ f.finding_id }}" target="_blank" rel="noopener"><code>{{ f.cve_id }}</code></a>
+            {% else %}
+            <code>{{ f.cve_id }}</code>
+            {% endif %}
+          </td>
+          <td><span class="badge badge-{{ f.severity }}">{{ f.severity }}</span></td>
+          <td>{{ f.component }}</td>
+          <td>{{ f.component_version }}</td>
+          <td>{{ "%.1f"|format(f.cvss_score) if f.cvss_score else "&mdash;" }}</td>
+          <td>{{ "%.1f"|format(f.epss_percentile * 100) if f.epss_percentile else "&mdash;" }}{% if f.epss_percentile %}%{% endif %}</td>
+          <td>{% if f.in_kev %}<span class="pill pill-kev">KEV</span>{% else %}<span class="pill pill-none">&mdash;</span>{% endif %}</td>
+          <td>{% if f.has_exploit %}<span class="pill pill-exploit">Exploit</span>{% else %}<span class="pill pill-none">&mdash;</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{# ── 5. Exploit Maturity ── #}
+{% if exploit_maturity_summary %}
+<section class="report-section">
+  <h2>Exploit Maturity</h2>
+  <p style="font-size:0.85em;color:#666;margin-bottom:10px;">{{ exploit_maturity_summary.total_with_exploits | default(0) }} finding(s) with known exploit intelligence</p>
+  <div class="exploit-grid">
+    {% set cats = [
+      ("kev", "In KEV"), ("vckev", "VulnCheck KEV"), ("weaponized", "Weaponized"),
+      ("poc", "PoC"), ("threatactors", "Threat Actors"), ("ransomware", "Ransomware"),
+      ("botnets", "Botnets"), ("commercial", "Commercial"), ("reported", "Reported")
+    ] %}
+    {% for key, label in cats %}
+      {% set count = exploit_maturity_summary[key] | default(0) %}
+      {% if count > 10 %}{% set heat = "heat-3" %}
+      {% elif count > 3 %}{% set heat = "heat-2" %}
+      {% elif count > 0 %}{% set heat = "heat-1" %}
+      {% else %}{% set heat = "heat-0" %}{% endif %}
+      <div class="exploit-cell {{ heat }}">
+        <div class="cell-count">{{ count }}</div>
+        <div class="cell-label">{{ label }}</div>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{# ── 6. Reachability Analysis ── #}
+{% if reachability_summary and reachability_summary.has_data %}
+<section class="report-section">
+  <h2>Reachability Analysis</h2>
+  <div class="reach-cards">
+    <div class="reach-card reach-reachable">
+      <div class="reach-value">{{ reachability_summary.reachable | default(0) }}</div>
+      <div class="reach-label">Reachable</div>
+    </div>
+    <div class="reach-card reach-unreachable">
+      <div class="reach-value">{{ reachability_summary.unreachable | default(0) }}</div>
+      <div class="reach-label">Unreachable</div>
+    </div>
+    <div class="reach-card reach-inconclusive">
+      <div class="reach-value">{{ reachability_summary.inconclusive | default(0) }}</div>
+      <div class="reach-label">Inconclusive</div>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{# ── 7. Triage Pipeline ── #}
+{% if triage_pipeline %}
+<section class="report-section">
+  <h2>Triage Pipeline</h2>
+  <p style="font-size:0.82em;color:#666;margin-bottom:10px;">Current VEX triage status of findings</p>
+  <div class="panel">
+    <div class="status-grid">
+      <div class="status-item intriage">
+        <div class="val">{{ triage_pipeline.in_triage | default(0) }}</div>
+        <div class="lbl">Being Investigated</div>
+      </div>
+      <div class="status-item affected">
+        <div class="val">{{ triage_pipeline.affected | default(0) }}</div>
+        <div class="lbl">Confirmed Affected</div>
+      </div>
+      <div class="status-item exploitable">
+        <div class="val">{{ triage_pipeline.exploitable | default(0) }}</div>
+        <div class="lbl">Open with Known Exploit</div>
+      </div>
+    </div>
+    {% if triage_pipeline.vex_summary and triage_pipeline.vex_summary.count %}
+    <div class="banner-info" style="margin-top:12px;">
+      Auto-triage recommendations available: <strong>{{ triage_pipeline.vex_summary.count }}</strong> suggestions
+      {% if triage_pipeline.vex_summary.top_components %}
+        &mdash; top components: {{ triage_pipeline.vex_summary.top_components | join(", ") }}
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{# ── 8. Remediation Progress ── #}
+{% if remediation_progress %}
+<section class="report-section">
+  <h2>Remediation Progress</h2>
+  <div class="panel">
+    <div style="display:flex;gap:24px;margin-bottom:14px;flex-wrap:wrap;">
+      <div style="text-align:center;padding:10px 20px;background:#fde0dc;border-radius:6px;">
+        <div style="font-size:1.5em;font-weight:700;color:#d32f2f;">{{ remediation_progress.p0_count | default(0) }}</div>
+        <div style="font-size:0.75em;color:#666;">P0 Action Cards</div>
+      </div>
+      <div style="text-align:center;padding:10px 20px;background:#fff3e0;border-radius:6px;">
+        <div style="font-size:1.5em;font-weight:700;color:#f57c00;">{{ remediation_progress.p1_count | default(0) }}</div>
+        <div style="font-size:0.75em;color:#666;">P1 Action Cards</div>
+      </div>
+    </div>
+
+    {% if remediation_progress.top_p0_cves %}
+    <h3 style="font-size:0.9em;margin-bottom:8px;color:#d32f2f;">Top P0 CVEs</h3>
+    <table class="p0-table">
+      <thead><tr><th>CVE ID</th><th>Component</th><th>CVSS</th><th>Project</th></tr></thead>
+      <tbody>
+        {% for cve in remediation_progress.top_p0_cves %}
+        <tr>
+          <td>
+            {% if domain and cve.project_id and cve.project_version_id and cve.finding_id %}
+            <a href="https://{{ domain }}/projects/{{ cve.project_id }}/versions/{{ cve.project_version_id }}/findings?findingId={{ cve.finding_id }}" target="_blank" rel="noopener"><code>{{ cve.cve_id }}</code></a>
+            {% else %}
+            <code>{{ cve.cve_id }}</code>
+            {% endif %}
+          </td>
+          <td>{{ cve.component }}</td>
+          <td>{{ "%.1f"|format(cve.cvss_score) if cve.cvss_score else "&mdash;" }}</td>
+          <td>{{ cve.project_name }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% if remediation_progress.p0_components %}
+    <h3 style="font-size:0.9em;margin:14px 0 8px;color:#d32f2f;">P0 Vulnerable Components &mdash; Critical + Exploit/KEV</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+      {% for card in remediation_progress.p0_components %}
+      <div style="border:1px solid #fecaca;border-left:4px solid #d32f2f;border-radius:6px;padding:10px 14px;background:#fff8f8;min-width:200px;">
+        <div style="font-weight:600;font-size:0.9em;">{{ card.component }}</div>
+        <div style="font-size:0.78em;color:#555;margin-top:3px;">
+          {{ card.finding_count }} finding(s) &middot; Top CVE: <code>{{ card.top_cve }}</code> &middot; CVSS {{ "%.1f"|format(card.worst_cvss) }}
+        </div>
+        {% if card.project %}<div style="font-size:0.75em;color:#888;">{{ card.project }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if remediation_progress.p1_components %}
+    <h3 style="font-size:0.9em;margin:14px 0 8px;color:#f57c00;">P1 Vulnerable Components &mdash; High + Network Vector</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;">
+      {% for card in remediation_progress.p1_components %}
+      <div style="border:1px solid #ffe0b2;border-left:4px solid #f57c00;border-radius:6px;padding:10px 14px;background:#fffdf8;min-width:200px;">
+        <div style="font-weight:600;font-size:0.9em;">{{ card.component }}</div>
+        <div style="font-size:0.78em;color:#555;margin-top:3px;">
+          {{ card.finding_count }} finding(s) &middot; Top CVE: <code>{{ card.top_cve }}</code> &middot; CVSS {{ "%.1f"|format(card.worst_cvss) }}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{# ── 9. All Findings by Severity Tier ── #}
+{% if findings_by_tier %}
+<section class="report-section">
+  <h2>All Findings</h2>
+  {% set status_labels = {"UNKNOWN": "Open", "NO_STATUS": "Open", "OPEN": "Open", "IN_TRIAGE": "In Triage"} %}
+  {% set tiers = [
+    ("CRITICAL", findings_by_tier.CRITICAL | default([])),
+    ("HIGH", findings_by_tier.HIGH | default([])),
+    ("MEDIUM", findings_by_tier.MEDIUM | default([])),
+    ("LOW", findings_by_tier.LOW | default([])),
+    ("INFORMATIONAL", findings_by_tier.INFORMATIONAL | default([]))
+  ] %}
+  {% for tier_name, tier_findings in tiers %}
+    {% if tier_findings %}
+    <details{% if tier_name in ("CRITICAL", "HIGH") %} open{% endif %}>
+      <summary><span class="badge badge-{{ tier_name }}">{{ tier_name }}</span> &mdash; {{ tier_findings | length }} finding(s)</summary>
+      <table class="tier-table">
+        <thead>
+          <tr>
+            <th>CVE ID</th>
+            <th>Severity</th>
+            <th>Component</th>
+            <th>Version</th>
+            <th>CVSS</th>
+            <th>EPSS %ile</th>
+            <th>KEV</th>
+            <th>Exploit</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in tier_findings %}
+          <tr>
+            <td>
+              {% if domain and f.project_id and f.project_version_id and f.finding_id %}
+              <a href="https://{{ domain }}/projects/{{ f.project_id }}/versions/{{ f.project_version_id }}/findings?findingId={{ f.finding_id }}" target="_blank" rel="noopener"><code>{{ f.cve_id }}</code></a>
+              {% else %}
+              <code>{{ f.cve_id }}</code>
+              {% endif %}
+            </td>
+            <td><span class="badge badge-{{ f.severity }}">{{ f.severity }}</span></td>
+            <td>{{ f.component }}</td>
+            <td>{{ f.component_version }}</td>
+            <td>{{ "%.1f"|format(f.cvss_score) if f.cvss_score else "&mdash;" }}</td>
+            <td>{{ "%.1f"|format(f.epss_percentile * 100) if f.epss_percentile else "&mdash;" }}{% if f.epss_percentile %}%{% endif %}</td>
+            <td>{% if f.in_kev %}<span class="pill pill-kev">KEV</span>{% else %}<span class="pill pill-none">&mdash;</span>{% endif %}</td>
+            <td>{% if f.has_exploit %}<span class="pill pill-exploit">Exploit</span>{% else %}<span class="pill pill-none">&mdash;</span>{% endif %}</td>
+            <td>{{ status_labels.get(f.status, f.status) if status_labels.get is defined else f.status }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+    {% endif %}
+  {% endfor %}
+</section>
+{% endif %}
+
+{# ── 10. Component Risk Analysis ── #}
+{% if component_risk_ranking %}
+<section class="report-section">
+  <h2>Component Risk Analysis</h2>
+  <div class="table-container" style="padding:0;border:none;">
+    <table>
+      <thead>
+        <tr>
+          <th>Component</th>
+          <th>Version</th>
+          <th>Critical</th>
+          <th>High</th>
+          <th>Medium</th>
+          <th>Low</th>
+          <th>Total</th>
+          <th>Risk Score</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in component_risk_ranking %}
+        <tr>
+          <td>{{ c.component }}</td>
+          <td>{{ c.component_version }}</td>
+          <td>{% if c.critical > 0 %}<strong style="color:#d32f2f;">{{ c.critical }}</strong>{% else %}0{% endif %}</td>
+          <td>{% if c.high > 0 %}<strong style="color:#f57c00;">{{ c.high }}</strong>{% else %}0{% endif %}</td>
+          <td>{{ c.medium }}</td>
+          <td>{{ c.low }}</td>
+          <td>{{ c.total }}</td>
+          <td><strong>{{ c.risk_score }}</strong></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{# ── 11. Component Licenses ── #}
+{% if component_license_distribution %}
+<section class="report-section">
+  <h2>Component Licenses</h2>
+  <canvas id="licenseChart" width="600" height="300"></canvas>
+  <script>
+    (function() {
+      var ctx = document.getElementById('licenseChart').getContext('2d');
+      var items = {{ component_license_distribution | tojson }};
+      new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: items.map(function(i) { return i.license; }),
+          datasets: [{
+            label: 'Components',
+            data: items.map(function(i) { return i.count; }),
+            backgroundColor: '#1976d2',
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: { x: { beginAtZero: true, ticks: { stepSize: 1 } } }
+        }
+      });
+    })();
+  </script>
+</section>
+{% endif %}
+
+{# ── 12. SBOM Summary ── #}
+{% if sbom_stats %}
+<section class="report-section">
+  <h2>SBOM Summary</h2>
+  <p><strong>Total Components:</strong> {{ sbom_stats.total_components | default(0) }}</p>
+  {% if component_inventory %}
+  <details>
+    <summary>View component inventory ({{ component_inventory | length }})</summary>
+    <table class="tier-table" style="margin-top:8px;">
+      <thead><tr><th>Component</th><th>Version</th><th>Type</th><th>License</th></tr></thead>
+      <tbody>
+        {% for c in component_inventory %}
+        <tr>
+          <td>{{ c.name }}</td>
+          <td>{{ c.version if c.version else "—" }}</td>
+          <td>{{ c.type if c.type else "—" }}</td>
+          <td>{{ c.license if c.license else "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+
+{# ── 13. Per-Project Breakdown (folder scope only) ── #}
+{% if project_cards %}
+<section class="report-section">
+  <h2>Per-Project Breakdown</h2>
+  {% for proj in project_cards %}
+  <details{% if loop.index <= 3 %} open{% endif %}>
+    <summary>{{ proj.project_name }} &mdash; <span style="color:#d32f2f;">{{ proj.critical }} critical</span>, <span style="color:#f57c00;">{{ proj.high }} high</span> ({{ proj.total }} total)</summary>
+    <div class="proj-card-body">
+      <div class="proj-sev-line">
+        Critical: <strong style="color:#d32f2f;">{{ proj.critical }}</strong> &middot;
+        High: <strong style="color:#f57c00;">{{ proj.high }}</strong> &middot;
+        Medium: {{ proj.medium }} &middot;
+        Low: {{ proj.low }} &middot;
+        Open: {{ proj.open }}
+      </div>
+      {% if proj.top_findings %}
+      <table class="proj-table">
+        <thead><tr><th>CVE</th><th>Severity</th><th>CVSS</th><th>Component</th></tr></thead>
+        <tbody>
+          {% for f in proj.top_findings %}
+          <tr>
+            <td><code>{{ f.cve_id }}</code></td>
+            <td><span class="badge badge-{{ f.severity }}">{{ f.severity }}</span></td>
+            <td>{{ "%.1f"|format(f.cvss_score) if f.cvss_score else "&mdash;" }}</td>
+            <td>{{ f.component }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+      {% if proj.riskiest_component %}
+      <div style="font-size:0.82em;color:#555;margin-top:6px;">
+        Riskiest component: <strong>{{ proj.riskiest_component }}</strong> (score: {{ proj.riskiest_score }})
+      </div>
+      {% endif %}
+    </div>
+  </details>
+  {% endfor %}
+</section>
+{% endif %}
+
+{# ── 14. Scan Metadata ── #}
+{% if scan_metadata %}
+<section class="report-section">
+  <h2>Scan Metadata</h2>
+  <div class="meta-row">
+    {% if scan_metadata.project_name %}<span><strong>Project:</strong> {{ scan_metadata.project_name }}</span>{% endif %}
+    {% if scan_metadata.version_name %}<span><strong>Version:</strong> {{ scan_metadata.version_name }}</span>{% endif %}
+    {% if scan_metadata.scan_date %}<span><strong>Scan Date:</strong> {{ scan_metadata.scan_date }}</span>{% endif %}
+    {% if scan_metadata.days_since_scan is not none %}
+    <span>
+      <span class="days-badge {{ 'stale' if scan_metadata.days_since_scan > 30 else '' }}">
+        {{ scan_metadata.days_since_scan }} day(s) ago
+      </span>
+    </span>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% endblock %}

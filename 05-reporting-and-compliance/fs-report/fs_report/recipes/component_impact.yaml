@@ -1,0 +1,21 @@
+name: "Component Impact"
+template: "component_impact.html"
+category: assessment
+description: "Portfolio-wide blast radius for a named component — shows all projects/assets where the component is present, with severity breakdown and version distribution"
+execution_order: 20
+auto_run: false
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+
+transform_function: component_impact_transform
+output:
+  table: true
+  formats:
+    - csv
+    - xlsx
+    - html
+    - md
+  charts: []

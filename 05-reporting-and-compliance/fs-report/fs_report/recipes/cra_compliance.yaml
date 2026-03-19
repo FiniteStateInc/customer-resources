@@ -1,0 +1,22 @@
+name: "CRA Compliance"
+template: "cra_compliance.html"
+category: assessment
+description: "Exploited vulnerabilities requiring EU Cyber Resilience Act notification — KEV hits and known-exploit findings across your supply chain"
+execution_order: 20
+auto_run: false  # Only runs when explicitly requested with --recipe
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+    filter: "inKev==true or hasKnownExploit==true"
+
+transform_function: cra_compliance_transform
+output:
+  table: true
+  formats:
+    - csv
+    - xlsx
+    - html
+    - md
+  charts: []

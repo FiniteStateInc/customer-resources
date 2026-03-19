@@ -1291,7 +1291,7 @@ def main(
         False,
         "--ai",
         help="Enable AI remediation guidance for Triage Prioritization and CVE Impact "
-        "(requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, GEMINI_API_KEY, or GITHUB_TOKEN)",
+        "(requires ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or GITHUB_TOKEN)",
     ),
     ai_provider: str | None = typer.Option(
         None,

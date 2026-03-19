@@ -116,6 +116,9 @@ class NVDCveRecord:
     workaround_urls: list[str] = field(default_factory=list)
     cvss_v2_vector: str = ""
     cvss_v3_vector: str = ""
+    vuln_status: str = (
+        ""  # NVD vulnStatus: Analyzed, Modified, Rejected, Disputed, etc.
+    )
 
     @property
     def fix_versions(self) -> list[str]:
@@ -201,6 +204,146 @@ class NVDCveRecord:
                     f"stable release."
                 )
         return "\n".join(lines) if lines else ""
+
+    def _serialize(self) -> dict[str, Any]:
+        """Serialize this NVDCveRecord to a JSON-safe dict."""
+        return {
+            "cve_id": self.cve_id,
+            "description": self.description,
+            "affected_ranges": [
+                {
+                    "vendor": r.vendor,
+                    "product": r.product,
+                    "version_start": r.version_start,
+                    "version_start_type": r.version_start_type,
+                    "version_end": r.version_end,
+                    "version_end_type": r.version_end_type,
+                }
+                for r in self.affected_ranges
+            ],
+            "references": self.references,
+            "patch_urls": self.patch_urls,
+            "advisory_urls": self.advisory_urls,
+            "workaround_urls": self.workaround_urls,
+            "cvss_v2_vector": self.cvss_v2_vector,
+            "cvss_v3_vector": self.cvss_v3_vector,
+            "vuln_status": self.vuln_status,
+        }
+
+    @classmethod
+    def _deserialize(cls, data: dict[str, Any]) -> NVDCveRecord:
+        """Deserialize a dict back into an NVDCveRecord."""
+        ranges = [AffectedRange(**r) for r in data.get("affected_ranges", [])]
+        return cls(
+            cve_id=data.get("cve_id", ""),
+            description=data.get("description", ""),
+            affected_ranges=ranges,
+            references=data.get("references", []),
+            patch_urls=data.get("patch_urls", []),
+            advisory_urls=data.get("advisory_urls", []),
+            workaround_urls=data.get("workaround_urls", []),
+            cvss_v2_vector=data.get("cvss_v2_vector", ""),
+            cvss_v3_vector=data.get("cvss_v3_vector", ""),
+            vuln_status=data.get("vuln_status", ""),
+        )
+
+
+def _parse_cve_record(cve_data: dict[str, Any]) -> NVDCveRecord:
+    """Parse a raw NVD CVE JSON object into an NVDCveRecord.
+
+    Module-level helper so it can be used independently of NVDClient.
+    """
+    cve_id = cve_data.get("id", "")
+    vuln_status = cve_data.get("vulnStatus", "")
+
+    # Extract English description
+    description = ""
+    for desc in cve_data.get("descriptions", []):
+        if desc.get("lang") == "en":
+            description = desc.get("value", "")
+            break
+
+    # Extract affected version ranges from configurations
+    affected_ranges: list[AffectedRange] = []
+    for config in cve_data.get("configurations", []):
+        for node in config.get("nodes", []):
+            for match in node.get("cpeMatch", []):
+                if not match.get("vulnerable", False):
+                    continue
+                criteria = match.get("criteria", "")
+                # Parse CPE 2.3 string: cpe:2.3:a:vendor:product:version:...
+                parts = criteria.split(":")
+                vendor = parts[3] if len(parts) > 3 else ""
+                product = parts[4] if len(parts) > 4 else ""
+
+                ar = AffectedRange(
+                    vendor=vendor,
+                    product=product,
+                )
+                if "versionStartIncluding" in match:
+                    ar.version_start = match["versionStartIncluding"]
+                    ar.version_start_type = "including"
+                elif "versionStartExcluding" in match:
+                    ar.version_start = match["versionStartExcluding"]
+                    ar.version_start_type = "excluding"
+
+                if "versionEndExcluding" in match:
+                    ar.version_end = match["versionEndExcluding"]
+                    ar.version_end_type = "excluding"
+                elif "versionEndIncluding" in match:
+                    ar.version_end = match["versionEndIncluding"]
+                    ar.version_end_type = "including"
+
+                # Only include ranges that have meaningful version bounds
+                if ar.version_start or ar.version_end:
+                    affected_ranges.append(ar)
+
+    # Extract references, categorise by tag
+    references: list[dict[str, Any]] = []
+    patch_urls: list[str] = []
+    advisory_urls: list[str] = []
+    workaround_urls: list[str] = []
+    for ref in cve_data.get("references", []):
+        url = ref.get("url", "")
+        tags = ref.get("tags", [])
+        references.append({"url": url, "tags": tags})
+        if "Patch" in tags:
+            patch_urls.append(url)
+        if "Vendor Advisory" in tags or "Third Party Advisory" in tags:
+            advisory_urls.append(url)
+        if "Mitigation" in tags or "Workaround" in tags:
+            workaround_urls.append(url)
+
+    # Extract CVSS vectors from metrics
+    cvss_v2_vector = ""
+    cvss_v3_vector = ""
+    metrics = cve_data.get("metrics", {})
+    if isinstance(metrics, dict):
+        v2_list = metrics.get("cvssMetricV2", [])
+        if isinstance(v2_list, list) and v2_list:
+            v2_data = v2_list[0].get("cvssData", {})
+            if isinstance(v2_data, dict):
+                cvss_v2_vector = v2_data.get("vectorString", "")
+        v3_list = metrics.get("cvssMetricV31", [])
+        if not v3_list or not isinstance(v3_list, list):
+            v3_list = metrics.get("cvssMetricV30", [])
+        if isinstance(v3_list, list) and v3_list:
+            v3_data = v3_list[0].get("cvssData", {})
+            if isinstance(v3_data, dict):
+                cvss_v3_vector = v3_data.get("vectorString", "")
+
+    return NVDCveRecord(
+        cve_id=cve_id,
+        description=description,
+        affected_ranges=affected_ranges,
+        references=references,
+        patch_urls=patch_urls,
+        advisory_urls=advisory_urls,
+        workaround_urls=workaround_urls,
+        cvss_v2_vector=cvss_v2_vector,
+        cvss_v3_vector=cvss_v3_vector,
+        vuln_status=vuln_status,
+    )
 
 
 class NVDClient:
@@ -327,43 +470,12 @@ class NVDClient:
     @staticmethod
     def _serialize(record: NVDCveRecord) -> dict[str, Any]:
         """Serialize an NVDCveRecord to a JSON-safe dict."""
-        return {
-            "cve_id": record.cve_id,
-            "description": record.description,
-            "affected_ranges": [
-                {
-                    "vendor": r.vendor,
-                    "product": r.product,
-                    "version_start": r.version_start,
-                    "version_start_type": r.version_start_type,
-                    "version_end": r.version_end,
-                    "version_end_type": r.version_end_type,
-                }
-                for r in record.affected_ranges
-            ],
-            "references": record.references,
-            "patch_urls": record.patch_urls,
-            "advisory_urls": record.advisory_urls,
-            "workaround_urls": record.workaround_urls,
-            "cvss_v2_vector": record.cvss_v2_vector,
-            "cvss_v3_vector": record.cvss_v3_vector,
-        }
+        return record._serialize()
 
     @staticmethod
     def _deserialize(data: dict[str, Any]) -> NVDCveRecord:
         """Deserialize a dict back into an NVDCveRecord."""
-        ranges = [AffectedRange(**r) for r in data.get("affected_ranges", [])]
-        return NVDCveRecord(
-            cve_id=data.get("cve_id", ""),
-            description=data.get("description", ""),
-            affected_ranges=ranges,
-            references=data.get("references", []),
-            patch_urls=data.get("patch_urls", []),
-            advisory_urls=data.get("advisory_urls", []),
-            workaround_urls=data.get("workaround_urls", []),
-            cvss_v2_vector=data.get("cvss_v2_vector", ""),
-            cvss_v3_vector=data.get("cvss_v3_vector", ""),
-        )
+        return NVDCveRecord._deserialize(data)
 
     def _fetch_from_api(self, cve_id: str) -> NVDCveRecord | None:
         """Fetch a single CVE record from the NVD API with retry on 429."""
@@ -421,95 +533,7 @@ class NVDClient:
 
     def _parse_cve_record(self, cve_data: dict[str, Any]) -> NVDCveRecord:
         """Parse a raw NVD CVE JSON object into an NVDCveRecord."""
-        cve_id = cve_data.get("id", "")
-
-        # Extract English description
-        description = ""
-        for desc in cve_data.get("descriptions", []):
-            if desc.get("lang") == "en":
-                description = desc.get("value", "")
-                break
-
-        # Extract affected version ranges from configurations
-        affected_ranges: list[AffectedRange] = []
-        for config in cve_data.get("configurations", []):
-            for node in config.get("nodes", []):
-                for match in node.get("cpeMatch", []):
-                    if not match.get("vulnerable", False):
-                        continue
-                    criteria = match.get("criteria", "")
-                    # Parse CPE 2.3 string: cpe:2.3:a:vendor:product:version:...
-                    parts = criteria.split(":")
-                    vendor = parts[3] if len(parts) > 3 else ""
-                    product = parts[4] if len(parts) > 4 else ""
-
-                    ar = AffectedRange(
-                        vendor=vendor,
-                        product=product,
-                    )
-                    if "versionStartIncluding" in match:
-                        ar.version_start = match["versionStartIncluding"]
-                        ar.version_start_type = "including"
-                    elif "versionStartExcluding" in match:
-                        ar.version_start = match["versionStartExcluding"]
-                        ar.version_start_type = "excluding"
-
-                    if "versionEndExcluding" in match:
-                        ar.version_end = match["versionEndExcluding"]
-                        ar.version_end_type = "excluding"
-                    elif "versionEndIncluding" in match:
-                        ar.version_end = match["versionEndIncluding"]
-                        ar.version_end_type = "including"
-
-                    # Only include ranges that have meaningful version bounds
-                    if ar.version_start or ar.version_end:
-                        affected_ranges.append(ar)
-
-        # Extract references, categorise by tag
-        references: list[dict[str, Any]] = []
-        patch_urls: list[str] = []
-        advisory_urls: list[str] = []
-        workaround_urls: list[str] = []
-        for ref in cve_data.get("references", []):
-            url = ref.get("url", "")
-            tags = ref.get("tags", [])
-            references.append({"url": url, "tags": tags})
-            if "Patch" in tags:
-                patch_urls.append(url)
-            if "Vendor Advisory" in tags or "Third Party Advisory" in tags:
-                advisory_urls.append(url)
-            if "Mitigation" in tags or "Workaround" in tags:
-                workaround_urls.append(url)
-
-        # Extract CVSS vectors from metrics
-        cvss_v2_vector = ""
-        cvss_v3_vector = ""
-        metrics = cve_data.get("metrics", {})
-        if isinstance(metrics, dict):
-            v2_list = metrics.get("cvssMetricV2", [])
-            if isinstance(v2_list, list) and v2_list:
-                v2_data = v2_list[0].get("cvssData", {})
-                if isinstance(v2_data, dict):
-                    cvss_v2_vector = v2_data.get("vectorString", "")
-            v3_list = metrics.get("cvssMetricV31", [])
-            if not v3_list or not isinstance(v3_list, list):
-                v3_list = metrics.get("cvssMetricV30", [])
-            if isinstance(v3_list, list) and v3_list:
-                v3_data = v3_list[0].get("cvssData", {})
-                if isinstance(v3_data, dict):
-                    cvss_v3_vector = v3_data.get("vectorString", "")
-
-        return NVDCveRecord(
-            cve_id=cve_id,
-            description=description,
-            affected_ranges=affected_ranges,
-            references=references,
-            patch_urls=patch_urls,
-            advisory_urls=advisory_urls,
-            workaround_urls=workaround_urls,
-            cvss_v2_vector=cvss_v2_vector,
-            cvss_v3_vector=cvss_v3_vector,
-        )
+        return _parse_cve_record(cve_data)
 
     def get_cve(self, cve_id: str) -> NVDCveRecord | None:
         """

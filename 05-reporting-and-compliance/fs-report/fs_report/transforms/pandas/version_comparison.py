@@ -15,6 +15,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from fs_report.transforms.pandas.security_progress import (
+    _process_cve_updates,
+    _to_iso8601z,
+)
+
 logger = logging.getLogger(__name__)
 
 # Severity ordering for display
@@ -103,6 +108,7 @@ def version_comparison_transform(
     """
     additional_data = additional_data or {}
     projects_raw = additional_data.get("projects", [])
+    api_client = additional_data.get("api_client")
 
     if not projects_raw:
         logger.warning("No project data for version comparison")
@@ -120,7 +126,7 @@ def version_comparison_transform(
             logger.debug("Skipping %s — only %d version(s)", pname, len(versions))
             continue
 
-        result = _process_single_project(pname, versions)
+        result = _process_single_project(pname, versions, api_client=api_client)
         # Skip projects where all versions were filtered out (e.g. failed scans)
         if not result.get("progression"):
             continue
@@ -297,6 +303,7 @@ def version_comparison_transform(
 def _process_single_project(
     project_name: str,
     versions: list[dict[str, Any]],
+    api_client: Any = None,
 ) -> dict[str, Any]:
     """
     Build the progression data for a single project.
@@ -348,6 +355,9 @@ def _process_single_project(
     progression: list[dict[str, Any]] = []
     summary_rows: list[dict] = []
 
+    # Track CVE updates for the last pair to reuse in latest_delta (avoids double fetch)
+    _last_ext_updates: dict[str, list[dict]] = {}
+
     for i, (v_meta, f_df, c_df) in enumerate(version_dfs):
         vname = v_meta.get("name", v_meta.get("id", f"v{i+1}"))
         created = v_meta.get("created", "")
@@ -380,11 +390,14 @@ def _process_single_project(
             step["fixed_severity_summary"] = "0"
             step["new_severity_summary"] = "0"
             step["component_churn"] = []
+            step["externally_changed"] = []
+            step["externally_changed_count"] = 0
+            step["external_changes_window"] = {}
         else:
             prev_v_meta_i = version_dfs[i - 1][0]
             prev_f_df = version_dfs[i - 1][1]
             prev_c_df = version_dfs[i - 1][2]
-            fixed_df, new_df, _ = _classify_findings(prev_f_df, f_df)
+            fixed_df, new_df, unchanged_df = _classify_findings(prev_f_df, f_df)
             churn_df = _classify_components(prev_c_df, c_df)
             churn_df = _attach_findings_impact(
                 churn_df,
@@ -393,6 +406,27 @@ def _process_single_project(
                 prev_f_df,
                 f_df,
             )
+
+            # Fetch external CVE changes for this version pair
+            prev_created = prev_v_meta_i.get("created", "")
+            if api_client is not None:
+                ext_updates = _fetch_external_cve_changes(
+                    api_client, prev_created, created
+                )
+                new_df = _annotate_new_findings(new_df, ext_updates)
+                externally_changed = _build_externally_changed(
+                    unchanged_df, ext_updates
+                )
+                ext_window: dict[str, str] = {
+                    "from": prev_created[:10] if prev_created else "",
+                    "to": created[:10] if created else "",
+                }
+                if i == len(version_dfs) - 1:
+                    _last_ext_updates = ext_updates
+            else:
+                externally_changed = []
+                ext_window = {}
+
             step["fixed"] = len(fixed_df)
             step["new"] = len(new_df)
             step["from_version"] = prev_v_meta_i.get(
@@ -407,6 +441,9 @@ def _process_single_project(
                 _severity_counts(new_df)
             )
             step["component_churn"] = _df_to_records(churn_df)
+            step["externally_changed"] = externally_changed
+            step["externally_changed_count"] = len(externally_changed)
+            step["external_changes_window"] = ext_window
 
         progression.append(step)
 
@@ -427,6 +464,21 @@ def _process_single_project(
         prev_f_df,
         last_f_df,
     )
+
+    # Annotate new_latest and compute externally_changed for the latest pair.
+    # Reuse _last_ext_updates from the loop (same pair) to avoid a double fetch.
+    if api_client is not None:
+        new_latest = _annotate_new_findings(new_latest, _last_ext_updates)
+        latest_externally_changed = _build_externally_changed(
+            unchanged_latest, _last_ext_updates
+        )
+        latest_ext_window: dict[str, str] = {
+            "from": prev_v_meta.get("created", "")[:10],
+            "to": last_v_meta.get("created", "")[:10],
+        }
+    else:
+        latest_externally_changed = []
+        latest_ext_window = {}
 
     # First→Last KPI
     kpi = _compute_kpi(
@@ -489,7 +541,10 @@ def _process_single_project(
             "component_churn": _df_to_records(component_churn),
             "fixed_count": len(fixed_latest),
             "new_count": len(new_latest),
-            "unchanged_count": unchanged_latest,
+            "unchanged_count": len(unchanged_latest),
+            "externally_changed": latest_externally_changed,
+            "externally_changed_count": len(latest_externally_changed),
+            "external_changes_window": latest_ext_window,
         },
         "kpi": kpi,
         "_summary_rows": summary_rows,
@@ -637,17 +692,26 @@ def _make_findings_df(raw: list[dict]) -> pd.DataFrame:
 
     # Build a stable match key for version-over-version comparison.
     # Prefer cveId when available; otherwise build a composite fingerprint
-    # from component name + severity + risk score.  This avoids false churn
-    # when the platform assigns new finding IDs to the same vulnerability
-    # after a component version bump (e.g. musl 1.2.5-r8 → 1.2.5-r21).
+    # from component name + title (stable across platform re-scores that
+    # change severity or risk score).  If title is also empty, fall back to
+    # component_name | cwe_id | finding_type.
     has_cve = df["cveId"].notna() & (df["cveId"] != "")
-    fallback = (
-        df["component_name"].fillna("").astype(str)
+    for col in ("cwe_id", "finding_type"):
+        if col not in df.columns:
+            df[col] = ""
+
+    title_str = df["title"].fillna("").astype(str).str.strip()
+    has_title = title_str != ""
+    comp_str = df["component_name"].fillna("").astype(str)
+    fallback_with_title = comp_str + "|" + title_str
+    fallback_no_title = (
+        comp_str
         + "|"
-        + df["severity"].astype(str)
+        + df["cwe_id"].fillna("").astype(str)
         + "|"
-        + pd.to_numeric(df["risk"], errors="coerce").fillna(0).astype(str)
+        + df["finding_type"].fillna("").astype(str)
     )
+    fallback = fallback_with_title.where(has_title, fallback_no_title)
     df["match_key"] = df["cveId"].where(has_cve, fallback)
 
     return df
@@ -700,17 +764,18 @@ def _make_components_df(raw: list[dict]) -> pd.DataFrame:
 
 def _classify_findings(
     baseline: pd.DataFrame, current: pd.DataFrame
-) -> tuple[pd.DataFrame, pd.DataFrame, int]:
-    """Return (fixed, new, unchanged_count)."""
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Return (fixed, new, unchanged) as DataFrames."""
     baseline_keys = set(baseline["match_key"])
     current_keys = set(current["match_key"])
 
     fixed_keys = baseline_keys - current_keys
     new_keys = current_keys - baseline_keys
-    unchanged_count = len(baseline_keys & current_keys)
+    unchanged_keys = baseline_keys & current_keys
 
     fixed_df = baseline[baseline["match_key"].isin(fixed_keys)].copy()
     new_df = current[current["match_key"].isin(new_keys)].copy()
+    unchanged_df = current[current["match_key"].isin(unchanged_keys)].copy()
 
     # Sort by severity rank then risk descending
     for df in (fixed_df, new_df):
@@ -723,7 +788,7 @@ def _classify_findings(
         columns="_sev_rank"
     )
 
-    return fixed_df, new_df, unchanged_count
+    return fixed_df, new_df, unchanged_df
 
 
 def _classify_components(baseline: pd.DataFrame, current: pd.DataFrame) -> pd.DataFrame:
@@ -854,3 +919,147 @@ def _compute_kpi(
         "baseline_version": baseline_info.get("name", "First"),
         "current_version": current_info.get("name", "Latest"),
     }
+
+
+# ---------------------------------------------------------------------------
+# External CVE change helpers
+# ---------------------------------------------------------------------------
+
+
+def _fetch_external_cve_changes(
+    api_client: Any,
+    baseline_created: str,
+    current_created: str,
+) -> dict[str, list[dict]]:
+    """Fetch and classify CVE updates between two version creation dates.
+
+    Returns the same structure as ``_process_cve_updates``:
+    ``{"added": [...], "severity_escalated": [...], "exploit_gained": [...], ...}``
+    Returns an empty dict if ``api_client`` is None or dates are missing.
+    """
+    if api_client is None:
+        return {}
+
+    start = _to_iso8601z(baseline_created)
+    end = _to_iso8601z(current_created)
+    if not start or not end:
+        return {}
+
+    params: dict[str, Any] = {
+        "startDate": start,
+        "endDate": end,
+        "limit": 100,
+        "offset": 0,
+    }
+    results: list[dict] = []
+    while True:
+        try:
+            batch = api_client.get("/public/v0/cves/updates", params=params)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Could not fetch CVE updates (offset=%d): %s", params["offset"], exc
+            )
+            break
+        if not batch:
+            break
+        results.extend(batch)
+        if len(batch) < 100:
+            break
+        params["offset"] += 100
+
+    logger.debug("Fetched %d CVE updates for window %s → %s", len(results), start, end)
+    return _process_cve_updates(results)
+
+
+def _build_externally_changed(
+    unchanged_df: pd.DataFrame,
+    cve_updates: dict[str, list[dict]],
+) -> list[dict]:
+    """Cross-reference unchanged CVE findings with severity/exploit updates.
+
+    Returns a list of dicts describing findings that were present in both
+    versions but whose CVE metadata changed externally during the window.
+    A finding qualifies if its CVE ID appears in ``severity_escalated``,
+    ``exploit_gained``, or ``exploit_subsided``.
+    """
+    if unchanged_df.empty or not cve_updates:
+        return []
+
+    has_cve = unchanged_df["cveId"].notna() & (unchanged_df["cveId"] != "")
+    cve_df = unchanged_df[has_cve]
+    if cve_df.empty:
+        return []
+
+    unchanged_cve_ids = set(cve_df["cveId"].astype(str))
+    result: list[dict] = []
+
+    for change_type in ("severity_escalated", "exploit_gained", "exploit_subsided"):
+        for upd in cve_updates.get(change_type, []):
+            cve_id = upd.get("cve_id", "")
+            if cve_id not in unchanged_cve_ids:
+                continue
+            matching = cve_df[cve_df["cveId"] == cve_id]
+            for _, row in matching.iterrows():
+                entry: dict[str, Any] = {
+                    "cve_id": cve_id,
+                    "component_name": row.get("component_name", ""),
+                    "change_type": change_type,
+                    "projects": upd.get("projects", []),
+                }
+                if change_type == "severity_escalated":
+                    entry["old_severity"] = upd.get("old_severity")
+                    entry["new_severity"] = upd.get("new_severity")
+                    entry["old_exploit"] = None
+                    entry["new_exploit"] = None
+                else:
+                    entry["old_severity"] = None
+                    entry["new_severity"] = upd.get("severity")
+                    entry["old_exploit"] = upd.get("old_exploit")
+                    entry["new_exploit"] = upd.get("new_exploit")
+                result.append(entry)
+
+    return result
+
+
+def _annotate_new_findings(
+    new_df: pd.DataFrame,
+    cve_updates: dict[str, list[dict]],
+) -> pd.DataFrame:
+    """Add ``external_change_note`` field to new findings whose CVE was
+    externally updated during the comparison window.
+
+    The note communicates that the severity escalation or exploit gain is not
+    a developer-introduced regression.
+    """
+    if new_df.empty or not cve_updates:
+        return new_df
+
+    escalated = {
+        u.get("cve_id", ""): u for u in cve_updates.get("severity_escalated", [])
+    }
+    exploit_gained = {
+        u.get("cve_id", ""): u for u in cve_updates.get("exploit_gained", [])
+    }
+
+    def _note(row: pd.Series) -> str:
+        cve_id = str(row.get("cveId") or "")
+        if not cve_id:
+            return ""
+        if cve_id in escalated:
+            u = escalated[cve_id]
+            return (
+                f"Severity escalated from {u.get('old_severity')} to "
+                f"{u.get('new_severity')} by platform update "
+                f"(not a developer-introduced regression)"
+            )
+        if cve_id in exploit_gained:
+            u = exploit_gained[cve_id]
+            return (
+                f"Exploit maturity gained ({u.get('new_exploit')}) by platform update "
+                f"(not a developer-introduced regression)"
+            )
+        return ""
+
+    new_df = new_df.copy()
+    new_df["external_change_note"] = new_df.apply(_note, axis=1)
+    return new_df

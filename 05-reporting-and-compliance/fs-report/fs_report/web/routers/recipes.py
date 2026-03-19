@@ -23,6 +23,9 @@ async def list_recipes() -> JSONResponse:
             "category": r.category or "Uncategorized",
             "description": r.description or "",
             "auto_run": r.auto_run,
+            "requires_project": r.requires_project,
+            "requires_project_or_folder": r.requires_project_or_folder,
+            "requires_cve": r.requires_cve,
         }
         for r in recipe_list
     ]

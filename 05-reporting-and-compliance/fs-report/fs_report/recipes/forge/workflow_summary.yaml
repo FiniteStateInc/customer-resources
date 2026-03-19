@@ -1,0 +1,16 @@
+name: "Workflow Summary"
+category: assessment
+description: "Session summary for forge workflow runs — renders whatever steps the journal contains."
+execution_order: 50
+auto_run: false
+
+transform_function: workflow_summary_transform
+
+template: workflow_summary.html
+
+output:
+  table: false
+  formats:
+    - html
+    - md
+    - json

@@ -36,6 +36,45 @@ from fs_report.models import Recipe, ReportData
 logger = logging.getLogger(__name__)
 
 
+def _slack_mrkdwn_to_html(text: str) -> str:
+    """Convert Slack mrkdwn formatting to HTML.
+
+    Handles: *bold*, _italic_, ~strikethrough~, <url|label> links,
+    and newlines → <br>.  Returns a Markup string (safe for Jinja2).
+    """
+    import re
+
+    from markupsafe import Markup
+
+    # Escape HTML entities first
+    text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    h = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # Slack links: <url|label> → <a href="url">label</a>
+    h = re.sub(
+        r"&lt;(https?://[^|&]+)\|([^&]+)&gt;",
+        r'<a href="\1" style="color:#1976d2;">\2</a>',
+        h,
+    )
+    # Bare Slack links: <url> → <a href="url">url</a>
+    h = re.sub(
+        r"&lt;(https?://[^&]+)&gt;",
+        r'<a href="\1" style="color:#1976d2;">\1</a>',
+        h,
+    )
+
+    # Bold: *text* (not preceded/followed by space inside)
+    h = re.sub(r"\*([^\*\n]+)\*", r"<strong>\1</strong>", h)
+    # Italic: _text_
+    h = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"<em>\1</em>", h)
+    # Strikethrough: ~text~
+    h = re.sub(r"~([^~\n]+)~", r"<s>\1</s>", h)
+    # Newlines
+    h = h.replace("\n", "<br>")
+
+    return Markup(h)
+
+
 def convert_to_native_types(obj: Any, _depth: int = 0) -> Any:
     """
     Recursively convert pandas/numpy objects to native Python types.
@@ -129,6 +168,7 @@ class HTMLRenderer:
             loader=FileSystemLoader(template_dir),
             autoescape=select_autoescape(["html", "xml"]),
         )
+        self.env.filters["slack_mrkdwn"] = _slack_mrkdwn_to_html
 
     def render(
         self, recipe: Recipe, report_data: ReportData, output_path: Path
@@ -139,8 +179,17 @@ class HTMLRenderer:
             template_name = getattr(recipe, "template", None)
             if template_name:
                 template = self.env.get_template(template_name)
-            elif recipe.output.charts and len(recipe.output.charts) > 1:
-                # Use executive summary template for multiple charts
+            elif (
+                recipe.output.charts
+                and len(recipe.output.charts) > 1
+                and recipe.name
+                in (
+                    "Executive Summary",
+                    "Executive Dashboard",
+                    "Component Vulnerability Analysis",
+                )
+            ):
+                # Use executive summary template only for recipes designed for it
                 template = self._get_template("executive_summary", recipe.name)
             else:
                 # Use default template for single chart
@@ -557,6 +606,26 @@ class HTMLRenderer:
                         for k, v in value.items()
                     }
                 template_data[key] = value
+        # For recipes with custom templates, the transform result may contain
+        # a "charts" dict that should override the recipe's ChartConfig list.
+        # The reserved-key guard above blocks this, so apply it explicitly.
+        if recipe.template and additional_data:
+            for key in (
+                "charts",
+                "summary",
+                "cve_updates",
+                "cve_update_summary",
+                "dossiers",
+                "actions",
+                "suppressed",
+                "ai_prompts",
+                "coverage",
+                "cra_findings",
+                "mode",
+            ):
+                if key in additional_data:
+                    template_data[key] = additional_data[key]
+
         # If the main data is a dict (custom transform), merge all keys into template_data
         if isinstance(report_data.data, dict):
             for key, value in report_data.data.items():

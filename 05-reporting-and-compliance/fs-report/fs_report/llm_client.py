@@ -73,18 +73,22 @@ MODEL_MAP: dict[str, tuple[str, str]] = {
 
 # Env var detection order
 _PROVIDER_ENV_VARS: list[tuple[str, str]] = [
-    ("anthropic", "ANTHROPIC_AUTH_TOKEN"),
+    ("anthropic", "ANTHROPIC_API_KEY"),
     ("openai", "OPENAI_API_KEY"),
     ("gemini", "GEMINI_API_KEY"),
     ("copilot", "GITHUB_TOKEN"),
 ]
+
+# Legacy env var kept for backwards compatibility
+_ANTHROPIC_LEGACY_VAR = "ANTHROPIC_AUTH_TOKEN"
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 # Canonical list of env vars that indicate AI provider credentials are available.
 # Import this instead of duplicating the list.
 AI_ENV_VARS: tuple[str, ...] = (
-    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",  # deprecated, kept for detection
     "OPENAI_API_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
@@ -363,9 +367,14 @@ class LLMClient:
         else:
             logger.info("AI cache disabled (TTL=0, will regenerate every run)")
 
+    def _connect(self) -> sqlite3.Connection:
+        """Open a connection to the cache database with a 30s busy timeout."""
+        return sqlite3.connect(str(self.db_path), timeout=30.0)
+
     def _init_cache_tables(self) -> None:
         """Ensure remediation cache tables exist."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS cve_remediations (
                     cve_id TEXT PRIMARY KEY,
@@ -441,6 +450,18 @@ class LLMClient:
             env_map = dict(_PROVIDER_ENV_VARS)
             env_var = env_map[override]
             api_key = os.getenv(env_var, "")
+            # Anthropic: fall back to deprecated ANTHROPIC_AUTH_TOKEN
+            if not api_key and override == "anthropic":
+                api_key = os.getenv(_ANTHROPIC_LEGACY_VAR, "")
+                if api_key:
+                    import warnings
+
+                    warnings.warn(
+                        "ANTHROPIC_AUTH_TOKEN is deprecated. "
+                        "Use ANTHROPIC_API_KEY instead.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
             if not api_key:
                 raise ValueError(
                     f"AI provider '{override}' requires the {env_var} "
@@ -453,6 +474,17 @@ class LLMClient:
             api_key = os.getenv(env_var, "")
             if api_key:
                 return provider, api_key
+        # Anthropic: fall back to deprecated ANTHROPIC_AUTH_TOKEN
+        api_key = os.getenv(_ANTHROPIC_LEGACY_VAR, "")
+        if api_key:
+            import warnings
+
+            warnings.warn(
+                "ANTHROPIC_AUTH_TOKEN is deprecated. " "Use ANTHROPIC_API_KEY instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return "anthropic", api_key
         # Also check GOOGLE_API_KEY as Gemini fallback
         google_key = os.getenv("GOOGLE_API_KEY", "")
         if google_key:
@@ -593,7 +625,7 @@ class LLMClient:
     def get_cached_remediation(self, cve_id: str) -> dict[str, Any] | None:
         """Look up cached remediation guidance for a CVE (respects TTL)."""
         try:
-            with sqlite3.connect(str(self.db_path)) as conn:
+            with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
                     "SELECT * FROM cve_remediations WHERE cve_id = ?", (cve_id,)
@@ -608,13 +640,16 @@ class LLMClient:
                     logger.debug(f"Cache expired for {cve_id}")
         except sqlite3.OperationalError:
             # Table may not exist yet (e.g. shared DB without LLM tables)
-            self._init_cache_tables()
+            try:
+                self._init_cache_tables()
+            except sqlite3.OperationalError as exc:
+                logger.warning(f"Remediation cache unavailable: {exc}")
         return None
 
     def cache_remediation(self, cve_id: str, remediation: dict[str, Any]) -> None:
         """Store remediation guidance in the cache."""
         try:
-            with sqlite3.connect(str(self.db_path)) as conn:
+            with self._connect() as conn:
                 conn.execute(
                     """INSERT OR REPLACE INTO cve_remediations
                        (cve_id, component_name, fix_version, guidance, workaround,
@@ -637,14 +672,17 @@ class LLMClient:
                     ),
                 )
         except sqlite3.OperationalError:
-            self._init_cache_tables()
-            # Retry once after creating tables
-            self.cache_remediation(cve_id, remediation)
+            try:
+                self._init_cache_tables()
+                # Retry once after creating tables
+                self.cache_remediation(cve_id, remediation)
+            except sqlite3.OperationalError as exc:
+                logger.warning(f"Remediation cache write failed: {exc}")
 
     def get_cached_summary(self, cache_key: str) -> str | None:
         """Look up cached AI summary (portfolio or project level, respects TTL)."""
         try:
-            with sqlite3.connect(str(self.db_path)) as conn:
+            with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
                     "SELECT * FROM ai_summary_cache WHERE cache_key = ?", (cache_key,)
@@ -656,7 +694,10 @@ class LLMClient:
                         return row_dict.get("summary_text")
                     logger.debug(f"AI summary cache expired: {cache_key}")
         except sqlite3.OperationalError:
-            self._init_cache_tables()
+            try:
+                self._init_cache_tables()
+            except sqlite3.OperationalError as exc:
+                logger.warning(f"AI summary cache unavailable: {exc}")
         return None
 
     def cache_summary(
@@ -664,7 +705,7 @@ class LLMClient:
     ) -> None:
         """Store an AI summary in the cache."""
         try:
-            with sqlite3.connect(str(self.db_path)) as conn:
+            with self._connect() as conn:
                 conn.execute(
                     """INSERT OR REPLACE INTO ai_summary_cache
                        (cache_key, scope, summary_text, generated_by, generated_at)
@@ -678,13 +719,16 @@ class LLMClient:
                     ),
                 )
         except sqlite3.OperationalError:
-            self._init_cache_tables()
-            self.cache_summary(cache_key, scope, summary_text, model)
+            try:
+                self._init_cache_tables()
+                self.cache_summary(cache_key, scope, summary_text, model)
+            except sqlite3.OperationalError as exc:
+                logger.warning(f"AI summary cache write failed: {exc}")
 
     def get_cached_cve_detail(self, finding_id: str) -> dict[str, Any] | None:
         """Look up cached CVE detail metadata."""
         try:
-            with sqlite3.connect(str(self.db_path)) as conn:
+            with self._connect() as conn:
                 row = conn.execute(
                     "SELECT cve_metadata FROM cve_detail_cache WHERE finding_id = ?",
                     (finding_id,),
@@ -693,13 +737,16 @@ class LLMClient:
                     result: dict[str, Any] = json.loads(row[0])
                     return result
         except sqlite3.OperationalError:
-            self._init_cache_tables()
+            try:
+                self._init_cache_tables()
+            except sqlite3.OperationalError as exc:
+                logger.warning(f"CVE detail cache unavailable: {exc}")
         return None
 
     def cache_cve_detail(self, finding_id: str, metadata: Any) -> None:
         """Store CVE detail metadata in the cache."""
         try:
-            with sqlite3.connect(str(self.db_path)) as conn:
+            with self._connect() as conn:
                 conn.execute(
                     """INSERT OR REPLACE INTO cve_detail_cache
                        (finding_id, cve_metadata, fetched_at)
@@ -711,13 +758,16 @@ class LLMClient:
                     ),
                 )
         except sqlite3.OperationalError:
-            self._init_cache_tables()
-            self.cache_cve_detail(finding_id, metadata)
+            try:
+                self._init_cache_tables()
+                self.cache_cve_detail(finding_id, metadata)
+            except sqlite3.OperationalError as exc:
+                logger.warning(f"CVE detail cache write failed: {exc}")
 
     def get_cached_exploit_detail(self, finding_id: str) -> dict[str, Any] | None:
         """Look up cached exploit detail metadata."""
         try:
-            with sqlite3.connect(str(self.db_path)) as conn:
+            with self._connect() as conn:
                 row = conn.execute(
                     "SELECT exploit_metadata FROM exploit_detail_cache WHERE finding_id = ?",
                     (finding_id,),
@@ -726,13 +776,16 @@ class LLMClient:
                     result: dict[str, Any] = json.loads(row[0])
                     return result
         except sqlite3.OperationalError:
-            self._init_cache_tables()
+            try:
+                self._init_cache_tables()
+            except sqlite3.OperationalError as exc:
+                logger.warning(f"Exploit detail cache unavailable: {exc}")
         return None
 
     def cache_exploit_detail(self, finding_id: str, metadata: Any) -> None:
         """Store exploit detail metadata in the cache."""
         try:
-            with sqlite3.connect(str(self.db_path)) as conn:
+            with self._connect() as conn:
                 conn.execute(
                     """INSERT OR REPLACE INTO exploit_detail_cache
                        (finding_id, exploit_metadata, fetched_at)
@@ -744,8 +797,11 @@ class LLMClient:
                     ),
                 )
         except sqlite3.OperationalError:
-            self._init_cache_tables()
-            self.cache_exploit_detail(finding_id, metadata)
+            try:
+                self._init_cache_tables()
+                self.cache_exploit_detail(finding_id, metadata)
+            except sqlite3.OperationalError as exc:
+                logger.warning(f"Exploit detail cache write failed: {exc}")
 
     # =========================================================================
     # Bullet-point formatters (replace verbose JSON dumps in prompts)

@@ -10,15 +10,22 @@ This guide explains each report available in the Finite State Reporting Kit, wha
 2. [Report Categories](#report-categories)
 3. [Available Reports](#available-reports)
    - [Executive Summary](#executive-summary) *(Operational)*
+   - [Security Progress](#security-progress) *(Operational, on-demand: posture improvement tracking)*
    - [Scan Analysis](#scan-analysis) *(Operational)*
    - [User Activity](#user-activity) *(Operational)*
    - [Component Vulnerability Analysis](#component-vulnerability-analysis) *(Assessment)*
    - [Findings by Project](#findings-by-project) *(Assessment)*
    - [Component List](#component-list) *(Assessment)*
+   - [License Report](#license-report) *(Assessment, on-demand: license risk by category)*
    - [Triage Prioritization](#triage-prioritization) *(Assessment)*
+   - [False Positive Analysis](#false-positive-analysis) *(Assessment, on-demand: FP candidate identification)*
+   - [Scan Quality](#scan-quality) *(Assessment, on-demand: per-asset coverage and quality signals)*
+   - [CRA Compliance](#cra-compliance) *(Assessment, on-demand: EU Cyber Resilience Act notification scope)*
+   - [Component Impact](#component-impact) *(Assessment, on-demand: portfolio blast radius for a named component)*
    - [CVE Impact](#cve-impact) *(Assessment, on-demand: CVE dossier with affected projects)*
    - [Version Comparison](#version-comparison) *(Assessment, on-demand: full version & component changelog)*
    - [Executive Dashboard](#executive-dashboard) *(Assessment, on-demand: executive-level security overview)*
+   - [Component Remediation Package](#component-remediation-package) *(Assessment, on-demand: zero-day component remediation)*
    - [Remediation Package](#remediation-package) *(Assessment, on-demand: actionable remediation plan)*
 4. [Output Formats](#output-formats)
 5. [Filtering Options](#filtering-options)
@@ -63,6 +70,7 @@ Operational reports show activity and trends within the specified time window. T
 | Report | What it measures over the period |
 |--------|----------------------------------|
 | **Executive Summary** | Findings detected during the window |
+| **Security Progress** | Posture delta, triage funnel, and CVE change tracking (on-demand) |
 | **Scan Analysis** | Scans run during the window |
 | **User Activity** | User actions during the window |
 
@@ -77,7 +85,12 @@ Assessment reports show the current security state of the target — the latest 
 | **Component Vulnerability Analysis** | Current vulnerability posture by component |
 | **Findings by Project** | Current findings inventory per project |
 | **Component List** | Current software component inventory with license analysis |
+| **License Report** | License risk distribution by category (on-demand) |
 | **Triage Prioritization** | Current triage priorities based on today's data |
+| **False Positive Analysis** | FP candidates identified by mechanical signals and AI (on-demand) |
+| **Scan Quality** | Per-asset scan type coverage and unpack quality scores (on-demand) |
+| **CRA Compliance** | KEV and known-exploit findings requiring EU CRA notification (on-demand) |
+| **Component Impact** | Portfolio blast radius for a named component (on-demand) |
 | **Version Comparison** | Full version and component changelog across all version pairs (on-demand) |
 
 > **Tip:** If you need to date-filter an Assessment report (e.g., "only show findings detected after January 1"), use the `--detected-after YYYY-MM-DD` flag. This injects a date floor without changing the report's current-state nature.
@@ -116,6 +129,57 @@ Assessment reports show the current security state of the target — the latest 
 **Example command:**
 ```bash
 fs-report run --recipe "Executive Summary" --period 90d
+```
+
+---
+
+### Security Progress
+
+**Category:** Operational (on-demand) — data is filtered to the specified time period.
+
+**Purpose:** Track security posture improvement over time. Shows severity trends for findings detected in the window, a triage funnel snapshot, and CVE-level change tracking sourced from the `/public/v0/cves/updates` endpoint.
+
+**Who should use it:** Security teams, programme managers, vulnerability management leads
+
+**Important:** This report does **not** run by default. You must explicitly request it:
+
+```bash
+fs-report run --recipe "Security Progress" --period 30d
+```
+
+**What it shows:**
+- Current severity distribution of open findings (CRITICAL / HIGH / MEDIUM / LOW)
+- Triage funnel snapshot — findings by status (OPEN, IN_TRIAGE, RESOLVED, FALSE_POSITIVE, etc.)
+- CVE change tracking for the period: new CVEs, retracted CVEs, severity escalations/downgrades, and exploit maturity changes
+- Flat findings export (Severity, Status, Detected Date, Project, Component, CVE ID, Title)
+
+**Key visualizations:**
+- **Current Severity Distribution** — bar chart of open findings by severity
+- **Triage Status Distribution** — pie chart of all findings by triage status
+- **CVE Changes This Period** — bar chart of CVE-level changes (added, retracted, severity ↑/↓, exploit gained)
+
+**CVE change categories:**
+
+| Category | Meaning |
+|----------|---------|
+| **Added** | New CVEs introduced to the NVD database during the period |
+| **Retracted** | CVEs removed or retracted |
+| **Severity Escalated** | CVSS severity increased (e.g. HIGH → CRITICAL) |
+| **Severity Downgraded** | CVSS severity decreased |
+| **Exploit Gained** | Exploit maturity increased (e.g. POC → WEAPONIZED) |
+
+**Formats:** HTML, CSV, XLSX, Markdown
+
+**Example commands:**
+```bash
+# Portfolio-wide progress for the last 30 days
+fs-report run --recipe "Security Progress" --period 30d
+
+# Scoped to a specific project
+fs-report run --recipe "Security Progress" --project "MyProject" --period 30d
+
+# Scoped to a folder
+fs-report run --recipe "Security Progress" --folder "Product Line A" --period 90d
 ```
 
 ---
@@ -332,6 +396,58 @@ fs-report run --recipe "Component List" --detected-after 2026-01-01
 
 # Specific version
 fs-report run --recipe "Component List" --version "1234567890"
+```
+
+---
+
+### License Report
+
+**Category:** Assessment (on-demand) — shows the current license risk posture regardless of time period.
+
+**Purpose:** Focused license risk analysis that groups all components by license risk category. Complements the Component List report's per-component view with an aggregated, risk-first perspective suitable for legal and compliance reviews.
+
+**Who should use it:** Legal teams, compliance officers, open-source programme offices, security auditors
+
+**Important:** This report does **not** run by default. You must explicitly request it:
+
+```bash
+fs-report run --recipe "License Report"
+```
+
+**What it shows:**
+- All components grouped by declared license and risk category
+- Risk categories: Strong Copyleft, Weak Copyleft, Proprietary/Restricted, Unknown, Permissive
+- Component count per license with associated projects
+- License risk distribution pie chart
+
+**Risk categories:**
+
+| Category | Examples | Risk |
+|----------|---------|------|
+| **Strong Copyleft** | GPL-2.0, GPL-3.0, AGPL-3.0 | Source-disclosure obligations apply |
+| **Weak Copyleft** | LGPL-2.1, MPL-2.0 | Limited disclosure obligations |
+| **Proprietary/Restricted** | Commercial, EULA | Usage restrictions may apply |
+| **Unknown** | Unlicensed, non-SPDX names | Cannot assess risk |
+| **Permissive** | MIT, Apache-2.0, BSD-2-Clause | No disclosure obligations |
+
+**Key output columns:**
+- **License** — SPDX identifier or raw license name
+- **Risk Category** — classification as above
+- **Component Count** — number of components with this license
+- **Projects** — projects where this license appears
+
+**Formats:** HTML, CSV, XLSX
+
+**Example commands:**
+```bash
+# Full portfolio license risk summary
+fs-report run --recipe "License Report"
+
+# Scoped to a specific project
+fs-report run --recipe "License Report" --project "MyProject"
+
+# Scoped to a folder
+fs-report run --recipe "License Report" --folder "Product Line A"
 ```
 
 ---
@@ -592,7 +708,7 @@ Supports multiple LLM providers (auto-detected from environment variables):
 
 | Provider | Env Variable | Summary Model | Fast Model |
 |----------|-------------|---------------|------------|
-| **Anthropic** (default) | `ANTHROPIC_AUTH_TOKEN` | Claude Opus | Claude Haiku |
+| **Anthropic** (default) | `ANTHROPIC_API_KEY` | Claude Opus | Claude Haiku |
 | **OpenAI** | `OPENAI_API_KEY` | GPT-4o | GPT-4o-mini |
 | **GitHub Copilot** | `GITHUB_TOKEN` | GPT-4o | GPT-4o-mini |
 
@@ -754,6 +870,208 @@ The `--serve` flag starts a lightweight local server on `http://localhost:8080` 
 
 ---
 
+### False Positive Analysis
+
+**Category:** Assessment (on-demand) — evaluates current findings regardless of time period.
+
+**Purpose:** Identify likely false positives in your open findings inventory using mechanical signal checks and optional AI applicability analysis. Produces VEX recommendations for confirmed candidates so teams can suppress noise quickly and focus on real risk.
+
+**Who should use it:** Security analysts, triage leads, vulnerability management teams
+
+**Important:** This report does **not** run by default. You must explicitly request it:
+
+```bash
+fs-report run --recipe "False Positive Analysis" --period 30d
+```
+
+**Tier 1 — mechanical checks (no API key needed):**
+
+| Signal | Confidence | Description |
+|--------|-----------|-------------|
+| **Cross-project propagation** | HIGH | Same CVE + component already triaged FP in another project |
+| **Historical component pattern** | MEDIUM | Component version has a high FP ratio in triage history |
+| **NVD version-range mismatch** | MEDIUM | Component version falls outside the NVD-specified affected range |
+| **Rejected/Disputed CVE** | HIGH / MEDIUM | NVD vulnerability status is Rejected or Disputed |
+| **Unreachable code** | HIGH | Negative reachability score — code path cannot be reached |
+
+**Tier 2 — AI applicability analysis (requires `--ai`):**
+
+| Signal | Description |
+|--------|-------------|
+| **AI component not affected** | LLM determines the component is not affected by the CVE(s) |
+| **AI finding not affected** | LLM determines the individual finding is not applicable |
+
+Component-level prompts are evaluated first; if the AI marks a component `not_affected`, all findings on that component are flagged without running individual finding prompts.
+
+**Key outputs:**
+- **FP Candidates** — open findings that triggered one or more signals, with rolled-up confidence (HIGH / MEDIUM / LOW)
+- **VEX Recommendations** — `NOT_AFFECTED` recommendations with justification codes for batch triage
+- **Signal detail** — per-signal breakdown for analyst review
+- **Charts** — FP candidates by detection method, by severity, and by component
+
+**Formats:** HTML, CSV, XLSX, Markdown
+
+**Example commands:**
+```bash
+# Mechanical checks only (no API key needed)
+fs-report run --recipe "False Positive Analysis" --period 30d
+
+# With AI applicability analysis
+fs-report run --recipe "False Positive Analysis" --period 30d --ai
+
+# Export AI prompts for manual review (no API key needed)
+fs-report run --recipe "False Positive Analysis" --period 30d --ai-prompts
+
+# Scoped to a single project
+fs-report run --recipe "False Positive Analysis" --project "MyProject"
+```
+
+---
+
+### Scan Quality
+
+**Category:** Assessment (on-demand) — evaluates scan coverage for assets active in the period.
+
+**Purpose:** Surface customer-facing scan quality signals — which scan types cover each asset (SCA, SAST, CONFIG), where coverage gaps exist, and what the binary unpack quality score is for binary SCA scans. Distinct from Scan Analysis (which tracks throughput and failure rates): this report asks "how good is the scanning we do have?"
+
+**Who should use it:** DevSecOps teams, platform administrators, security engineers
+
+**Important:** This report does **not** run by default. You must explicitly request it:
+
+```bash
+fs-report run --recipe "Scan Quality" --period 30d
+```
+
+**What it shows:**
+- Per-asset scan type coverage matrix (SCA, SAST, CONFIG, Binary SCA, Vulnerability Analysis)
+- Coverage score per asset (0–5, one point per scan type present)
+- Aggregate coverage breakdown across the portfolio
+- Binary SCA unpack evaluation scores (1–100) with short summaries and potential issues, for the 10 most-recent binary SCA scans
+- Scan type distribution bar chart
+
+**Key metrics:**
+
+| Metric | What it tells you |
+|--------|-------------------|
+| **Coverage Score** | How many distinct scan types cover an asset (0 = none, 5 = all types) |
+| **Avg Coverage Score** | Portfolio-wide average — lower values indicate coverage gaps |
+| **Unpack Score** | Binary firmware unpack quality (1–100); low scores mean poor extraction and missed components |
+| **Scan Type Breakdown** | Which scan types dominate the portfolio |
+
+**Formats:** HTML, CSV, XLSX, Markdown
+
+**Example commands:**
+```bash
+# Portfolio-wide scan quality
+fs-report run --recipe "Scan Quality" --period 30d
+
+# Scoped to a specific folder
+fs-report run --recipe "Scan Quality" --folder "Product Line A" --period 30d
+```
+
+---
+
+### CRA Compliance
+
+**Category:** Assessment (on-demand) — shows current findings regardless of time period.
+
+**Purpose:** Identify exploited vulnerabilities that may trigger an EU Cyber Resilience Act notification obligation. Under the CRA, manufacturers must notify ENISA within 24 hours of becoming aware of an actively exploited vulnerability in a product with digital elements. This report surfaces all findings where the CVE appears in the CISA KEV catalogue or has a known exploit — the primary signals for CRA notification scope.
+
+**Who should use it:** Compliance teams, legal counsel, CISOs, product security officers
+
+**Important:** This report does **not** run by default. You must explicitly request it:
+
+```bash
+fs-report run --recipe "CRA Compliance" --period 30d
+```
+
+**What it shows:**
+- All findings with a KEV hit or known exploit (excluding findings marked FALSE_POSITIVE or NOT_AFFECTED)
+- CRA trigger label for each finding: "KEV" or "Known Exploit"
+- CVSS score, EPSS score, severity, component, project, and triage status
+- Per-project dossiers with top CVEs by CVSS score
+- Summary counts: total in-scope findings, KEV hits, known exploit hits, Critical/High counts
+
+**Key data columns:**
+
+| Column | Description |
+|--------|-------------|
+| **CRA Trigger** | KEV or Known Exploit |
+| **CVE ID** | CVE identifier |
+| **Severity** | CRITICAL / HIGH / MEDIUM / LOW |
+| **CVSS Score** | 0–10 scale |
+| **Component** | Affected component and version |
+| **Project** | Project containing the finding |
+| **EPSS Score / Percentile** | Exploit Prediction Scoring System |
+| **Status** | Current triage status |
+
+**Formats:** HTML, CSV, XLSX, Markdown
+
+**Example commands:**
+```bash
+# Portfolio-wide CRA scope assessment
+fs-report run --recipe "CRA Compliance" --period 30d
+
+# Scoped to a specific project
+fs-report run --recipe "CRA Compliance" --project "MyProduct"
+
+# Scoped to a folder
+fs-report run --recipe "CRA Compliance" --folder "Product Line A"
+```
+
+---
+
+### Component Impact
+
+**Category:** Assessment (on-demand) — shows current portfolio exposure for a named component.
+
+**Purpose:** Answer "where in our portfolio do we have component X, and what CVEs affect it?" Useful for zero-day response when a component is reported compromised before a CVE is published, or for supply-chain impact analysis.
+
+**Requires `--component`** to specify the component name to analyse.
+
+**Who should use it:** Security incident responders, security engineers, supply-chain risk teams
+
+**Important:** This report does **not** run by default. You must explicitly request it:
+
+```bash
+fs-report run --recipe "Component Impact" --component "openssl"
+```
+
+**How it works:** The report uses the component search API (`/public/v0/components/search`) for fast portfolio-wide lookup, then enriches each location with CVE findings context (count, severity breakdown, top 3 CVEs). Projects with active CVE findings are listed first, sorted by severity.
+
+**What it shows:**
+- Every project in the portfolio that contains the named component, with detected version(s)
+- CVE count, Critical/High/Medium counts, and top 3 CVEs per project
+- Portfolio-level blast radius summary: projects with component, projects with findings, total CVEs
+- Optional version range filtering to scope to affected versions only
+
+**Key outputs:**
+
+| Section | Details |
+|---------|---------|
+| **Summary header** | Component name, version range, projects affected, total CVEs |
+| **Location table** | One row per project: detected versions, CVE count, severity breakdown, top CVEs |
+| **CSV export** | One row per project with component, version(s), project, CVE count, Critical/High/Medium |
+
+**Formats:** HTML, CSV, XLSX, Markdown
+
+**Example commands:**
+```bash
+# All projects containing openssl
+fs-report run --recipe "Component Impact" --component "openssl"
+
+# Scope to a specific version range (affected versions only)
+fs-report run --recipe "Component Impact" --component "openssl" --component-version ">=3.0,<3.0.7"
+
+# Scope to a specific exact version
+fs-report run --recipe "Component Impact" --component "log4j-core" --component-version "2.14.1"
+
+# Scope to a folder
+fs-report run --recipe "Component Impact" --component "busybox" --folder "IoT Products"
+```
+
+---
+
 ### CVE Impact
 
 **Category:** Assessment (on-demand) — CVE-centric dossier showing affected projects, reachability, and exploit details.
@@ -837,6 +1155,8 @@ In addition to the **Summary** (one row per version), the report produces detail
 - **CSV:** Main file `Version Comparison.csv` (summary) plus `Version Comparison_Detail_Findings.csv`, `Version Comparison_Detail_Findings_Churn.csv`, and `Version Comparison_Detail_Component_Churn.csv` when data exists.
 - **XLSX:** Single workbook with sheets **Summary**, **Findings Detail**, **Findings Churn**, and **Component Churn** (sheets omitted if empty).
 
+**Note on "new" findings:** A finding may appear as "new" in a version even when the component was not updated, because the CVE itself was published or had its severity changed externally (NVD update). Use the [Security Progress](#security-progress) report to track CVE-level changes from the NVD during the same period.
+
 **What to look for:**
 | Healthy | Needs Attention |
 |---------|-----------------|
@@ -916,6 +1236,73 @@ fs-report run --recipe "Executive Dashboard" --ai --period 90d
 
 ---
 
+### Component Remediation Package
+
+**Category:** Assessment (on-demand) — component-centric zero-day remediation guidance.
+
+**Purpose:** Produce actionable remediation guidance for a vulnerable component across your portfolio, without requiring a CVE. Designed for zero-day scenarios where a component is known to be compromised before any CVE is published. Groups findings by (component, version) and provides upgrade paths, ecosystem health context, and interim mitigations.
+
+**Who should use it:** Security teams, incident responders, remediation planners
+
+**Important:** This report does **not** run by default. You must explicitly request it with `--component`:
+
+```bash
+fs-report run --recipe "Component Remediation Package" --component "openssl"
+```
+
+**What it shows:**
+
+| Section | Details |
+|---------|---------|
+| **Summary** | Component name/version, affected project count, severity breakdown, suppressed count |
+| **Remediation actions** | Per-component-version: blast radius, severity counts, affected projects, AI guidance |
+| **Suppressed findings** | Findings excluded by VEX status (FALSE_POSITIVE / NOT_AFFECTED) |
+
+**Key differences from Remediation Package:**
+- No CVE-centric scoring or OSV fix-version lookup — works with zero CVEs
+- Component-scoped view: one action per (component, version) pair across the portfolio
+- Priority based on severity × blast-radius (not CVSS + OSV validation)
+- AI prompts framed as zero-day guidance
+
+**AI enrichment (optional):**
+
+```bash
+# Live AI guidance (requires API key)
+fs-report run --recipe "Component Remediation Package" --component "openssl" --ai
+
+# Deep analysis with high-capability model
+fs-report run --recipe "Component Remediation Package" --component "openssl" --ai --ai-analysis
+
+# Export AI prompts for manual review (no API key needed)
+fs-report run --recipe "Component Remediation Package" --component "openssl" --ai-prompts
+
+# With deployment context
+fs-report run --recipe "Component Remediation Package" --component "openssl" --ai \
+  --product-type firmware --network-exposure air_gapped
+
+# From a context file
+fs-report run --recipe "Component Remediation Package" --component "openssl" --ai \
+  --context-file deployment.yaml
+```
+
+**Formats:** HTML, CSV, XLSX, Markdown
+
+**Example commands:**
+```bash
+# All versions of a component across the portfolio
+fs-report run --recipe "Component Remediation Package" --component "openssl"
+
+# Scope to a specific version range
+fs-report run --recipe "Component Remediation Package" --component "openssl" \
+  --component-version ">=3.0,<3.0.7"
+
+# Scope to a folder
+fs-report run --recipe "Component Remediation Package" --component "busybox" \
+  --folder "IoT Products"
+```
+
+---
+
 ### Remediation Package
 
 **Category:** Assessment (on-demand) — actionable remediation plan with validated fix versions and structured options.
@@ -952,9 +1339,16 @@ Each action includes typed options:
 ```bash
 # With AI workaround and breaking-change analysis
 fs-report run --recipe "Remediation Package" --project "MyProject" --ai
+
+# Deep analysis using high-capability model (more detailed guidance)
+fs-report run --recipe "Remediation Package" --project "MyProject" --ai --ai-analysis
+
+# With deployment context from a file
+fs-report run --recipe "Remediation Package" --project "MyProject" --ai \
+  --context-file deployment.yaml
 ```
 
-When `--ai` is enabled, each action is enriched with LLM-generated workaround guidance and breaking-change risk assessment. Use `--ai off` to disable AI even if the recipe YAML enables it by default.
+When `--ai` is enabled, each action is enriched with LLM-generated workaround guidance and breaking-change risk assessment. Add `--ai-analysis` to use the high-capability model for deeper analysis. Use `--ai off` to disable AI even if the recipe YAML enables it by default.
 
 Add `--product-type` and `--network-exposure` (or `--context-file`) to get product-specific workaround recommendations tailored to your deployment environment. See the [Deployment Context](#deployment-context-product-aware-ai-guidance) section under Triage Prioritization for full details.
 
@@ -1009,6 +1403,8 @@ Most reports generate output in multiple formats:
 | `--recipe` | Run specific report only | N/A | `--recipe "Scan Analysis"` |
 | `--finding-types` | Finding types to include | Findings reports | `--finding-types cve,credentials` |
 | `--cve` | CVE(s) to analyse (required for CVE Impact), comma-separated | CVE Impact | `--cve CVE-2024-1234` |
+| `--component` | Component name to analyse (required for Component Impact, Component Remediation Package) | Component Impact, Component Remediation Package | `--component "openssl"` |
+| `--component-version` | Version range for component filtering | Component Impact, Component Remediation Package | `--component-version ">=3.0,<3.0.7"` |
 | `--baseline-version` | Baseline version ID | Version Comparison | `--baseline-version 12345` |
 | `--current-version` | Current version ID | Version Comparison | `--current-version 67890` |
 | `--ai-model-high` | Override the "high" (summary) LLM model | AI-enabled reports | `--ai-model-high claude-sonnet-4-20250514` |
@@ -1083,21 +1479,35 @@ fs-report run --period 30d --finding-types all
 4. **Use Findings by Project** → Plan specific remediation within projects
 5. **Run Version Comparison** → Validate that remediation work produced results
 6. **Monitor with Scan Analysis** → Ensure scanning infrastructure supports the work
-7. **Track with Component List** → Maintain software inventory for compliance
-8. **Review User Activity** → Ensure platform adoption and engagement
+7. **Track Security Progress** → Measure posture improvement and catch external CVE changes
+8. **Track with Component List** → Maintain software inventory for compliance
+9. **Review User Activity** → Ensure platform adoption and engagement
+
+### Incident Response Workflow (zero-day / breaking component)
+
+1. **Component Impact** → Find every project in the portfolio containing the affected component
+2. **Component Remediation Package** → Generate upgrade paths and AI-guided mitigations
+3. **False Positive Analysis** → Suppress noise so the team can focus on confirmed findings
+
+### Compliance Workflow
+
+1. **Component List** → Full software inventory with declared/concluded licenses and policy status
+2. **License Report** → Risk-first summary grouping licenses by Permissive / Copyleft / Unknown
+3. **CRA Compliance** → Scope KEV and known-exploit findings for EU CRA notification
 
 ### By Audience
 
 | Audience | Primary Reports |
 |----------|-----------------|
-| **Executives** | Executive Summary |
-| **Security Leadership** | Executive Summary, Component Vulnerability Analysis, Triage Prioritization |
+| **Executives** | Executive Summary, Executive Dashboard |
+| **Security Leadership** | Executive Summary, Security Progress, Component Vulnerability Analysis, Triage Prioritization |
 | **Development Teams** | Findings by Project, Version Comparison, Triage Prioritization |
 | **Release Managers** | Version Comparison |
-| **Vulnerability Management** | Triage Prioritization (with `--ai`) |
-| **DevSecOps / Operations** | Scan Analysis |
-| **Compliance / Legal** | Component List (license analysis, copyleft, policy) |
-| **Platform Administrators** | User Activity, Scan Analysis |
+| **Vulnerability Management** | Triage Prioritization (with `--ai`), False Positive Analysis |
+| **Incident Response** | Component Impact, Component Remediation Package, CRA Compliance |
+| **DevSecOps / Operations** | Scan Analysis, Scan Quality |
+| **Compliance / Legal** | Component List, License Report, CRA Compliance |
+| **Platform Administrators** | User Activity, Scan Analysis, Scan Quality |
 
 ---
 
@@ -1108,6 +1518,7 @@ fs-report run --period 30d --finding-types all
 | Report | Frequency | Purpose |
 |--------|-----------|---------|
 | **Executive Summary** | Monthly (leadership), Weekly (security) | Track trends and overall progress |
+| **Security Progress** | Monthly (programme reviews), On-demand | Measure posture delta and catch external CVE changes |
 | **Scan Analysis** | Daily (operations), Weekly (reviews) | Monitor scanning infrastructure |
 | **User Activity** | Weekly (adoption), Monthly (stakeholder reviews) | Engagement tracking |
 
@@ -1116,9 +1527,15 @@ fs-report run --period 30d --finding-types all
 | Report | Frequency | Purpose |
 |--------|-----------|---------|
 | **Triage Prioritization** | Weekly (active remediation), On-demand | Prioritize what to fix next |
+| **False Positive Analysis** | Monthly (triage hygiene), On-demand | Suppress noise and focus on confirmed findings |
 | **Component Vulnerability Analysis** | Quarterly (strategic), Monthly (active remediation) | Prioritize risky components |
 | **Findings by Project** | Weekly (dev teams), Daily (during sprints) | Plan project-level remediation |
 | **Component List** | Monthly (audits), On-demand (SBOM requests) | Compliance, license review, and inventory tracking |
+| **License Report** | Quarterly (legal reviews), On-demand | License risk summary for legal and compliance |
+| **CRA Compliance** | Monthly (regulatory), On-demand (incident) | EU CRA notification scope assessment |
+| **Scan Quality** | Quarterly (platform health), On-demand | Identify coverage gaps and unpack quality issues |
+| **Component Impact** | On-demand (zero-day / supply-chain incident) | Blast radius for a specific component |
+| **Component Remediation Package** | On-demand (zero-day / supply-chain incident) | Rapid remediation guidance for a compromised component |
 | **Version Comparison** | On-demand (after remediation or releases) | Validate specific version improvements |
 
 ---

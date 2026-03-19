@@ -216,7 +216,7 @@
             <strong>Generated:</strong> {{ generated_at }} | 
             <strong>Records:</strong> {{ metadata.transformed_count }}
             {% if folder_path %} | <strong>Folder:</strong> {{ folder_path }}{% endif %}
-            {% if project_filter %} | <strong>Project:</strong> {{ project_filter }}{% endif %}
+            {% if scan_metadata and scan_metadata.project_name %} | <strong>Project:</strong> {{ scan_metadata.project_name }}{% elif project_filter %} | <strong>Project:</strong> {{ project_filter }}{% endif %}
         </div>
         
         {% block content %}{% endblock %}

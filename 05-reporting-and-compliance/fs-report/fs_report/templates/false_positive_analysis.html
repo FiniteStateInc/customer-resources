@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+
+{% block title %}False Positive Analysis — {{ project_filter or folder_name or recipe_name }}{% endblock %}
+
+{% block content %}
+<style>
+  .kpi-row { display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
+  .kpi-card {
+    flex: 1; min-width: 140px; background: #fff; border: 1px solid #dee2e6;
+    border-radius: 8px; padding: 18px 16px; text-align: center;
+  }
+  .kpi-card.border-blue   { border-top: 4px solid #1976d2; }
+  .kpi-card.border-green  { border-top: 4px solid #388e3c; }
+  .kpi-card.border-orange { border-top: 4px solid #f57c00; }
+  .kpi-card.border-purple { border-top: 4px solid #6a1b9a; }
+  .kpi-value { font-size: 2em; font-weight: 700; line-height: 1.2; }
+  .kpi-label { font-size: 0.8em; color: #666; margin-top: 4px; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }
+  .badge-HIGH   { background: #d32f2f; color: #fff; }
+  .badge-MEDIUM { background: #f57c00; color: #fff; }
+  .badge-LOW    { background: #fbc02d; color: #333; }
+
+  .badge-sev-CRITICAL { background: #d32f2f; color: #fff; }
+  .badge-sev-HIGH     { background: #f57c00; color: #fff; }
+  .badge-sev-MEDIUM   { background: #fbc02d; color: #333; }
+  .badge-sev-LOW      { background: #388e3c; color: #fff; }
+  .badge-sev-INFO     { background: #0288d1; color: #fff; }
+
+  .pill { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 0.7em; font-weight: 600; }
+  .pill-signal { background: #e3f2fd; color: #1565c0; margin-right: 4px; }
+
+  section.report-section { margin-bottom: 32px; }
+  section.report-section h2 { font-size: 1.15em; color: #2c3e50; border-bottom: 2px solid #e9ecef; padding-bottom: 6px; margin-bottom: 14px; }
+
+  table.review-queue { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+  table.review-queue th { background: #f8f9fa; border-bottom: 2px solid #dee2e6; padding: 8px 10px; text-align: left; font-weight: 600; }
+  table.review-queue td { border-bottom: 1px solid #eee; padding: 7px 10px; vertical-align: top; }
+  table.review-queue tr:hover { background: #f5f5f5; }
+  .reason-cell { max-width: 350px; font-size: 0.9em; color: #555; }
+</style>
+
+<script>
+function copyPrompt(btn) {
+  var pre = btn.parentElement.querySelector('pre');
+  navigator.clipboard.writeText(pre.textContent).then(function() {
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+  });
+}
+</script>
+
+<!-- Summary Cards -->
+<section class="report-section">
+  <div class="kpi-row">
+    <div class="kpi-card border-blue">
+      <div class="kpi-value">{{ summary.total_open_findings if summary else 0 }}</div>
+      <div class="kpi-label">Open Findings</div>
+    </div>
+    <div class="kpi-card border-green">
+      <div class="kpi-value">{{ summary.fp_candidates_found if summary else 0 }}</div>
+      <div class="kpi-label">FP Candidates</div>
+    </div>
+    <div class="kpi-card border-orange">
+      <div class="kpi-value">{{ summary.mechanical_detections if summary else 0 }}</div>
+      <div class="kpi-label">Mechanical Detections</div>
+    </div>
+    <div class="kpi-card border-purple">
+      <div class="kpi-value">{{ summary.ai_detections if summary else 0 }}</div>
+      <div class="kpi-label">AI Detections</div>
+    </div>
+  </div>
+</section>
+
+<!-- AI Component Prompts (run these first — if not_affected, skip finding prompts for that component) -->
+{% if ai_component_prompts and ai_component_prompts|length > 0 %}
+<section class="report-section">
+  <h2>Component Applicability Prompts</h2>
+  <p style="color: #6c757d;">{{ ai_component_prompts|length }} component prompts. Start here — if the LLM says <code>not_affected</code>, all findings on that component are likely FP.</p>
+  {% for p in ai_component_prompts %}
+  <details style="margin-bottom: 8px;">
+    <summary style="cursor:pointer;color:#007bff;font-weight:600;font-size:0.9em;">{{ p.component }}</summary>
+    <div style="position:relative;margin-top:6px;">
+      <button onclick="copyPrompt(this)" style="position:absolute;top:5px;right:5px;padding:4px 10px;font-size:0.8em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
+      <pre style="background:#f8f9fa;padding:15px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:400px;overflow-y:auto;">{{ p.prompt }}</pre>
+    </div>
+  </details>
+  {% endfor %}
+</section>
+{% endif %}
+
+<!-- AI Per-Finding Prompts -->
+{% if ai_triage_prompts and ai_triage_prompts|length > 0 %}
+<section class="report-section">
+  <h2>Per-Finding Applicability Prompts</h2>
+  <p style="color: #6c757d;">{{ ai_triage_prompts|length }} finding prompts. Only needed for findings on components not already ruled out above.</p>
+  {% for p in ai_triage_prompts[:20] %}
+  <details style="margin-bottom: 8px;">
+    <summary style="cursor:pointer;color:#007bff;font-weight:600;font-size:0.9em;">{{ p.finding_id }} — {{ p.component }}</summary>
+    <div style="position:relative;margin-top:6px;">
+      <button onclick="copyPrompt(this)" style="position:absolute;top:5px;right:5px;padding:4px 10px;font-size:0.8em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
+      <pre style="background:#f8f9fa;padding:15px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:400px;overflow-y:auto;">{{ p.prompt }}</pre>
+    </div>
+  </details>
+  {% endfor %}
+  {% if ai_triage_prompts|length > 20 %}
+  <p style="color: #888; font-size: 0.85em;">Showing first 20 of {{ ai_triage_prompts|length }}. Full set in the _prompts.md file.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<!-- FP Review Queue -->
+<section class="report-section">
+  <h2>False Positive Review Queue</h2>
+  {% if candidates and candidates|length > 0 %}
+  <table class="review-queue">
+    <thead>
+      <tr>
+        <th>CVE</th>
+        <th>Component</th>
+        <th>Severity</th>
+        <th>Confidence</th>
+        <th>Signals</th>
+        <th>Reason / AI Rationale</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in candidates %}
+      <tr>
+        <td><strong>{{ row.cve_id or row.finding_id or '—' }}</strong></td>
+        <td>{{ row.component_name or '—' }} {{ row.component_version or '' }}</td>
+        <td><span class="badge badge-sev-{{ row.severity or 'INFO' }}">{{ row.severity or 'UNKNOWN' }}</span></td>
+        <td><span class="badge badge-{{ row.fp_confidence or 'LOW' }}">{{ row.fp_confidence or '—' }}</span></td>
+        <td>
+          {% if row.fp_signals %}
+            {% for sig in row.fp_signals.split(',') if row.fp_signals is string %}
+              <span class="pill pill-signal">{{ sig.strip() }}</span>
+            {% endfor %}
+            {% if row.fp_signals is not string %}
+              {% for sig in row.fp_signals %}
+                <span class="pill pill-signal">{{ sig }}</span>
+              {% endfor %}
+            {% endif %}
+          {% endif %}
+        </td>
+        <td class="reason-cell">
+          {{ row.primary_reason or '—' }}
+          {% if row.ai_rationale %}
+          <details style="margin-top: 4px;">
+            <summary style="cursor:pointer;color:#007bff;font-size:0.85em;">AI details</summary>
+            <div style="margin-top:4px;padding:8px;background:#f8f9fa;border-radius:4px;font-size:0.85em;">
+              <strong>Verdict:</strong> {{ row.ai_verdict }}<br>
+              {{ row.ai_rationale }}
+            </div>
+          </details>
+          {% endif %}
+        </td>
+        <td>{{ row.recommended_action or 'Review' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color: #888;">No false positive candidates detected. {% if not summary or summary.ai_detections == 0 %}Try running with <code>--ai</code> for AI-based applicability analysis.{% endif %}</p>
+  {% endif %}
+</section>
+
+<!-- Signal Distribution -->
+{% if summary and summary.by_signal_type %}
+<section class="report-section">
+  <h2>Detection by Signal Type</h2>
+  <table class="review-queue" style="max-width: 500px;">
+    <thead><tr><th>Signal</th><th>Count</th></tr></thead>
+    <tbody>
+      {% for sig, count in summary.by_signal_type.items() %}
+      <tr><td>{{ sig }}</td><td>{{ count }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% endblock %}

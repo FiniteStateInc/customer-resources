@@ -87,6 +87,12 @@ class MarkdownRenderer:
             "Findings by Project": self._render_findings_by_project,
             "Component Vulnerability Analysis": self._render_component_vulnerability_analysis,
             "Version Comparison": self._render_version_comparison,
+            "Customer Brief": self._render_customer_brief,
+            "Assessment Overview": self._render_assessment_overview,
+            "Workflow Summary": self._render_workflow_summary,
+            "Component Remediation Package": self._render_component_remediation_package,
+            "Component Impact": self._render_component_impact,
+            "Scan Quality": self._render_scan_quality,
         }
 
         # Try exact match first, then prefix match (handles scoped names
@@ -1082,6 +1088,1010 @@ class MarkdownRenderer:
                 self._df_to_table(component_churn, columns=available, max_rows=200)
             )
             parts.append("")
+
+        parts.append(self._footer())
+        return "\n".join(parts) + "\n"
+
+    # ── Customer Brief ──────────────────────────────────────────────────
+
+    def _render_customer_brief(self, recipe: Recipe, report_data: ReportData) -> str:
+        tr = self._get_transform_result(report_data)
+
+        summary = tr.get("summary", {})
+        if not isinstance(summary, dict):
+            summary = {}
+        triage = tr.get("triage_summary", {})
+        if not isinstance(triage, dict):
+            triage = {}
+        top_findings = tr.get("top_findings", [])
+        remed = tr.get("remediation_highlights", {})
+        if not isinstance(remed, dict):
+            remed = {}
+        sbom = tr.get("sbom_stats", {})
+        if not isinstance(sbom, dict):
+            sbom = {}
+        scan_meta = tr.get("scan_metadata", {})
+        if not isinstance(scan_meta, dict):
+            scan_meta = {}
+
+        parts = ["# Customer Brief", ""]
+        parts.append(self._metadata_block(report_data, recipe))
+        parts.append("")
+
+        # Scan metadata
+        meta_items = []
+        if scan_meta.get("project_name"):
+            meta_items.append(f"**Project:** {scan_meta['project_name']}")
+        if scan_meta.get("version_name"):
+            meta_items.append(f"**Version:** {scan_meta['version_name']}")
+        if scan_meta.get("scan_date_range"):
+            meta_items.append(f"**Detection Range:** {scan_meta['scan_date_range']}")
+        if meta_items:
+            parts.append(" | ".join(meta_items))
+            parts.append("")
+
+        # KPI Summary
+        metrics: list[tuple[str, Any]] = [
+            ("Total Findings", _safe_int(summary.get("total_findings", 0))),
+            (
+                "Open (Untriaged + In Triage)",
+                _safe_int(summary.get("open_count", 0)),
+            ),
+            ("Critical", _safe_int(summary.get("critical_count", 0))),
+            ("High", _safe_int(summary.get("high_count", 0))),
+            ("Medium", _safe_int(summary.get("medium_count", 0))),
+            ("Low", _safe_int(summary.get("low_count", 0))),
+            ("% Triaged", f"{summary.get('pct_triaged', 0)}%"),
+            ("KEV Listed", _safe_int(summary.get("kev_count", 0))),
+            ("Exploits", _safe_int(summary.get("exploit_count", 0))),
+            ("Components", _safe_int(summary.get("total_components", 0))),
+        ]
+        parts.append(self._summary_table(metrics))
+        parts.append("")
+
+        # Triage breakdown
+        parts.append("## Triage Status")
+        parts.append("| Status | Count |")
+        parts.append("| --- | --- |")
+        parts.append(f"| Untriaged | {_safe_int(triage.get('untriaged', 0))} |")
+        parts.append(f"| In Triage | {_safe_int(triage.get('in_triage', 0))} |")
+        parts.append(f"| Not Affected | {_safe_int(triage.get('not_affected', 0))} |")
+        parts.append(
+            f"| False Positive | {_safe_int(triage.get('false_positive', 0))} |"
+        )
+        parts.append(f"| Affected | {_safe_int(triage.get('affected', 0))} |")
+        parts.append(f"| Resolved | {_safe_int(triage.get('resolved', 0))} |")
+        parts.append("")
+
+        # Severity Distribution
+        sev_dist = tr.get("severity_distribution", {})
+        if isinstance(sev_dist, dict) and sev_dist:
+            parts.append("## Severity Distribution")
+            parts.append("| Severity | Count |")
+            parts.append("| --- | --- |")
+            for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"):
+                parts.append(f"| {sev} | {_safe_int(sev_dist.get(sev, 0))} |")
+            parts.append("")
+
+        # Top Security Risks
+        top_risks = tr.get("top_security_risks", [])
+        if top_risks:
+            parts.append("## Top Security Risks")
+            parts.append(
+                "| CVE | Severity | Component | Version "
+                "| CVSS | EPSS %ile | KEV | Exploit |"
+            )
+            parts.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+            for r in top_risks:
+                if not isinstance(r, dict):
+                    continue
+                kev = "KEV" if r.get("in_kev") else ""
+                exploit = "Yes" if r.get("has_exploit") else ""
+                cvss = _safe_float(r.get("cvss_score"), 1)
+                epss = _safe_float(r.get("epss_percentile"), 1)
+                parts.append(
+                    f"| {_escape_pipe(_safe_str(r.get('cve_id')))} "
+                    f"| {_safe_str(r.get('severity'))} "
+                    f"| {_escape_pipe(_safe_str(r.get('component')))} "
+                    f"| {_escape_pipe(_safe_str(r.get('component_version')))} "
+                    f"| {cvss} "
+                    f"| {epss} "
+                    f"| {kev} "
+                    f"| {exploit} |"
+                )
+            parts.append("")
+
+        # Exploit Maturity
+        exploit_mat = tr.get("exploit_maturity_summary", {})
+        if isinstance(exploit_mat, dict) and exploit_mat:
+            _exploit_labels = {
+                "kev": "In KEV",
+                "vckev": "VulnCheck KEV",
+                "weaponized": "Weaponized",
+                "poc": "PoC",
+                "threatactors": "Threat Actors",
+                "ransomware": "Ransomware",
+                "botnets": "Botnets",
+                "commercial": "Commercial",
+                "reported": "Reported",
+            }
+            parts.append("## Exploit Maturity")
+            parts.append("| Category | Count |")
+            parts.append("| --- | --- |")
+            for key, label in _exploit_labels.items():
+                parts.append(f"| {label} | {_safe_int(exploit_mat.get(key, 0))} |")
+            total_exploits = exploit_mat.get("total_with_exploits", 0)
+            parts.append(
+                f"| **Total with Exploits** " f"| **{_safe_int(total_exploits)}** |"
+            )
+            parts.append("")
+
+        # Reachability Analysis
+        reach = tr.get("reachability_summary", {})
+        if isinstance(reach, dict) and reach.get("has_data"):
+            parts.append("## Reachability Analysis")
+            parts.append(f"- **Reachable:** {_safe_int(reach.get('reachable', 0))}")
+            parts.append(f"- **Unreachable:** {_safe_int(reach.get('unreachable', 0))}")
+            parts.append(
+                f"- **Inconclusive:** " f"{_safe_int(reach.get('inconclusive', 0))}"
+            )
+            parts.append("")
+
+        # Component Risk Analysis
+        comp_risk = tr.get("component_risk_ranking", [])
+        if comp_risk:
+            parts.append("## Component Risk Analysis")
+            parts.append(
+                "| Component | Version | Critical | High "
+                "| Medium | Low | Total | Score |"
+            )
+            parts.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+            for c in comp_risk:
+                if not isinstance(c, dict):
+                    continue
+                parts.append(
+                    f"| {_escape_pipe(_safe_str(c.get('component')))} "
+                    f"| {_escape_pipe(_safe_str(c.get('component_version')))} "
+                    f"| {_safe_int(c.get('critical', 0))} "
+                    f"| {_safe_int(c.get('high', 0))} "
+                    f"| {_safe_int(c.get('medium', 0))} "
+                    f"| {_safe_int(c.get('low', 0))} "
+                    f"| {_safe_int(c.get('total', 0))} "
+                    f"| {_safe_float(c.get('risk_score'), 1)} |"
+                )
+            parts.append("")
+
+        # License Distribution
+        lic_dist = tr.get("component_license_distribution", [])
+        if lic_dist:
+            parts.append("## License Distribution")
+            parts.append("| License | Count |")
+            parts.append("| --- | --- |")
+            for entry in lic_dist:
+                if not isinstance(entry, dict):
+                    continue
+                parts.append(
+                    f"| {_escape_pipe(_safe_str(entry.get('license')))} "
+                    f"| {_safe_int(entry.get('count', 0))} |"
+                )
+            parts.append("")
+
+        # Top findings
+        if top_findings:
+            parts.append("## Top Findings (Critical & High, Open)")
+            parts.append(
+                "| CVE | Severity | Component | Version | CVSS | KEV | Exploit |"
+            )
+            parts.append("| --- | --- | --- | --- | --- | --- | --- |")
+            for f in top_findings:
+                if not isinstance(f, dict):
+                    continue
+                kev = "KEV" if f.get("in_kev") else ""
+                exploit = "Yes" if f.get("has_exploit") else ""
+                cvss = _safe_float(f.get("cvss_score"), 1)
+                parts.append(
+                    f"| {_escape_pipe(_safe_str(f.get('cve_id')))} "
+                    f"| {_safe_str(f.get('severity'))} "
+                    f"| {_escape_pipe(_safe_str(f.get('component')))} "
+                    f"| {_escape_pipe(_safe_str(f.get('component_version')))} "
+                    f"| {cvss} "
+                    f"| {kev} "
+                    f"| {exploit} |"
+                )
+            parts.append("")
+
+        # Remediation highlights (gate-based)
+        g1 = remed.get("gate_1", [])
+        g2 = remed.get("gate_2", [])
+        if g1 or g2:
+            parts.append("## Remediation Highlights")
+            for label, cards in [
+                ("Gate 1 — Reachable + Exploitable/KEV", g1),
+                ("Gate 2 — Network Vector + High EPSS", g2),
+            ]:
+                if cards:
+                    parts.append(f"### {label}")
+                    for card in cards:
+                        if not isinstance(card, dict):
+                            continue
+                        parts.append(
+                            f"- **{_escape_pipe(_safe_str(card.get('component')))}** "
+                            f"— {_safe_int(card.get('finding_count'))} finding(s), "
+                            f"top CVE: {_safe_str(card.get('top_cve'))}, "
+                            f"CVSS {_safe_float(card.get('worst_cvss'), 1)}"
+                        )
+            parts.append("")
+
+        # SBOM
+        total_comp = _safe_int(sbom.get("total_components", 0))
+        if total_comp:
+            parts.append(f"## SBOM Summary\n\n**Total Components:** {total_comp}")
+            parts.append("")
+
+        parts.append(self._footer())
+        return "\n".join(parts) + "\n"
+
+    # ── Assessment Overview ────────────────────────────────────────────────
+
+    def _render_assessment_overview(
+        self, recipe: Recipe, report_data: ReportData
+    ) -> str:
+        tr = self._get_transform_result(report_data)
+
+        summary = tr.get("summary", {})
+        if not isinstance(summary, dict):
+            summary = {}
+        severity_distribution = tr.get("severity_distribution", {})
+        if not isinstance(severity_distribution, dict):
+            severity_distribution = {}
+        top_security_risks = tr.get("top_security_risks", [])
+        exploit_maturity = tr.get("exploit_maturity_summary", {})
+        if not isinstance(exploit_maturity, dict):
+            exploit_maturity = {}
+        reachability = tr.get("reachability_summary", {})
+        if not isinstance(reachability, dict):
+            reachability = {}
+        exploit_intel = tr.get("exploit_intel", {})
+        if not isinstance(exploit_intel, dict):
+            exploit_intel = {}
+        triage_pipeline = tr.get("triage_pipeline", {})
+        if not isinstance(triage_pipeline, dict):
+            triage_pipeline = {}
+        remediation_progress = tr.get("remediation_progress", {})
+        if not isinstance(remediation_progress, dict):
+            remediation_progress = {}
+        findings_by_tier = tr.get("findings_by_tier", {})
+        if not isinstance(findings_by_tier, dict):
+            findings_by_tier = {}
+        component_risk_ranking = tr.get("component_risk_ranking", [])
+        component_license_distribution = tr.get("component_license_distribution", [])
+        sbom_stats = tr.get("sbom_stats", {})
+        if not isinstance(sbom_stats, dict):
+            sbom_stats = {}
+        project_cards = tr.get("project_cards", [])
+        scan_meta = tr.get("scan_metadata", {})
+        if not isinstance(scan_meta, dict):
+            scan_meta = {}
+
+        parts = ["# Assessment Overview", ""]
+        parts.append(self._metadata_block(report_data, recipe))
+        parts.append("")
+
+        # Scan metadata
+        meta_items = []
+        if scan_meta.get("project_name"):
+            meta_items.append(f"**Project:** {scan_meta['project_name']}")
+        if scan_meta.get("version_name"):
+            meta_items.append(f"**Version:** {scan_meta['version_name']}")
+        if scan_meta.get("scan_date"):
+            meta_items.append(f"**Scan Date:** {scan_meta['scan_date']}")
+        if meta_items:
+            parts.append(" | ".join(meta_items))
+            parts.append("")
+
+        # KPI Summary
+        metrics: list[tuple[str, Any]] = [
+            ("Total Findings", _safe_int(summary.get("total_findings", 0))),
+            ("Critical", _safe_int(summary.get("critical_count", 0))),
+            ("High", _safe_int(summary.get("high_count", 0))),
+            ("Medium", _safe_int(summary.get("medium_count", 0))),
+            ("Low", _safe_int(summary.get("low_count", 0))),
+            ("Open", _safe_int(summary.get("open_count", 0))),
+            ("Triaged", _safe_int(summary.get("triaged_count", 0))),
+            ("Exploited", _safe_int(exploit_intel.get("has_exploit_count", 0))),
+            (
+                "EPSS \u2265 0.5",
+                _safe_int(exploit_intel.get("epss_high_count", 0)),
+            ),
+            ("KEV Listed", _safe_int(exploit_intel.get("kev_count", 0))),
+            ("Components", _safe_int(summary.get("total_components", 0))),
+        ]
+        parts.append(self._summary_table(metrics))
+        parts.append("")
+
+        # Severity Distribution
+        if severity_distribution:
+            parts.append("## Severity Distribution")
+            parts.append("| Severity | Count |")
+            parts.append("| --- | --- |")
+            for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"):
+                parts.append(
+                    f"| {sev} | {_safe_int(severity_distribution.get(sev, 0))} |"
+                )
+            parts.append("")
+
+        # Top Security Risks
+        if top_security_risks:
+            parts.append("## Top Security Risks")
+            parts.append(
+                "| CVE | Severity | Component | Version "
+                "| CVSS | EPSS %ile | KEV | Exploit |"
+            )
+            parts.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+            for r in top_security_risks[:10]:
+                if not isinstance(r, dict):
+                    continue
+                kev = "KEV" if r.get("in_kev") else ""
+                exploit = "Yes" if r.get("has_exploit") else ""
+                cvss = _safe_float(r.get("cvss_score"), 1)
+                epss = _safe_float(r.get("epss_percentile"), 1)
+                parts.append(
+                    f"| {_escape_pipe(_safe_str(r.get('cve_id')))} "
+                    f"| {_safe_str(r.get('severity'))} "
+                    f"| {_escape_pipe(_safe_str(r.get('component')))} "
+                    f"| {_escape_pipe(_safe_str(r.get('component_version')))} "
+                    f"| {cvss} "
+                    f"| {epss} "
+                    f"| {kev} "
+                    f"| {exploit} |"
+                )
+            parts.append("")
+
+        # Exploit Maturity
+        if exploit_maturity:
+            _exploit_labels = {
+                "kev": "In KEV",
+                "vckev": "VulnCheck KEV",
+                "weaponized": "Weaponized",
+                "poc": "PoC",
+                "threatactors": "Threat Actors",
+                "ransomware": "Ransomware",
+                "botnets": "Botnets",
+                "commercial": "Commercial",
+                "reported": "Reported",
+            }
+            parts.append("## Exploit Maturity")
+            parts.append("| Category | Count |")
+            parts.append("| --- | --- |")
+            for key, label in _exploit_labels.items():
+                parts.append(f"| {label} | {_safe_int(exploit_maturity.get(key, 0))} |")
+            total_exploits = exploit_maturity.get("total_with_exploits", 0)
+            parts.append(
+                f"| **Total with Exploits** " f"| **{_safe_int(total_exploits)}** |"
+            )
+            parts.append("")
+
+        # Reachability Analysis
+        if isinstance(reachability, dict) and reachability.get("has_data"):
+            parts.append("## Reachability Analysis")
+            parts.append(
+                f"- **Reachable:** {_safe_int(reachability.get('reachable', 0))}"
+            )
+            parts.append(
+                f"- **Unreachable:** {_safe_int(reachability.get('unreachable', 0))}"
+            )
+            parts.append(
+                f"- **Inconclusive:** "
+                f"{_safe_int(reachability.get('inconclusive', 0))}"
+            )
+            parts.append("")
+
+        # Triage Pipeline
+        parts.append("## Triage Pipeline")
+        parts.append("| Status | Count |")
+        parts.append("| --- | --- |")
+        parts.append(
+            f"| In Triage | {_safe_int(triage_pipeline.get('in_triage', 0))} |"
+        )
+        parts.append(f"| Affected | {_safe_int(triage_pipeline.get('affected', 0))} |")
+        parts.append(
+            f"| Open + Exploit "
+            f"| {_safe_int(triage_pipeline.get('exploitable', 0))} |"
+        )
+        parts.append("")
+
+        # Remediation Progress
+        p0 = remediation_progress.get("p0_components", [])
+        p1 = remediation_progress.get("p1_components", [])
+        if p0 or p1:
+            parts.append("## Remediation Progress")
+            if p0:
+                parts.append("### P0 — Critical + Exploitable/KEV")
+                for card in p0:
+                    if not isinstance(card, dict):
+                        continue
+                    parts.append(
+                        f"- **{_escape_pipe(_safe_str(card.get('component')))}** "
+                        f"— {_safe_int(card.get('finding_count'))} finding(s), "
+                        f"top CVE: {_safe_str(card.get('top_cve'))}, "
+                        f"CVSS {_safe_float(card.get('worst_cvss'), 1)}"
+                    )
+            if p1:
+                parts.append("### P1 — High + Network Vector")
+                for card in p1:
+                    if not isinstance(card, dict):
+                        continue
+                    parts.append(
+                        f"- **{_escape_pipe(_safe_str(card.get('component')))}** "
+                        f"— {_safe_int(card.get('finding_count'))} finding(s), "
+                        f"top CVE: {_safe_str(card.get('top_cve'))}, "
+                        f"CVSS {_safe_float(card.get('worst_cvss'), 1)}"
+                    )
+            parts.append("")
+
+        # All Findings
+        tier_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"]
+        has_any_findings = any(findings_by_tier.get(sev) for sev in tier_order)
+        if has_any_findings:
+            parts.append("## All Findings")
+            parts.append(
+                "| CVE | Severity | Component | Version "
+                "| CVSS | EPSS %ile | KEV | Exploit | Status |"
+            )
+            parts.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+            rendered = 0
+            for sev in tier_order:
+                tier_findings = findings_by_tier.get(sev, [])
+                for f in tier_findings:
+                    if rendered >= 2000:
+                        break
+                    if not isinstance(f, dict):
+                        continue
+                    kev = "KEV" if f.get("in_kev") else ""
+                    exploit = "Yes" if f.get("has_exploit") else ""
+                    cvss = _safe_float(f.get("cvss_score"), 1)
+                    epss = _safe_float(f.get("epss_percentile"), 1)
+                    parts.append(
+                        f"| {_escape_pipe(_safe_str(f.get('cve_id')))} "
+                        f"| {_safe_str(f.get('severity'))} "
+                        f"| {_escape_pipe(_safe_str(f.get('component')))} "
+                        f"| {_escape_pipe(_safe_str(f.get('component_version')))} "
+                        f"| {cvss} "
+                        f"| {epss} "
+                        f"| {kev} "
+                        f"| {exploit} "
+                        f"| {_safe_str(f.get('status'))} |"
+                    )
+                    rendered += 1
+                if rendered >= 2000:
+                    break
+            parts.append("")
+
+        # Component Risk Ranking
+        if component_risk_ranking:
+            parts.append("## Component Risk Ranking")
+            parts.append(
+                "| Component | Version | Critical | High "
+                "| Medium | Low | Total | Score |"
+            )
+            parts.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+            for c in component_risk_ranking:
+                if not isinstance(c, dict):
+                    continue
+                parts.append(
+                    f"| {_escape_pipe(_safe_str(c.get('component')))} "
+                    f"| {_escape_pipe(_safe_str(c.get('component_version')))} "
+                    f"| {_safe_int(c.get('critical', 0))} "
+                    f"| {_safe_int(c.get('high', 0))} "
+                    f"| {_safe_int(c.get('medium', 0))} "
+                    f"| {_safe_int(c.get('low', 0))} "
+                    f"| {_safe_int(c.get('total', 0))} "
+                    f"| {_safe_float(c.get('risk_score'), 1)} |"
+                )
+            parts.append("")
+
+        # License Distribution
+        if component_license_distribution:
+            parts.append("## License Distribution")
+            parts.append("| License | Count |")
+            parts.append("| --- | --- |")
+            for entry in component_license_distribution:
+                if not isinstance(entry, dict):
+                    continue
+                parts.append(
+                    f"| {_escape_pipe(_safe_str(entry.get('license')))} "
+                    f"| {_safe_int(entry.get('count', 0))} |"
+                )
+            parts.append("")
+
+        # SBOM Stats
+        total_comp = _safe_int(sbom_stats.get("total_components", 0))
+        if total_comp:
+            parts.append(f"## SBOM Summary\n\n**Total Components:** {total_comp}")
+            parts.append("")
+
+        # Per-Project Breakdown
+        if project_cards:
+            parts.append("## Per-Project Breakdown")
+            parts.append("")
+            for card in project_cards:
+                if not isinstance(card, dict):
+                    continue
+                proj_name = _safe_str(card.get("project_name"))
+                parts.append(f"### {_escape_pipe(proj_name)}")
+                parts.append(
+                    f"Critical: {_safe_int(card.get('critical', 0))} | "
+                    f"High: {_safe_int(card.get('high', 0))} | "
+                    f"Medium: {_safe_int(card.get('medium', 0))} | "
+                    f"Low: {_safe_int(card.get('low', 0))} | "
+                    f"Total: {_safe_int(card.get('total', 0))}"
+                )
+                top5 = card.get("top_findings", [])
+                if top5:
+                    parts.append("")
+                    parts.append("| CVE | Severity | Component | Version | CVSS |")
+                    parts.append("| --- | --- | --- | --- | --- |")
+                    for f in top5[:5]:
+                        if not isinstance(f, dict):
+                            continue
+                        cvss = _safe_float(f.get("cvss_score"), 1)
+                        parts.append(
+                            f"| {_escape_pipe(_safe_str(f.get('cve_id')))} "
+                            f"| {_safe_str(f.get('severity'))} "
+                            f"| {_escape_pipe(_safe_str(f.get('component')))} "
+                            f"| {_escape_pipe(_safe_str(f.get('component_version')))} "
+                            f"| {cvss} |"
+                        )
+                parts.append("")
+
+        parts.append(self._footer())
+        return "\n".join(parts) + "\n"
+
+    # ── Workflow Summary ─────────────────────────────────────────────────
+
+    def _render_workflow_summary(self, recipe: Recipe, report_data: ReportData) -> str:
+        import json as _json
+
+        tr = self._get_transform_result(report_data)
+
+        kpis = tr.get("kpis", {})
+        if not isinstance(kpis, dict):
+            kpis = {}
+        timeline = tr.get("timeline", [])
+        if not isinstance(timeline, list):
+            timeline = []
+        steps = tr.get("steps", [])
+        if not isinstance(steps, list):
+            steps = []
+        workflow_meta = tr.get("workflow_meta", {})
+        if not isinstance(workflow_meta, dict):
+            workflow_meta = {}
+
+        parts = ["# Workflow Summary", ""]
+        parts.append(self._metadata_block(report_data, recipe))
+        parts.append("")
+
+        if workflow_meta.get("start_time"):
+            parts.append(f"**Started:** {workflow_meta['start_time']}")
+            parts.append("")
+
+        # KPI table
+        dur = kpis.get("total_duration_sec", 0)
+        if dur >= 60:
+            dur_str = f"{dur / 60:.1f}m"
+        else:
+            dur_str = f"{int(dur)}s"
+        metrics: list[tuple[str, Any]] = [
+            ("Findings Triaged", _safe_int(kpis.get("total_findings_triaged", 0))),
+            ("VEX Applied", _safe_int(kpis.get("vex_applied", 0))),
+            ("Tickets Created", _safe_int(kpis.get("tickets_created", 0))),
+            ("Notifications Sent", _safe_int(kpis.get("notifications_sent", 0))),
+            ("Total Steps", _safe_int(kpis.get("total_steps", 0))),
+            ("Duration", dur_str),
+        ]
+        parts.append(self._summary_table(metrics))
+        parts.append("")
+
+        # Timeline
+        if timeline:
+            parts.append("## Timeline")
+            for i, tl in enumerate(timeline):
+                if not isinstance(tl, dict):
+                    continue
+                display_name = tl.get("label") or tl.get("step", "")
+                ts = tl.get("timestamp", "")
+                dur_prev = tl.get("duration_from_prev_sec", 0)
+                dur_note = f" (+{dur_prev:.0f}s)" if dur_prev else ""
+                ts_note = f" — {ts}" if ts else ""
+                parts.append(
+                    f"{i + 1}. **{_escape_pipe(display_name)}**{dur_note}{ts_note}"
+                )
+            parts.append("")
+
+        # Per-step details
+        if steps:
+            parts.append("## Step Details")
+            parts.append("")
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                display_name = step.get("label") or step.get("step", "")
+                step_type = step.get("step_type", "unknown")
+                detail = step.get("detail", {})
+                raw_data = step.get("raw_data", {})
+
+                tag = f" [{step.get('step', '')}]"
+                parts.append(f"### {_escape_pipe(display_name)}{tag}")
+                parts.append("")
+
+                if step_type == "triage" and isinstance(detail, dict):
+                    ts_d = detail.get("triage_summary", {})
+                    cr = detail.get("change_report", {})
+                    vx = detail.get("vex_applied", {})
+                    if isinstance(ts_d, dict) and ts_d.get("total_recommendations"):
+                        parts.append(
+                            f"- **{ts_d['total_recommendations']}** findings triaged"
+                        )
+                    if isinstance(cr, dict) and cr.get("new_recommendations"):
+                        parts.append(
+                            f"- **{cr['new_recommendations']}** new recommendations"
+                        )
+                    if isinstance(vx, dict) and vx.get("applied_count"):
+                        parts.append(
+                            f"- **{vx['applied_count']}** VEX statements applied"
+                        )
+
+                elif step_type == "tickets" and isinstance(detail, dict):
+                    tickets = detail.get("tickets_created", [])
+                    count = detail.get("tickets_count", 0)
+                    if isinstance(tickets, list) and tickets:
+                        parts.append("| Component | Ticket |")
+                        parts.append("| --- | --- |")
+                        for t in tickets:
+                            if not isinstance(t, dict):
+                                continue
+                            comp = _escape_pipe(str(t.get("component", "—")))
+                            key = _escape_pipe(
+                                str(t.get("ticket_key", t.get("key", "—")))
+                            )
+                            parts.append(f"| {comp} | {key} |")
+                    elif count:
+                        parts.append(
+                            f"- **{count}** ticket{'s' if count != 1 else ''} created"
+                        )
+
+                elif step_type == "notification" and isinstance(detail, dict):
+                    status = "Sent" if detail.get("success") else "Failed"
+                    channel = detail.get("channel", "")
+                    line = f"- **{status}**"
+                    if channel:
+                        line += f" — {_escape_pipe(channel)}"
+                    parts.append(line)
+
+                elif step_type == "recipe_run" and isinstance(detail, dict):
+                    recipe_name = detail.get("recipe", "")
+                    if recipe_name:
+                        parts.append(f"- Recipe: **{_escape_pipe(recipe_name)}**")
+                    output_files = detail.get("output_files", [])
+                    if isinstance(output_files, list) and output_files:
+                        parts.append(
+                            f"- {len(output_files)} output file{'s' if len(output_files) != 1 else ''}"
+                        )
+
+                else:
+                    # Unknown step — fenced JSON
+                    parts.append("```json")
+                    parts.append(_json.dumps(raw_data, indent=2, default=str))
+                    parts.append("```")
+
+                parts.append("")
+
+        parts.append(self._footer())
+        return "\n".join(parts) + "\n"
+
+    # ── Component Remediation Package ────────────────────────────────
+
+    def _render_component_remediation_package(
+        self, recipe: Recipe, report_data: ReportData
+    ) -> str:
+        tr = self._get_transform_result(report_data)
+
+        actions: list[dict[str, Any]] = tr.get("actions", [])
+        suppressed: list[dict[str, Any]] = tr.get("suppressed", [])
+        summary: dict[str, Any] = tr.get("summary", {})
+
+        parts = ["# Component Remediation Package", ""]
+        parts.append(self._metadata_block(report_data, recipe))
+        parts.append("")
+
+        # Summary
+        comp_name = summary.get("component_name", "")
+        ver_range = summary.get("version_range", "")
+        label = comp_name
+        if ver_range:
+            label += f" ({ver_range})"
+        if label:
+            parts.append(f"**Component:** {label}")
+            parts.append("")
+
+        metrics = [
+            ("Action Cards", summary.get("total_actions", len(actions))),
+            ("Affected Projects", summary.get("affected_project_count", 0)),
+            ("Zero-Day Actions", summary.get("zero_day_actions", 0)),
+            ("CVE Actions", summary.get("cve_actions", 0)),
+            ("Critical", summary.get("critical_actions", 0)),
+            ("High", summary.get("high_actions", 0)),
+        ]
+        parts.append(self._summary_table(metrics))
+        parts.append("")
+
+        # Action cards
+        if actions:
+            parts.append("## Remediation Actions")
+            parts.append("")
+            for action in actions:
+                comp = action.get("component_name", "")
+                ver = action.get("component_version_name", "")
+                severity = action.get("max_severity", "UNKNOWN")
+                is_zd = action.get("is_zero_day", False)
+                tag = "ZERO-DAY" if is_zd else severity
+                cve_count = len(action.get("cve_ids", []))
+                project_count = len(action.get("affected_projects", []))
+
+                parts.append(
+                    f"### {comp} {ver} [{tag}] — {cve_count} CVEs, "
+                    f"{project_count} project(s)"
+                )
+                parts.append("")
+
+                # Affected projects
+                projects = action.get("affected_projects", [])
+                if projects:
+                    parts.append(f"**Projects:** {', '.join(projects)}")
+                    parts.append("")
+
+                # CVEs
+                cve_ids = action.get("cve_ids", [])
+                if cve_ids:
+                    parts.append(f"**Known CVEs:** {', '.join(cve_ids[:20])}")
+                    if len(cve_ids) > 20:
+                        parts.append(f"  *(+{len(cve_ids) - 20} more)*")
+                    parts.append("")
+                elif is_zd:
+                    parts.append("**Known CVEs:** None — zero-day scenario")
+                    parts.append("")
+
+                # Upgrade recommendation
+                upgrade = action.get("upgrade_recommendation", "")
+                if upgrade:
+                    parts.append(f"**Upgrade:** {upgrade}")
+                    parts.append("")
+
+                # Interim mitigations
+                mitigations = action.get("interim_mitigations", [])
+                if mitigations:
+                    parts.append("**Interim Mitigations:**")
+                    for m in mitigations:
+                        parts.append(f"- {m}")
+                    parts.append("")
+
+                # AI guidance (live LLM response)
+                ai_guidance = action.get("ai_guidance", "")
+                if ai_guidance:
+                    parts.append("**AI Remediation Guidance:**")
+                    parts.append("")
+                    parts.append(ai_guidance)
+                    parts.append("")
+
+                # AI prompt (for copy-paste when no live call)
+                prompt_data = action.get("ai_prompt")
+                if prompt_data and not ai_guidance:
+                    parts.append("**AI Prompt (copy-paste):**")
+                    parts.append("")
+                    parts.append("```")
+                    parts.append(prompt_data.get("user", ""))
+                    parts.append("```")
+                    parts.append("")
+
+        # Suppressed findings
+        if suppressed:
+            parts.append("## Suppressed Findings")
+            parts.append("")
+            parts.append("| Component | Version | CVE | Severity | Status | Project |")
+            parts.append("|-----------|---------|-----|----------|--------|---------|")
+            for s in suppressed[:50]:
+                parts.append(
+                    f"| {_safe_str(s.get('component_name', ''))} "
+                    f"| {_safe_str(s.get('component_version_name', ''))} "
+                    f"| {_safe_str(s.get('cve_id', ''))} "
+                    f"| {_safe_str(s.get('severity', ''))} "
+                    f"| {_safe_str(s.get('status', ''))} "
+                    f"| {_safe_str(s.get('project_name', ''))} |"
+                )
+            if len(suppressed) > 50:
+                parts.append(f"\n*({len(suppressed) - 50} more suppressed findings)*")
+            parts.append("")
+
+        parts.append(self._footer())
+        return "\n".join(parts) + "\n"
+
+    # ── Component Impact ─────────────────────────────────────────────
+
+    def _render_component_impact(self, recipe: Recipe, report_data: ReportData) -> str:
+        tr = self._get_transform_result(report_data)
+
+        locations: list[dict[str, Any]] = tr.get("locations", [])
+        summary: dict[str, Any] = tr.get("summary", {})
+
+        comp_name = summary.get("component_name", "")
+        ver_range = summary.get("version_range", "")
+        label = comp_name
+        if ver_range:
+            label += f" ({ver_range})"
+
+        parts = [f"# Component Impact — {label}", ""]
+        parts.append(self._metadata_block(report_data, recipe))
+        parts.append("")
+
+        # Summary
+        metrics = [
+            (
+                "Projects with Component",
+                summary.get("projects_with_component", len(locations)),
+            ),
+            ("Projects with CVE Findings", summary.get("projects_with_findings", 0)),
+            ("Total CVEs", summary.get("total_cve_count", 0)),
+            ("Critical", summary.get("critical_count", 0)),
+            ("High", summary.get("high_count", 0)),
+        ]
+        parts.append(self._summary_table(metrics))
+        parts.append("")
+
+        # Locations table
+        if locations:
+            parts.append("## Affected Projects")
+            parts.append("")
+            parts.append("| Project | Version(s) | CVEs | Critical | High | Medium |")
+            parts.append("|---------|------------|------|----------|------|--------|")
+            for loc in locations:
+                proj = _safe_str(loc.get("project_name", ""))
+                versions = ", ".join(loc.get("detected_versions", [])) or "—"
+                cve_count = loc.get("cve_count", 0)
+                critical = loc.get("critical_count", 0)
+                high = loc.get("high_count", 0)
+                medium = loc.get("medium_count", 0)
+                parts.append(
+                    f"| {proj} | {versions} | {cve_count} | {critical} | {high} | {medium} |"
+                )
+            parts.append("")
+
+            # Top CVEs across all projects
+            all_top_cves: list[dict[str, Any]] = []
+            for loc in locations:
+                for cve in loc.get("top_cves", []):
+                    if isinstance(cve, dict) and cve not in all_top_cves:
+                        all_top_cves.append(cve)
+            if all_top_cves:
+                all_top_cves.sort(
+                    key=lambda c: float(c.get("cvss_score", 0)), reverse=True
+                )
+                parts.append("## Top CVEs")
+                parts.append("")
+                parts.append("| CVE ID | Severity | CVSS |")
+                parts.append("|--------|----------|------|")
+                for cve in all_top_cves[:10]:
+                    cve_id = _safe_str(cve.get("cve_id", ""))
+                    severity = _safe_str(cve.get("severity", ""))
+                    cvss = cve.get("cvss_score", "")
+                    parts.append(f"| {cve_id} | {severity} | {cvss} |")
+                parts.append("")
+
+        parts.append(self._footer())
+        return "\n".join(parts) + "\n"
+
+    # ── Scan Quality ──────────────────────────────────────────────────
+
+    def _render_scan_quality(self, recipe: Recipe, report_data: ReportData) -> str:
+        tr = self._get_transform_result(report_data)
+        meta = report_data.metadata
+
+        summary_df = tr.get("summary_table", pd.DataFrame())
+        if not isinstance(summary_df, pd.DataFrame):
+            summary_df = pd.DataFrame()
+        summary = tr.get("summary", {})
+        if not isinstance(summary, dict):
+            summary = {}
+
+        # Derive scope label from metadata
+        scope_parts = []
+        folder = meta.get("folder_name", "") or meta.get("folder_filter", "")
+        project = meta.get("project_filter", "")
+        if folder:
+            scope_parts.append(f"Folder: {folder}")
+        if project:
+            scope_parts.append(f"Project: {project}")
+        scope = ", ".join(scope_parts) if scope_parts else "All Projects"
+
+        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+
+        parts = [
+            "# Scan Quality Report",
+            f"**Generated:** {date_str} | **Scope:** {scope}",
+            "",
+        ]
+
+        # Summary stats
+        total_projects = _safe_int(summary.get("total_projects", len(summary_df)))
+        avg_coverage = summary.get("avg_coverage_score", 0.0)
+        reach_cov = summary.get("reachability_coverage", {})
+        if not isinstance(reach_cov, dict):
+            reach_cov = {}
+        with_reachability = _safe_int(reach_cov.get("with_reachability", 0))
+        binary_projects = _safe_int(reach_cov.get("binary_projects", 0))
+        # binary projects eligible for reachability = those with binary SCA
+        # (with_reachability already has it; binary_projects = binary without reach)
+        total_binary = with_reachability + binary_projects
+        stale_count = _safe_int(summary.get("stale_project_count", 0))
+
+        parts.append("## Summary")
+        parts.append(f"- **Projects Scanned:** {total_projects}")
+        parts.append(f"- **Avg Coverage Score:** {_safe_float(avg_coverage)} / 4")
+        parts.append(
+            f"- **Reachability Coverage:** {with_reachability} of {total_binary}"
+            " binary-scanned projects"
+        )
+        parts.append(f"- **Stale/Dormant Projects:** {stale_count}")
+        parts.append("")
+
+        # Summary table — curated columns
+        if not summary_df.empty:
+            parts.append("## Projects")
+            table_cols = [
+                "project_name",
+                "staleness",
+                "coverage_score",
+                "has_reachability",
+                "critical_findings",
+                "unpack_rating",
+            ]
+            table_headers = {
+                "project_name": "Project",
+                "staleness": "Staleness",
+                "coverage_score": "Coverage Score",
+                "has_reachability": "Reachability",
+                "critical_findings": "Critical Findings",
+                "unpack_rating": "Unpack Rating",
+            }
+            parts.append(
+                self._df_to_table(summary_df, columns=table_cols, headers=table_headers)
+            )
+            parts.append("")
+
+        # Projects Needing Attention
+        if not summary_df.empty:
+            attention_rows: list[tuple[str, str]] = []
+            for _, row in summary_df.iterrows():
+                issues: list[str] = []
+                staleness_val = _safe_str(row.get("staleness", ""))
+                if staleness_val in ("STALE", "DORMANT"):
+                    issues.append(staleness_val)
+                if _safe_str(row.get("has_reachability", "")) == "No":
+                    issues.append("No reachability")
+                unpack_val = _safe_str(row.get("unpack_rating", ""))
+                if unpack_val in ("Fair", "Poor"):
+                    issues.append(f"{unpack_val} unpack quality")
+                if issues:
+                    proj = _escape_pipe(_safe_str(row.get("project_name", "")))
+                    attention_rows.append((proj, ", ".join(issues)))
+
+            if attention_rows:
+                parts.append("## Projects Needing Attention")
+                parts.append("")
+                parts.append("| Project | Issue |")
+                parts.append("|---------|-------|")
+                for proj, issue in attention_rows:
+                    parts.append(f"| {proj} | {issue} |")
+                parts.append("")
 
         parts.append(self._footer())
         return "\n".join(parts) + "\n"

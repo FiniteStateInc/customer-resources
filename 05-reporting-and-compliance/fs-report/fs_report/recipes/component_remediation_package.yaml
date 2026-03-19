@@ -1,0 +1,36 @@
+name: "Component Remediation Package"
+template: "component_remediation_package.html"
+category: assessment
+description: "Zero-day remediation guidance for a vulnerable component across your portfolio — upgrade paths, breaking-change analysis, ecosystem health, and interim mitigations (no CVE required)"
+execution_order: 25
+auto_run: false
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+
+parameters:
+  # AI prompt configuration
+  ai_live: false         # Enable live LLM calls (requires --ai)
+  ai_prompts: false      # Export prompts for manual LLM use
+  ai_analysis: false     # Deep analysis using high-capability model (requires --ai-analysis)
+
+  # Output options
+  include_suppressed: false   # Include FALSE_POSITIVE/NOT_AFFECTED in appendix
+
+  # Scoring weights (component risk factors)
+  weights:
+    network_reachable: 2.0
+    critical_severity: 3.0
+    high_severity: 1.5
+
+transform_function: component_remediation_package_transform
+output:
+  table: true
+  formats:
+    - csv
+    - xlsx
+    - html
+    - md
+  charts: []

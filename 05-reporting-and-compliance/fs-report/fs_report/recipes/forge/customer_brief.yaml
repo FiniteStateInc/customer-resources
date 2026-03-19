@@ -1,0 +1,29 @@
+name: "Customer Brief"
+category: assessment
+description: "External-facing project security brief for customers and regulators."
+execution_order: 20
+auto_run: false
+requires_project: true
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+
+additional_queries:
+  components:
+    endpoint: "/public/v0/components"
+    params:
+      limit: 10000
+
+transform_function: customer_brief_transform
+
+template: customer_brief.html
+
+output:
+  table: true
+  formats:
+    - html
+    - md
+    - pdf
+  charts: []

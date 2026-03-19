@@ -56,6 +56,19 @@
                        value="{{ state.get('period', '30d') }}" placeholder="30d, 2m, 90d">
             </div>
 
+            {% if show_component %}
+            <div class="form-group">
+                <label for="pre-component">&#128230; Component name</label>
+                <input type="text" id="pre-component" name="component_filter"
+                       value="{{ state.get('component_filter', '') }}"
+                       placeholder="e.g. openssl, busybox">
+                <small class="form-hint">Contains match — partial names work</small>
+                {% if show_component_recommended %}
+                <small class="form-hint-warning">Recommended for Component Impact / Component Remediation</small>
+                {% endif %}
+            </div>
+            {% endif %}
+
             {% if show_cve %}
             <div class="form-group">
                 <label for="pre-cve">CVE ID(s)</label>

@@ -118,24 +118,48 @@ class RecipeLoader:
 
         for item in package.iterdir():
             name = str(item.name)
-            if not (name.endswith(".yaml") or name.endswith(".yml")):
-                continue
-            if name.startswith("_"):
-                self.logger.debug(f"Skipping template/example file: {name}")
-                continue
-
-            try:
-                text = item.read_text(encoding="utf-8")
-                yaml_data = yaml.safe_load(text)
-                if not yaml_data:
-                    self.logger.warning(f"Empty bundled recipe file: {name}")
+            if item.is_dir() and not name.startswith("_"):
+                # Consumer subdirectory — load recipes and tag with audience
+                audience = name
+                for subitem in item.iterdir():
+                    subname = str(subitem.name)
+                    if not (subname.endswith(".yaml") or subname.endswith(".yml")):
+                        continue
+                    if subname.startswith("_"):
+                        self.logger.debug(f"Skipping template/example file: {subname}")
+                        continue
+                    try:
+                        text = subitem.read_text(encoding="utf-8")
+                        yaml_data = yaml.safe_load(text)
+                        if not yaml_data:
+                            self.logger.warning(
+                                f"Empty bundled recipe file: {audience}/{subname}"
+                            )
+                            continue
+                        recipe = Recipe.model_validate(yaml_data)
+                        recipe.audience = audience
+                        self.logger.debug(
+                            f"Loaded bundled recipe: {recipe.name} (audience={audience})"
+                        )
+                        recipes.append(recipe)
+                    except Exception as e:
+                        self.logger.error(
+                            f"Failed to load bundled recipe {audience}/{subname}: {e}"
+                        )
+                        continue
+            elif name.endswith((".yaml", ".yml")) and not name.startswith("_"):
+                try:
+                    text = item.read_text(encoding="utf-8")
+                    yaml_data = yaml.safe_load(text)
+                    if not yaml_data:
+                        self.logger.warning(f"Empty bundled recipe file: {name}")
+                        continue
+                    recipe = Recipe.model_validate(yaml_data)
+                    self.logger.debug(f"Loaded bundled recipe: {recipe.name}")
+                    recipes.append(recipe)
+                except Exception as e:
+                    self.logger.error(f"Failed to load bundled recipe {name}: {e}")
                     continue
-                recipe = Recipe.model_validate(yaml_data)
-                self.logger.debug(f"Loaded bundled recipe: {recipe.name}")
-                recipes.append(recipe)
-            except Exception as e:
-                self.logger.error(f"Failed to load bundled recipe {name}: {e}")
-                continue
 
         return recipes
 
@@ -165,6 +189,10 @@ class RecipeLoader:
             try:
                 recipe = self._load_recipe_file(yaml_file)
                 if recipe:
+                    # Derive audience from subdirectory (one level deep only)
+                    rel = yaml_file.relative_to(directory)
+                    if len(rel.parts) == 2 and not rel.parts[0].startswith("_"):
+                        recipe.audience = rel.parts[0]
                     recipes.append(recipe)
             except Exception as e:
                 self.logger.error(f"Failed to load recipe from {yaml_file}: {e}")
@@ -232,7 +260,7 @@ class RecipeLoader:
                 self.logger.error("Recipe name is required")
                 return False
 
-            if not recipe.query.endpoint:
+            if recipe.query is None or not recipe.query.endpoint:
                 self.logger.error("Query endpoint is required")
                 return False
 

@@ -133,7 +133,10 @@ def load_config_file() -> dict[str, Any]:
         if not isinstance(data, dict):
             return {}
         return data
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Failed to parse config file %s: %s", path, exc
+        )
         return {}
 
 

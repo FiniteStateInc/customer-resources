@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "fs-report"
-version = "1.8.3"
+version = "1.9.0"
 description = "Finite State Stand-Alone Reporting Kit"
 authors = ["Finite State <support@finitestate.io>"]
 license = "MIT"
@@ -8,8 +8,8 @@ readme = "README.md"
 packages = [{include = "fs_report"}]
 include = [
     "fs_report/changelog.yaml",
-    "fs_report/recipes/*.yaml",
-    "fs_report/recipes/*.yml",
+    "fs_report/recipes/**/*.yaml",
+    "fs_report/recipes/**/*.yml",
     "fs_report/templates/*.html",
     "fs_report/web/templates/**/*.html",
     "fs_report/web/static/**/*",
@@ -47,6 +47,7 @@ fastapi = ">=0.115.0,<1"
 uvicorn = {version = ">=0.34.0", extras = ["standard"]}
 sse-starlette = ">=3.0.0,<4"
 python-multipart = ">=0.0.20"
+weasyprint = ">=62.0"
 
 [tool.poetry.group.tui.dependencies]
 textual = ">=8.0.0,<9"

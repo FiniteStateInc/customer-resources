@@ -1,0 +1,36 @@
+name: "False Positive Analysis"
+category: assessment
+description: "Identify likely false positives using mechanical checks and AI applicability analysis. Non-AI: version mismatch, reachability, cross-project propagation. AI mode: LLM-based library identity and applicability verdicts."
+execution_order: 40
+auto_run: false
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+
+parameters:
+  min_triaged_for_patterns: 3
+  historical_fp_ratio_threshold: 0.5
+
+transform_function: false_positive_analysis_transform
+
+template: false_positive_analysis.html
+
+output:
+  table: true
+  formats:
+    - csv
+    - xlsx
+    - html
+    - md
+  charts:
+    - name: "fp_by_signal_type"
+      chart: bar
+      title: "FP Candidates by Detection Method"
+    - name: "fp_by_severity"
+      chart: bar
+      title: "FP Candidates by Severity"
+    - name: "fp_by_component"
+      chart: bar
+      title: "Top Components with Likely FPs"

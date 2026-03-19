@@ -16,6 +16,10 @@ transform_function: version_comparison_transform
 
 output:
   formats: ["csv", "xlsx", "html", "md"]
-  chart: bar
   table: true
   slide_title: "Version Comparison"
+  charts:
+    - name: "external_changes"
+      chart: bar
+      title: "External CVE Changes This Window"
+      description: "CVEs present in both versions whose severity or exploit status changed due to platform intelligence updates (not developer action)"

@@ -264,6 +264,7 @@
             {% for gate in scoring_config.gates %}
             <h4>{{ gate.name | replace('_', ' ') | title }} — {{ gate.band }} (score={{ gate.score }})</h4>
             <ul>
+                {# |e escapes user content BEFORE |replace injects known-safe HTML tags #}
                 <li>{{ gate.description | e | replace(' AND ', ' <strong>AND</strong> ') | replace(' OR ', ' <strong>OR</strong> ') | safe }}</li>
             </ul>
             {% endfor %}

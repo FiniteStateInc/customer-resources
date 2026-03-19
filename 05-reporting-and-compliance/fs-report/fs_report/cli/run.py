@@ -103,6 +103,8 @@ def create_config(
     cve_filter: Union[str, None] = None,
     component_filter: Union[str, None] = None,
     component_match: str = "contains",
+    component_version: Union[str, None] = None,
+    threat_context: Union[str, None] = None,
     skip_nvd: bool = False,
     scoring_file: Union[str, None] = None,
     tp_gate: Union[str, None] = None,
@@ -112,7 +114,7 @@ def create_config(
     overwrite: bool = False,
     logo: Union[str, None] = None,
     apply_vex_triage: Union[str, None] = None,
-    autotriage: bool = False,
+    autotriage: str | None = None,
     scan_types: Union[str, None] = None,
     scan_statuses: Union[str, None] = None,
     low_memory: bool = False,
@@ -413,6 +415,8 @@ def create_config(
         cve_filter=cve_filter,
         component_filter=component_filter,
         component_match=_component_match,
+        component_version=component_version,
+        threat_context=threat_context,
         skip_nvd=skip_nvd,
         scoring_file=scoring_file,
         tp_gate=tp_gate,
@@ -476,6 +480,8 @@ def run_reports(
     cve_filter: Union[str, None] = None,
     component_filter: Union[str, None] = None,
     component_match: str = "contains",
+    component_version: Union[str, None] = None,
+    threat_context: Union[str, None] = None,
     skip_nvd: bool = False,
     scoring_file: Union[str, None] = None,
     tp_gate: Union[str, None] = None,
@@ -485,7 +491,7 @@ def run_reports(
     overwrite: bool = False,
     logo: Union[str, None] = None,
     apply_vex_triage: Union[str, None] = None,
-    autotriage: bool = False,
+    autotriage: str | None = None,
     dry_run: bool = False,
     vex_concurrency: int = 5,
     context_file: Union[str, None] = None,
@@ -506,7 +512,7 @@ def run_reports(
     try:
         data_override = None
         if data_file:
-            with open(data_file) as f:
+            with open(data_file, encoding="utf-8") as f:
                 data_override = json.load(f)
 
         config = create_config(
@@ -552,6 +558,8 @@ def run_reports(
             cve_filter=cve_filter,
             component_filter=component_filter,
             component_match=component_match,
+            component_version=component_version,
+            threat_context=threat_context,
             skip_nvd=skip_nvd,
             scoring_file=scoring_file,
             tp_gate=tp_gate,
@@ -618,6 +626,8 @@ def run_reports(
                 f"  Component filter: {config.component_filter} "
                 f"(match: {config.component_match})"
             )
+        if config.component_version:
+            logger.info(f"  Component version range: {config.component_version}")
         if config.skip_nvd:
             logger.info("  NVD enrichment: Skipped (--no-nvd)")
         if config.scan_types:
@@ -655,7 +665,7 @@ def run_reports(
         if config.apply_vex_triage:
             logger.info(f"  Apply VEX triage: {config.apply_vex_triage}")
         if config.autotriage:
-            logger.info("  Autotriage: Enabled")
+            logger.info(f"  Autotriage: {config.autotriage}")
         if config.nvd_api_key:
             logger.info("  NVD API key: configured")
         if config.logo:
@@ -744,10 +754,14 @@ def run_reports(
         if data_override is not None:
 
             class MockAPIClient:
-                def __init__(self, data: dict[str, Any]) -> None:
+                def __init__(self, data: dict[str, Any] | list) -> None:
                     self.data = data
 
                 def fetch_data(self, query_config: Any) -> list[dict[str, Any]]:
+                    # List overrides have no endpoint keys to match —
+                    # the data is already handled by report_engine via data_override
+                    if isinstance(self.data, list):
+                        return []
                     endpoint = query_config.endpoint
                     for key in self.data:
                         if key in endpoint or key in getattr(query_config, "name", ""):
@@ -1091,7 +1105,7 @@ def run_command(
         False,
         "--ai",
         help="Enable AI remediation guidance "
-        "(requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, GEMINI_API_KEY, or GITHUB_TOKEN)",
+        "(requires ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or GITHUB_TOKEN)",
         rich_help_panel=_AI,
     ),
     ai_provider: Union[str, None] = typer.Option(
@@ -1186,12 +1200,14 @@ def run_command(
     baseline_version: Union[str, None] = typer.Option(
         None,
         "--baseline-version",
+        "--baseline",  # alias for backwards compatibility
         help="Baseline version ID for Version Comparison report.",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
     current_version: Union[str, None] = typer.Option(
         None,
         "--current-version",
+        "--current",  # alias for backwards compatibility
         help="Current version ID for Version Comparison report.",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
@@ -1241,6 +1257,22 @@ def run_command(
         "name@version specs always use exact.",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
+    component_version: Union[str, None] = typer.Option(
+        None,
+        "--component-version",
+        help="Version range filter for Component Impact report. "
+        "Supports exact version ('1.36.1'), comparison operators ('<2.0', '>=1.0'), "
+        "or comma-separated ranges ('>=1.0,<2.0'). Used with --component.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    threat_context: Union[str, None] = typer.Option(
+        None,
+        "--context",
+        help="Threat context for Component Remediation Package. Describes what is "
+        "known about the zero-day or vulnerability scenario. Injected into AI prompts "
+        "for more targeted guidance.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
     skip_nvd: bool = typer.Option(
         False,
         "--no-nvd",
@@ -1287,11 +1319,11 @@ def run_command(
         "Runs VEX application only (no report generation).",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
-    autotriage: bool = typer.Option(
-        False,
+    autotriage: str | None = typer.Option(
+        None,
         "--autotriage",
-        help="Auto-apply VEX recommendations after Triage Prioritization "
-        "report completes.",
+        help="Auto-apply VEX recommendations after report completes. "
+        "Levels: 'high' (default), 'medium', 'all'.",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
     dry_run: bool = typer.Option(
@@ -1441,6 +1473,7 @@ def run_command(
         cve_filter=cve_filter,
         component_filter=component_filter,
         component_match=component_match,
+        threat_context=threat_context,
         skip_nvd=skip_nvd,
         scoring_file=scoring_file,
         tp_gate=tp_gate,

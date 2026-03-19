@@ -23,6 +23,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Executive Summary | High-level security dashboard for leadership |
 | Scan Analysis | Scan throughput, success rates, and infrastructure health |
 | User Activity | Platform adoption and engagement metrics |
+| Security Progress | Security posture improvement over time — severity delta, triage funnel, finding trends |
 
 **Assessment** — current state, showing the latest security posture regardless of time period:
 
@@ -32,10 +33,16 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Findings by Project | Complete findings inventory per project with CVE details, severity, and platform links |
 | Component List | Software inventory (SBOM) for compliance |
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
+| License Report | Component license risk classification (Permissive, Copyleft, Proprietary) with policy analysis |
 | Executive Dashboard | 11-section executive-level security report with KPI cards, risk donut, severity trends, and more *(on-demand)* |
 | CVE Impact | CVE-centric dossier with affected projects, reachability, and exploit intelligence *(on-demand)* |
 | Remediation Package | Actionable remediation plan with fix-version validation, structured options (upgrade/workaround/mitigation), and optional AI enrichment *(on-demand)* |
+| Component Remediation Package | Zero-day remediation guidance for a component — upgrade paths, breaking changes, mitigations, and AI-powered recommendations *(on-demand)* |
+| Component Impact | Portfolio blast radius for a named component — affected projects, versions, and severity breakdown *(on-demand)* |
 | Version Comparison | Full version and component changelog (every version pair); fixed/new findings and component churn per step; CSV/XLSX include summary plus detail *(on-demand)* |
+| CRA Compliance | EU Cyber Resilience Act — exploited and KEV-listed vulnerabilities requiring regulatory notification *(on-demand)* |
+| False Positive Analysis | Surface likely false positives using mechanical checks and optional AI applicability analysis *(on-demand)* |
+| Scan Quality | Per-asset scan coverage and quality signals — scan type gaps and reachability unknowns *(on-demand)* |
 
 ## Quick Start
 
@@ -223,7 +230,7 @@ fs-report help periods                                 # Period format help
 
 Running bare `fs-report` (no arguments) launches an interactive web UI at `http://localhost:8321`:
 
-- **Dashboard** with workflow cards for common report scenarios
+- **Dashboard** with 16 workflow cards covering all recipes — each card opens a pre-run panel with recipe-specific configuration (AI settings, component filter, CVE input, version pickers, etc.)
 - **Real-time progress** streaming via Server-Sent Events (SSE) during report generation
 - **Direct report linking** — "View Report" opens the generated HTML immediately after a run
 - **Cancellation** — cancel button works at any point, including during NVD lookups
@@ -286,7 +293,7 @@ The reporting kit supports AI-powered remediation guidance via the `--ai` flag. 
 
 | Provider | Env Variable | Models |
 |----------|-------------|--------|
-| **Anthropic** (default) | `ANTHROPIC_AUTH_TOKEN` | Claude Opus / Haiku |
+| **Anthropic** (default) | `ANTHROPIC_API_KEY` | Claude Opus / Haiku |
 | **OpenAI** | `OPENAI_API_KEY` | GPT-4o / GPT-4o-mini |
 | **GitHub Copilot** | `GITHUB_TOKEN` | GPT-4o / GPT-4o-mini |
 

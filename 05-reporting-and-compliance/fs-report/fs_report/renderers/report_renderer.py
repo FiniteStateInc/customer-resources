@@ -129,6 +129,10 @@ class ReportRenderer:
         if "json" in formats:
             generated_files += self._render_json(recipe, report_data, recipe_output_dir)
 
+        # Generate PDF if requested
+        if "pdf" in formats:
+            generated_files += self._render_pdf(recipe, report_data, recipe_output_dir)
+
         # Generate Markdown agent prompt if requested
         if "md" in formats:
             generated_files += self._render_markdown(
@@ -184,6 +188,18 @@ class ReportRenderer:
                     else pd.DataFrame()
                 )
 
+            # Scan Quality: summary + detail tables
+            scan_quality_detail = additional_data.get("detail_table")
+            has_scan_quality_detail = (
+                recipe.name == "Scan Quality" and scan_quality_detail is not None
+            )
+            if has_scan_quality_detail:
+                scan_quality_detail_df = (
+                    scan_quality_detail
+                    if isinstance(scan_quality_detail, pd.DataFrame)
+                    else pd.DataFrame()
+                )
+
             # Generate main files
             base_filename = self._sanitize_filename(recipe.name)
 
@@ -211,6 +227,10 @@ class ReportRenderer:
                     )
                     self.csv_renderer.render(detail_component_churn_df, churn_csv)
                     generated_files.append(str(churn_csv))
+                if has_scan_quality_detail and not scan_quality_detail_df.empty:
+                    detail_csv = output_dir / f"{base_filename}_Detail.csv"
+                    self.csv_renderer.render(scan_quality_detail_df, detail_csv)
+                    generated_files.append(str(detail_csv))
             # XLSX output
             if "xlsx" in formats:
                 xlsx_path = output_dir / f"{base_filename}.xlsx"
@@ -333,6 +353,11 @@ class ReportRenderer:
                         self.xlsx_renderer.render_multi_sheet(cl_sheets, xlsx_path)
                     else:
                         self.xlsx_renderer.render(table_data, xlsx_path, recipe.name)
+                elif has_scan_quality_detail:
+                    sheets = [("Summary", table_data)]
+                    if not scan_quality_detail_df.empty:
+                        sheets.append(("Version Detail", scan_quality_detail_df))
+                    self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
                 else:
                     self.xlsx_renderer.render(table_data, xlsx_path, recipe.name)
                 self.logger.debug(f"Generated XLSX: {xlsx_path}")
@@ -455,6 +480,27 @@ class ReportRenderer:
                 generated_files.append(str(json_path))
         except Exception as e:
             self.logger.error(f"Error generating JSON: {e}")
+            raise
+        return generated_files
+
+    def _render_pdf(
+        self,
+        recipe: Recipe,
+        report_data: ReportData,
+        output_dir: Path,
+    ) -> list[str]:
+        """Render PDF output via weasyprint. Returns list of generated file paths."""
+        generated_files = []
+        try:
+            from fs_report.renderers.pdf_renderer import PDFRenderer
+
+            pdf_renderer = PDFRenderer()
+            pdf_path = output_dir / f"{self._sanitize_filename(recipe.name)}.pdf"
+            pdf_renderer.render(recipe, report_data, pdf_path)
+            self.logger.debug(f"Generated PDF: {pdf_path}")
+            generated_files.append(str(pdf_path))
+        except Exception as e:
+            self.logger.error(f"Error generating PDF: {e}")
             raise
         return generated_files
 

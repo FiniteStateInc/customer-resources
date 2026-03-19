@@ -504,6 +504,9 @@
                         <h3>Changes ({{ proj.latest_delta.baseline_label | default(proj.latest_delta.baseline_version) }} &rarr; {{ proj.latest_delta.current_label | default(proj.latest_delta.current_version) }})</h3>
                         <span class="badge badge-fixed">{{ proj.latest_delta.fixed_count }} fixed</span>
                         <span class="badge badge-new">{{ proj.latest_delta.new_count }} new</span>
+                        {% if proj.latest_delta.externally_changed_count | default(0) > 0 %}
+                        <span class="badge" style="background-color:#fff3e0;color:#e65100;">{{ proj.latest_delta.externally_changed_count }} external</span>
+                        {% endif %}
                     </div>
                     <div class="changes-summary">
                         <span class="changes-summary-fixed">Fixed: {{ proj.latest_delta.fixed_severity_summary }}</span>
@@ -559,6 +562,7 @@
                                         <th>Component</th>
                                         <th class="num">Score</th>
                                         <th>Title</th>
+                                        <th>Note</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -569,11 +573,12 @@
                                         <td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td>
                                         <td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk else '—' }}</td>
                                         <td>{{ row.title if row.title else '—' }}</td>
+                                        <td style="font-size:0.8em;color:#e65100;">{{ row.external_change_note if row.external_change_note else '' }}</td>
                                     </tr>
                                     {% endfor %}
                                     {% if proj.latest_delta.new_findings|length > 10 %}
                                     <tr class="show-more-row">
-                                        <td colspan="5">
+                                        <td colspan="6">
                                             <button class="show-more-btn" onclick="toggleRows('new-{{ loop.index }}')">
                                                 Show {{ proj.latest_delta.new_findings|length - 10 }} more...
                                             </button>
@@ -588,6 +593,43 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Latest Delta: Externally Changed (Unchanged CVE findings with platform updates) -->
+                {% if proj.latest_delta.externally_changed and proj.latest_delta.externally_changed|length > 0 %}
+                <div class="section">
+                    <div class="section-header">
+                        <h3>Externally Changed Findings ({{ proj.latest_delta.baseline_label | default(proj.latest_delta.baseline_version) }} &rarr; {{ proj.latest_delta.current_label | default(proj.latest_delta.current_version) }})</h3>
+                        <span class="badge" style="background-color:#fff3e0;color:#e65100;">{{ proj.latest_delta.externally_changed_count }} CVEs</span>
+                    </div>
+                    <p style="font-size:0.88em;color:#6c757d;margin-bottom:12px;">CVEs present in both versions whose severity or exploit status changed due to platform intelligence updates — not developer action. These findings remain open and may require re-prioritization.</p>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>CVE ID</th>
+                                <th>Component</th>
+                                <th>Change Type</th>
+                                <th>Old Severity</th>
+                                <th>New Severity</th>
+                                <th>Old Exploit</th>
+                                <th>New Exploit</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for entry in proj.latest_delta.externally_changed %}
+                            <tr>
+                                <td>{{ entry.cve_id }}</td>
+                                <td>{{ entry.component_name if entry.component_name else '—' }}</td>
+                                <td>{{ entry.change_type | replace('_', ' ') | title }}</td>
+                                <td>{% if entry.old_severity %}<span class="severity-badge severity-{{ entry.old_severity }}">{{ entry.old_severity }}</span>{% else %}—{% endif %}</td>
+                                <td>{% if entry.new_severity %}<span class="severity-badge severity-{{ entry.new_severity }}">{{ entry.new_severity }}</span>{% else %}—{% endif %}</td>
+                                <td style="font-size:0.85em;">{{ entry.old_exploit if entry.old_exploit else '—' }}</td>
+                                <td style="font-size:0.85em;">{{ entry.new_exploit if entry.new_exploit else '—' }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
 
                 <!-- Latest Delta: Component Churn -->
                 {% if proj.latest_delta.component_churn and proj.latest_delta.component_churn|length > 0 %}

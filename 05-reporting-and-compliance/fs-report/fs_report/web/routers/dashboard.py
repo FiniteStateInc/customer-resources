@@ -80,6 +80,48 @@ WORKFLOWS = [
         "description": "License risk classification across your components",
         "recipes": ["license report"],
     },
+    {
+        "id": "cra-compliance",
+        "title": "CRA Compliance",
+        "icon": "\U0001f1ea\U0001f1fa",
+        "description": "EU Cyber Resilience Act — exploited and KEV-listed vulnerabilities requiring regulatory notification",
+        "recipes": ["cra compliance"],
+    },
+    {
+        "id": "component-impact",
+        "title": "Component Impact",
+        "icon": "\U0001f4e6",
+        "description": "Portfolio blast radius for a named component — all affected projects, versions, and findings",
+        "recipes": ["component impact"],
+    },
+    {
+        "id": "component-remediation",
+        "title": "Component Remediation",
+        "icon": "\U0001f6e1",
+        "description": "Zero-day remediation guidance for a vulnerable component — upgrade paths, ecosystem health, interim mitigations",
+        "recipes": ["component remediation package"],
+    },
+    {
+        "id": "security-progress",
+        "title": "Security Progress",
+        "icon": "\U0001f4c8",
+        "description": "Security posture improvement over time — severity delta, triage funnel snapshot, and finding trends",
+        "recipes": ["security progress"],
+    },
+    {
+        "id": "scan-quality",
+        "title": "Scan Quality",
+        "icon": "\U0001f50e",
+        "description": "Per-asset scan coverage and quality signals — scan type gaps and reachability unknowns",
+        "recipes": ["scan quality"],
+    },
+    {
+        "id": "false-positive-analysis",
+        "title": "False Positive Analysis",
+        "icon": "\U0001f9ea",
+        "description": "Analyze false positive patterns and surface likely FP candidates. Enable AI for LLM applicability verdicts.",
+        "recipes": ["false positive analysis"],
+    },
 ]
 
 

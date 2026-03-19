@@ -1,4 +1,47 @@
 releases:
+  - version: "1.9.0"
+    date: "2026-03-18"
+    changes:
+      - report: ~
+        type: added
+        description: "Component search optimization: --component on Remediation Package, Component Remediation Package, and Component Impact uses /public/v0/components/search to scope findings queries (~10x faster, ~80% less memory)"
+      - report: "Component Remediation Package"
+        type: added
+        description: "Zero-day support: action cards built from component search results even when no CVE findings exist"
+      - report: "Component Remediation Package"
+        type: added
+        description: "--ai flag for live LLM calls per action card (upgrade paths, breaking changes, ecosystem health, mitigations, isolation recommendations)"
+      - report: "Component Remediation Package"
+        type: added
+        description: "--ai-prompts flag for copy-paste prompts for manual LLM use (no API key needed)"
+      - report: "Component Remediation Package"
+        type: added
+        description: "--context flag injects threat/vulnerability context into AI prompts for targeted zero-day guidance"
+      - report: "Component Impact"
+        type: added
+        description: "Markdown output format with affected projects table, version distribution, and top CVEs"
+      - report: "Component Remediation Package"
+        type: added
+        description: "Markdown output format with action cards, interim mitigations, AI guidance, and copy-paste prompts"
+      - report: "Component Impact"
+        type: added
+        description: "CSV now shows project locations (component, version, project, CVE counts) regardless of whether CVEs exist"
+      - report: "Component Remediation Package"
+        type: fixed
+        description: "Enable --ai and --ai-analysis (was missing from additional_data injection)"
+      - report: ~
+        type: fixed
+        description: "Component search filters out partial name matches (e.g. 'typer' no longer matches 'media-typer')"
+      - report: ~
+        type: fixed
+        description: "Folder/default branches no longer overwrite component-search-scoped findings"
+      - report: ~
+        type: fixed
+        description: "Per-recipe state reset prevents stale component search results leaking between recipes"
+      - report: ~
+        type: fixed
+        description: "NVD pipeline fed on component-search fetched records"
+
   - version: "1.8.3"
     date: "2026-03-12"
     changes:

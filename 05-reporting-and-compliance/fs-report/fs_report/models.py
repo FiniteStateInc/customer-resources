@@ -37,6 +37,7 @@ class ChartType(StrEnum):
     BUBBLE = "bubble"
     HEATMAP = "heatmap"
     RADAR = "radar"
+    DOUGHNUT = "doughnut"
 
 
 class TransformType(StrEnum):
@@ -266,12 +267,18 @@ class Recipe(BaseModel):
         description="Whether to include in default runs. "
         "If false, only runs when explicitly requested with --recipe.",
     )
+    audience: str | None = Field(
+        None,
+        description="Consumer audience for this recipe. None = standard user-facing. "
+        "Set automatically from the recipe's subdirectory name (e.g., 'forge', 'fs_cli'). "
+        "Audience recipes are hidden from 'list recipes' by default.",
+    )
     template: str | None = Field(None, description="HTML template to use for rendering")
     description: str | None = Field(None, description="Recipe description")
     parameters: dict[str, Any] | None = Field(
         None, description="Recipe parameters for customization"
     )
-    query: QueryConfig = Field(..., description="API query configuration")
+    query: QueryConfig | None = Field(None, description="API query configuration")
     project_list_query: QueryConfig | None = Field(
         None,
         description="Query for fetching project data (for new vs existing analysis)",
@@ -303,6 +310,10 @@ class Recipe(BaseModel):
         False,
         description="Whether this recipe requires a --cve filter. "
         "When true, the engine will refuse to run without one.",
+    )
+    requires_project_or_folder: bool = Field(
+        False,
+        description="Whether this recipe requires --project or --folder to be set.",
     )
     output: OutputConfig = Field(..., description="Output configuration")
 
@@ -393,7 +404,7 @@ class Config(BaseModel):
     # AI remediation guidance options
     ai: bool = Field(
         False,
-        description="Enable AI remediation guidance (requires ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY, GEMINI_API_KEY, or GITHUB_TOKEN)",
+        description="Enable AI remediation guidance (requires ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or GITHUB_TOKEN)",
     )
     ai_provider: str | None = Field(
         None,
@@ -454,6 +465,12 @@ class Config(BaseModel):
         None,
         description="Free-text deployment notes for AI prompts (max 500 chars).",
     )
+    threat_context: str | None = Field(
+        None,
+        description="Free-text threat/vulnerability context for Component Remediation "
+        "Package. Describes what is known about the zero-day or threat scenario. "
+        "Injected into AI prompts to produce more targeted guidance.",
+    )
     nvd_api_key: str | None = Field(
         None,
         description="NVD API key for faster fix-version lookups. "
@@ -513,6 +530,11 @@ class Config(BaseModel):
         description="Match mode for --component: 'contains' (default, case-insensitive "
         "substring) or 'exact' (exact name match). name@version specs always use exact.",
     )
+    component_version: str | None = Field(
+        None,
+        description="Version range filter for Component Impact report (e.g. '<2.0', '>=1.0,<2.0', '1.36.1'). "
+        "Used with --component to scope impact to specific version ranges.",
+    )
     skip_nvd: bool = Field(
         False,
         description="Skip NVD enrichment entirely. Useful for faster runs when NVD "
@@ -549,10 +571,11 @@ class Config(BaseModel):
         description="Path to vex_recommendations.json to apply to the platform. "
         "Runs VEX application only (no report generation).",
     )
-    autotriage: bool = Field(
-        False,
-        description="Auto-apply VEX recommendations after Triage Prioritization "
-        "report completes.",
+    autotriage: str | None = Field(
+        None,
+        description="Auto-apply VEX recommendations after report completes. "
+        "Levels: 'high' (mechanical only), 'medium' (+ AI high confidence), "
+        "'all' (all candidates). Default when flag given without value: 'high'.",
     )
     overwrite: bool = Field(
         False,

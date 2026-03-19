@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>Component Impact Report - Finite State Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6; color: #333; background-color: #f8f9fa;
+        }
+        .container { margin: 0 auto; padding: 20px; background-color: white; border: 1px solid #dee2e6; min-height: 100%; }
+        .header { text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid #e9ecef; }
+        .company-logo { max-height: 50px; width: auto; margin: 0 auto; display: block; }
+        .header h1 { color: #2c3e50; font-size: 2.5em; margin-bottom: 10px; }
+        .header .subtitle { color: #6c757d; font-size: 1.1em; }
+        .metadata { background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 30px; font-size: 0.9em; color: #6c757d; }
+
+        .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .kpi-card {
+            background: white; border: 1px solid #dee2e6; border-radius: 8px;
+            padding: 20px; text-align: center;
+        }
+        .kpi-card .kpi-title { font-size: 0.85em; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .kpi-card .kpi-value { font-size: 2.2em; font-weight: 700; color: #2c3e50; line-height: 1; }
+
+        .section { margin-bottom: 30px; }
+        .section-title { color: #2c3e50; font-size: 1.5em; margin-bottom: 15px; }
+
+        .version-badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 30px; }
+        .version-badge {
+            display: inline-block; padding: 4px 12px; border-radius: 12px;
+            font-size: 0.85em; font-weight: 500; background-color: #e9ecef; color: #495057;
+            border: 1px solid #dee2e6;
+        }
+
+        .dossier { margin-bottom: 20px; border: 1px solid #dee2e6; border-radius: 8px; overflow: hidden; }
+        .dossier summary {
+            padding: 15px 20px; background-color: #f8f9fa; cursor: pointer;
+            font-weight: 600; color: #2c3e50; list-style: none;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .dossier summary::-webkit-details-marker { display: none; }
+        .dossier summary::before { content: '\25B6'; margin-right: 10px; font-size: 0.7em; transition: transform 0.2s; }
+        .dossier[open] summary::before { transform: rotate(90deg); }
+        .dossier-body { padding: 20px; }
+        .dossier-meta { font-size: 0.9em; color: #6c757d; margin-bottom: 15px; }
+
+        .table-container { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #dee2e6; }
+        th { background-color: #f8f9fa; font-weight: 600; color: #495057; position: sticky; top: 0; z-index: 10; }
+        tr:hover { background-color: #f8f9fa; }
+        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+        .severity-badge {
+            display: inline-block; padding: 2px 10px; border-radius: 12px;
+            font-size: 0.8em; font-weight: 600; color: white;
+        }
+        .severity-critical { background-color: #dc2626; }
+        .severity-high { background-color: #ea580c; }
+        .severity-medium { background-color: #eab308; color: #333; }
+        .severity-low { background-color: #2563eb; }
+        .severity-unknown { background-color: #757575; }
+
+        .footer { text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e9ecef; color: #6c757d; font-size: 0.9em; }
+        .finite-state-logo { color: #007bff; font-weight: bold; }
+
+        @media print {
+            body { background-color: white; }
+            .container { max-width: none; }
+            .dossier[open] summary ~ * { display: block; }
+        }
+    </style>
+</head>
+<body>
+    <span id="fsConnectionBadge"></span>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            {% if logo_path %}
+            <div class="logo-container">
+                <img src="{{ logo_path }}" alt="Company Logo" class="company-logo">
+            </div>
+            {% else %}
+            <div class="logo-container">
+                <img src="data:image/webp;base64,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"
+                     alt="Finite State Logo" class="company-logo">
+            </div>
+            {% endif %}
+            <h1>Component Impact Report</h1>
+            <div class="subtitle">
+                {{ summary.component_name | default('Unknown Component') }} — Blast Radius Analysis
+            </div>
+        </div>
+
+        <!-- Metadata -->
+        <div class="metadata">
+            <strong>Report:</strong> Component Impact |
+            <strong>Generated:</strong> {{ generated_at }} |
+            <strong>Scope:</strong> {{ scope_label | default('All Projects') }}
+            {% if summary.component_name %}| <strong>Component:</strong> {{ summary.component_name }}{% endif %}
+            {% if summary.version_range %}| <strong>Version Range:</strong> {{ summary.version_range }}{% endif %}
+        </div>
+
+        <!-- KPI Cards -->
+        <div class="kpi-row">
+            <div class="kpi-card">
+                <div class="kpi-title">Projects with Component</div>
+                <div class="kpi-value" {% if summary.projects_with_component | default(0) > 0 %}style="color: #dc2626;"{% endif %}>{{ summary.projects_with_component | default(0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">With Known CVEs</div>
+                <div class="kpi-value" {% if summary.projects_with_findings | default(0) > 0 %}style="color: #ea580c;"{% endif %}>{{ summary.projects_with_findings | default(0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Total CVE Findings</div>
+                <div class="kpi-value">{{ summary.total_cve_count | default(0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Critical</div>
+                <div class="kpi-value" {% if summary.critical_count | default(0) > 0 %}style="color: #dc2626;"{% endif %}>{{ summary.critical_count | default(0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">High</div>
+                <div class="kpi-value" {% if summary.high_count | default(0) > 0 %}style="color: #ea580c;"{% endif %}>{{ summary.high_count | default(0) }}</div>
+            </div>
+        </div>
+
+        {% if summary.version_range %}
+        <div style="background:#fef9c3;border:1px solid #fde047;border-radius:6px;padding:10px 16px;margin-bottom:20px;font-size:0.9em;color:#713f12;">
+            &#9888; Version range filter active: <strong>{{ summary.version_range }}</strong> — only projects with matching component versions are shown.
+        </div>
+        {% endif %}
+
+        <!-- Portfolio Location Table (primary view) -->
+        {% if locations and locations | length > 0 %}
+        <div class="section">
+            <h2 class="section-title">Portfolio Locations</h2>
+            <p style="font-size:0.9em;color:#6c757d;margin-bottom:12px;">
+                <strong>{{ locations | length }}</strong> project(s) contain <strong>{{ summary.component_name }}</strong>.
+                Projects with known CVE findings are listed first.
+            </p>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Project</th>
+                            <th>Detected Version(s)</th>
+                            <th style="text-align:center;">CVE Findings</th>
+                            <th style="text-align:center;">Critical</th>
+                            <th style="text-align:center;">High</th>
+                            <th>Top CVE</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for loc in locations %}
+                        <tr {% if loc.cve_count > 0 %}style="background:#fff8f8;"{% endif %}>
+                            <td style="font-weight:{% if loc.cve_count > 0 %}600{% else %}normal{% endif %};">
+                                {{ loc.project_name }}
+                            </td>
+                            <td style="font-size:0.85em;color:#555;">
+                                {% if loc.detected_versions %}
+                                    {{ loc.detected_versions | join(', ') }}
+                                {% else %}
+                                    <span style="color:#aaa;">—</span>
+                                {% endif %}
+                            </td>
+                            <td style="text-align:center;">
+                                {% if loc.cve_count > 0 %}
+                                <strong style="color:#dc2626;">{{ loc.cve_count }}</strong>
+                                {% else %}
+                                <span style="color:#aaa;">—</span>
+                                {% endif %}
+                            </td>
+                            <td style="text-align:center;">
+                                {% if loc.critical_count > 0 %}
+                                <strong style="color:#dc2626;">{{ loc.critical_count }}</strong>
+                                {% else %}&mdash;{% endif %}
+                            </td>
+                            <td style="text-align:center;">
+                                {% if loc.high_count > 0 %}
+                                <strong style="color:#ea580c;">{{ loc.high_count }}</strong>
+                                {% else %}&mdash;{% endif %}
+                            </td>
+                            <td style="font-size:0.85em;">
+                                {% if loc.top_cves %}
+                                    {% set tc = loc.top_cves[0] %}
+                                    <code>{{ tc.cve_id | default('') }}</code>
+                                    {% set sev = tc.severity | default('') | upper %}
+                                    <span class="severity-badge {% if sev == 'CRITICAL' %}severity-critical{% elif sev == 'HIGH' %}severity-high{% elif sev == 'MEDIUM' %}severity-medium{% elif sev == 'LOW' %}severity-low{% endif %}" style="font-size:0.75em;">{{ sev }}</span>
+                                    {% if loc.top_cves | length > 1 %}
+                                    <span style="color:#aaa;font-size:0.8em;">+{{ loc.top_cves | length - 1 }} more</span>
+                                    {% endif %}
+                                {% else %}
+                                    <span style="color:#aaa;">No CVE findings</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% else %}
+        <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:16px 20px;color:#166534;font-size:0.95em;">
+            &#10003; No projects found containing <strong>{{ summary.component_name }}</strong>{% if summary.version_range %} in version range <strong>{{ summary.version_range }}</strong>{% endif %}.
+        </div>
+        {% endif %}
+
+        <div class="footer">
+            <p>Generated by <span class="finite-state-logo">Finite State</span> | {{ generated_at }}</p>
+            <p style="font-size: 0.8em; margin-top: 4px;">Copyright &copy; 2026 Finite State, Inc.</p>
+        </div>
+    </div>
+
+    {% include '_action_buttons.html' %}
+</body>
+</html>

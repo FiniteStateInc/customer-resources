@@ -17,6 +17,13 @@ This directory contains YAML recipe files that define the available reports in t
 | `remediation_package.yaml` | Remediation Package | Actionable remediation plan with fix-version validation and structured options *(on-demand)* |
 | `executive_dashboard.yaml` | Executive Dashboard | 11-section executive-level security report with KPI cards, severity trends, and exploit intelligence *(on-demand)* |
 | `cve_impact.yaml` | CVE Impact | CVE-centric dossier with affected projects, reachability, and exploit intelligence *(on-demand)* |
+| `license_report.yaml` | License Report | Component license risk classification (Permissive, Copyleft, Proprietary) with policy analysis |
+| `cra_compliance.yaml` | CRA Compliance | EU Cyber Resilience Act compliance assessment with KEV and exploit analysis *(on-demand)* |
+| `false_positive_analysis.yaml` | False Positive Analysis | Patterns and trends in false positive findings across the portfolio *(on-demand)* |
+| `scan_quality.yaml` | Scan Quality | Per-asset scan coverage and detection quality metrics *(on-demand)* |
+| `security_progress.yaml` | Security Progress | Security posture improvement tracking over time *(on-demand)* |
+| `component_remediation_package.yaml` | Component Remediation Package | Zero-day remediation guidance with upgrade paths, AI-powered recommendations, and interim mitigations *(on-demand)* |
+| `component_impact.yaml` | Component Impact | Portfolio blast radius for a named component — affected projects, versions, and severity breakdown *(on-demand)* |
 
 ## Usage
 

@@ -35,6 +35,14 @@ FINDINGS_RECIPES = {"findings by project"}
 VERSION_RECIPES = {"version comparison"}
 COMPONENT_RECIPES = {"component list"}
 REMEDIATION_RECIPES = {"remediation package"}
+FPA_RECIPES = {"false positive analysis"}
+COMPONENT_REMEDIATION_RECIPES = {"component remediation package"}
+COMPONENT_SCOPED_RECIPES = {
+    "component impact",
+    "component remediation package",
+    "component vulnerability analysis",
+}
+COMPONENT_RECOMMENDED_RECIPES = {"component impact", "component remediation package"}
 
 
 def _parse_cache_ttl(value: Any) -> int:
@@ -341,11 +349,22 @@ async def prerun_form(
 
     selected = {r.lower() for r in recipe_names}
     show_cve = bool(selected & (CVE_RECIPES | REMEDIATION_RECIPES))
-    show_ai = bool(selected & (CVE_RECIPES | TRIAGE_RECIPES | REMEDIATION_RECIPES))
+    show_ai = bool(
+        selected
+        & (
+            CVE_RECIPES
+            | TRIAGE_RECIPES
+            | REMEDIATION_RECIPES
+            | FPA_RECIPES
+            | COMPONENT_REMEDIATION_RECIPES
+        )
+    )
     show_triage = bool(selected & TRIAGE_RECIPES)
     show_finding_types = bool(selected & FINDINGS_RECIPES)
     show_version_fields = bool(selected & VERSION_RECIPES)
     show_project_required = bool(selected & REMEDIATION_RECIPES)
+    show_component = bool(selected & COMPONENT_SCOPED_RECIPES)
+    show_component_recommended = bool(selected & COMPONENT_RECOMMENDED_RECIPES)
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
@@ -362,6 +381,8 @@ async def prerun_form(
             "show_finding_types": show_finding_types,
             "show_version_fields": show_version_fields,
             "show_project_required": show_project_required,
+            "show_component": show_component,
+            "show_component_recommended": show_component_recommended,
         },
     )
 

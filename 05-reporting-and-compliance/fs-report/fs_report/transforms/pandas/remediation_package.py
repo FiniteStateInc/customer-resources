@@ -1603,6 +1603,7 @@ def _enrich_with_ai_analysis(
     has_creds = any(
         os.getenv(v)
         for v in (
+            "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "OPENAI_API_KEY",
             "GEMINI_API_KEY",
@@ -1782,6 +1783,7 @@ def _enrich_with_combined_analysis(
     has_creds = any(
         os.getenv(v)
         for v in (
+            "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
             "OPENAI_API_KEY",
             "GEMINI_API_KEY",

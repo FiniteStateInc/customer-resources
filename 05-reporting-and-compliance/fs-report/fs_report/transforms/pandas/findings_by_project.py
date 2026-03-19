@@ -406,10 +406,8 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
         def extract_cvss_score(risk: Any) -> float:
             try:
                 score = float(risk)
-                # Scale down if > 10 (sometimes API returns scores multiplied by 10)
-                if score > 10:
-                    score = score / 10.0
-                return score
+                # API returns risk as 0-100; always convert to 0-10 CVSS scale
+                return round(score / 10.0, 1)
             except Exception:
                 return 0.0
 
@@ -474,8 +472,12 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
             calculate_weaponization_count
         )
     else:
-        df["exploit_count"] = 0
-        df["weaponization_count"] = 0
+        # Preserve already-computed columns (report engine pre-flattens
+        # and drops exploitInfo before the transform re-enters here).
+        if "exploit_count" not in df.columns:
+            df["exploit_count"] = 0
+        if "weaponization_count" not in df.columns:
+            df["weaponization_count"] = 0
 
     # Handle reachability score
     if "reachabilityScore" in df.columns:
@@ -492,7 +494,8 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
             )
         )
     else:
-        df["reachability_label"] = "UNKNOWN"
+        if "reachability_label" not in df.columns:
+            df["reachability_label"] = "UNKNOWN"
 
     # Handle KEV (Known Exploited Vulnerabilities) indicator
     if "inKev" in df.columns:
@@ -500,7 +503,8 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
             df["inKev"].fillna(False).astype(bool).map({True: "Yes", False: ""})
         )
     else:
-        df["kev_label"] = ""
+        if "kev_label" not in df.columns:
+            df["kev_label"] = ""
 
     # Ensure all required columns exist with defaults
     if "cvss_score" not in df.columns:

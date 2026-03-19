@@ -1662,6 +1662,19 @@ class ReportEngine:
                     all_succeeded = False
                     continue
 
+                # Require --project or --folder for recipes that declare requires_project_or_folder
+                if (
+                    getattr(recipe, "requires_project_or_folder", False) is True
+                    and not self.config.project_filter
+                    and not self.config.folder_filter
+                ):
+                    self.logger.error(
+                        f"'{recipe.name}' requires --project or --folder. "
+                        "Use --project <name-or-id> or --folder <name-or-id> to scope."
+                    )
+                    all_succeeded = False
+                    continue
+
                 # Folder-scoped Remediation Package: iterate over projects
                 if (
                     recipe.name == "Remediation Package"
@@ -1858,6 +1871,207 @@ class ReportEngine:
                 self.logger.error(f"Remediation Package failed for {project_name}: {e}")
 
         return any_succeeded
+
+    # ------------------------------------------------------------------
+    # Component search optimization
+    # ------------------------------------------------------------------
+
+    _MAX_COMPONENT_SEARCH_SPECS = 10
+
+    def _search_components(
+        self,
+    ) -> tuple[list[dict[str, Any]], set[int]] | None:
+        """Search for components by name via /public/v0/components/search.
+
+        Uses ``self.config.component_filter`` (comma-separated specs).
+        Returns ``(components, version_ids)`` or ``None`` if the search
+        should be skipped (too many specs, API error, etc.).
+
+        When ``self.config.project_filter`` is set, *version_ids* is
+        narrowed to only versions belonging to that project.
+
+        When ``self.config.component_version`` contains range operators
+        (>=, <=, >, <, !=), version filtering is done client-side after
+        the search.  Simple version strings are passed to the search
+        endpoint's ``version`` query param.
+        """
+        import re
+
+        comp_filter = getattr(self.config, "component_filter", None)
+        if not comp_filter:
+            return None
+
+        specs = [s.strip() for s in comp_filter.split(",") if s.strip()]
+        if len(specs) > self._MAX_COMPONENT_SEARCH_SPECS:
+            self.logger.warning(
+                "Component search optimization skipped: %d specs exceeds "
+                "limit of %d — falling back to full fetch",
+                len(specs),
+                self._MAX_COMPONENT_SEARCH_SPECS,
+            )
+            return None
+
+        _RANGE_RE = re.compile(r"[><=!]")
+
+        all_components: list[dict[str, Any]] = []
+        url = f"{self.api_client.base_url}/public/v0/components/search"
+
+        # Determine if --component-version should be passed to the
+        # search endpoint (simple string) or filtered client-side (range).
+        comp_version = getattr(self.config, "component_version", None)
+        _version_is_range = bool(comp_version and _RANGE_RE.search(comp_version))
+
+        for spec in specs:
+            search_params: dict[str, str] = {"limit": "1000"}
+
+            # Parse name@version syntax
+            if "@" in spec:
+                name, version = spec.rsplit("@", 1)
+                search_params["name"] = name
+                search_params["version"] = version
+            else:
+                search_params["name"] = spec
+                # Pass simple --component-version to the search endpoint
+                if comp_version and not _version_is_range:
+                    search_params["version"] = comp_version
+
+            try:
+                response = self.api_client.client.get(
+                    url, params=search_params, timeout=60
+                )
+                response.raise_for_status()
+                data = response.json()
+                if isinstance(data, list):
+                    all_components.extend(data)
+                    self.logger.info(
+                        "Component search '%s': %d results", spec, len(data)
+                    )
+                else:
+                    self.logger.warning(
+                        "Component search '%s': unexpected response type %s",
+                        spec,
+                        type(data).__name__,
+                    )
+            except Exception as exc:
+                self.logger.warning(
+                    "Component search failed for '%s': %s — falling back to full fetch",
+                    spec,
+                    exc,
+                )
+                return None
+
+        # Apply client-side version range filtering if --component-version
+        # contains range operators
+        if comp_version and _version_is_range:
+            from fs_report.transforms.pandas.component_impact import (
+                _parse_version_range,
+                _version_matches,
+            )
+
+            try:
+                constraints = _parse_version_range(comp_version)
+                before = len(all_components)
+                all_components = [
+                    c
+                    for c in all_components
+                    if _version_matches(
+                        str(c.get("componentVersion", c.get("version", ""))),
+                        constraints,
+                    )
+                ]
+                self.logger.info(
+                    "Component version range '%s': %d → %d components",
+                    comp_version,
+                    before,
+                    len(all_components),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "Version range filtering failed: %s — using all components",
+                    exc,
+                )
+
+        # Extract version IDs, optionally filtered by project or folder.
+        # Post-filter search results by component name.  The search
+        # endpoint uses partial matching (e.g. "typer" returns "media-typer").
+        # We filter to exact name matches on the search results.
+        _target_names = set()
+        for spec in specs:
+            name = spec.rsplit("@", 1)[0] if "@" in spec else spec
+            _target_names.add(name.lower())
+
+        before_filter = len(all_components)
+        all_components = [
+            c
+            for c in all_components
+            if c.get("componentName", c.get("name", "")).lower() in _target_names
+        ]
+        if before_filter != len(all_components):
+            self.logger.info(
+                "Component name filter: %d → %d (removed partial matches)",
+                before_filter,
+                len(all_components),
+            )
+
+        if not all_components:
+            self.logger.info("Component search: no results after name filtering")
+            return all_components, set()
+
+        # The search endpoint returns a different shape than /public/v0/components:
+        #   { "componentName", "componentVersion",
+        #     "project": { "projectId", "projectName",
+        #                  "latestMatchingProjectVersionId", "projectVersionName" } }
+        project_filter = self.config.project_filter
+        folder_project_ids: set | None = getattr(self, "_folder_project_ids", None)
+        _folder_pid_strs = (
+            {str(p) for p in folder_project_ids} if folder_project_ids else None
+        )
+        version_ids: set[int] = set()
+        for comp in all_components:
+            # Handle both search endpoint shape and ComponentV0 shape
+            proj = comp.get("project") or {}
+            if isinstance(proj, dict):
+                pv_id = proj.get(
+                    "latestMatchingProjectVersionId",
+                    (comp.get("projectVersion") or {}).get("id"),
+                )
+                proj_id = proj.get("projectId", proj.get("id"))
+            else:
+                pv_id = (comp.get("projectVersion") or {}).get("id")
+                proj_id = None
+
+            if pv_id is None:
+                continue
+
+            # Narrow to project if --project is set
+            if project_filter:
+                if str(proj_id) != str(project_filter):
+                    continue
+            # Narrow to folder's project set if --folder is set
+            elif _folder_pid_strs is not None and proj_id is not None:
+                if str(proj_id) not in _folder_pid_strs:
+                    continue
+
+            version_ids.add(int(pv_id))
+
+        # Cap version IDs to avoid URL-too-long (414) on the findings RSQL
+        _MAX_VERSION_IDS = 200
+        if len(version_ids) > _MAX_VERSION_IDS:
+            self.logger.warning(
+                "Component search returned %d version IDs (cap=%d) "
+                "— falling back to full fetch",
+                len(version_ids),
+                _MAX_VERSION_IDS,
+            )
+            return None
+
+        self.logger.info(
+            "Component search: %d components, %d unique version IDs",
+            len(all_components),
+            len(version_ids),
+        )
+
+        return all_components, version_ids
 
     # ------------------------------------------------------------------
     # Cross-server Version Comparison helper
@@ -2529,6 +2743,9 @@ class ReportEngine:
     def _process_recipe(self, recipe: Recipe) -> ReportData | None:
         """Process a single recipe and return report data."""
         try:
+            # Reset per-recipe state
+            self._component_search_results = None
+
             # Track whether entity-level caching was used (needs date post-filtering)
             needs_date_postfilter = False
             is_operational = False
@@ -2551,35 +2768,51 @@ class ReportEngine:
                 self.logger.info(
                     f"Using data from override file for recipe: {recipe.name}"
                 )
-                # For data override, we need to extract the main query data
-                # The main query should match one of the keys in the override data
-                endpoint = recipe.query.endpoint
-                raw_data = None
-                # Patch: if override is a list, use it directly
-                if isinstance(self.data_override, list):  # type: ignore[unreachable]
-                    raw_data = self.data_override  # type: ignore[unreachable]
+                if recipe.query is None:
+                    # No endpoint to match — use entire override as raw data
+                    if isinstance(self.data_override, list):  # type: ignore[unreachable]
+                        raw_data = self.data_override  # type: ignore[unreachable]
+                    else:
+                        # Dict override: use first value, or the whole dict
+                        first_key = next(iter(self.data_override), None)
+                        raw_data = self.data_override[first_key] if first_key else []
                 else:
-                    self.logger.debug(
-                        f"Override matching: endpoint={endpoint}, override keys={list(self.data_override.keys())}"
-                    )
-                    for key in self.data_override:
-                        key_str = str(key)
-                        endpoint_str = str(endpoint)
+                    # For data override, we need to extract the main query data
+                    # The main query should match one of the keys in the override data
+                    endpoint = recipe.query.endpoint
+                    raw_data = None
+                    # Patch: if override is a list, use it directly
+                    if isinstance(self.data_override, list):  # type: ignore[unreachable]
+                        raw_data = self.data_override  # type: ignore[unreachable]
+                    else:
                         self.logger.debug(
-                            f"Comparing key='{key_str}' to endpoint='{endpoint_str}'"
+                            f"Override matching: endpoint={endpoint}, override keys={list(self.data_override.keys())}"
                         )
-                        if key_str == endpoint_str or key_str.endswith(
-                            endpoint_str.split("/")[-1]
-                        ):
-                            raw_data = self.data_override[key]
-                            self.logger.debug(f"Override match found: key='{key_str}'")
-                            break
-                if raw_data is None:
+                        for key in self.data_override:
+                            key_str = str(key)
+                            endpoint_str = str(endpoint)
+                            self.logger.debug(
+                                f"Comparing key='{key_str}' to endpoint='{endpoint_str}'"
+                            )
+                            if key_str == endpoint_str or key_str.endswith(
+                                endpoint_str.split("/")[-1]
+                            ):
+                                raw_data = self.data_override[key]
+                                self.logger.debug(
+                                    f"Override match found: key='{key_str}'"
+                                )
+                                break
+                    if raw_data is None:
+                        self.logger.error(
+                            f"Could not find data for endpoint {endpoint} in override data"
+                        )
+                        return None
+            else:
+                if recipe.query is None:
                     self.logger.error(
-                        f"Could not find data for endpoint {endpoint} in override data"
+                        f"Recipe '{recipe.name}' has no query and no data override — skipping"
                     )
                     return None
-            else:
                 # Use robust pagination for all major findings-based reports
                 _ROBUST_ENDPOINTS = {
                     "/public/v0/findings",
@@ -3000,9 +3233,64 @@ class ReportEngine:
                         ):
                             _nvd_on_records, _nvd_collect = self._start_nvd_pipeline()
 
+                        # --- Component search optimization ---
+                        # For component-scoped recipes (RP, CRP, CI), search
+                        # components by name first to get version IDs, then scope
+                        # the findings query to only those versions.
+                        _component_search_results: list[dict] | None = None
+                        _component_version_ids: set[int] | None = None
+                        _is_component_scoped = getattr(
+                            self.config, "component_filter", None
+                        ) and recipe.name in (
+                            "Remediation Package",
+                            "Component Remediation Package",
+                            "Component Impact",
+                        )
+                        if _is_component_scoped:
+                            _cs_result = self._search_components()
+                            if _cs_result is not None:
+                                _component_search_results, _component_version_ids = (
+                                    _cs_result
+                                )
+                                if _component_version_ids:
+                                    self.logger.info(
+                                        "Component search optimization: scoping "
+                                        "findings to %d version IDs",
+                                        len(_component_version_ids),
+                                    )
+                                else:
+                                    self.logger.info(
+                                        "Component search returned 0 matching "
+                                        "versions — report will be empty"
+                                    )
+
+                        # Store for later injection into additional_data
+                        self._component_search_results = _component_search_results
+
                         # Build filter list for non-entity-cached paths
                         # (entity-cached paths skip this and post-filter instead)
                         filters = []
+
+                        # Preserve recipe-defined RSQL filter (e.g. CRA Compliance KEV filter)
+                        if (
+                            recipe.query
+                            and recipe.query.params
+                            and recipe.query.params.filter
+                            and "${" not in recipe.query.params.filter
+                        ):
+                            _recipe_rsql = recipe.query.params.filter
+                            # RSQL "or" keyword needs parentheses when combined with ";"
+                            # Convert: "inKev==true or hasKnownExploit==true"
+                            #      to: "(inKev==true,hasKnownExploit==true)"
+                            if " or " in _recipe_rsql.lower():
+                                parts = [
+                                    p.strip()
+                                    for p in _recipe_rsql.split(" or ")
+                                    if p.strip()
+                                ]
+                                _recipe_rsql = f"({','.join(parts)})"
+                            filters.append(_recipe_rsql)
+
                         if category_filter:
                             filters.append(category_filter)
 
@@ -3032,7 +3320,55 @@ class ReportEngine:
                         # transform (not at API level) so sibling CVEs on the
                         # same component are included in the action card.
 
-                        if self.config.project_filter:
+                        # Component-search scoping: add version ID filter and
+                        # skip the project/folder version-resolution branches
+                        # (versions are already known from the search).
+                        if _component_version_ids:
+                            sorted_vids = sorted(_component_version_ids)
+                            filters.append(
+                                f"projectVersion=in=({','.join(str(v) for v in sorted_vids)})"
+                            )
+                            # Still add project filter for safety (redundant but harmless)
+                            if self.config.project_filter:
+                                try:
+                                    project_id = int(self.config.project_filter)
+                                    filters.append(f"project=={project_id}")
+                                except ValueError:
+                                    filters.append(
+                                        f"project=={self.config.project_filter}"
+                                    )
+
+                            # Build query and fetch immediately — skip the
+                            # version-resolution / entity-caching branches below
+                            combined_filter = ";".join(filters) if filters else ""
+                            unified_query = QueryConfig(
+                                endpoint=recipe.query.endpoint,
+                                params=QueryParams(
+                                    limit=recipe.query.params.limit,
+                                    filter=combined_filter,
+                                    finding_type=finding_type,
+                                    archived=False,
+                                    excluded=False,
+                                ),
+                            )
+                            self.logger.info(
+                                "Fetching findings for %s (component-search scoped) "
+                                "with filter: %s",
+                                recipe.name,
+                                combined_filter,
+                            )
+                            _fetched = self.api_client.fetch_all_with_resume(
+                                unified_query
+                            )
+                            # Feed NVD pipeline before converting to DataFrame
+                            if _nvd_on_records is not None and _fetched:
+                                _nvd_on_records(_fetched)
+                            raw_data = (
+                                pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
+                            )
+                            del _fetched
+
+                        elif self.config.project_filter:
                             # Single project filter - get findings for this project
                             try:
                                 project_id = int(self.config.project_filter)
@@ -3657,6 +3993,76 @@ class ReportEngine:
                                 self.logger.info(
                                     f"Fetched {total_records} total findings for scanned projects"
                                 )
+                    else:
+                        # Generic handler for robust endpoints not matched above
+                        # (e.g. Scan Quality on /public/v0/scans).
+                        if _endpoint == "/public/v0/scans":
+                            # Use the same scan-specific fetch path as Scan Analysis:
+                            # _apply_scan_filters for project/folder scoping, then
+                            # _fetch_scans_with_early_termination for robust retry +
+                            # date-based early termination + SQLite cache.
+                            _scan_query = self._apply_scan_filters(recipe.query)
+                            self.logger.info(
+                                f"Fetching {recipe.name} via scan filters"
+                                + (
+                                    f", filter: {_scan_query.params.filter}"
+                                    if _scan_query.params.filter
+                                    else ""
+                                )
+                            )
+                            # Assessment recipes (e.g. Scan Quality) need ALL scans,
+                            # not just those in the --period window.
+                            _saved_start = self.config.start_date
+                            if recipe.category == "assessment":
+                                self.config.start_date = "2020-01-01"
+                            try:
+                                _fetched = self._fetch_scans_with_early_termination(
+                                    _scan_query
+                                )
+                            finally:
+                                if recipe.category == "assessment":
+                                    self.config.start_date = _saved_start
+                        else:
+                            _generic_filters: list[str] = []
+                            if self.config.project_filter:
+                                try:
+                                    _gp_id = int(self.config.project_filter)
+                                    _generic_filters.append(f"project=={_gp_id}")
+                                except ValueError:
+                                    _generic_filters.append(
+                                        f"project=={self.config.project_filter}"
+                                    )
+                            elif self._folder_project_ids:
+                                folder_pids = sorted(self._folder_project_ids)
+                                _generic_filters.append(
+                                    f"project=in=({','.join(str(pid) for pid in folder_pids)})"
+                                )
+                            _generic_combined = (
+                                ";".join(_generic_filters) if _generic_filters else ""
+                            )
+                            _generic_query = QueryConfig(
+                                endpoint=recipe.query.endpoint,
+                                params=QueryParams(
+                                    limit=recipe.query.params.limit,
+                                    filter=_generic_combined or None,
+                                    sort=getattr(recipe.query.params, "sort", None),
+                                ),
+                            )
+                            self.logger.info(
+                                f"Fetching {recipe.name} with paginated fetch"
+                                + (
+                                    f", filter: {_generic_combined}"
+                                    if _generic_combined
+                                    else ""
+                                )
+                            )
+                            _fetched = self.api_client.fetch_all_with_resume(
+                                _generic_query
+                            )
+                        raw_data = (
+                            pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
+                        )
+                        del _fetched
                 else:
                     _fetched = self.api_client.fetch_data(recipe.query)
                     raw_data = pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
@@ -3940,6 +4346,22 @@ class ReportEngine:
             ):
                 additional_data["projects"] = self._scan_analysis_project_data
 
+            # Inject NVD client for False Positive Analysis
+            if recipe.name == "False Positive Analysis":
+                try:
+                    from fs_report.nvd_client import NVDClient
+
+                    _fpa_nvd = NVDClient(
+                        api_key=getattr(self.config, "nvd_api_key", None),
+                        cache_dir=getattr(self.config, "cache_dir", None),
+                        cache_ttl=max(getattr(self.config, "cache_ttl", 0), 86400),
+                    )
+                    additional_data["nvd_client"] = _fpa_nvd
+                except Exception as e:
+                    self.logger.info(
+                        f"NVD client unavailable for FPA (version-range checks disabled): {e}"
+                    )
+
             # Inject CVE Impact reachability data, descriptions, and exploits
             if recipe.name == "CVE Impact":
                 if (
@@ -3982,8 +4404,19 @@ class ReportEngine:
             ):
                 additional_data.update(self._version_comparison_data)
 
-            # Inject API client and domain for Remediation Package (SBOM fetching)
-            if recipe.name == "Remediation Package":
+            # Inject API client and domain for recipes that need live API access
+            if recipe.name in (
+                "Security Progress",
+                "Component Impact",
+                "Assessment Overview",
+                "Customer Brief",
+            ):
+                additional_data["api_client"] = self.api_client
+                if "domain" not in additional_data:
+                    additional_data["domain"] = self.config.domain
+
+            # Inject API client and domain for Remediation Package / CRP (SBOM fetching)
+            if recipe.name in ("Remediation Package", "Component Remediation Package"):
                 additional_data["api_client"] = self.api_client
                 additional_data["domain"] = self.config.domain
 
@@ -4000,9 +4433,46 @@ class ReportEngine:
                     if getattr(self.config, "ai_depth", "summary") == "full":
                         rp["ai_analysis"] = True
 
-                # Fetch component details for enriching agent prompts
-                if not raw_data.empty:
+                # Fetch component details for enriching agent prompts (RP only)
+                if recipe.name == "Remediation Package" and not raw_data.empty:
                     self._fetch_remediation_component_details(raw_data, additional_data)
+
+            # Inject API client and domain for Scan Quality
+            if recipe.name == "Scan Quality":
+                additional_data["api_client"] = self.api_client
+                if "domain" not in additional_data:
+                    additional_data["domain"] = self.config.domain
+                # Fetch active project list for filtering stale/deleted projects
+                if hasattr(recipe, "project_list_query") and recipe.project_list_query:
+                    from fs_report.models import QueryParams
+
+                    project_query = QueryConfig(
+                        endpoint=recipe.project_list_query.endpoint,
+                        params=QueryParams(
+                            limit=recipe.project_list_query.params.limit,
+                            offset=0,
+                            archived=False,
+                            excluded=False,
+                        ),
+                    )
+                    try:
+                        projects_data = self.api_client.fetch_all_with_resume(
+                            project_query
+                        )
+                        additional_data["projects"] = projects_data
+                        self.logger.info(
+                            f"Fetched {len(projects_data)} active projects for Scan Quality"
+                        )
+                    except Exception as exc:
+                        self.logger.warning(
+                            f"Failed to fetch project list for Scan Quality: {exc}"
+                        )
+
+            # Inject component search results (from _search_components optimization)
+            if getattr(self, "_component_search_results", None) is not None:
+                additional_data["component_search_results"] = (
+                    self._component_search_results
+                )
 
             # Fetch scoped components for Executive Dashboard
             if recipe.name == "Executive Dashboard" and not raw_data.empty:
@@ -4148,7 +4618,44 @@ class ReportEngine:
                     self.logger.debug(f"Fetching additional data for {query_name}")
                     self.logger.debug(f"Query config: {query_config}")
 
-                    additional_raw_data = self.api_client.fetch_data(query_config)
+                    # Apply project/version scoping to additional queries
+                    # (generic additional_queries lack scope by default)
+                    _aq = query_config
+                    _aq_scoped = False
+                    if (
+                        self.config.project_filter
+                        and hasattr(_aq, "params")
+                        and hasattr(_aq, "endpoint")
+                        and "/components" in str(_aq.endpoint)
+                    ):
+                        from fs_report.models import QueryConfig as _QC
+                        from fs_report.models import QueryParams as _QP
+
+                        _aq_filters: list[str] = []
+                        if _aq.params and _aq.params.filter:
+                            _aq_filters.append(_aq.params.filter)
+                        try:
+                            _pf_id = int(self.config.project_filter)
+                            _aq_filters.append(f"project=={_pf_id}")
+                        except ValueError:
+                            _aq_filters.append(f"project=={self.config.project_filter}")
+                        _aq = _QC(
+                            endpoint=_aq.endpoint,
+                            params=_QP(
+                                limit=_aq.params.limit if _aq.params else 10000,
+                                filter=";".join(_aq_filters),
+                            ),
+                        )
+                        _aq_scoped = True
+                        self.logger.info(
+                            f"Scoped additional query '{query_name}' with project filter: {_aq.params.filter}"
+                        )
+
+                    # Use paginated fetch for scoped queries (may exceed single page)
+                    if _aq_scoped:
+                        additional_raw_data = self.api_client.fetch_all_with_resume(_aq)
+                    else:
+                        additional_raw_data = self.api_client.fetch_data(_aq)
 
                     self.logger.debug(
                         f"Additional data for {query_name}: {len(additional_raw_data) if additional_raw_data else 0} records"
@@ -4279,8 +4786,11 @@ class ReportEngine:
                         "Transform function returned dict with keys, merged into additional_data"
                     )
 
-                    # Write VEX recommendations JSON for Triage Prioritization
-                    if recipe.name == "Triage Prioritization":
+                    # Write VEX recommendations JSON
+                    if recipe.name in (
+                        "Triage Prioritization",
+                        "False Positive Analysis",
+                    ):
                         vex_recs = transform_result.get("vex_recommendations", [])
                         if not vex_recs:
                             self.logger.info(
@@ -4324,10 +4834,10 @@ class ReportEngine:
                 )
                 transformed_data = transformed_data["main"]
 
-            # Promote Remediation Package transform results into additional_data
-            # so the HTML template receives actions_df, remediation_summary,
-            # charts, etc. as top-level template variables.
-            if recipe.name == "Remediation Package":
+            # Promote transform results into additional_data for recipes
+            # with custom HTML templates so they receive charts, summary,
+            # dossiers, etc. as top-level template variables.
+            if recipe.template:
                 tr = additional_data.get("transform_result", {})
                 if isinstance(tr, dict):
                     for k, v in tr.items():
@@ -5004,7 +5514,9 @@ class ReportEngine:
             params=QueryParams(
                 filter=query_config.params.filter,
                 sort="created:desc",  # Force sort by newest first
-                limit=query_config.params.limit or 100,
+                limit=min(
+                    query_config.params.limit or 100, 100
+                ),  # scans API max is 100
                 offset=0,
             ),
         )

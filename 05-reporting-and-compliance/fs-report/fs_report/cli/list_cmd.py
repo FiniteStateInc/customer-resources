@@ -38,6 +38,14 @@ def recipes(
         "--no-bundled-recipes",
         help="Disable bundled recipes shipped with the package.",
     ),
+    audience: Union[str, None] = typer.Option(
+        None,
+        "--audience",
+        help=(
+            "Show recipes for a specific consumer audience (e.g., 'forge'). "
+            "Use 'all' to show every recipe regardless of audience."
+        ),
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -58,7 +66,15 @@ def recipes(
     loader = RecipeLoader(dir_str, use_bundled=not no_bundled_recipes)
 
     try:
-        recipes_list = loader.load_recipes()
+        all_recipes = loader.load_recipes()
+
+        # Apply audience filter
+        if audience is None:
+            recipes_list = [r for r in all_recipes if r.audience is None]
+        elif audience == "all":
+            recipes_list = all_recipes
+        else:
+            recipes_list = [r for r in all_recipes if r.audience == audience]
 
         if not recipes_list:
             if output_json:
@@ -75,6 +91,10 @@ def recipes(
                     "description": r.description,
                     "auto_run": r.auto_run,
                     "execution_order": r.execution_order,
+                    "audience": r.audience,
+                    "requires_project": r.requires_project,
+                    "requires_project_or_folder": r.requires_project_or_folder,
+                    "requires_cve": r.requires_cve,
                 }
                 for r in recipes_list
             ]
@@ -83,11 +103,45 @@ def recipes(
 
         table = Table(title=f"Available Recipes ({len(recipes_list)} found)")
         table.add_column("Name", style="cyan", no_wrap=True)
-        table.add_column("File", style="dim")
+        table.add_column("Scope", style="yellow", no_wrap=True)
+        if audience == "all":
+            table.add_column("Audience", style="magenta", no_wrap=True)
 
-        for recipe in recipes_list:
-            filename = f"{recipe.name.lower().replace(' ', '_')}.yaml"
-            table.add_row(recipe.name, filename)
+        def _scope(r: object) -> str:
+            if getattr(r, "requires_cve", False):
+                return "--cve"
+            if getattr(r, "requires_project", False):
+                return "--project"
+            if getattr(r, "requires_project_or_folder", False):
+                return "--project or --folder"
+            if getattr(r, "category", None) == "operational":
+                return "--period"
+            return ""
+
+        # Group: operational first, then assessment
+        operational = sorted(
+            [r for r in recipes_list if r.category == "operational"],
+            key=lambda r: r.execution_order,
+        )
+        assessment = sorted(
+            [r for r in recipes_list if r.category != "operational"],
+            key=lambda r: r.execution_order,
+        )
+
+        def _add_group(label: str, group: list) -> None:
+            if not group:
+                return
+            table.add_row(f"[bold]{label}[/bold]", "")
+            for recipe in group:
+                scope = _scope(recipe)
+                if audience == "all":
+                    table.add_row(f"  {recipe.name}", scope, recipe.audience or "")
+                else:
+                    table.add_row(f"  {recipe.name}", scope)
+            table.add_section()
+
+        _add_group("Operational", operational)
+        _add_group("Assessment", assessment)
 
         console.print(table)
 
@@ -131,6 +185,31 @@ def projects(
         "--json",
         help="Output as JSON for programmatic consumption.",
     ),
+    sort: Union[str, None] = typer.Option(
+        None,
+        "--sort",
+        help=(
+            "Sort field and direction "
+            "(e.g. findings:desc, name:asc, lastScan:desc, created:asc)."
+        ),
+    ),
+    limit: Union[int, None] = typer.Option(
+        None,
+        "--limit",
+        help="Maximum number of projects to return. Default: all.",
+        min=1,
+    ),
+    offset: Union[int, None] = typer.Option(
+        None,
+        "--offset",
+        help="Skip this many projects before returning results (pagination).",
+        min=0,
+    ),
+    filter_str: Union[str, None] = typer.Option(
+        None,
+        "--filter",
+        help="RSQL filter string passed to the API (e.g. name==*portal*, archived==false).",
+    ),
 ) -> None:
     """List all available projects."""
     setup_logging(verbose)
@@ -158,7 +237,14 @@ def projects(
         api_client = APIClient(config)
         projects_query = QueryConfig(
             endpoint="/public/v0/projects",
-            params=QueryParams(limit=1000, archived=False, excluded=False),
+            params=QueryParams(
+                limit=limit if limit is not None else 1000,
+                offset=offset,
+                archived=False,
+                excluded=False,
+                sort=sort,
+                filter=filter_str,
+            ),
         )
         projects_data = api_client.fetch_data(projects_query)
 
@@ -527,6 +613,8 @@ def _list_single_project_versions(
             f"[bold cyan]Fetching versions for project: {project}[/bold cyan]"
         )
 
+    import difflib
+
     target_project = None
     try:
         project_id = int(project)
@@ -534,13 +622,26 @@ def _list_single_project_versions(
             (p for p in all_projects if p.get("id") == project_id), None
         )
     except ValueError:
+        # Exact match first, then case-insensitive fallback
         target_project = next(
-            (p for p in all_projects if p.get("name", "").lower() == project.lower()),
-            None,
+            (p for p in all_projects if p.get("name", "") == project), None
         )
+        if target_project is None:
+            target_project = next(
+                (
+                    p
+                    for p in all_projects
+                    if p.get("name", "").lower() == project.lower()
+                ),
+                None,
+            )
 
     if not target_project:
-        console.print(f"[red]Error: Project '{project}' not found.[/red]")
+        console.print(f"[red]Error: No project found matching '{project}'.[/red]")
+        all_names = [p.get("name", "") for p in all_projects if p.get("name")]
+        close = difflib.get_close_matches(project, all_names, n=1, cutoff=0.4)
+        if close:
+            console.print(f"[yellow]Did you mean '{close[0]}'?[/yellow]")
         console.print(
             "[yellow]Use 'fs-report list projects' to see available projects.[/yellow]"
         )

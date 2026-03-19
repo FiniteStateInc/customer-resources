@@ -1,0 +1,34 @@
+name: "Security Progress"
+template: "security_progress.html"
+category: operational
+description: "Security posture improvement over time — severity delta, triage funnel snapshot, open findings trend, and CVE change tracking (new, retracted, severity/exploit updates via /public/v0/cves/updates)."
+execution_order: 30
+auto_run: false
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+    sort: "detectedDate:asc"
+
+transform_function: security_progress_transform
+output:
+  table: true
+  formats:
+    - csv
+    - xlsx
+    - html
+    - md
+  charts:
+    - name: "severity_distribution"
+      chart: bar
+      title: "Current Severity Distribution"
+      description: "Finding count by severity (open findings)"
+    - name: "triage_funnel"
+      chart: pie
+      title: "Triage Status Distribution"
+      description: "Breakdown of findings by triage status"
+    - name: "cve_changes"
+      chart: bar
+      title: "CVE Changes This Period"
+      description: "New, retracted, severity-escalated, and exploit-updated CVEs detected during the reporting window"

@@ -1,5 +1,53 @@
 # Release Notes
 
+## Version 1.9.0 (March 2026)
+
+### New Recipes
+
+- **Security Progress** — Tracks security posture improvement over time, showing how finding counts and severity profiles change across successive scans.
+- **CRA Compliance** — Reports on EU Cyber Resilience Act compliance exposure by surfacing exploited and KEV-listed vulnerabilities across the portfolio.
+- **Scan Quality** — Per-asset scan coverage and quality signals: detects shallow scans, low component counts, missing SBOM data, and other indicators of scan health.
+- **False Positive Analysis** — Runs mechanical checks (binary architecture mismatch, OS incompatibility, platform exclusion) and optional AI-powered applicability analysis to identify likely false positives. Use `--ai` for live LLM analysis of each finding.
+- **Customer Brief (forge audience)** — External-facing project brief for customer delivery, with PDF export support. Available in the `forge/` audience subdirectory.
+- **Assessment Overview (forge audience)** — Internal management snapshot summarizing assessment scope, findings, and risk posture. Available in the `forge/` audience subdirectory.
+- **Workflow Summary (forge audience)** — Session and journal-based workflow step summary for tracking analyst activity. Available in the `forge/` audience subdirectory.
+
+### New Features
+
+- **Component search optimization** — `--component` on Remediation Package, Component Remediation Package, and Component Impact now uses the `/public/v0/components/search` endpoint to scope findings queries to only the relevant component versions. This eliminates the need to fetch all portfolio findings, making component-scoped runs approximately 10x faster and using ~80% less memory. Large portfolios that previously required fetching 50k+ findings now complete in seconds.
+- **Component Remediation Package zero-day support** — CRP now builds action cards from component search results even when no CVE findings exist. This enables zero-day response workflows where the vulnerability is known but hasn't yet been assigned a CVE or ingested by the scanner.
+- **`--ai` on Component Remediation Package** — Live LLM calls per action card generate detailed remediation guidance covering upgrade paths, breaking changes, ecosystem health, interim mitigations, and isolation recommendations. Requires an AI provider configured via `--ai-provider`.
+- **`--ai-prompts` on Component Remediation Package** — Generates copy-paste prompts for each action card for manual LLM use. No API key needed — useful for airgapped environments or one-off investigations.
+- **`--context` flag** — Inject free-form threat or vulnerability context into CRP AI prompts for targeted zero-day guidance. Example: `--context "Component is vulnerable to RCE via crafted input in the XML parser"`. Context is passed to all action card prompts.
+- **Component Impact Markdown renderer** — Component Impact now supports `--format md`, producing a Markdown document with an affected projects table, version distribution summary, and top CVEs.
+- **Component Remediation Package Markdown renderer** — CRP now supports `--format md`, producing a Markdown document with action cards, interim mitigations, AI guidance sections, and copy-paste prompts.
+- **Component Impact CSV project locations** — The CSV output now includes component, version, project, and CVE count columns for all matching versions, regardless of whether CVE findings exist.
+- **Audience subdirectory support** — Recipes can be organized into audience-specific subdirectories (e.g. `forge/`) so consumer-specific recipes don't appear in the default `list recipes` output.
+- **`--baseline` / `--current` CLI aliases** — The Version Comparison flags `--baseline-version` and `--current-version` now have shorter aliases `--baseline` and `--current`.
+- **`--autotriage` confidence levels** — `--autotriage` now accepts an optional confidence threshold (`high`, `medium`, `all`) instead of being a boolean flag. `high` (the default when no value is given) applies only mechanically-confirmed candidates; `medium` includes AI high-confidence results; `all` applies everything.
+- **`ANTHROPIC_API_KEY` environment variable** — The standard `ANTHROPIC_API_KEY` env var is now the preferred way to supply the Anthropic API key. `ANTHROPIC_AUTH_TOKEN` is deprecated but still accepted.
+- **`list recipes` grouped by category** — Output is now grouped by recipe category and includes description and scope columns for easier discovery.
+- **`list projects` sort/limit/offset/filter** — Supports `--sort`, `--limit`, `--offset`, and `--filter` flags for pagination and searching large project lists.
+- **`list versions` case-insensitive matching** — Project name matching in `list versions` is now case-insensitive.
+- **Version Comparison surfaces external CVE changes** — The progression table now highlights CVEs that changed severity or exploit maturity between versions, even if the finding count is unchanged.
+- **Web UI: 16 workflow cards** — The dashboard now shows 16 workflow cards. Recipe-specific configuration is exposed inline: AI settings (provider, model, confidence) for False Positive Analysis and CRP; component name filter for component-scoped recipes.
+- **Web UI: prerun panel visibility tests** — Test coverage verifies that recipe-specific configuration panels show and hide correctly based on the selected recipe.
+
+### Changes
+
+- **`--autotriage` changed from boolean to string** — Now accepts `high`, `medium`, or `all` to control which FP candidates are auto-applied. Running `--autotriage` without a value still works (defaults to `high`). Backwards compatible — existing scripts continue to function.
+- **`ANTHROPIC_AUTH_TOKEN` deprecated** — Rename to `ANTHROPIC_API_KEY` in your environment or config file. The old name continues to work but will be removed in a future release.
+
+### Bug Fixes
+
+- **`--ai` / `--ai-analysis` on CRP** — AI flags were not being injected into the recipe's `additional_data`, so CRP never received AI parameters. Fixed.
+- **Component search partial name matching** — Search results are now filtered to exact component name matches, preventing false positives (e.g. searching for `typer` no longer returns results for `media-typer`).
+- **Folder/default branch clobbering** — Folder and default branch fetch paths no longer overwrite findings already scoped via component search.
+- **Per-recipe state isolation** — Recipe state is now reset between runs, preventing stale component search results from leaking into subsequent recipe executions in the same session.
+- **NVD enrichment on component search results** — The NVD enrichment pipeline is now correctly fed records fetched via component search.
+
+---
+
 ## Version 1.8.3 (March 2026)
 
 ### New Features
@@ -271,7 +319,7 @@
   - Multi-CVE analysis: `--cve CVE-2024-1234,CVE-2024-5678`
   - Narrow to one project: `--cve CVE-2024-1234 --project myproject`
   - AI prompt export: Use `--ai-prompts` to generate structured LLM prompts alongside the report (no API key required)
-  - AI remediation guidance: Use `--ai` for live AI-powered remediation advice (requires `ANTHROPIC_AUTH_TOKEN`)
+  - AI remediation guidance: Use `--ai` for live AI-powered remediation advice (requires `ANTHROPIC_API_KEY`)
 
 ### Improvements
 

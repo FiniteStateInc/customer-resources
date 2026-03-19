@@ -1,0 +1,46 @@
+name: "Scan Quality"
+template: "scan_quality.html"
+category: assessment
+description: "Per-project scan quality assessment — coverage gaps, staleness, reachability status, unpack quality, and severity context."
+execution_order: 35
+auto_run: false
+
+query:
+  endpoint: "/public/v0/scans"
+  params:
+    limit: 100
+    sort: "created:desc"
+
+project_list_query:
+  endpoint: "/public/v0/projects"
+  params:
+    limit: 10000
+    archived: false
+
+transform_function: scan_quality_transform
+output:
+  table: true
+  formats:
+    - csv
+    - xlsx
+    - html
+    - md
+  charts:
+    - name: "staleness_distribution"
+      chart: doughnut
+      title: "Staleness Distribution"
+      description: "Project scan recency breakdown"
+    - name: "scan_type_coverage"
+      chart: bar
+      title: "Scan Type Coverage"
+      description: "Number of projects with each scan type"
+    - name: "unpack_rating_distribution"
+      chart: bar
+      title: "Unpack Rating Distribution"
+      description: "Binary scan unpack quality ratings"
+
+parameters:
+  staleness_thresholds:
+    fresh: 30
+    aging: 90
+    stale: 365

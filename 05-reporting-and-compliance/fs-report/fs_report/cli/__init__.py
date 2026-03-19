@@ -262,6 +262,8 @@ _RUN_FLAGS = {
     "--nvd-api-key",
     "--baseline-date",
     "--baseline-version",
+    "--baseline",
+    "--current",
     "--current-version",
     "--open-only",
     "--request-delay",
