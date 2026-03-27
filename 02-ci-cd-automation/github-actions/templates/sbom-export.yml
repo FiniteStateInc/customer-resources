@@ -1,0 +1,51 @@
+# Finite State SBOM Export
+#
+# Uploads a binary for SCA analysis, waits for scan completion,
+# then downloads the FS-generated SBOM as a workflow artifact.
+#
+# Prerequisites:
+#   - Secret: FS_API_TOKEN (Finite State API token)
+#   - Variable: FS_DOMAIN (e.g., app.finitestate.io)
+#   - Variable: FS_PROJECT_ID (your project ID)
+#
+# Copy this file to .github/workflows/finite-state-sbom.yml in your repository.
+
+name: Finite State SBOM Export
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  sbom-export:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Authenticate with Finite State
+      - uses: finite-state/setup@v1
+        with:
+          api-token: ${{ secrets.FS_API_TOKEN }}
+          domain: ${{ vars.FS_DOMAIN }}
+          project-id: ${{ vars.FS_PROJECT_ID }}
+
+      # 2. Upload binary for SCA analysis
+      - uses: finite-state/upload-scan@v1
+        id: upload
+        with:
+          type: sca
+          file: build/firmware.bin
+          version: "${{ github.ref_name }}"
+
+      # 3. Download the FS-generated SBOM (CycloneDX with VEX data)
+      - uses: finite-state/download-sbom@v1
+        with:
+          version-id: ${{ steps.upload.outputs.version-id }}
+          format: cyclonedx
+          include-vex: true
+          artifact-name: "finite-state-sbom-${{ github.ref_name }}"
