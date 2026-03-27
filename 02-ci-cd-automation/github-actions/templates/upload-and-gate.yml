@@ -1,0 +1,71 @@
+# Finite State Security Gate
+#
+# Uploads a binary for SCA analysis, runs triage prioritization and version
+# comparison reports, gates the PR on findings, and posts a summary comment.
+#
+# Prerequisites:
+#   - Secret: FS_API_TOKEN (Finite State API token)
+#   - Variable: FS_DOMAIN (e.g., app.finitestate.io)
+#   - Variable: FS_PROJECT_ID (your project ID)
+#
+# Copy this file to .github/workflows/finite-state.yml in your repository.
+
+name: Finite State Security Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  security-gate:
+    name: Security Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Authenticate with Finite State
+      - uses: finite-state/setup@v1
+        id: fs
+        with:
+          api-token: ${{ secrets.FS_API_TOKEN }}
+          domain: ${{ vars.FS_DOMAIN }}
+          project-id: ${{ vars.FS_PROJECT_ID }}
+
+      # 2. Upload binary for SCA analysis
+      #    Replace the file path with your actual build artifact.
+      - uses: finite-state/upload-scan@v1
+        id: upload
+        with:
+          type: sca
+          file: build/firmware.bin
+          version: "pr-${{ github.event.number }}"
+
+      # 3. Run triage prioritization and version comparison reports
+      - uses: finite-state/run-report@v1
+        id: report
+        with:
+          recipe: "Triage Prioritization,Version Comparison"
+          period: 30d
+
+      # 4. Gate: fail if any new critical/high findings or P0 triage items
+      - uses: finite-state/quality-gate@v1
+        id: gate
+        with:
+          mode: delta,triage-priority
+          max-new-critical: 0
+          max-new-high: 0
+          fail-on-p0: true
+          report-dir: ${{ steps.report.outputs.report-dir }}
+
+      # 5. Post findings summary as a PR comment (runs even if gate fails)
+      - uses: finite-state/pr-comment@v1
+        if: always()
+        with:
+          template: triage
+          gate-result: ${{ steps.gate.outputs.result }}
+          gate-summary: ${{ steps.gate.outputs.summary }}
+          report-dir: ${{ steps.report.outputs.report-dir }}
