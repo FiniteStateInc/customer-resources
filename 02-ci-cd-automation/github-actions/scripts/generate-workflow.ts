@@ -5,7 +5,7 @@ import * as yaml from 'js-yaml'
 // --- Types ---
 
 export interface WizardAnswers {
-  scanType: 'sca' | 'sast' | 'sbom' | 'third-party' | 'vulnerability-analysis'
+  scanType: 'sca' | 'sast' | 'config' | 'sbom' | 'third-party' | 'vulnerability-analysis'
   sbomFormat?: 'cdx' | 'spdx'
   scannerType?: string
   gateModes: Array<'delta' | 'threshold' | 'triage-priority'>
@@ -137,18 +137,23 @@ export function buildGateStep(answers: Partial<WizardAnswers>): WorkflowStep {
   return step
 }
 
-export function buildCommentStep(answers: Partial<WizardAnswers> & { template?: string }): WorkflowStep {
-  return {
+export function buildCommentStep(answers: Partial<WizardAnswers> & { template?: string; hasGate?: boolean }): WorkflowStep {
+  const step: WorkflowStep = {
     name: 'Post PR comment',
     uses: 'finite-state/pr-comment@v1',
     if: 'always()',
     with: {
       template: answers.commentTemplate || answers.template || 'summary',
-      'gate-result': '${{ steps.gate.outputs.result }}',
-      'gate-summary': '${{ steps.gate.outputs.summary }}',
       'report-dir': '${{ steps.report.outputs.report-dir }}',
     },
   }
+
+  if (answers.hasGate) {
+    step.with!['gate-result'] = '${{ steps.gate.outputs.result }}'
+    step.with!['gate-summary'] = '${{ steps.gate.outputs.summary }}'
+  }
+
+  return step
 }
 
 export function buildSbomStep(answers: Partial<WizardAnswers>): WorkflowStep {
@@ -203,7 +208,7 @@ export function generateWorkflow(answers: WizardAnswers): string {
 
   // PR comment
   if (answers.prComments) {
-    steps.push(buildCommentStep(answers))
+    steps.push(buildCommentStep({ ...answers, hasGate: answers.gateModes.length > 0 }))
   }
 
   // SBOM export
@@ -263,6 +268,8 @@ async function runWizard(): Promise<void> {
     message: 'What do you want to scan?',
     choices: [
       { value: 'sca', name: 'Binary (SCA)' },
+      { value: 'sast', name: 'Source code (SAST)' },
+      { value: 'config', name: 'Configuration audit' },
       { value: 'vulnerability-analysis', name: 'Binary (reachability analysis)' },
       { value: 'sbom', name: 'SBOM file' },
       { value: 'third-party', name: 'Third-party scanner results' },
