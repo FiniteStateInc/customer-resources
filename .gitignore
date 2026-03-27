@@ -176,6 +176,11 @@ test_summary.txt
 test_summary.txt
 cva_debug.log
 
+# SQLite databases
+*.db
+*.db-journal
+*.db-wal
+
 # Finite State specific
 .finitestate/link.json
 
