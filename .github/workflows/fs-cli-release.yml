@@ -17,8 +17,8 @@ jobs:
       - name: Extract version
         id: version
         run: |
-          TAG="${GITHUB_REF_NAME}"           # fs-cli-v2.0.10
-          VERSION="${TAG#fs-cli-}"            # v2.0.10
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#fs-cli-}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -35,46 +35,45 @@ jobs:
 
       - name: Create versioned release
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "fs-cli ${{ steps.version.outputs.version }}" \
-            --notes "## fs-cli ${{ steps.version.outputs.version }}
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          NOTES=$(cat <<'EOF'
+          ## fs-cli $VERSION
 
-Platform binaries and checksums for fs-cli ${{ steps.version.outputs.version }}.
+          Platform binaries and checksums.
 
-### Install
-\`\`\`sh
-curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/install.sh | sh
-\`\`\`
+          ### Install
+          ```sh
+          curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/install.sh | sh
+          ```
 
-### Assets
-| File | Platform |
-|------|----------|
-| \`fs-cli-linux-amd64\` | Linux x86_64 |
-| \`fs-cli-linux-arm64\` | Linux ARM64 |
-| \`fs-cli-darwin-amd64\` | macOS Intel |
-| \`fs-cli-darwin-arm64\` | macOS Apple Silicon |
-| \`fs-cli-windows-amd64.exe\` | Windows x86_64 |
-| \`checksums.txt\` | SHA-256 checksums |
-" \
+          ### Assets
+          | File | Platform |
+          |------|----------|
+          | `fs-cli-linux-amd64` | Linux x86_64 |
+          | `fs-cli-linux-arm64` | Linux ARM64 |
+          | `fs-cli-darwin-amd64` | macOS Intel |
+          | `fs-cli-darwin-arm64` | macOS Apple Silicon |
+          | `fs-cli-windows-amd64.exe` | Windows x86_64 |
+          | `checksums.txt` | SHA-256 checksums |
+          EOF
+          )
+          gh release create "$TAG" \
+            --title "fs-cli ${VERSION}" \
+            --notes "$NOTES" \
             release-assets/*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update latest release
         run: |
-          # Delete existing latest release
+          VERSION="${{ steps.version.outputs.version }}"
           gh release delete "fs-cli-latest" --yes 2>/dev/null || true
-
-          # Force-move the latest tag
           git tag -f "fs-cli-latest"
           git push origin "fs-cli-latest" --force
-
           gh release create "fs-cli-latest" \
-            --title "fs-cli latest (${{ steps.version.outputs.version }})" \
-            --notes "Always points to the most recent fs-cli release. Currently ${{ steps.version.outputs.version }}.
-
-To pin to a specific version, use the \`fs-cli-vX.Y.Z\` release instead.
-" \
+            --title "fs-cli latest (${VERSION})" \
+            --notes "Always points to the most recent fs-cli release. Currently ${VERSION}. To pin to a specific version, use the fs-cli-vX.Y.Z release instead." \
             release-assets/*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
