@@ -6,17 +6,52 @@ This section covers integrating scanning into your CI/CD pipelines and automatin
 
 ### Finite State CLI 2.0 (`fs-cli`)
 
-`fs-cli` scans your repo’s dependencies (SCA/SBOM-grade inventory) and uploads results to the Finite State platform. It’s a **single binary** with **no runtime dependencies**.
+`fs-cli` scans your repo's dependencies (SCA/SBOM-grade inventory) and uploads results to the Finite State platform. It's a **single binary** with **no runtime dependencies**.
 
-- **Current bundled version**: `v2.0.4` (see `./fs-cli/latest/VERSION`)
+- **Current bundled version**: see `./fs-cli/latest/VERSION`
 
-- **Install (recommended)**:
+#### Install (persistent)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/install.sh | sh
 ```
 
-- **Configure credentials** (either style works):
+The installer detects your OS and architecture, downloads the correct binary, verifies its SHA-256 checksum, and installs to `/usr/local/bin` (or `~/.local/bin`). Override with `INSTALL_DIR`:
+
+```sh
+curl -fsSL .../install.sh | INSTALL_DIR=/opt/tools sh
+```
+
+#### Run without installing (CI wrapper)
+
+For **Jenkins, Bamboo**, and other CI agents that need a zero-install, single-command approach:
+
+**Linux / macOS:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/run-fs-cli.sh \
+  | sh -s -- scan --name myproject .
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/run-fs-cli.ps1 -OutFile run-fs-cli.ps1
+.\run-fs-cli.ps1 scan --name myproject .
+```
+
+The wrapper scripts auto-detect the platform, download and cache the binary in `.fs-cli/`, verify checksums, and forward all arguments to `fs-cli`. On subsequent runs they reuse the cached binary and auto-update when a new version is available.
+
+**Environment variables for the wrapper:**
+
+| Variable | Description |
+|----------|-------------|
+| `FS_CLI_DIR` | Cache directory (default: `.fs-cli` in working dir) |
+| `FS_CLI_PATH` | Skip download and use this binary path directly |
+
+#### Configure credentials
+
+Set these environment variables (either style works):
 
 ```sh
 export FS_TOKEN="your-api-token"
@@ -26,17 +61,41 @@ export FINITE_STATE_AUTH_TOKEN="your-api-token"
 export FINITE_STATE_DOMAIN="your-domain.finitestate.io"
 ```
 
-- **CI-friendly scan examples**:
+#### CI scan examples
 
 ```sh
-# Dry run (prints what would be uploaded)
+# Dry run (prints JSON, doesn't upload)
 fs-cli scan --name myproject --test .
 
-# Upload dependency inventory for a repo (monorepo-friendly)
+# Upload dependency inventory for a single project
+fs-cli scan --name myproject .
+
+# Monorepo scan (recursive ecosystem detection)
 fs-cli scan --name myproject --all .
+
+# Pin to a specific version string
+fs-cli scan --name myproject --version "1.2.3" .
+
+# Upload a binary artifact
+fs-cli upload --name myproject --version "1.2.3" firmware.bin
+
+# Import an existing SBOM
+fs-cli import --name myproject --version "1.2.3" sbom.cdx.json
 ```
 
-See `./fs-cli/latest/README.md` and `./fs-cli/latest/USER_GUIDE.md` for full usage, flags, and CI/CD guidance.
+#### Self-update
+
+Once installed, `fs-cli` can update itself:
+
+```sh
+fs-cli update
+```
+
+It also checks for new versions after each command and prints a notification when an update is available. Suppress with `FS_NO_UPDATE_CHECK=1`.
+
+See `./fs-cli/latest/README.md` and `./fs-cli/latest/USER_GUIDE.md` for the full flag reference and CI/CD guidance.
+
+---
 
 ### BETA: C/C++ Scanner (`fs-scan`, from `syft-mod`)
 
@@ -81,4 +140,3 @@ The `fs-scan BETA/Unmanaged.C.and.C++.projects.csv` file is included as a compan
 For complete instructions (including signature verification, output formats, and upload options), see:
 - `./fs-scan BETA/README.md`
 - `./fs-scan BETA/QUICKSTART.md`
-
