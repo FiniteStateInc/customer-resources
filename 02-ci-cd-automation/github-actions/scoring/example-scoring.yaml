@@ -1,0 +1,119 @@
+# Finite State Triage Scoring Configuration
+#
+# This file configures how findings are classified into priority bands
+# (P0/P1/P2/P3) for the Triage Prioritization recipe and quality gate.
+#
+# Usage:
+#   - In GitHub Actions: pass as `scoring-file` input to run-report
+#   - In Forge: pass to run_triage_pipeline
+#   - With fs-report CLI: pass as --scoring-file argument
+#
+# The scoring model has three stages:
+#   1. Gate 1 (P0): Hard rules for immediately exploitable findings
+#   2. Gate 2 (P1): Hard rules for likely exploitable findings
+#   3. Additive scoring (P2/P3): Weighted composite score for remaining findings
+
+# ============================================================================
+# Gate 1: P0 — CRITICAL / Immediately Exploitable
+# ============================================================================
+# Findings that match ALL conditions are classified as P0.
+# Default: Reachable code with a known exploit or CISA KEV entry.
+gate_1:
+  label: "P0 - Immediately Exploitable"
+  conditions:
+    # The vulnerable function must be reachable in the binary
+    - field: reachability_score
+      operator: ">"
+      value: 0
+
+    # AND there must be a known exploit or KEV listing
+    # (use OR grouping by listing alternatives)
+    - any_of:
+        - field: has_exploit
+          operator: "=="
+          value: true
+        - field: in_kev
+          operator: "=="
+          value: true
+
+# ============================================================================
+# Gate 2: P1 — HIGH / Likely Exploitable
+# ============================================================================
+# Findings that pass Gate 1 are checked against Gate 2.
+# Default: Reachable, network-accessible, high EPSS score.
+gate_2:
+  label: "P1 - Likely Exploitable"
+  conditions:
+    - field: reachability_score
+      operator: ">="
+      value: 0
+
+    - field: attack_vector
+      operator: "in"
+      value: ["NETWORK"]
+
+    - field: epss_percentile
+      operator: ">"
+      value: 0.9
+
+# ============================================================================
+# Additive Scoring — P2/P3 Banding
+# ============================================================================
+# Findings that don't match Gate 1 or Gate 2 are scored using a weighted
+# composite of the factors below. The composite score (0.0 - 1.0) determines
+# whether the finding is P2 (MEDIUM) or P3 (LOW/INFO).
+
+additive_weights:
+  # CVSS base score (0-10, normalized to 0-1)
+  cvss_base_score:
+    weight: 0.3
+    normalize: 10
+
+  # EPSS percentile (already 0-1)
+  epss_percentile:
+    weight: 0.25
+
+  # Reachability score (0-100, normalized to 0-1)
+  reachability_score:
+    weight: 0.25
+    normalize: 100
+
+  # Exploit maturity (categorical, mapped to 0-1)
+  exploit_maturity:
+    weight: 0.2
+    mapping:
+      HIGH: 1.0
+      FUNCTIONAL: 0.8
+      POC: 0.5
+      UNPROVEN: 0.1
+      NONE: 0.0
+
+# ============================================================================
+# Band Thresholds
+# ============================================================================
+# Composite score thresholds for P2/P3 classification.
+# Findings with composite score >= P2_threshold are P2.
+# Remaining findings are P3.
+
+bands:
+  P2_threshold: 0.5
+  P3_threshold: 0.0
+
+# ============================================================================
+# Customization Tips
+# ============================================================================
+#
+# To make gating stricter:
+#   - Lower the epss_percentile threshold in Gate 2 (e.g., 0.85 instead of 0.9)
+#   - Add attack_vector "ADJACENT_NETWORK" to Gate 2
+#   - Raise additive weights for reachability_score
+#
+# To make gating more permissive:
+#   - Add more conditions to Gate 1 (all must match, so more = stricter filter)
+#   - Raise the epss_percentile threshold in Gate 2
+#   - Lower the P2_threshold to push more findings to P3
+#
+# To focus on specific threat vectors:
+#   - Add field conditions for specific CWE types
+#   - Adjust attack_vector filtering in Gate 2
+#   - Increase weight for exploit_maturity if you care about exploit availability

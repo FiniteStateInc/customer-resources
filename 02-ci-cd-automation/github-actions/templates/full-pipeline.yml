@@ -1,0 +1,77 @@
+# Finite State Full Security Pipeline
+#
+# The complete pipeline: upload binary, run reports (triage + version comparison
+# + remediation), gate the PR, post a detailed comment, and export the SBOM.
+#
+# Prerequisites:
+#   - Secret: FS_API_TOKEN (Finite State API token)
+#   - Variable: FS_DOMAIN (e.g., app.finitestate.io)
+#   - Variable: FS_PROJECT_ID (your project ID)
+#
+# Copy this file to .github/workflows/finite-state.yml in your repository.
+
+name: Finite State Full Pipeline
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  security-pipeline:
+    name: Security Pipeline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Authenticate with Finite State
+      - uses: finite-state/setup@v1
+        id: fs
+        with:
+          api-token: ${{ secrets.FS_API_TOKEN }}
+          domain: ${{ vars.FS_DOMAIN }}
+          project-id: ${{ vars.FS_PROJECT_ID }}
+
+      # 2. Upload binary for SCA analysis
+      - uses: finite-state/upload-scan@v1
+        id: upload
+        with:
+          type: sca
+          file: build/firmware.bin
+          version: "pr-${{ github.event.number }}"
+
+      # 3. Run comprehensive reports
+      - uses: finite-state/run-report@v1
+        id: report
+        with:
+          recipe: "Triage Prioritization,Version Comparison,Remediation Package"
+          period: 30d
+
+      # 4. Gate: delta + triage priority
+      - uses: finite-state/quality-gate@v1
+        id: gate
+        with:
+          mode: delta,triage-priority
+          max-new-critical: 0
+          max-new-high: 0
+          fail-on-p0: true
+          report-dir: ${{ steps.report.outputs.report-dir }}
+
+      # 5. Post detailed findings comment
+      - uses: finite-state/pr-comment@v1
+        if: always()
+        with:
+          template: triage
+          gate-result: ${{ steps.gate.outputs.result }}
+          gate-summary: ${{ steps.gate.outputs.summary }}
+          report-dir: ${{ steps.report.outputs.report-dir }}
+
+      # 6. Export SBOM with VEX data as workflow artifact
+      - uses: finite-state/download-sbom@v1
+        with:
+          version-id: ${{ steps.upload.outputs.version-id }}
+          format: cyclonedx
+          include-vex: true

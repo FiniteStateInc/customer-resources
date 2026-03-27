@@ -1,0 +1,58 @@
+# Finite State Nightly Report
+#
+# Runs a comprehensive set of reports on a nightly schedule and uploads
+# them as workflow artifacts. Does not require a PR or binary upload —
+# reports on the latest version already in the platform.
+#
+# Prerequisites:
+#   - Secret: FS_API_TOKEN (Finite State API token)
+#   - Variable: FS_DOMAIN (e.g., app.finitestate.io)
+#   - Variable: FS_PROJECT_ID (your project ID)
+#
+# Copy this file to .github/workflows/finite-state-nightly.yml in your repository.
+
+name: Finite State Nightly Report
+
+on:
+  schedule:
+    # Run at 2:00 AM UTC every day
+    - cron: "0 2 * * *"
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+
+jobs:
+  nightly-report:
+    name: Nightly Security Report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Authenticate with Finite State
+      - uses: finite-state/setup@v1
+        with:
+          api-token: ${{ secrets.FS_API_TOKEN }}
+          domain: ${{ vars.FS_DOMAIN }}
+          project-id: ${{ vars.FS_PROJECT_ID }}
+
+      # 2. Run full reporting suite
+      #    Reports cover the last 30 days by default. Adjust recipes and
+      #    period as needed. Remove recipes you don't need.
+      - uses: finite-state/run-report@v1
+        id: report
+        with:
+          recipe: "Executive Summary,Triage Prioritization,Version Comparison,Remediation Package,Component Vulnerability Analysis"
+          period: 30d
+
+      # 3. (Optional) Run a quality gate to track trends
+      #    This won't block anything on a nightly run, but the pass/fail
+      #    result is recorded in the workflow run history for trend tracking.
+      - uses: finite-state/quality-gate@v1
+        continue-on-error: true
+        with:
+          mode: threshold,triage-priority
+          max-critical: 0
+          max-high: 10
+          fail-on-p0: true
+          report-dir: ${{ steps.report.outputs.report-dir }}

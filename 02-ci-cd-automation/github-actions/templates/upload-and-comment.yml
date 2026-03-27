@@ -1,0 +1,56 @@
+# Finite State Security Report
+#
+# Uploads a binary for SCA analysis, runs a triage prioritization report,
+# and posts a summary comment on the PR. Does NOT gate/block the PR.
+#
+# Prerequisites:
+#   - Secret: FS_API_TOKEN (Finite State API token)
+#   - Variable: FS_DOMAIN (e.g., app.finitestate.io)
+#   - Variable: FS_PROJECT_ID (your project ID)
+#
+# Copy this file to .github/workflows/finite-state.yml in your repository.
+
+name: Finite State Security Report
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  security-report:
+    name: Security Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Authenticate with Finite State
+      - uses: finite-state/setup@v1
+        with:
+          api-token: ${{ secrets.FS_API_TOKEN }}
+          domain: ${{ vars.FS_DOMAIN }}
+          project-id: ${{ vars.FS_PROJECT_ID }}
+
+      # 2. Upload binary for SCA analysis
+      - uses: finite-state/upload-scan@v1
+        with:
+          type: sca
+          file: build/firmware.bin
+          version: "pr-${{ github.event.number }}"
+
+      # 3. Run triage prioritization report
+      - uses: finite-state/run-report@v1
+        id: report
+        with:
+          recipe: "Triage Prioritization"
+          period: 30d
+
+      # 4. Post findings summary as a PR comment
+      - uses: finite-state/pr-comment@v1
+        if: always()
+        with:
+          template: summary
+          report-dir: ${{ steps.report.outputs.report-dir }}
