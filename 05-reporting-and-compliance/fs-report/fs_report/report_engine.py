@@ -66,8 +66,6 @@ class RunResult:
     recipes: list[RecipeResult] = field(default_factory=list)
 
 
-# [REMOVED] All DuckDB-related logic and imports. Only pandas transformer is used.
-
 # Raw API columns that _normalize_columns already extracts into flat
 # columns (component_name, has_exploit, reachability_score, etc.).
 # Safe to drop after per-batch scoring to reclaim ~1 KB/row.

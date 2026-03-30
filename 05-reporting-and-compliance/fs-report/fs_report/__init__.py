@@ -20,6 +20,11 @@
 
 """Finite State Stand-Alone Reporting Kit."""
 
-__version__ = "1.6.0"
+try:
+    from importlib.metadata import version as _get_version
+
+    __version__ = _get_version("fs-report")
+except Exception:  # installed in editable mode or not installed
+    __version__ = "dev"
 __author__ = "Finite State, Inc."
 __license__ = "MIT"

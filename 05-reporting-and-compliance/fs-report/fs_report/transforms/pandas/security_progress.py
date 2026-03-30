@@ -368,6 +368,17 @@ def _classify_cve_lifecycle(
     }
 
 
+def _format_date(date_str: str) -> str:
+    """Format an ISO 8601 timestamp to 'Mon DD, YYYY' for display."""
+    if not date_str:
+        return "--"
+    try:
+        dt = pd.to_datetime(date_str, utc=True)
+        return dt.strftime("%b %d, %Y")
+    except Exception:  # noqa: BLE001
+        return date_str
+
+
 def _count_open(findings: list[dict]) -> int:
     """Count findings that are not resolved."""
     count = 0
@@ -430,17 +441,23 @@ def _build_project_progression(
         findings = version.get("findings", [])
         open_count = _count_open(findings)
         sev = _severity_counts(findings)
+        # Flatten severity counts to lowercase keys for template access
+        sev_flat = {k.lower(): v for k, v in sev.items()}
+
+        raw_date = version.get("created", "")
 
         if i == 0:
             # First version: baseline, no deltas
             snapshot: dict[str, Any] = {
                 "version": version.get("name", ""),
-                "date": version.get("created", ""),
+                "date": raw_date,
+                "date_display": _format_date(raw_date),
                 "open_count": open_count,
                 "resolved": 0,
                 "new": 0,
                 "total": len(findings),
                 "severity": sev,
+                **sev_flat,
             }
         else:
             prev_findings = versions[i - 1].get("findings", [])
@@ -454,12 +471,14 @@ def _build_project_progression(
 
             snapshot = {
                 "version": version.get("name", ""),
-                "date": version.get("created", ""),
+                "date": raw_date,
+                "date_display": _format_date(raw_date),
                 "open_count": open_count,
                 "resolved": resolved,
                 "new": new_count,
                 "total": len(findings),
                 "severity": sev,
+                **sev_flat,
             }
 
         progression.append(snapshot)
@@ -562,6 +581,7 @@ def _transform_with_projects(
         "net_change": net_change,
         "projects_improved": projects_improved,
         "projects_regressed": projects_regressed,
+        "total_projects": len(project_progressions),
     }
 
     # Portfolio progression: combined open count at each timestamp
@@ -604,18 +624,63 @@ def _transform_with_projects(
 def _build_portfolio_progression(
     project_progressions: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Build combined timeline by aggregating open counts across projects at each timestamp."""
-    # Collect all (date, open_count) from each project
-    date_totals: dict[str, int] = {}
+    """Build combined timeline using last-observation-carried-forward.
+
+    At each date in the combined timeline, every project contributes its most
+    recent version's counts so that each point represents the full portfolio.
+    """
+    # Collect per-project snapshots keyed by date
+    per_project: list[list[tuple[str, dict]]] = []
+    all_dates: set[str] = set()
     for proj in project_progressions:
+        snaps: list[tuple[str, dict]] = []
         for snap in proj.get("progression", []):
             date = snap.get("date", "")
             if date:
-                date_totals[date] = date_totals.get(date, 0) + snap["open_count"]
+                snaps.append((date, snap))
+                all_dates.add(date)
+        if snaps:
+            per_project.append(sorted(snaps, key=lambda x: x[0]))
 
-    # Sort by date
-    sorted_dates = sorted(date_totals.keys())
-    return [{"date": d, "open_count": date_totals[d]} for d in sorted_dates]
+    if not all_dates:
+        return []
+
+    sorted_dates = sorted(all_dates)
+    date_display_map: dict[str, str] = {}
+
+    # Build portfolio totals at each date using LOCF per project
+    result: list[dict[str, Any]] = []
+    for d in sorted_dates:
+        total_open = 0
+        total_sev: dict[str, int] = dict.fromkeys(_SEVERITY_ORDER, 0)
+
+        for proj_snaps in per_project:
+            # Find the most recent snapshot at or before this date
+            latest: dict | None = None
+            for snap_date, snap in proj_snaps:
+                if snap_date <= d:
+                    latest = snap
+                else:
+                    break
+            if latest is None:
+                continue
+            total_open += latest["open_count"]
+            sev = latest.get("severity", {})
+            for s in _SEVERITY_ORDER:
+                total_sev[s] += sev.get(s, 0)
+            if latest.get("date_display") and d == latest.get("date", ""):
+                date_display_map[d] = latest["date_display"]
+
+        result.append(
+            {
+                "date": d,
+                "date_display": date_display_map.get(d, _format_date(d)),
+                "open_count": total_open,
+                **{s.lower(): total_sev[s] for s in _SEVERITY_ORDER},
+            }
+        )
+
+    return result
 
 
 def _build_progression_df(
@@ -625,11 +690,12 @@ def _build_progression_df(
     rows: list[dict[str, Any]] = []
     for proj in project_progressions:
         for snap in proj.get("progression", []):
+            sev = snap.get("severity", {})
             rows.append(
                 {
                     "Project": proj["project_name"],
                     "Version": snap["version"],
-                    "Date": snap["date"],
+                    "Date": snap.get("date_display", snap["date"]),
                     "Open": snap["open_count"],
                     "Resolved": snap["resolved"],
                     "New": snap["new"],
@@ -638,11 +704,27 @@ def _build_progression_df(
                         if proj["progression"]
                         else 0
                     ),
+                    "Critical": sev.get("CRITICAL", 0),
+                    "High": sev.get("HIGH", 0),
+                    "Medium": sev.get("MEDIUM", 0),
+                    "Low": sev.get("LOW", 0),
                 }
             )
     if not rows:
         return pd.DataFrame(
-            columns=["Project", "Version", "Date", "Open", "Resolved", "New", "Net"]
+            columns=[
+                "Project",
+                "Version",
+                "Date",
+                "Open",
+                "Resolved",
+                "New",
+                "Net",
+                "Critical",
+                "High",
+                "Medium",
+                "Low",
+            ]
         )
     return pd.DataFrame(rows)
 

@@ -115,6 +115,7 @@ def create_config(
     logo: Union[str, None] = None,
     apply_vex_triage: Union[str, None] = None,
     autotriage: str | None = None,
+    autotriage_status: list[str] | None = None,
     scan_types: Union[str, None] = None,
     scan_statuses: Union[str, None] = None,
     low_memory: bool = False,
@@ -427,6 +428,7 @@ def create_config(
         logo=logo,
         apply_vex_triage=apply_vex_triage,
         autotriage=autotriage,
+        autotriage_status=autotriage_status,
         scan_types=scan_types,
         scan_statuses=scan_statuses,
         low_memory=low_memory,
@@ -492,6 +494,7 @@ def run_reports(
     logo: Union[str, None] = None,
     apply_vex_triage: Union[str, None] = None,
     autotriage: str | None = None,
+    autotriage_status: list[str] | None = None,
     dry_run: bool = False,
     vex_concurrency: int = 5,
     context_file: Union[str, None] = None,
@@ -570,6 +573,7 @@ def run_reports(
             logo=logo,
             apply_vex_triage=apply_vex_triage,
             autotriage=autotriage,
+            autotriage_status=autotriage_status,
             scan_types=scan_types,
             scan_statuses=scan_statuses,
             low_memory=low_memory,
@@ -666,6 +670,8 @@ def run_reports(
             logger.info(f"  Apply VEX triage: {config.apply_vex_triage}")
         if config.autotriage:
             logger.info(f"  Autotriage: {config.autotriage}")
+        if config.autotriage_status:
+            logger.info(f"  Autotriage status filter: {config.autotriage_status}")
         if config.nvd_api_key:
             logger.info("  NVD API key: configured")
         if config.logo:
@@ -695,6 +701,7 @@ def run_reports(
                 dry_run=dry_run,
                 vex_override=config.vex_override,
                 filter_projects=filter_projects,
+                filter_statuses=config.autotriage_status,
             )
             result = applier.apply_file(config.apply_vex_triage)
             _print_vex_summary(result)
@@ -865,6 +872,7 @@ def run_reports(
                         concurrency=vex_concurrency,
                         dry_run=dry_run,
                         vex_override=config.vex_override,
+                        filter_statuses=config.autotriage_status,
                     )
                     try:
                         vex_result = applier.apply_file(vex_path)
@@ -1326,6 +1334,14 @@ def run_command(
         help="Auto-apply VEX recommendations after report completes.",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
+    autotriage_status: Union[str, None] = typer.Option(
+        None,
+        "--autotriage-status",
+        help="Filter autotriage/apply-vex-triage to specific VEX statuses. "
+        "Comma-separated (e.g. 'NOT_AFFECTED' for unreachables only, "
+        "'IN_TRIAGE,NOT_AFFECTED' for both).",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -1484,6 +1500,11 @@ def run_command(
         logo=logo,
         apply_vex_triage=apply_vex_triage,
         autotriage="high" if autotriage else None,
+        autotriage_status=(
+            [s.strip().upper() for s in autotriage_status.split(",")]
+            if autotriage_status
+            else None
+        ),
         dry_run=dry_run,
         vex_concurrency=vex_concurrency,
         scan_types=scan_types,

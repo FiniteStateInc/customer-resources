@@ -577,6 +577,13 @@ class Config(BaseModel):
         "Levels: 'high' (mechanical only), 'medium' (+ AI high confidence), "
         "'all' (all candidates). Default when flag given without value: 'high'.",
     )
+    autotriage_status: list[str] | None = Field(
+        None,
+        description="Filter autotriage/apply-vex-triage to specific VEX statuses. "
+        "Comma-separated list of statuses to apply (e.g. 'NOT_AFFECTED' for "
+        "unreachables only, 'IN_TRIAGE,NOT_AFFECTED' for both). "
+        "When not set, all recommended statuses are applied.",
+    )
     overwrite: bool = Field(
         False,
         description="Overwrite existing report files. Without this flag, the CLI refuses "

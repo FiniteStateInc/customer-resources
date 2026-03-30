@@ -161,13 +161,13 @@
         </div>
         {% endif %}
 
-        <!-- Portfolio Trend Chart -->
+        <!-- Open CVE Trend by Severity -->
         {% if portfolio_progression and portfolio_progression | length > 1 %}
         <div class="chart-container">
             <h2 class="chart-title">Open CVE Trend</h2>
-            <p class="chart-description">Total open CVE count across all projects over time.</p>
+            <p class="chart-description">Total open CVEs over time, broken down by severity.</p>
             <div class="chart-wrapper">
-                <canvas id="trendChart"></canvas>
+                <canvas id="severityTrendChart"></canvas>
             </div>
         </div>
         {% endif %}
@@ -189,7 +189,9 @@
                     </tr>
                 </thead>
                 <tbody>
+                    {% set ns = namespace(hidden=0) %}
                     {% for p in projects | sort(attribute='net_change') %}
+                    {% if p.net_change | default(0) != 0 or p.baseline_open | default(0) > 0 or p.current_open | default(0) > 0 or p.total_resolved | default(0) > 0 or p.total_new | default(0) > 0 %}
                     <tr>
                         <td>{{ p.project_name }}</td>
                         <td class="num">{{ p.baseline_open | default(0) }}</td>
@@ -200,7 +202,15 @@
                             {% if p.net_change | default(0) > 0 %}+{% endif %}{{ p.net_change | default(0) }}
                         </td>
                     </tr>
+                    {% else %}
+                    {% set ns.hidden = ns.hidden + 1 %}
+                    {% endif %}
                     {% endfor %}
+                    {% if ns.hidden > 0 %}
+                    <tr style="color: #6c757d; font-style: italic;">
+                        <td colspan="6">{{ ns.hidden }} project{{ 's' if ns.hidden != 1 else '' }} with no findings or changes not shown</td>
+                    </tr>
+                    {% endif %}
                 </tbody>
             </table>
         </div>
@@ -253,7 +263,7 @@
             <p class="description">Expand a project to see how vulnerability counts changed across firmware versions.</p>
 
             {% for p in projects | sort(attribute='net_change') %}
-            {% if p.progression and p.progression | length > 0 %}
+            {% if p.progression and p.progression | length > 0 and (p.net_change | default(0) != 0 or p.baseline_open | default(0) > 0 or p.current_open | default(0) > 0 or p.total_resolved | default(0) > 0 or p.total_new | default(0) > 0) %}
             <details>
                 <summary>
                     {{ p.project_name }}
@@ -283,7 +293,7 @@
                         {% for v in p.progression %}
                         <tr>
                             <td><strong>{{ v.version | default('--') }}</strong></td>
-                            <td>{{ v.date | default('--') }}</td>
+                            <td>{{ v.date_display | default(v.date) | default('--') }}</td>
                             <td class="num">{{ v.open_count | default(0) }}</td>
                             <td class="num" style="color: #388e3c;">{{ v.resolved | default(0) }}</td>
                             <td class="num" style="color: #f57c00;">{{ v.new | default(0) }}</td>
@@ -318,51 +328,81 @@
 
     document.addEventListener('DOMContentLoaded', function() {
 
-        /* ── Portfolio Trend Chart ── */
+        /* ── Open CVE Trend by Severity ── */
         {% if portfolio_progression and portfolio_progression | length > 1 %}
         (function() {
-            var ctx = document.getElementById('trendChart');
+            var ctx = document.getElementById('severityTrendChart');
             if (!ctx) return;
 
             var progression = {{ portfolio_progression | tojson }};
-            var labels = progression.map(function(d) { return d.date; });
-            var values = progression.map(function(d) { return d.open_count; });
+            var labels = progression.map(function(d) { return d.date_display || d.date; });
+
+            var sevDefs = [
+                { label: 'Critical', key: 'critical', color: '#dc2626' },
+                { label: 'High',     key: 'high',     color: '#ea580c' },
+                { label: 'Medium',   key: 'medium',   color: '#eab308' },
+                { label: 'Low',      key: 'low',      color: '#2563eb' },
+                { label: 'Unknown',  key: 'unknown',  color: '#9ca3af' }
+            ];
+
+            var datasets = sevDefs.filter(function(ds) {
+                return progression.some(function(d) { return (d[ds.key] || 0) > 0; });
+            }).map(function(ds) {
+                return {
+                    label: ds.label,
+                    data: progression.map(function(d) { return d[ds.key] || 0; }),
+                    borderColor: ds.color,
+                    backgroundColor: ds.color + '33',
+                    fill: true,
+                    stack: 'severity',
+                    tension: 0.3,
+                    pointRadius: 3,
+                    borderWidth: 2
+                };
+            });
+
+            datasets.push({
+                label: 'Total',
+                data: progression.map(function(d) { return d.open_count; }),
+                borderColor: '#333',
+                backgroundColor: 'transparent',
+                fill: false,
+                stack: 'total',
+                tension: 0.3,
+                pointRadius: 4,
+                pointBackgroundColor: '#333',
+                borderWidth: 2,
+                borderDash: [6, 3]
+            });
 
             new Chart(ctx.getContext('2d'), {
                 type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: 'Open CVEs',
-                        data: values,
-                        borderColor: '#1976d2',
-                        backgroundColor: 'rgba(25, 118, 210, 0.08)',
-                        fill: true,
-                        tension: 0.3,
-                        pointRadius: 4,
-                        pointBackgroundColor: '#1976d2',
-                        borderWidth: 2
-                    }]
-                },
+                data: { labels: labels, datasets: datasets },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
-                        legend: { display: false },
+                        legend: { position: 'top' },
                         datalabels: {
+                            display: function(context) {
+                                if (context.dataset.label !== 'Total') return false;
+                                var last = context.dataset.data.length - 1;
+                                return context.dataIndex === 0 || context.dataIndex === last;
+                            },
                             anchor: 'end',
                             align: 'top',
                             color: '#333',
                             font: { weight: 'bold', size: 11 },
-                            formatter: function(value) { return value; }
+                            formatter: function(value) { return value.toLocaleString(); }
                         }
                     },
                     scales: {
                         x: {
-                            title: { display: true, text: 'Date', color: '#6c757d' },
-                            ticks: { maxRotation: 45, color: '#6c757d' }
+                            title: { display: true, text: 'Version', color: '#6c757d' },
+                            ticks: { maxRotation: 45, color: '#6c757d', autoSkip: true, maxTicksLimit: 20 }
                         },
                         y: {
+                            stacked: true,
                             beginAtZero: true,
                             title: { display: true, text: 'Open CVEs', color: '#6c757d' },
                             ticks: { precision: 0, color: '#6c757d' }

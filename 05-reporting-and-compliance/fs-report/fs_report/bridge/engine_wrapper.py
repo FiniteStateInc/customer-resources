@@ -155,6 +155,7 @@ class EngineWrapper:
                 vex_override=config_params.get("vexOverride", False),
                 apply_vex_triage=config_params.get("applyVexTriage"),
                 autotriage=config_params.get("autotriage"),
+                autotriage_status=config_params.get("autoTriageStatus"),
                 scan_types=config_params.get("scanTypes"),
                 scan_statuses=config_params.get("scanStatuses"),
                 context_file=config_params.get("contextFile"),

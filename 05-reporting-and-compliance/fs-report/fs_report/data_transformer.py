@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Data transformation module using pandas and DuckDB."""
+"""Data transformation module using pandas."""
 
 import importlib
 import logging
@@ -68,7 +68,7 @@ def flatten_records(
 
 
 class DataTransformer:
-    """Transform data using pandas and DuckDB."""
+    """Transform data using pandas."""
 
     def __init__(self) -> None:
         """Initialize the data transformer."""
@@ -126,7 +126,7 @@ class DataTransformer:
                 self.logger.error(f"Error in transform {i+1}: {e}")
                 raise
 
-        # Final cleanup: handle problematic columns that slipped through from DuckDB failures
+        # Final cleanup: handle problematic column naming artefacts
         if "i_d" in df.columns:
             if "finding_count" in df.columns:
                 self.logger.debug(
@@ -553,28 +553,16 @@ class DataTransformer:
         """Apply filter transformation."""
         self.logger.debug(f"Applying filter: {filter_expr}")
 
-        # Check if this is a simple string comparison that DuckDB might struggle with
+        # Simple string comparisons use a fast path
         if self._is_simple_string_filter(filter_expr):
             return self._apply_simple_string_filter(df, filter_expr)
 
         try:
-            # Use DuckDB for complex filtering
-            # con = duckdb.connect(":memory:")
-            # con.register("df", df)
-
-            # query = f"SELECT * FROM df WHERE {filter_expr}"
-            # result = con.execute(query).df()
-
-            # con.close()
-            # return result
             return df.query(filter_expr)
-
         except Exception as e:
             self.logger.error(f"Error in filter: {e}")
-            # Fallback to pandas query with better error handling
             try:
-                # Handle common DuckDB casting issues by using pandas query
-                # Replace DuckDB-style string literals with pandas-compatible ones
+                # Normalise curly quotes to straight quotes
                 pandas_expr = (
                     filter_expr.replace("\u2018", "'")
                     .replace("\u2019", "'")
@@ -584,12 +572,11 @@ class DataTransformer:
                 return df.query(pandas_expr)
             except Exception as e2:
                 self.logger.error(f"Pandas query also failed: {e2}")
-                # Final fallback: try to handle the specific case of string comparison
                 return self._apply_simple_string_filter(df, filter_expr)
 
     def _is_simple_string_filter(self, filter_expr: str) -> bool:
         """Check if this is a simple string comparison filter."""
-        # Check for simple string comparisons that DuckDB might struggle with
+        # Check for simple string comparisons that need special handling
         simple_patterns = [
             "!=" in filter_expr and "'" in filter_expr,  # severity != 'none'
             "==" in filter_expr and "'" in filter_expr,  # severity == 'high'
