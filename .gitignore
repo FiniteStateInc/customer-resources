@@ -181,6 +181,9 @@ cva_debug.log
 *.db-journal
 *.db-wal
 
+# Encryption keys
+encryption.key
+
 # Finite State specific
 .finitestate/link.json
 
