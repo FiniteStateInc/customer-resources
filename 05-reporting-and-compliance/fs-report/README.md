@@ -23,7 +23,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Executive Summary | High-level security dashboard for leadership |
 | Scan Analysis | Scan throughput, success rates, and infrastructure health |
 | User Activity | Platform adoption and engagement metrics |
-| Security Progress | Security posture improvement over time — severity delta, triage funnel, finding trends |
+| Security Progress | Version-over-version security progression — CVEs resolved, new CVEs, per-project progress, portfolio trend |
 
 **Assessment** — current state, showing the latest security posture regardless of time period:
 
@@ -41,7 +41,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Component Impact | Portfolio blast radius for a named component — affected projects, versions, and severity breakdown *(on-demand)* |
 | Version Comparison | Full version and component changelog (every version pair); fixed/new findings and component churn per step; CSV/XLSX include summary plus detail *(on-demand)* |
 | CRA Compliance | EU Cyber Resilience Act — exploited and KEV-listed vulnerabilities requiring regulatory notification *(on-demand)* |
-| False Positive Analysis | Surface likely false positives using mechanical checks and optional AI applicability analysis *(on-demand)* |
+| False Positive Analysis | Surface likely false positives using mechanical checks and AI applicability analysis; auto-apply VEX with `--autotriage` *(on-demand)* |
 | Scan Quality | Per-asset scan coverage and quality signals — scan type gaps and reachability unknowns *(on-demand)* |
 
 ## Quick Start

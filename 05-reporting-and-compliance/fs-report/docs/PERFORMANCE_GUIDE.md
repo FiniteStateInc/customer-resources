@@ -87,7 +87,7 @@ For long-running reports or iterative development, the SQLite cache provides per
 | Iterating on recipe development | `--cache-ttl 1d` |
 | CI/CD scheduled runs | `--cache-ttl 30m` |
 | Debugging stale data issues | `--no-cache` |
-| Cache corruption | `--clear-cache` |
+| Cache corruption | `fs-report cache clear --api` |
 
 ### Usage
 
@@ -101,8 +101,8 @@ poetry run fs-report --cache-ttl 30m
 # Force fresh data (ignore any cached data)
 poetry run fs-report --no-cache
 
-# Clear all cached data and exit
-poetry run fs-report --clear-cache
+# Clear all cached data
+fs-report cache clear --api
 ```
 
 ### Benefits Over JSON Progress Files

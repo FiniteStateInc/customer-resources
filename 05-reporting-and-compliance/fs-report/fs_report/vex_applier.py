@@ -174,6 +174,8 @@ def validate_recommendations(recs: list[dict]) -> tuple[list[dict], list[dict]]:
         pv_id = rec.get("project_version_id", "")
         vex_status = rec.get("recommended_vex_status", "")
 
+        justification = rec.get("justification", "")
+
         errors = []
         if not internal_id:
             errors.append("missing id (internal primary key)")
@@ -181,6 +183,8 @@ def validate_recommendations(recs: list[dict]) -> tuple[list[dict], list[dict]]:
             errors.append("missing project_version_id")
         if vex_status not in VALID_VEX_STATUSES:
             errors.append(f"invalid VEX status: {vex_status}")
+        if justification and justification not in VALID_VEX_JUSTIFICATIONS:
+            errors.append(f"invalid justification: {justification}")
 
         if errors:
             rec["_validation_errors"] = errors
@@ -461,14 +465,26 @@ class VexApplier:
             TextColumn("{task.fields[status]}"),
         )
 
-        with progress, ThreadPoolExecutor(max_workers=self.concurrency) as executor:
+        client = httpx.Client(
+            headers={
+                "X-Authorization": self.auth_token,
+                "Content-Type": "application/json",
+            },
+            timeout=30.0,
+        )
+        with (
+            progress,
+            client,
+            ThreadPoolExecutor(max_workers=self.concurrency) as executor,
+        ):
             task_id = progress.add_task(
                 "Applying VEX updates",
                 total=len(valid_recs),
                 status="",
             )
             futures = {
-                executor.submit(self._update_one, rec): rec for rec in valid_recs
+                executor.submit(self._update_one, rec, client): rec
+                for rec in valid_recs
             }
             for future in as_completed(futures):
                 result = future.result()
@@ -483,6 +499,8 @@ class VexApplier:
                         result["id"],
                         result.get("error", "unknown error"),
                     )
+                    if result.get("response_body"):
+                        logger.warning("  Response: %s", result["response_body"])
                 progress.update(
                     task_id,
                     advance=1,
@@ -508,7 +526,7 @@ class VexApplier:
 
     # ── internals ────────────────────────────────────────────────────
 
-    def _update_one(self, rec: dict) -> dict:
+    def _update_one(self, rec: dict, client: httpx.Client) -> dict:
         """Process a single VEX update in a thread."""
         internal_id = rec["id"]
         finding_id = rec.get("finding_id", internal_id)
@@ -518,26 +536,16 @@ class VexApplier:
         reachability_label = rec.get("reachability_label", "INCONCLUSIVE")
         justification = rec.get("justification")
 
-        client = httpx.Client(
-            headers={
-                "X-Authorization": self.auth_token,
-                "Content-Type": "application/json",
-            },
-            timeout=30.0,
+        result = apply_vex_status(
+            client,
+            self.base_url,
+            pv_id,
+            internal_id,
+            vex_status,
+            reason,
+            justification_enum=justification,
+            reachability_label=reachability_label,
         )
-        try:
-            result = apply_vex_status(
-                client,
-                self.base_url,
-                pv_id,
-                internal_id,
-                vex_status,
-                reason,
-                justification_enum=justification,
-                reachability_label=reachability_label,
-            )
-        finally:
-            client.close()
 
         result["id"] = internal_id
         result["finding_id"] = finding_id

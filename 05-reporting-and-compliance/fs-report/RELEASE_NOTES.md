@@ -24,7 +24,7 @@
 - **Component Impact CSV project locations** — The CSV output now includes component, version, project, and CVE count columns for all matching versions, regardless of whether CVE findings exist.
 - **Audience subdirectory support** — Recipes can be organized into audience-specific subdirectories (e.g. `forge/`) so consumer-specific recipes don't appear in the default `list recipes` output.
 - **`--baseline` / `--current` CLI aliases** — The Version Comparison flags `--baseline-version` and `--current-version` now have shorter aliases `--baseline` and `--current`.
-- **`--autotriage` confidence levels** — `--autotriage` now accepts an optional confidence threshold (`high`, `medium`, `all`) instead of being a boolean flag. `high` (the default when no value is given) applies only mechanically-confirmed candidates; `medium` includes AI high-confidence results; `all` applies everything.
+- **`--autotriage` boolean flag** — `--autotriage` is now a simple boolean flag (no argument needed). Applies high-confidence candidates by default.
 - **`ANTHROPIC_API_KEY` environment variable** — The standard `ANTHROPIC_API_KEY` env var is now the preferred way to supply the Anthropic API key. `ANTHROPIC_AUTH_TOKEN` is deprecated but still accepted.
 - **`list recipes` grouped by category** — Output is now grouped by recipe category and includes description and scope columns for easier discovery.
 - **`list projects` sort/limit/offset/filter** — Supports `--sort`, `--limit`, `--offset`, and `--filter` flags for pagination and searching large project lists.
@@ -35,7 +35,7 @@
 
 ### Changes
 
-- **`--autotriage` changed from boolean to string** — Now accepts `high`, `medium`, or `all` to control which FP candidates are auto-applied. Running `--autotriage` without a value still works (defaults to `high`). Backwards compatible — existing scripts continue to function.
+- **`--autotriage` simplified to boolean flag** — No longer requires a string argument. Just use `--autotriage` to auto-apply VEX recommendations after report generation.
 - **`ANTHROPIC_AUTH_TOKEN` deprecated** — Rename to `ANTHROPIC_API_KEY` in your environment or config file. The old name continues to work but will be removed in a future release.
 
 ### Bug Fixes

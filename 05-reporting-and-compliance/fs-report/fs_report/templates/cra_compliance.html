@@ -225,7 +225,7 @@
                         <td>
                             <span class="trigger-badge {% if row.cra_trigger == 'KEV' %}trigger-kev{% else %}trigger-exploit{% endif %}">{{ row.cra_trigger }}</span>
                         </td>
-                        <td>{{ row.status }}</td>
+                        <td>{{ row.status if row.status and row.status != 'nan' else '\u2014' }}</td>
                         <td class="num">{% if row.epss_score is not none %}{{ '%.4f' | format(row.epss_score) }}{% else %}&mdash;{% endif %}</td>
                     </tr>
                     {% endfor %}

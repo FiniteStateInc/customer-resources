@@ -1,9 +1,23 @@
-{% extends "base.html" %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% if mode == 'detailed' %}Customer Brief Detailed{% else %}Customer Brief{% endif %}{% if scan_metadata and scan_metadata.project_name %} — {{ scan_metadata.project_name }}{% endif %}</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+  /* Base typography */
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Inter", "Segoe UI", system-ui, sans-serif; color: #333; background: #fff; }
+  .report-container { font-size: 13px; font-family: "Inter", "Segoe UI", system-ui, sans-serif; }
+  table { font-size: 0.85em; }
 
-{% block title %}Customer Brief — {{ scan_metadata.project_name if scan_metadata else recipe_name }}{% endblock %}
+  /* Table base styles */
+  table { width: 100%; border-collapse: collapse; }
+  th { background-color: #f8f9fa; font-weight: 600; color: #495057; }
+  td { border-bottom: 1px solid #dee2e6; }
+  th, td { padding: 6px 8px; vertical-align: top; text-align: left; }
 
-{% block content %}
-<style>
   .kpi-row { display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
   .kpi-card {
     flex: 1; min-width: 140px; background: #fff; border: 1px solid #dee2e6;
@@ -14,15 +28,15 @@
   .kpi-card.border-blue     { border-top: 4px solid #1976d2; }
   .kpi-card.border-green    { border-top: 4px solid #388e3c; }
   .kpi-card.border-kev      { border-top: 4px solid #6a1b9a; }
-  .kpi-value { font-size: 2em; font-weight: 700; line-height: 1.2; }
-  .kpi-label { font-size: 0.8em; color: #666; margin-top: 4px; }
+  .kpi-value { font-size: 1.6em; font-weight: 700; line-height: 1.2; }
+  .kpi-label { font-size: 0.7em; color: #666; margin-top: 4px; }
   .kpi-critical .kpi-value { color: #d32f2f; }
   .kpi-high     .kpi-value { color: #f57c00; }
   .kpi-blue     .kpi-value { color: #1976d2; }
   .kpi-green    .kpi-value { color: #388e3c; }
   .kpi-kev      .kpi-value { color: #6a1b9a; }
 
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.65em; font-weight: 600; }
   .badge-CRITICAL { background: #d32f2f; color: #fff; }
   .badge-HIGH     { background: #f57c00; color: #fff; }
   .badge-MEDIUM   { background: #fbc02d; color: #333; }
@@ -30,7 +44,7 @@
   .badge-INFO     { background: #0288d1; color: #fff; }
   .badge-UNKNOWN  { background: #9e9e9e; color: #fff; }
 
-  .pill { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 0.7em; font-weight: 600; }
+  .pill { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 0.6em; font-weight: 600; }
   .pill-kev     { background: #6a1b9a; color: #fff; }
   .pill-exploit { background: #bf360c; color: #fff; }
   .pill-none    { background: #e0e0e0; color: #666; }
@@ -51,23 +65,25 @@
   .remed-card .badge-p0 { border-left: 4px solid #d32f2f; }
   .remed-card .badge-p1 { border-left: 4px solid #f57c00; }
 
-  .scan-meta-row { display: flex; gap: 30px; flex-wrap: wrap; font-size: 0.85em; color: #555; margin-top: 6px; }
+  .scan-meta-row { display: flex; flex-wrap: wrap; font-size: 0.85em; color: #555; margin-top: 6px; }
+  .scan-meta-row span { margin-right: 30px; }
   .scan-meta-row span strong { color: #333; }
 
   section.report-section { margin-bottom: 32px; }
-  section.report-section h2 { font-size: 1.15em; color: #2c3e50; border-bottom: 2px solid #e9ecef; padding-bottom: 6px; margin-bottom: 14px; }
+  section.report-section h2 { font-size: 0.9em; color: #1a237e; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 2px solid #e9ecef; padding-bottom: 6px; margin-bottom: 14px; }
 
   .customer-header { margin-bottom: 24px; }
   .customer-header .project-badge { display: inline-block; background: #e3f2fd; color: #1565c0; border-radius: 4px; padding: 3px 10px; font-size: 0.85em; font-weight: 600; margin-left: 8px; }
   .customer-header .report-date { color: #888; font-size: 0.85em; margin-top: 4px; }
 
   /* New section styles */
-  .exploit-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; }
+  .exploit-grid { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
   .exploit-cell {
+    flex: 0 0 calc(33.333% - 7px); box-sizing: border-box;
     border-radius: 6px; padding: 12px; text-align: center; font-size: 0.85em;
     border: 1px solid #dee2e6;
   }
-  .exploit-cell .cell-count { font-size: 1.8em; font-weight: 700; line-height: 1.2; }
+  .exploit-cell .cell-count { font-size: 1.5em; font-weight: 700; line-height: 1.2; }
   .exploit-cell .cell-label { font-size: 0.78em; color: #555; margin-top: 2px; }
   .heat-0 { background: #f5f5f5; color: #999; }
   .heat-1 { background: #fff3e0; color: #e65100; }
@@ -79,37 +95,83 @@
     flex: 1; min-width: 120px; background: #fff; border: 1px solid #dee2e6;
     border-radius: 8px; padding: 16px; text-align: center;
   }
-  .reach-card .reach-value { font-size: 1.8em; font-weight: 700; line-height: 1.2; }
+  .reach-card .reach-value { font-size: 1.5em; font-weight: 700; line-height: 1.2; }
   .reach-card .reach-label { font-size: 0.78em; color: #666; margin-top: 4px; }
   .reach-reachable .reach-value { color: #d32f2f; }
   .reach-unreachable .reach-value { color: #388e3c; }
   .reach-inconclusive .reach-value { color: #f57c00; }
 
-  /* PDF-only sections */
-  .cover-page, .intro-page, .appendix { display: none; }
+  /* PDF-only sections — hidden on screen, shown in print via @media print below */
 
   @page {
     size: letter;
-    margin: 1in 0.75in;
-    @bottom-center { content: counter(page); font-size: 9pt; color: #999; }
+    margin: 0.75in 0.75in 0.9in 0.75in;
+    @bottom-center {
+      content: "© 2026 Finite State, Inc. All rights reserved. | www.finitestate.io | support@finitestate.io";
+      font-size: 7.5pt; color: #999;
+    }
   }
   @media print {
     .cover-page, .intro-page, .appendix { display: block; }
     section.report-section { page-break-inside: avoid; }
+    .print-header {
+      display: block;
+      position: fixed; top: 0; left: 0; right: 0;
+      height: 50px; max-height: 50px;
+      background: #1a237e;
+      padding: 8px 20px;
+      font-size: 9px;
+      z-index: 9999;
+      overflow: hidden;
+      clip: rect(0, auto, 50px, 0);
+    }
+    .print-header .ph-left { float: left; }
+    .print-header .ph-center { text-align: center; }
+    .print-header .ph-right { float: right; }
+    .print-header .ph-title { color: #e8734a; font-weight: 600; font-size: 10px; }
+    .print-header .ph-date { color: #fff; font-size: 8px; }
+    .print-header .ph-org { color: #fff; font-size: 10px; }
+    .print-header .ph-project { color: #fff; font-weight: 700; font-size: 11px; }
+    .print-header .ph-logo { height: 20px; max-height: 20px; vertical-align: middle; background: transparent; }
+    body { margin-top: 60px; }
   }
   @media screen {
     .cover-page, .intro-page, .appendix { display: none; }
+    .print-header { display: none; }
   }
 
   .cover-page {
     page-break-after: always;
-    text-align: center;
-    padding-top: 200px;
+    position: relative;
+    width: 100%; height: 9.5in;
+    background-size: cover;
+    background-position: center;
+    background-color: #1a237e;
+    overflow: hidden;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
-  .cover-page h1 { font-size: 2.5em; color: #1a237e; margin-bottom: 16px; }
-  .cover-page .cover-subtitle { font-size: 1.3em; color: #555; margin-bottom: 40px; }
-  .cover-page .cover-meta { font-size: 0.95em; color: #666; line-height: 2; }
-  .cover-page .cover-confidential { margin-top: 60px; font-size: 0.8em; color: #999; font-style: italic; }
+  .cover-logo {
+    position: absolute; top: 40px; right: 40px;
+    width: 150px; height: auto;
+  }
+  .cover-card {
+    position: absolute; bottom: 15%; left: 40px;
+    background: #1a237e; color: #fff; padding: 32px 40px;
+    max-width: 420px;
+  }
+  .cover-card h1 {
+    font-size: 1.8em; font-weight: 600; margin: 0 0 12px;
+    border-bottom: 2px solid #fff; padding-bottom: 12px;
+  }
+  .cover-card .cover-field { margin-top: 12px; }
+  .cover-card .cover-label { font-size: 0.75em; opacity: 0.8; }
+  .cover-card .cover-value { font-size: 0.95em; font-weight: 600; }
+  .cover-confidential {
+    position: absolute; bottom: 30px; left: 0; right: 0;
+    text-align: center; font-size: 0.7em; color: rgba(255,255,255,0.6);
+    font-style: italic;
+  }
 
   .intro-page {
     page-break-after: always;
@@ -123,27 +185,102 @@
 
   .appendix {
     page-break-before: always;
-    font-size: 0.85em; color: #444; line-height: 1.6;
+    font-size: 0.78em; color: #444; line-height: 1.6;
   }
   .appendix h2 { color: #1a237e; font-size: 1.15em; border-bottom: 2px solid #e9ecef; padding-bottom: 6px; margin: 20px 0 10px; }
   .appendix h3 { font-size: 0.95em; color: #2c3e50; margin: 14px 0 6px; }
   .appendix dl { margin: 0 0 12px 0; }
   .appendix dt { font-weight: 600; margin-top: 8px; }
   .appendix dd { margin-left: 16px; }
-</style>
+
+  /* Detailed mode — expandable rows (screen only) */
+  .detail-row { display: none; }
+  .detail-row.expanded { display: table-row; }
+  .detail-chevron { cursor: pointer; font-size: 0.8em; color: #666; user-select: none; display: inline-block; }
+  .detail-chevron::before { content: "▶"; display: inline-block; transition: transform 0.2s; }
+  .detail-chevron.open::before { transform: rotate(90deg); }
+
+  .detail-panel { padding: 12px 16px; background: #f8f9fa; border-radius: 6px; margin: 4px 0; }
+  .detail-panel dt { font-weight: 600; font-size: 0.8em; color: #495057; margin-top: 8px; }
+  .detail-panel dt:first-child { margin-top: 0; }
+  .detail-panel dd { margin-left: 0; font-size: 0.85em; color: #333; }
+
+  .exploit-pill { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; font-weight: 600; margin-right: 4px; }
+  .exploit-pill-fire { background: #bf360c; color: #fff; }
+
+  .reach-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7em; font-weight: 600; }
+  .reach-REACHABLE { background: #f3e5f5; color: #6a1b9a; }
+  .reach-UNREACHABLE { background: #e8f5e9; color: #2e7d32; }
+  .reach-UNKNOWN { background: #e0e0e0; color: #666; }
+
+  /* Detailed mode — card section (print only) */
+  .detailed-cards-section { display: none; }
+  .detail-card {
+    border: 1px solid #dee2e6; border-radius: 8px; padding: 16px; margin-bottom: 16px;
+    page-break-inside: avoid; border-left: 4px solid #9e9e9e;
+  }
+  .detail-card.sev-CRITICAL { border-left-color: #d32f2f; }
+  .detail-card.sev-HIGH { border-left-color: #f57c00; }
+  .detail-card.sev-MEDIUM { border-left-color: #fbc02d; }
+  .detail-card.sev-LOW { border-left-color: #388e3c; }
+  .detail-card-header { display: flex; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .detail-card-header > * { margin-right: 10px; }
+  .detail-card-header code { font-size: 1.1em; font-weight: 700; }
+  .detail-card-body dt { font-weight: 600; font-size: 0.85em; color: #495057; margin-top: 8px; }
+  .detail-card-body dd { margin-left: 0; font-size: 0.9em; }
+  .detail-card-desc { margin-top: 10px; padding: 8px 12px; background: #f8f9fa; border-radius: 4px; font-size: 0.85em; }
+
+  @media screen {
+    .detailed-cards-section { display: none !important; }
+  }
+  @media print {
+    .detail-row, .detail-chevron { display: none !important; }
+    .detailed-cards-section { display: block !important; }
+  }
+  </style>
+</head>
+<body>
 
 <!-- PDF Cover Page -->
-<div class="cover-page">
-  <h1>Security Risk Summary</h1>
-  <div class="cover-subtitle">
-    {% if scan_metadata and scan_metadata.project_name %}{{ scan_metadata.project_name }}{% endif %}
-    {% if scan_metadata and scan_metadata.version_name %} — v{{ scan_metadata.version_name }}{% endif %}
-  </div>
-  <div class="cover-meta">
-    {% if domain %}<div>{{ domain }}</div>{% endif %}
-    <div>{{ generated_at }}</div>
+<div class="cover-page" {% if cover_image_b64 %}style="background-image:url('data:image/jpeg;base64,{{ cover_image_b64 }}');"{% endif %}>
+  {% if logo_image_b64 %}
+  <img class="cover-logo" src="data:image/png;base64,{{ logo_image_b64 }}" alt="Finite State">
+  {% endif %}
+  <div class="cover-card">
+    <h1>{% if mode == 'detailed' %}Security Risk Report{% else %}Security Risk Summary{% endif %}</h1>
+    <div class="cover-field">
+      <div class="cover-label">Project Name:</div>
+      <div class="cover-value">{{ scan_metadata.project_name if scan_metadata else '' }}</div>
+    </div>
+    <div class="cover-field">
+      <div class="cover-label">Version:</div>
+      <div class="cover-value">{{ scan_metadata.version_name if scan_metadata else '' }}</div>
+    </div>
+    <div class="cover-field">
+      <div class="cover-label">Organization:</div>
+      <div class="cover-value">{{ organization if organization else (scan_metadata.organization if scan_metadata else '') }}</div>
+    </div>
+    <div class="cover-field">
+      <div class="cover-label">Published:</div>
+      <div class="cover-value">{{ generated_at }}</div>
+    </div>
   </div>
   <div class="cover-confidential">CONFIDENTIAL — This document contains proprietary security assessment information.</div>
+</div>
+
+<!-- Print header bar (repeats on every page via position:fixed in Chromium) -->
+<div class="print-header">
+  <div class="ph-left">
+    <div class="ph-title">{% if mode == 'detailed' %}Security Risk Report{% else %}Security Risk Summary{% endif %}</div>
+    <div class="ph-date">Published: {{ generated_at }}</div>
+  </div>
+  <div class="ph-center">
+    <div class="ph-org">{{ organization if organization else (scan_metadata.organization if scan_metadata else '') }}</div>
+    <div class="ph-project">{{ scan_metadata.project_name if scan_metadata else '' }} / {{ scan_metadata.version_name if scan_metadata else '' }}</div>
+  </div>
+  <div class="ph-right">
+    {% if logo_image_b64 %}<img class="ph-logo" src="data:image/png;base64,{{ logo_image_b64 }}" alt="FS">{% endif %}
+  </div>
 </div>
 
 <!-- PDF Introduction Page -->
@@ -160,6 +297,7 @@
   </div>
 </div>
 
+<div class="report-container">
 <!-- Customer-facing header -->
 <div class="customer-header">
   <h2>
@@ -266,6 +404,7 @@
           <th>Component</th>
           <th>Version</th>
           <th>CVSS</th>
+          <th>Reachability</th>
           <th>KEV</th>
           <th>Exploit</th>
           <th>VEX Status</th>
@@ -273,9 +412,17 @@
       </thead>
       <tbody>
         {% set status_labels = {"UNKNOWN": "Open", "NO_STATUS": "Open", "OPEN": "Open", "IN_TRIAGE": "In Triage"} %}
+        {% set detail_lookup = {} %}
+        {% if mode == 'detailed' and detailed_findings %}
+          {% for df in detailed_findings %}
+            {% if detail_lookup.update({df.finding_id: df}) %}{% endif %}
+          {% endfor %}
+        {% endif %}
         {% for f in top_findings %}
+        {% set detail = detail_lookup.get(f.finding_id) if detail_lookup else None %}
         <tr>
           <td>
+            {% if detail %}<span class="detail-chevron" onclick="var r=this.closest('tr').nextElementSibling;r.classList.toggle('expanded');this.classList.toggle('open')"></span> {% endif %}
             {% if domain and f.project_id and f.project_version_id and f.finding_id %}
             <a href="https://{{ domain }}/projects/{{ f.project_id }}/versions/{{ f.project_version_id }}/findings?findingId={{ f.finding_id }}" target="_blank" rel="noopener"><code>{{ f.cve_id }}</code></a>
             {% else %}
@@ -286,14 +433,74 @@
           <td>{{ f.component }}</td>
           <td>{{ f.component_version }}</td>
           <td>{{ "%.1f"|format(f.cvss_score) if f.cvss_score else "—" }}</td>
+          <td>{% if f.reachability_score is defined %}{% if f.reachability_score > 0 %}<span class="reach-badge reach-REACHABLE">Reachable</span>{% elif f.reachability_score < 0 %}<span class="reach-badge reach-UNREACHABLE">Unreachable</span>{% else %}<span class="reach-badge reach-UNKNOWN">—</span>{% endif %}{% else %}<span class="reach-badge reach-UNKNOWN">—</span>{% endif %}</td>
           <td>{% if f.in_kev %}<span class="pill pill-kev">KEV</span>{% else %}<span class="pill pill-none">—</span>{% endif %}</td>
           <td>{% if f.has_exploit %}<span class="pill pill-exploit">Exploit</span>{% else %}<span class="pill pill-none">—</span>{% endif %}</td>
           <td>{{ status_labels.get(f.status, f.status) }}</td>
         </tr>
+        {% if detail %}
+        <tr class="detail-row">
+          <td colspan="9">
+            <div class="detail-panel">
+              <dl>
+                {% if detail.description %}<dt>Description</dt><dd>{{ detail.description[:500] }}{% if detail.description|length > 500 %}…{% endif %}</dd>{% endif %}
+                {% if detail.component_description %}<dt>Component</dt><dd>{{ detail.component }} {{ detail.component_version }} — {{ detail.component_description }}</dd>{% endif %}
+                <dt>Exploit Maturity</dt>
+                <dd>{% if detail.exploit_maturity %}{% for em in detail.exploit_maturity %}<span class="exploit-pill exploit-pill-fire">🔥 {{ em }}</span>{% endfor %}{% else %}None known{% endif %}</dd>
+                <dt>Reachability</dt>
+                <dd><span class="reach-badge reach-{{ detail.reachability_label }}">{{ detail.reachability_label }}</span></dd>
+                {% if detail.epss_percentile %}<dt>EPSS Percentile</dt><dd>{{ "%.1f"|format(detail.epss_percentile * 100) }}%</dd>{% endif %}
+                {% if detail.attack_vector %}<dt>Attack Vector</dt><dd>{{ detail.attack_vector }}</dd>{% endif %}
+                {% if detail.cve_aliases %}<dt>CVE Aliases</dt><dd>{{ detail.cve_aliases | join(", ") }}</dd>{% endif %}
+                {% if detail.remediation %}<dt>Remediation</dt><dd>{{ detail.remediation }}</dd>{% endif %}
+                {% if detail.mitigation %}<dt>Mitigation</dt><dd>{{ detail.mitigation }}</dd>{% endif %}
+              </dl>
+            </div>
+          </td>
+        </tr>
+        {% endif %}
         {% endfor %}
       </tbody>
     </table>
   </div>
+</section>
+{% endif %}
+
+<!-- Detailed Findings Cards (PDF only) -->
+{% if mode == 'detailed' and detailed_findings %}
+<section class="report-section detailed-cards-section">
+  <h2>Detailed Findings</h2>
+  {% for f in detailed_findings %}
+  <div class="detail-card sev-{{ f.severity }}">
+    <div class="detail-card-header">
+      {% if domain and f.project_id and f.project_version_id and f.finding_id %}
+      <a href="https://{{ domain }}/projects/{{ f.project_id }}/versions/{{ f.project_version_id }}/findings?findingId={{ f.finding_id }}" target="_blank" rel="noopener"><code>{{ f.cve_id }}</code></a>
+      {% else %}
+      <code>{{ f.cve_id }}</code>
+      {% endif %}
+      <span class="badge badge-{{ f.severity }}">{{ f.severity }}</span>
+      <span>CVSS {{ "%.1f"|format(f.cvss_score) }}</span>
+    </div>
+    <div class="detail-card-body">
+      <dl>
+        <dt>Component</dt>
+        <dd>{{ f.component }} {{ f.component_version }}{% if f.component_description %} — {{ f.component_description }}{% endif %}</dd>
+        <dt>Exploit Maturity</dt>
+        <dd>{% if f.exploit_maturity %}{% for em in f.exploit_maturity %}<span class="exploit-pill exploit-pill-fire">🔥 {{ em }}</span>{% endfor %}{% else %}None known{% endif %}</dd>
+        <dt>Reachability</dt>
+        <dd><span class="reach-badge reach-{{ f.reachability_label }}">{{ f.reachability_label }}</span></dd>
+        {% if f.epss_percentile %}<dt>EPSS Percentile</dt><dd>{{ "%.1f"|format(f.epss_percentile * 100) }}%</dd>{% endif %}
+        {% if f.attack_vector %}<dt>Attack Vector</dt><dd>{{ f.attack_vector }}</dd>{% endif %}
+        {% if f.cve_aliases %}<dt>CVE Aliases</dt><dd>{{ f.cve_aliases | join(", ") }}</dd>{% endif %}
+      </dl>
+      {% if f.description %}
+      <div class="detail-card-desc">{{ f.description[:500] }}{% if f.description|length > 500 %}…{% endif %}</div>
+      {% endif %}
+      {% if f.remediation %}<div class="detail-card-desc"><strong>Remediation:</strong> {{ f.remediation }}</div>{% endif %}
+      {% if f.mitigation %}<div class="detail-card-desc"><strong>Mitigation:</strong> {{ f.mitigation }}</div>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
 </section>
 {% endif %}
 
@@ -572,4 +779,6 @@
   </dl>
 </div>
 
-{% endblock %}
+</div>
+</body>
+</html>

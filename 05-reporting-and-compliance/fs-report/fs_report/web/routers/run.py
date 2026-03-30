@@ -368,9 +368,9 @@ async def prerun_form(
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
+        request,
         "pages/prerun.html",
         {
-            "request": request,
             "nonce": nonce,
             "state": state,
             "recipe_names": recipe_names,
@@ -603,9 +603,9 @@ async def run_progress_page(
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
+        request,
         "pages/progress.html",
         {
-            "request": request,
             "nonce": nonce,
             "run_id": run_id,
             "recipes": run["recipes"],

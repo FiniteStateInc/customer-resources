@@ -24,12 +24,12 @@ The reporting kit supports two data transformation engines:
 ### DuckDB Transformer (Legacy)
 - SQL-like syntax for data manipulation
 - Good for simple aggregations and calculations
-- Use with `--transformer duckdb` or omit the flag
+- Legacy engine, no longer selectable via CLI
 
 ### Pandas Transformer (Recommended)
 - Python-based transforms for complex logic
 - Better debugging and extensibility
-- Use with `--transformer pandas`
+- Default engine, used automatically
 - Supports custom transform functions
 
 ## Step 2: Create a Pandas-Based Recipe
@@ -99,7 +99,7 @@ def findings_by_project_pandas_transform(data: List[Dict[str, Any]], **kwargs) -
 
 ```bash
 # Run with pandas transformer
-fs-report --recipe "Findings by Project" --transformer pandas --verbose
+fs-report --recipe "Findings by Project" --verbose
 
 # Check the output
 ls output/Findings\ by\ Project/
@@ -143,11 +143,8 @@ output:
 ### Test Your DuckDB Recipe
 
 ```bash
-# Run with DuckDB transformer (default)
+# Run the recipe
 fs-report --recipe "Security Dashboard" --verbose
-
-# Or explicitly specify DuckDB
-fs-report --recipe "Security Dashboard" --transformer duckdb --verbose
 ```
 
 ## Step 4: Advanced Pandas Recipe with Complex Logic
@@ -310,9 +307,8 @@ The comparison tool generates:
 ### Test Your Recipes
 
 ```bash
-# Test with different transformers
-fs-report --recipe "Your Recipe" --transformer pandas --verbose
-fs-report --recipe "Your Recipe" --transformer duckdb --verbose
+# Test with verbose output
+fs-report --recipe "Your Recipe" --verbose
 
 # Test with different date ranges
 fs-report --recipe "Your Recipe" --start 2025-01-01 --end 2025-01-31
@@ -395,12 +391,10 @@ export FINITE_STATE_DOMAIN="your-domain.finitestate.io"
 OUTPUT_DIR="./reports/$(date +%Y-%m-%d)"
 mkdir -p "$OUTPUT_DIR"
 
-# Run reports with pandas transformer
-fs-report --transformer pandas --output "$OUTPUT_DIR" --recipe "Findings by Project"
-fs-report --transformer pandas --output "$OUTPUT_DIR" --recipe "Component Risk Analysis"
-
-# Run traditional reports with DuckDB
-fs-report --transformer duckdb --output "$OUTPUT_DIR" --recipe "Security Dashboard"
+# Run reports
+fs-report --output "$OUTPUT_DIR" --recipe "Findings by Project"
+fs-report --output "$OUTPUT_DIR" --recipe "Component Risk Analysis"
+fs-report --output "$OUTPUT_DIR" --recipe "Security Dashboard"
 
 echo "Reports generated in $OUTPUT_DIR"
 ```

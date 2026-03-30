@@ -160,9 +160,9 @@ async def reports_page(
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
+        request,
         "pages/reports.html",
         {
-            "request": request,
             "nonce": nonce,
             "state": state,
             "report_files": report_files,
@@ -362,9 +362,9 @@ async def setup_page(
     """Render the first-run onboarding wizard."""
     templates = request.app.state.templates
     return templates.TemplateResponse(
+        request,
         "pages/setup.html",
         {
-            "request": request,
             "nonce": nonce,
             "state": state,
         },

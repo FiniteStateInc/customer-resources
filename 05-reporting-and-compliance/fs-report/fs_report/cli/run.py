@@ -1282,7 +1282,8 @@ def run_command(
     scoring_file: Union[str, None] = typer.Option(
         None,
         "--scoring-file",
-        help="Path to YAML with custom scoring weights for Triage Prioritization.",
+        help="Path to YAML with custom scoring weights (Triage Prioritization) "
+        "or staleness thresholds (Scan Quality).",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
     tp_gate: Union[str, None] = typer.Option(
@@ -1319,11 +1320,10 @@ def run_command(
         "Runs VEX application only (no report generation).",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
-    autotriage: str | None = typer.Option(
-        None,
+    autotriage: bool = typer.Option(
+        False,
         "--autotriage",
-        help="Auto-apply VEX recommendations after report completes. "
-        "Levels: 'high' (default), 'medium', 'all'.",
+        help="Auto-apply VEX recommendations after report completes.",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
     dry_run: bool = typer.Option(
@@ -1483,7 +1483,7 @@ def run_command(
         overwrite=overwrite,
         logo=logo,
         apply_vex_triage=apply_vex_triage,
-        autotriage=autotriage,
+        autotriage="high" if autotriage else None,
         dry_run=dry_run,
         vex_concurrency=vex_concurrency,
         scan_types=scan_types,

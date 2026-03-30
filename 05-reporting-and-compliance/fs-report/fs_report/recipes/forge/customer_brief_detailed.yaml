@@ -1,12 +1,12 @@
-name: "Customer Brief"
+name: "Customer Brief Detailed"
 category: assessment
-description: "External-facing project security brief for customers and regulators."
-execution_order: 20
+description: "Detailed project security brief with per-finding analysis for customers and regulators."
+execution_order: 21
 auto_run: false
 requires_project: true
 
 parameters:
-  mode: summary
+  mode: detailed
   all_severities: false
   max_detailed_findings: 100
 
@@ -14,6 +14,7 @@ query:
   endpoint: "/public/v0/findings"
   params:
     limit: 10000
+    includeAdditionalDetails: true
 
 additional_queries:
   components:
@@ -22,7 +23,6 @@ additional_queries:
       limit: 10000
 
 transform_function: customer_brief_transform
-
 template: customer_brief.html
 
 output:

@@ -162,9 +162,9 @@ async def dashboard(
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
+        request,
         "pages/dashboard.html",
         {
-            "request": request,
             "nonce": nonce,
             "state": state,
             "token_display": token_display,

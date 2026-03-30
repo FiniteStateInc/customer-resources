@@ -98,7 +98,17 @@ class RecipeLoader:
         if self.recipe_filter:
             filter_set = {r.lower() for r in self.recipe_filter}
             filtered_recipes = [r for r in recipes if r.name.lower() in filter_set]
-            self.logger.info(f"Filtered recipes: {[r.name for r in filtered_recipes]}")
+            if not filtered_recipes:
+                available = sorted(r.name for r in recipes)
+                unmatched = sorted(filter_set - {r.name.lower() for r in recipes})
+                self.logger.error(
+                    f"Recipe(s) not found: {unmatched}. "
+                    f"Available recipes: {available}"
+                )
+            else:
+                self.logger.info(
+                    f"Filtered recipes: {[r.name for r in filtered_recipes]}"
+                )
             return filtered_recipes
 
         return recipes

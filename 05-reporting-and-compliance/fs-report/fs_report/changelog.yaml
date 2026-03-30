@@ -1,4 +1,59 @@
 releases:
+  - version: "1.9.1"
+    date: "2026-03-29"
+    changes:
+      - report: "Security Progress"
+        type: added
+        description: "Version-over-version progression with per-project progress table, CVE lifecycle tracking (resolved by triage + removal), portfolio KPIs, and trend chart"
+      - report: "False Positive Analysis"
+        type: added
+        description: "Component applicability analysis table, NVD-enriched AI prompts, and inline per-finding prompts in review queue"
+      - report: ~
+        type: added
+        description: "JSON-RPC bridge for report server integration (python -m fs_report.bridge)"
+      - report: ~
+        type: fixed
+        description: "Starlette 1.0 compatibility (TemplateResponse API change)"
+      - report: ~
+        type: fixed
+        description: "Cache clear now drops all data tables (was missing 4)"
+      - report: ~
+        type: fixed
+        description: "VEX applier uses shared httpx.Client (fixes 'too many open files' on large AI runs)"
+      - report: "False Positive Analysis"
+        type: fixed
+        description: "Invalid COMPONENT_NOT_PRESENT justification causing 400 errors"
+      - report: "False Positive Analysis"
+        type: fixed
+        description: "Reason field now references correct CVE ID per finding"
+      - report: "False Positive Analysis"
+        type: fixed
+        description: "LLM verdict override when rationale contradicts (wrong library detection)"
+      - report: ~
+        type: fixed
+        description: "--autotriage works as boolean flag (no argument required)"
+      - report: ~
+        type: fixed
+        description: "Misspelled recipe names now show available recipes instead of 'no recipes found'"
+      - report: "Security Progress"
+        type: fixed
+        description: "Graceful fallback for single-version projects"
+      - report: "False Positive Analysis"
+        type: improved
+        description: "Review queue sorted by component, confidence badges removed"
+      - report: "False Positive Analysis"
+        type: improved
+        description: "AI details show detailed guidance instead of repeating rationale"
+      - report: ~
+        type: improved
+        description: "VEX applier logs response body on failures for easier debugging"
+      - report: ~
+        type: improved
+        description: "VEX recommendation validation catches invalid justification enums before API call"
+      - report: ~
+        type: improved
+        description: "LLM client shows cache hit/miss ratio in progress bar"
+
   - version: "1.9.0"
     date: "2026-03-18"
     changes:

@@ -1,7 +1,7 @@
 name: "Security Progress"
 template: "security_progress.html"
 category: operational
-description: "Security posture improvement over time — severity delta, triage funnel snapshot, open findings trend, and CVE change tracking (new, retracted, severity/exploit updates via /public/v0/cves/updates)."
+description: "Version-over-version progress report — CVEs resolved, new CVEs introduced, net change per project and portfolio-wide. Shows what teams accomplished during the period."
 execution_order: 30
 auto_run: false
 
@@ -20,15 +20,11 @@ output:
     - html
     - md
   charts:
-    - name: "severity_distribution"
-      chart: bar
-      title: "Current Severity Distribution"
-      description: "Finding count by severity (open findings)"
-    - name: "triage_funnel"
-      chart: pie
-      title: "Triage Status Distribution"
-      description: "Breakdown of findings by triage status"
+    - name: "portfolio_trend"
+      chart: line
+      title: "Open CVEs Over Time"
+      description: "Portfolio-wide open CVE count across version releases"
     - name: "cve_changes"
       chart: bar
       title: "CVE Changes This Period"
-      description: "New, retracted, severity-escalated, and exploit-updated CVEs detected during the reporting window"
+      description: "New, retracted, severity-escalated, and exploit-updated CVEs"

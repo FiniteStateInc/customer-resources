@@ -435,6 +435,65 @@ HTML-only output. No CSV/XLSX columns.
 
 ---
 
+## Security Progress
+
+### Main DataFrame
+
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `Project` | string | Project name |
+| 2 | `Version` | string | Version name |
+| 3 | `Date` | string | Version date (YYYY-MM-DD) |
+| 4 | `Open` | int | Open findings count |
+| 5 | `Resolved` | int | Resolved findings count |
+| 6 | `New` | int | New findings since previous version |
+| 7 | `Net` | int | Net change (New - Resolved) |
+
+---
+
+## False Positive Analysis
+
+### Main DataFrame (CSV/XLSX output)
+
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `cve_id` | string | CVE identifier |
+| 2 | `component_name` | string | Affected component name |
+| 3 | `component_version` | string | Component version |
+| 4 | `severity` | string | CRITICAL, HIGH, MEDIUM, LOW |
+| 5 | `fp_confidence` | float | False-positive confidence score |
+| 6 | `fp_signals` | string | Signals contributing to FP determination |
+| 7 | `primary_reason` | string | Primary reason for FP classification |
+| 8 | `ai_verdict` | string | AI-generated verdict |
+| 9 | `ai_rationale` | string | AI-generated rationale for the verdict |
+| 10 | `recommended_action` | string | Recommended next action |
+
+---
+
+## CRA Compliance
+
+### Main DataFrame (CSV/XLSX output)
+
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `cve_id` | string | CVE identifier |
+| 2 | `title` | string | Finding title |
+| 3 | `severity` | string | CRITICAL, HIGH, MEDIUM, LOW |
+| 4 | `cvss_score` | float | CVSS score (0-10) |
+| 5 | `component` | string | Affected component name |
+| 6 | `component_version` | string | Component version |
+| 7 | `project` | string | Project name |
+| 8 | `project_version` | string | Project version |
+| 9 | `status` | string | Finding status |
+| 10 | `cra_trigger` | string | CRA regulation trigger |
+| 11 | `in_kev` | bool | In CISA KEV |
+| 12 | `has_known_exploit` | bool | Known exploits exist |
+| 13 | `epss_score` | float | Raw EPSS score (0-1) |
+| 14 | `epss_percentile` | float | EPSS percentile (0-1) |
+| 15 | `detected_date` | string | Detection date |
+
+---
+
 ## Template Access Patterns
 
 ### Direct Access (Jinja2)

@@ -70,7 +70,7 @@ Operational reports show activity and trends within the specified time window. T
 | Report | What it measures over the period |
 |--------|----------------------------------|
 | **Executive Summary** | Findings detected during the window |
-| **Security Progress** | Posture delta, triage funnel, and CVE change tracking (on-demand) |
+| **Security Progress** | Version-over-version progression — CVEs resolved, new, net change per project (on-demand) |
 | **Scan Analysis** | Scans run during the window |
 | **User Activity** | User actions during the window |
 
@@ -137,26 +137,31 @@ fs-report run --recipe "Executive Summary" --period 90d
 
 **Category:** Operational (on-demand) — data is filtered to the specified time period.
 
-**Purpose:** Track security posture improvement over time. Shows severity trends for findings detected in the window, a triage funnel snapshot, and CVE-level change tracking sourced from the `/public/v0/cves/updates` endpoint.
+**Purpose:** Communicate security progress to management and product teams. Walks each project's version timeline within the period, tracking CVE lifecycle — which vulnerabilities were resolved (by triage or component removal), which are new, and the net change. Shows what teams accomplished.
 
-**Who should use it:** Security teams, programme managers, vulnerability management leads
+**Who should use it:** Security leads, programme managers, product team leads, management briefings
 
 **Important:** This report does **not** run by default. You must explicitly request it:
 
 ```bash
-fs-report run --recipe "Security Progress" --period 30d
+fs-report run --recipe "Security Progress" --period 2m --project openwrt
 ```
 
 **What it shows:**
-- Current severity distribution of open findings (CRITICAL / HIGH / MEDIUM / LOW)
-- Triage funnel snapshot — findings by status (OPEN, IN_TRIAGE, RESOLVED, FALSE_POSITIVE, etc.)
-- CVE change tracking for the period: new CVEs, retracted CVEs, severity escalations/downgrades, and exploit maturity changes
-- Flat findings export (Severity, Status, Detected Date, Project, Component, CVE ID, Title)
+- **Portfolio KPI cards** — Total Resolved, Total New, Net Change, Projects Improved
+- **Per-project progress table** — Baseline (open at period start), Current (open now), Resolved, New, Net Change — sorted by most improved
+- **Portfolio trend chart** — line chart of open CVE count over time across all projects
+- **CVE change tracking** — new CVEs, retracted CVEs, severity escalations/downgrades, exploit maturity changes (from `/public/v0/cves/updates`)
+- **Per-project detail** (collapsible) — version-by-version progression with severity breakdown
+- **CSV export** — Project, Version, Date, Open, Resolved, New, Net per version step
 
 **Key visualizations:**
-- **Current Severity Distribution** — bar chart of open findings by severity
-- **Triage Status Distribution** — pie chart of all findings by triage status
+- **Open CVEs Over Time** — line chart showing portfolio-wide open CVE count across version releases
 - **CVE Changes This Period** — bar chart of CVE-level changes (added, retracted, severity ↑/↓, exploit gained)
+
+**CVE resolution tracking:** A CVE is counted as "resolved" when it either (a) receives a VEX triage status (NOT_AFFECTED, RESOLVED, FALSE_POSITIVE, etc.) or (b) disappears from detection (component upgraded or removed). Both count as progress.
+
+**Single-version fallback:** If a project has only one version in the period, the report falls back to a flat snapshot view.
 
 **CVE change categories:**
 
@@ -904,7 +909,8 @@ fs-report run --recipe "False Positive Analysis" --period 30d
 Component-level prompts are evaluated first; if the AI marks a component `not_affected`, all findings on that component are flagged without running individual finding prompts.
 
 **Key outputs:**
-- **FP Candidates** — open findings that triggered one or more signals, with rolled-up confidence (HIGH / MEDIUM / LOW)
+- **FP Review Queue** — open findings that triggered one or more signals, grouped by component, with rolled-up confidence (HIGH / MEDIUM / LOW) and inline AI prompts
+- **Component Applicability Analysis** — per-component table showing AI verdict, confidence, rationale, guidance, fix version, and workaround
 - **VEX Recommendations** — `NOT_AFFECTED` recommendations with justification codes for batch triage
 - **Signal detail** — per-signal breakdown for analyst review
 - **Charts** — FP candidates by detection method, by severity, and by component
@@ -914,16 +920,19 @@ Component-level prompts are evaluated first; if the AI marks a component `not_af
 **Example commands:**
 ```bash
 # Mechanical checks only (no API key needed)
-fs-report run --recipe "False Positive Analysis" --period 30d
+fs-report run --recipe "False Positive Analysis" --project "MyProject"
 
 # With AI applicability analysis
-fs-report run --recipe "False Positive Analysis" --period 30d --ai
+fs-report run --recipe "False Positive Analysis" --project "MyProject" --ai
+
+# AI analysis + auto-apply VEX recommendations
+fs-report run --recipe "False Positive Analysis" --project "MyProject" --ai --autotriage
+
+# Preview VEX changes without applying
+fs-report run --recipe "False Positive Analysis" --project "MyProject" --ai --autotriage --dry-run
 
 # Export AI prompts for manual review (no API key needed)
-fs-report run --recipe "False Positive Analysis" --period 30d --ai-prompts
-
-# Scoped to a single project
-fs-report run --recipe "False Positive Analysis" --project "MyProject"
+fs-report run --recipe "False Positive Analysis" --project "MyProject" --ai-prompts
 ```
 
 ---

@@ -16,7 +16,10 @@ Returns a dict with:
 
 from __future__ import annotations
 
+import base64
 import logging
+import time as _time
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -128,6 +131,9 @@ def _normalize_findings(raw_findings: list[dict[str, Any]]) -> pd.DataFrame:
         "detected_date",
         "exploit_categories",
         "reachability_score",
+        "description",
+        "remediation",
+        "mitigation",
     ]
     if not raw_findings:
         return pd.DataFrame(columns=_EMPTY_COLS)
@@ -245,10 +251,168 @@ def _normalize_findings(raw_findings: list[dict[str, Any]]) -> pd.DataFrame:
                 or _safe_str(rec.get("detected_date"))
                 or _safe_str(rec.get("detected"))
             ),
+            "description": _safe_str(rec.get("description")),
+            "remediation": _safe_str(rec.get("remediation")),
+            "mitigation": _safe_str(rec.get("mitigation")),
         }
         rows.append(row)
 
     return pd.DataFrame(rows)
+
+
+def _filter_detailed_findings(
+    df: pd.DataFrame,
+    all_severities: bool = False,
+    max_findings: int = 100,
+) -> pd.DataFrame:
+    """Filter findings for detailed mode cards.
+
+    Default: Critical + High + Medium-with-exploits, open only, no cap.
+    all_severities=True: all severity levels, open only, capped.
+    """
+    if df.empty:
+        return df
+
+    open_mask = df["status"].isin(_OPEN_STATUSES)
+
+    if all_severities:
+        filtered = df[open_mask].sort_values("cvss_score", ascending=False)
+        filtered = filtered.head(max_findings)
+    else:
+        sev_mask = df["severity"].isin({"CRITICAL", "HIGH"}) | (
+            (df["severity"] == "MEDIUM") & (df["has_exploit"] == True)  # noqa: E712
+        )
+        filtered = df[open_mask & sev_mask].sort_values("cvss_score", ascending=False)
+
+    return filtered
+
+
+def _reachability_label(score: float) -> str:
+    """Convert numeric reachability score to display label."""
+    if score > 0:
+        return "REACHABLE"
+    if score < 0:
+        return "UNREACHABLE"
+    return "UNKNOWN"
+
+
+def _build_component_description_map(
+    components_data: list[Any],
+) -> dict[tuple[str, str], str]:
+    """Build (name, version) -> description lookup from components query data."""
+    desc_map: dict[tuple[str, str], str] = {}
+    for comp in components_data:
+        if not isinstance(comp, dict):
+            continue
+        name = _safe_str(comp.get("name"))
+        version = _safe_str(comp.get("version"))
+        desc = _safe_str(comp.get("description"))
+        if name and desc:
+            desc_map[(name, version)] = desc
+    return desc_map
+
+
+def _fetch_cve_aliases(
+    df: pd.DataFrame,
+    api_client: Any | None,
+) -> dict[str, list[str]]:
+    """Fetch CVE aliases for FS-prefixed findings via per-finding API calls.
+
+    Uses GET /public/v0/findings/{pvId}/{fId}/cves.
+    Only calls for non-CVE-prefixed finding IDs.
+    Returns mapping of finding_id -> list of alias CVE IDs.
+    """
+    if api_client is None or df.empty:
+        return {}
+
+    aliases: dict[str, list[str]] = {}
+    seen: set[tuple[str, str]] = set()
+
+    for _, row in df.iterrows():
+        cve_id = str(row.get("cve_id", ""))
+        if cve_id.startswith("CVE-"):
+            continue
+
+        fid = str(row.get("finding_id", ""))
+        pvid = str(row.get("project_version_id", ""))
+        if not fid or not pvid:
+            continue
+
+        key = (pvid, fid)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        try:
+            resp = api_client.get(f"/public/v0/findings/{pvid}/{fid}/cves")
+            if isinstance(resp, list):
+                alias_ids = [
+                    str(item.get("cveId", ""))
+                    for item in resp
+                    if isinstance(item, dict) and item.get("cveId")
+                ]
+                if alias_ids:
+                    aliases[fid] = alias_ids
+            _time.sleep(0.5)
+        except Exception:
+            logger.debug(
+                "Failed to fetch CVE aliases for %s/%s", pvid, fid, exc_info=True
+            )
+
+    return aliases
+
+
+def _build_detail_cards(
+    df: pd.DataFrame,
+    comp_desc_map: dict[tuple[str, str], str],
+    cve_aliases: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    """Build per-finding detail card dicts for template rendering."""
+    if df.empty:
+        return []
+
+    cards: list[dict[str, Any]] = []
+    for _, row in df.iterrows():
+        finding_id = str(row.get("finding_id", ""))
+        comp_name = str(row.get("component", ""))
+        comp_ver = str(row.get("component_version", ""))
+
+        # Exploit maturity: map category tokens to display labels, falling back to raw token
+        raw_cats = row.get("exploit_categories", [])
+        exploit_maturity = []
+        if isinstance(raw_cats, list):
+            for cat in raw_cats:
+                label = _EXPLOIT_CATEGORY_LABELS.get(str(cat).lower(), str(cat))
+                exploit_maturity.append(label)
+
+        cards.append(
+            {
+                "cve_id": str(row.get("cve_id", "")),
+                "severity": str(row.get("severity", "")),
+                "cvss_score": float(row.get("cvss_score", 0)),
+                "epss_percentile": float(row.get("epss_percentile", 0)),
+                "component": comp_name,
+                "component_version": comp_ver,
+                "component_description": comp_desc_map.get((comp_name, comp_ver), ""),
+                "description": str(row.get("description", "")),
+                "remediation": str(row.get("remediation", "")),
+                "mitigation": str(row.get("mitigation", "")),
+                "exploit_maturity": exploit_maturity,
+                "reachability_label": _reachability_label(
+                    float(row.get("reachability_score", 0))
+                ),
+                "in_kev": bool(row.get("in_kev", False)),
+                "has_exploit": bool(row.get("has_exploit", False)),
+                "attack_vector": str(row.get("attack_vector", "")),
+                "status": str(row.get("status", "")),
+                "cve_aliases": cve_aliases.get(finding_id, []),
+                "finding_id": finding_id,
+                "project_id": str(row.get("project_id", "")),
+                "project_version_id": str(row.get("project_version_id", "")),
+            }
+        )
+
+    return cards
 
 
 def customer_brief_transform(
@@ -324,6 +488,7 @@ def customer_brief_transform(
                 "in_kev",
                 "has_exploit",
                 "status",
+                "reachability_score",
                 "project_id",
                 "project_version_id",
             ]
@@ -433,6 +598,14 @@ def customer_brief_transform(
         dates = dates[dates != ""]
         if not dates.empty:
             scan_metadata["scan_date_range"] = f"{dates.min()} to {dates.max()}"
+
+    # ---- Organization name (derived from domain) ----
+    domain = getattr(config, "domain", "") if config else ""
+    organization = ""
+    if domain:
+        subdomain = domain.split(".")[0] if "." in domain else domain
+        organization = subdomain.replace("-", " ").title()
+    scan_metadata["organization"] = organization
 
     # ---- Severity distribution ----
     severity_distribution: dict[str, int] = {
@@ -548,9 +721,28 @@ def customer_brief_transform(
     # ---- total_components for summary ----
     summary["total_components"] = sbom_stats.get("total_components", 0)
 
-    domain = getattr(config, "domain", "") if config else ""
+    # ---- Base64-encoded brand assets for PDF cover ----
+    _assets_dir = Path(__file__).resolve().parent.parent.parent / "templates" / "assets"
+    cover_image_b64 = ""
+    logo_image_b64 = ""
+    try:
+        cover_path = _assets_dir / "cover.jpg"
+        if cover_path.is_file():
+            cover_image_b64 = base64.b64encode(cover_path.read_bytes()).decode("ascii")
+    except Exception:
+        logger.debug("Could not load cover.jpg for PDF cover", exc_info=True)
+    try:
+        logo_path = _assets_dir / "fs-logo.png"
+        if logo_path.is_file():
+            logo_image_b64 = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+    except Exception:
+        logger.debug("Could not load fs-logo.png for PDF cover", exc_info=True)
 
-    return {
+    # ---- Mode (summary vs detailed) ----
+    recipe_params = additional_data.get("recipe_parameters", {})
+    mode = recipe_params.get("mode", "summary")
+
+    result = {
         "main": df,
         "summary": summary,
         "top_findings": top_findings,
@@ -559,10 +751,37 @@ def customer_brief_transform(
         "sbom_stats": sbom_stats,
         "scan_metadata": scan_metadata,
         "domain": domain,
+        "organization": organization,
+        "cover_image_b64": cover_image_b64,
+        "logo_image_b64": logo_image_b64,
         "severity_distribution": severity_distribution,
         "component_license_distribution": component_license_distribution,
         "component_risk_ranking": component_risk_ranking,
         "reachability_summary": reachability_summary,
         "exploit_maturity_summary": exploit_maturity_summary,
         "top_security_risks": top_security_risks,
+        "mode": mode,
     }
+
+    if mode == "detailed":
+        all_sev = recipe_params.get("all_severities", False)
+        max_det = recipe_params.get("max_detailed_findings", 100)
+        detailed_df = _filter_detailed_findings(
+            df, all_severities=all_sev, max_findings=max_det
+        )
+        # Component descriptions from additional query
+        raw_components = additional_data.get("components", [])
+        comp_desc_map = _build_component_description_map(
+            raw_components if isinstance(raw_components, list) else []
+        )
+
+        api_client = additional_data.get("api_client")
+        cve_aliases = _fetch_cve_aliases(detailed_df, api_client)
+
+        result["detailed_findings"] = _build_detail_cards(
+            detailed_df, comp_desc_map, cve_aliases
+        )
+    else:
+        result["detailed_findings"] = []
+
+    return result

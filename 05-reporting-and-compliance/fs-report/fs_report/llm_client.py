@@ -636,8 +636,18 @@ class LLMClient:
                         # Backwards compat: old cache entries may lack verdict/rationale
                         row_dict.setdefault("verdict", "affected")
                         row_dict.setdefault("rationale", "")
+                        logger.debug(f"Remediation cache hit: {cve_id}")
                         return row_dict
-                    logger.debug(f"Cache expired for {cve_id}")
+                    logger.debug(
+                        f"Remediation cache expired for {cve_id} "
+                        f"(generated_at={row_dict.get('generated_at')}, "
+                        f"ttl={self.cache_ttl})"
+                    )
+                else:
+                    logger.debug(
+                        f"Remediation cache miss: {cve_id} "
+                        f"(not in DB: {self.db_path})"
+                    )
         except sqlite3.OperationalError:
             # Table may not exist yet (e.g. shared DB without LLM tables)
             try:
@@ -1700,6 +1710,29 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
             else "uncertain" if raw_verdict == "uncertain" else "affected"
         )
 
+        # Post-hoc consistency check: if the rationale clearly says "wrong
+        # library" / "different library" / "completely different" but the
+        # verdict came back as "affected", the LLM contradicted itself.
+        # Override to not_affected — the rationale is the deeper reasoning.
+        if result["verdict"] == "affected":
+            rationale_lower = result.get("rationale", "").lower()
+            guidance_lower = result.get("guidance", "").lower()
+            _combined = rationale_lower + " " + guidance_lower
+            _wrong_library_signals = (
+                "different library" in _combined
+                or "wrong library" in _combined
+                or "completely different" in _combined
+                or "not the same library" in _combined
+                or "does not affect" in _combined
+                or "no action needed" in _combined
+            )
+            if _wrong_library_signals:
+                logger.info(
+                    f"Verdict override for {component_name}: "
+                    f"rationale says wrong library but verdict was 'affected'"
+                )
+                result["verdict"] = "not_affected"
+
         # If parsing didn't work well, use the raw text as guidance
         if not result.get("guidance"):
             result["guidance"] = response_text.strip()
@@ -1737,12 +1770,12 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
 
         from tqdm import tqdm
 
+        cached_before = self._cached_count
         with tqdm(
             components, desc="Generating AI guidance", unit=" components"
         ) as pbar:
             for comp in pbar:
                 comp_key = f"{comp['component_name']}:{comp['component_version']}"
-                pbar.set_postfix_str(comp_key[:40])
 
                 # Collect CVE/exploit/reachability details for this component
                 cve_details = []
@@ -1781,8 +1814,16 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
                 )
                 results[comp_key] = guidance
 
+                was_cached = self._cached_count > prev_cached
+                cached_this_batch = self._cached_count - cached_before
+                total_done = len(results)
+                pbar.set_postfix_str(
+                    f"{'cached' if was_cached else 'api'} "
+                    f"({cached_this_batch}/{total_done} cached) "
+                    f"{comp_key[:30]}"
+                )
                 # Only rate-limit when we actually hit the API
-                if self._cached_count == prev_cached:
+                if not was_cached:
                     time.sleep(0.5)
 
         logger.info(

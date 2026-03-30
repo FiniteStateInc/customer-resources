@@ -229,9 +229,9 @@ async def scan_queue(
 
     if not state.token or not state.domain:
         return templates.TemplateResponse(
+            request,
             "components/_scan_queue.html",
             {
-                "request": request,
                 "connected": False,
                 "error": None,
                 "queue": None,
@@ -249,9 +249,9 @@ async def scan_queue(
         remaining = int(_BACKOFF_SECONDS - since_429)
         logger.debug("Queue fetch: backing off for %ds after 429", remaining)
         return templates.TemplateResponse(
+            request,
             "components/_scan_queue.html",
             {
-                "request": request,
                 "connected": True,
                 "error": f"Rate-limited — retrying in {remaining}s",
                 "queue": None,
@@ -310,9 +310,9 @@ async def scan_queue(
         if not any_success:
             logger.warning("Queue fetch: all pages failed, last: %s", last_error)
             return templates.TemplateResponse(
+                request,
                 "components/_scan_queue.html",
                 {
-                    "request": request,
                     "connected": True,
                     "error": last_error or "API error",
                     "queue": None,
@@ -322,9 +322,9 @@ async def scan_queue(
         queue = _group_scans(all_scans, now)
 
         return templates.TemplateResponse(
+            request,
             "components/_scan_queue.html",
             {
-                "request": request,
                 "connected": True,
                 "error": None,
                 "queue": queue,
@@ -334,9 +334,9 @@ async def scan_queue(
     except Exception as e:
         logger.warning("Queue fetch error: %s", e)
         return templates.TemplateResponse(
+            request,
             "components/_scan_queue.html",
             {
-                "request": request,
                 "connected": True,
                 "error": "Could not reach API",
                 "queue": None,

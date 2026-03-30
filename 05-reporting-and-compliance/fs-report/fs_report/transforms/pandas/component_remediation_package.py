@@ -740,7 +740,17 @@ def _build_summary(
 ) -> dict[str, Any]:
     """Build portfolio-level summary dict from the actions list."""
     if not actions:
-        return {}
+        return {
+            "component_name": component_name,
+            "version_range": version_range,
+            "total_actions": 0,
+            "zero_day_actions": 0,
+            "cve_actions": 0,
+            "affected_project_count": 0,
+            "critical_actions": 0,
+            "high_actions": 0,
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
 
     zero_day_actions = sum(1 for a in actions if a["is_zero_day"])
     cve_actions = sum(1 for a in actions if not a["is_zero_day"])

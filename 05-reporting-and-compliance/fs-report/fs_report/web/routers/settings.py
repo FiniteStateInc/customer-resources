@@ -78,9 +78,9 @@ async def settings_page(
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
+        request,
         "pages/settings.html",
         {
-            "request": request,
             "nonce": nonce,
             "state": state,
             "token_display": token_display,

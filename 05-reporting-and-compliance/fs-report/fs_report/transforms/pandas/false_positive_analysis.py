@@ -47,7 +47,7 @@ _JUSTIFICATION_MAP = {
     "rejected_cve": "CODE_NOT_PRESENT",
     "disputed_cve": "CODE_NOT_PRESENT",
     "unreachable_code": "CODE_NOT_REACHABLE",
-    "ai_component_not_affected": "COMPONENT_NOT_PRESENT",
+    "ai_component_not_affected": "CODE_NOT_PRESENT",
     "ai_finding_not_affected": "CODE_NOT_PRESENT",
 }
 
@@ -370,7 +370,17 @@ def _build_vex_recommendation(
     justification = _JUSTIFICATION_MAP.get(first_signal_type, "CODE_NOT_PRESENT")
 
     signal_types = [s["signal_type"] for s in signals]
-    reasons = "; ".join(s.get("reason", "") for s in signals)
+
+    # Build reason: for AI signals, include the detailed guidance/action
+    # so that autotriage writes the LLM's analysis into the VEX reason field.
+    reason_parts: list[str] = []
+    for sig in signals:
+        ai_detail = sig.get("ai_guidance", "") or sig.get("ai_action", "")
+        if ai_detail:
+            reason_parts.append(ai_detail)
+        elif sig.get("reason"):
+            reason_parts.append(sig["reason"])
+    reasons = "; ".join(reason_parts)
 
     return {
         "id": finding.get("id"),
@@ -565,6 +575,7 @@ def false_positive_analysis_transform(
     ai_detections = 0
     ai_component_prompts: list[dict[str, str]] = []
     ai_triage_prompts: list[dict[str, str]] = []
+    ai_component_results: list[dict[str, str]] = []
 
     ai_enabled = config is not None and (
         getattr(config, "ai", False) or getattr(config, "ai_prompts", False)
@@ -608,15 +619,36 @@ def false_positive_analysis_transform(
                 config, "ai", False
             )
 
+            # --- Fetch NVD data for prompt enrichment (shared by export + live) ---
+            nvd_snippets_map: dict[str, str] = {}
+            _nvd = additional_data.get("nvd_client") if additional_data else None
+            if _nvd and components_list:
+                all_cve_ids: list[str] = []
+                for comp in components_list:
+                    all_cve_ids.extend(comp.get("cve_ids", []))
+                unique_cves = list(dict.fromkeys(all_cve_ids))
+                if unique_cves:
+                    logger.info(f"Fetching NVD data for {len(unique_cves)} CVEs...")
+                    _nvd.get_batch(unique_cves, progress=True)
+                    for comp in components_list:
+                        comp_key = (
+                            f"{comp['component_name']}:" f"{comp['component_version']}"
+                        )
+                        snippet = _nvd.format_batch_for_prompt(comp.get("cve_ids", []))
+                        if snippet:
+                            nvd_snippets_map[comp_key] = snippet
+
             # Generate component-level prompts (one per unique component+version)
             ai_component_prompts = []
             if components_list:
                 for comp in components_list:
                     comp_key = f"{comp['component_name']} {comp['component_version']}"
+                    nvd_key = f"{comp['component_name']}:{comp['component_version']}"
                     prompt_text = _build_component_prompt(
                         component_name=comp["component_name"],
                         component_version=comp["component_version"],
                         cve_ids=comp["cve_ids"],
+                        nvd_fix_snippet=nvd_snippets_map.get(nvd_key, ""),
                     )
                     ai_component_prompts.append(
                         {
@@ -694,11 +726,27 @@ def false_positive_analysis_transform(
                 )
 
                 # --- Component-level analysis ---
-                ai_components = llm.generate_batch_component_guidance(components_list)
+                ai_components = llm.generate_batch_component_guidance(
+                    components_list,
+                    nvd_snippets_map=nvd_snippets_map or None,
+                )
                 not_affected_components: set[str] = set()
                 for comp_key, guidance in ai_components.items():
                     if guidance.get("verdict") == "not_affected":
                         not_affected_components.add(comp_key)
+                    parts = comp_key.split(":", 1)
+                    ai_component_results.append(
+                        {
+                            "component": parts[0] if parts else comp_key,
+                            "version": parts[1] if len(parts) > 1 else "",
+                            "verdict": guidance.get("verdict", ""),
+                            "confidence": guidance.get("confidence", ""),
+                            "rationale": guidance.get("rationale", ""),
+                            "guidance": guidance.get("guidance", ""),
+                            "fix_version": guidance.get("fix_version", ""),
+                            "workaround": guidance.get("workaround", ""),
+                        }
+                    )
 
                 # Apply component-level verdicts to individual findings
                 for _, row in scored_df.iterrows():
@@ -706,12 +754,27 @@ def false_positive_analysis_transform(
                     fid = str(row.get("finding_id", ""))
                     if comp_key in not_affected_components and fid in finding_signals:
                         guidance = ai_components[comp_key]
+                        # Build a finding-specific reason: the component-level
+                        # rationale may reference a different CVE from the same
+                        # component, so prefix with this finding's CVE ID.
+                        cve_id = row.get("cve_id", fid)
+                        comp_name = row.get("component_name", "")
+                        comp_ver = row.get("component_version", "")
+                        raw_rationale = guidance.get(
+                            "rationale", "AI: component not affected"
+                        )
+                        reason = (
+                            f"{cve_id}: {comp_name} {comp_ver} is not affected. "
+                            f"{raw_rationale}"
+                        )
                         signal = {
                             "signal_type": "ai_component_not_affected",
                             "confidence": guidance.get("confidence", "medium").upper(),
-                            "reason": guidance.get(
-                                "rationale", "AI: component not affected"
-                            ),
+                            "reason": reason,
+                            "ai_guidance": guidance.get("guidance", ""),
+                            "ai_action": guidance.get("action", ""),
+                            "ai_fix_version": guidance.get("fix_version", ""),
+                            "ai_workaround": guidance.get("workaround", ""),
                         }
                         finding_signals[fid].append(signal)
                         ai_detections += 1
@@ -753,6 +816,11 @@ def false_positive_analysis_transform(
                                 "reason": guidance.get(
                                     "rationale", "AI: finding not affected"
                                 ),
+                                "ai_guidance": guidance.get("guidance", "")
+                                or guidance.get("action", ""),
+                                "ai_action": guidance.get("action", ""),
+                                "ai_fix_version": guidance.get("fix_version", ""),
+                                "ai_workaround": guidance.get("workaround", ""),
                             }
                             if fid in finding_signals:
                                 finding_signals[fid].append(signal)
@@ -797,7 +865,13 @@ def false_positive_analysis_transform(
         for sig in signals:
             if sig["signal_type"].startswith("ai_"):
                 ai_verdict = "not_affected"
-                ai_rationale = sig.get("reason", "")
+                # Use the detailed guidance/action for ai_rationale, falling
+                # back to reason only if no richer detail is available.
+                ai_rationale = (
+                    sig.get("ai_guidance", "")
+                    or sig.get("ai_action", "")
+                    or sig.get("reason", "")
+                )
                 break
 
         # Primary reason = reason from the highest-confidence signal
@@ -839,6 +913,14 @@ def false_positive_analysis_transform(
     # 7. Build output DataFrames
     # ------------------------------------------------------------------
     candidates_df = pd.DataFrame(candidate_rows) if candidate_rows else pd.DataFrame()
+    if not candidates_df.empty:
+        sort_cols = [
+            c
+            for c in ["component_name", "component_version", "severity"]
+            if c in candidates_df.columns
+        ]
+        if sort_cols:
+            candidates_df = candidates_df.sort_values(sort_cols).reset_index(drop=True)
     signals_df = pd.DataFrame(all_signals) if all_signals else pd.DataFrame()
 
     # ------------------------------------------------------------------
@@ -887,6 +969,8 @@ def false_positive_analysis_transform(
         "signals": signals_df,
         "vex_recommendations": vex_recommendations,
         "ai_component_prompts": ai_component_prompts,
+        "ai_component_results": ai_component_results,
         "ai_triage_prompts": ai_triage_prompts,
+        "ai_finding_prompts": {p["finding_id"]: p["prompt"] for p in ai_triage_prompts},
         "fp_charts": charts,
     }

@@ -1478,7 +1478,13 @@ class ReportEngine:
         # Load recipes
         recipes = self.recipe_loader.load_recipes()
         if not recipes:
-            self.logger.warning("No recipes found in recipes directory")
+            if self.recipe_loader.recipe_filter:
+                self.logger.warning(
+                    "No recipes matched the requested filter. "
+                    "Check spelling with: fs-report list recipes"
+                )
+            else:
+                self.logger.warning("No recipes found in recipes directory")
             return _fail
 
         # Filter recipes if specific recipe is requested
@@ -2831,13 +2837,25 @@ class ReportEngine:
                 ):
                     from fs_report.models import QueryConfig, QueryParams
 
-                    if recipe.name == "Version Comparison":
-                        # --- Version Comparison: two-version parallel fetch ---
+                    if recipe.name in ("Version Comparison", "Security Progress"):
+                        # --- Version Comparison / Security Progress: two-version parallel fetch ---
                         _fetched = self._fetch_version_comparison_data(recipe)
-                        raw_data = (
-                            pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
-                        )
-                        del _fetched
+                        if _fetched or recipe.name == "Version Comparison":
+                            raw_data = (
+                                pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
+                            )
+                            del _fetched
+                        else:
+                            # Security Progress: fall back to flat findings fetch
+                            # when no multi-version data is available (e.g. single version)
+                            del _fetched
+                            self.logger.info(
+                                "Security Progress: no multi-version data, "
+                                "falling back to flat findings fetch"
+                            )
+                            _flat = self.api_client.fetch_all_with_resume(recipe.query)
+                            raw_data = pd.DataFrame(_flat) if _flat else pd.DataFrame()
+                            del _flat
                     elif recipe.name == "User Activity":
                         # Build filter for audit endpoint using RSQL format
                         # The audit API supports: time=ge=START;time=le=END
@@ -4399,7 +4417,7 @@ class ReportEngine:
                 additional_data["domain"] = self.config.domain
 
             # Inject Version Comparison data into additional_data
-            if recipe.name == "Version Comparison" and hasattr(
+            if recipe.name in ("Version Comparison", "Security Progress") and hasattr(
                 self, "_version_comparison_data"
             ):
                 additional_data.update(self._version_comparison_data)
@@ -4410,6 +4428,7 @@ class ReportEngine:
                 "Component Impact",
                 "Assessment Overview",
                 "Customer Brief",
+                "Customer Brief Detailed",
             ):
                 additional_data["api_client"] = self.api_client
                 if "domain" not in additional_data:

@@ -30,7 +30,12 @@ logger = logging.getLogger(__name__)
 _SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "UNKNOWN"]
 
 # Statuses that represent suppressed / resolved findings — excluded from CRA scope
-_EXCLUDED_STATUSES = {"FALSE_POSITIVE", "NOT_AFFECTED"}
+_EXCLUDED_STATUSES = {
+    "FALSE_POSITIVE",
+    "NOT_AFFECTED",
+    "RESOLVED",
+    "RESOLVED_WITH_PEDIGREE",
+}
 
 # Canonical output columns for the main DataFrame
 _OUTPUT_COLUMNS = [
@@ -173,7 +178,7 @@ def _extract_project_version(record: dict[str, Any]) -> str:
 
 def _extract_cve_id(record: dict[str, Any]) -> str:
     """Extract CVE/advisory ID from various field shapes."""
-    for key in ("cveId",):
+    for key in ("cveId", "findingId"):
         v = record.get(key)
         if isinstance(v, str) and v.strip():
             return v.strip()
@@ -187,6 +192,16 @@ def _extract_cve_id(record: dict[str, Any]) -> str:
         return cve.strip()
 
     return "N/A"
+
+
+def _safe_str(value: Any) -> str:
+    """Convert to string, treating None and NaN as empty."""
+    if value is None:
+        return ""
+    s = str(value)
+    if s in ("nan", "None", "NaN"):
+        return ""
+    return s
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -261,12 +276,17 @@ def cra_compliance_transform(
             continue
 
         in_kev = bool(rec.get("inKev", False))
-        has_known_exploit = bool(rec.get("hasKnownExploit", False))
+        # The API filter field "exploit" is not returned in the response.
+        # Detect exploit status from exploitInfo (list of sources like
+        # "kev", "vcKev", etc.) and exploitMaturity.
+        exploit_info = rec.get("exploitInfo") or []
+        exploit_maturity = rec.get("exploitMaturity")
+        has_exploit = bool(exploit_info) or bool(exploit_maturity)
 
         # CRA trigger label
         if in_kev:
             cra_trigger = "KEV"
-        elif has_known_exploit:
+        elif has_exploit:
             cra_trigger = "Known Exploit"
         else:
             cra_trigger = "Unknown"
@@ -286,10 +306,10 @@ def cra_compliance_transform(
             "component_version": _extract_component_version(rec),
             "project": _extract_project_name(rec),
             "project_version": _extract_project_version(rec),
-            "status": str(rec.get("status") or ""),
+            "status": _safe_str(rec.get("status")),
             "cra_trigger": cra_trigger,
             "in_kev": in_kev,
-            "has_known_exploit": has_known_exploit,
+            "has_known_exploit": has_exploit,
             "epss_score": _safe_float(rec.get("epssScore")),
             "epss_percentile": _safe_float(rec.get("epssPercentile")),
             "detected_date": str(
@@ -374,9 +394,17 @@ def cra_compliance_transform(
     # Sort dossiers: most findings first
     project_dossiers.sort(key=lambda d: d["finding_count"], reverse=True)
 
+    # Build scope label from config
+    scope_label = "All Projects"
+    if hasattr(config, "project_filter") and config.project_filter:
+        scope_label = config.project_filter
+    elif hasattr(config, "folder_filter") and config.folder_filter:
+        scope_label = f"Folder: {config.folder_filter}"
+
     return {
         "main": df,
         "summary": summary,
         "cra_findings": cra_findings,
         "project_dossiers": project_dossiers,
+        "scope_label": scope_label,
     }

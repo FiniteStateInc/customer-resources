@@ -9,7 +9,7 @@ query:
   endpoint: "/public/v0/findings"
   params:
     limit: 10000
-    filter: "inKev==true or hasKnownExploit==true"
+    filter: "inKev==true,exploit==true"
 
 transform_function: cra_compliance_transform
 output:

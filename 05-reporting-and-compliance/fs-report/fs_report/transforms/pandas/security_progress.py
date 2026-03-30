@@ -2,11 +2,17 @@
 Pandas transform for the Security Progress report.
 
 Produces:
-- A flat DataFrame (one row per finding) for CSV/XLSX export
-- Triage funnel snapshot (status distribution)
-- Severity distribution (open findings only)
-- Period comparison delta (if config.baseline_date is set)
+- Per-project version progression with CVE lifecycle tracking
+- Portfolio-level KPIs (total resolved, new, net change)
+- Portfolio progression timeline for trend charts
 - CVE change tracking via /public/v0/cves/updates (new, retracted, severity/exploit changes)
+
+CVE Lifecycle Model:
+    For each consecutive version pair, CVEs are classified as:
+    - resolved_by_triage: CVE exists in current version with a resolved VEX status
+    - resolved_by_removal: CVE was in previous version but absent from current
+    - new: CVE in current version but not in previous
+    - still_open: CVE in both versions without a resolved status
 
 CVE Updates Integration:
     The transform calls GET /public/v0/cves/updates?startDate=...&endDate=... to fetch
@@ -18,9 +24,6 @@ CVE Updates Integration:
     - other_updates: remaining updates with no severity/exploit change
 
     Requires api_client in additional_data["api_client"].
-
-Note: Triage velocity (time-in-triage, status transitions) requires
-status_changed_at from the API, which is not yet available.
 """
 
 from __future__ import annotations
@@ -40,6 +43,15 @@ _SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]
 # Statuses that count as "open/untriaged" (not yet resolved or suppressed).
 # NO_STATUS = untriaged/unset (API added 2026-03-15).
 _OPEN_STATUSES = {"OPEN", "IN_TRIAGE", "NO_STATUS"}
+
+# VEX statuses that mean "resolved" for lifecycle tracking
+_RESOLVED_STATUSES = {
+    "NOT_AFFECTED",
+    "FALSE_POSITIVE",
+    "RESOLVED",
+    "RESOLVED_WITH_PEDIGREE",
+    "EXPLOITABLE",
+}
 
 # All known triage statuses (ordered for consistent display)
 _ALL_STATUSES = [
@@ -133,7 +145,7 @@ def _fetch_cve_updates(api_client: Any, config: Config) -> list[dict]:
 
 
 def _exploit_rank(maturity: str | None) -> int:
-    """Map exploit maturity string to a comparable rank (0–3)."""
+    """Map exploit maturity string to a comparable rank (0-3)."""
     if not maturity:
         return 0
     m = maturity.upper()
@@ -143,7 +155,7 @@ def _exploit_rank(maturity: str | None) -> int:
         return 2
     if m in ("HIGH", "WEAPONIZED", "EXPLOITED_IN_WILD"):
         return 3
-    # UNPROVEN and unknown values → 0
+    # UNPROVEN and unknown values -> 0
     return 0
 
 
@@ -283,21 +295,213 @@ def _cve_update_summary(processed: dict[str, list[dict]]) -> dict[str, int]:
     return counts
 
 
+# ---------------------------------------------------------------------------
+# CVE Lifecycle Classification
+# ---------------------------------------------------------------------------
+
+
+def _is_resolved_status(status: str | None) -> bool:
+    """Return True if the VEX status indicates the finding is resolved."""
+    if not status:
+        return False
+    return status.upper() in _RESOLVED_STATUSES
+
+
+def _extract_cve_map(findings: list[dict]) -> dict[str, dict]:
+    """Build a map of CVE ID -> finding dict from a list of findings.
+
+    If multiple findings share a CVE ID, the last one wins (shouldn't happen
+    in practice since findings are per-version).
+    """
+    cve_map: dict[str, dict] = {}
+    for f in findings:
+        cve_id = f.get("findingId") or f.get("cveId") or f.get("cve_id") or ""
+        if cve_id:
+            cve_map[cve_id] = f
+    return cve_map
+
+
+def _classify_cve_lifecycle(
+    prev_findings: list[dict],
+    curr_findings: list[dict],
+) -> dict[str, set[str]]:
+    """Classify CVE lifecycle between two consecutive versions.
+
+    Returns dict with keys:
+    - resolved_by_triage: CVE IDs in curr with a resolved VEX status
+    - resolved_by_removal: CVE IDs in prev but absent from curr
+    - new: CVE IDs in curr but not in prev
+    - still_open: CVE IDs in both without resolved status
+    """
+    prev_map = _extract_cve_map(prev_findings)
+    curr_map = _extract_cve_map(curr_findings)
+
+    prev_ids = set(prev_map.keys())
+    curr_ids = set(curr_map.keys())
+
+    resolved_by_removal = prev_ids - curr_ids
+    new_cves = curr_ids - prev_ids
+    common = prev_ids & curr_ids
+
+    resolved_by_triage: set[str] = set()
+    still_open: set[str] = set()
+
+    for cve_id in common:
+        curr_status = curr_map[cve_id].get("status")
+        prev_status = prev_map[cve_id].get("status")
+        if _is_resolved_status(curr_status) and not _is_resolved_status(prev_status):
+            # Transitioned from open to resolved in this version step
+            resolved_by_triage.add(cve_id)
+        elif not _is_resolved_status(curr_status):
+            still_open.add(cve_id)
+        # else: was already resolved in prev, stays resolved — not a new resolution
+
+    # Also check new CVEs that might already be resolved
+    # (these are still "new" but not "open")
+    # We don't reclassify them — they count as new regardless of status
+
+    return {
+        "resolved_by_triage": resolved_by_triage,
+        "resolved_by_removal": resolved_by_removal,
+        "new": new_cves,
+        "still_open": still_open,
+    }
+
+
+def _count_open(findings: list[dict]) -> int:
+    """Count findings that are not resolved."""
+    count = 0
+    for f in findings:
+        status = f.get("status")
+        if not _is_resolved_status(status):
+            count += 1
+    return count
+
+
+def _severity_counts(findings: list[dict]) -> dict[str, int]:
+    """Count open findings by severity."""
+    counts: dict[str, int] = dict.fromkeys(_SEVERITY_ORDER, 0)
+    for f in findings:
+        if not _is_resolved_status(f.get("status")):
+            sev = (f.get("severity") or "UNKNOWN").upper()
+            if sev in counts:
+                counts[sev] += 1
+            else:
+                counts["UNKNOWN"] += 1
+    return counts
+
+
+# ---------------------------------------------------------------------------
+# Project Progression Builder
+# ---------------------------------------------------------------------------
+
+
+def _build_project_progression(
+    project_name: str,
+    versions: list[dict],
+) -> dict[str, Any]:
+    """Build a version-over-version progression for a single project.
+
+    Returns dict with:
+    - project_name: str
+    - progression: list of per-version snapshots
+    - baseline_open: open count at first version
+    - current_open: open count at last version
+    - total_resolved: cumulative resolved across all version steps
+    - total_new: cumulative new across all version steps
+    - net_change: current_open - baseline_open
+    """
+    if not versions:
+        return {
+            "project_name": project_name,
+            "progression": [],
+            "baseline_open": 0,
+            "current_open": 0,
+            "total_resolved": 0,
+            "total_new": 0,
+            "net_change": 0,
+        }
+
+    progression: list[dict[str, Any]] = []
+    total_resolved = 0
+    total_new = 0
+
+    for i, version in enumerate(versions):
+        findings = version.get("findings", [])
+        open_count = _count_open(findings)
+        sev = _severity_counts(findings)
+
+        if i == 0:
+            # First version: baseline, no deltas
+            snapshot: dict[str, Any] = {
+                "version": version.get("name", ""),
+                "date": version.get("created", ""),
+                "open_count": open_count,
+                "resolved": 0,
+                "new": 0,
+                "total": len(findings),
+                "severity": sev,
+            }
+        else:
+            prev_findings = versions[i - 1].get("findings", [])
+            lifecycle = _classify_cve_lifecycle(prev_findings, findings)
+            resolved = len(lifecycle["resolved_by_triage"]) + len(
+                lifecycle["resolved_by_removal"]
+            )
+            new_count = len(lifecycle["new"])
+            total_resolved += resolved
+            total_new += new_count
+
+            snapshot = {
+                "version": version.get("name", ""),
+                "date": version.get("created", ""),
+                "open_count": open_count,
+                "resolved": resolved,
+                "new": new_count,
+                "total": len(findings),
+                "severity": sev,
+            }
+
+        progression.append(snapshot)
+
+    baseline_open = progression[0]["open_count"]
+    current_open = progression[-1]["open_count"]
+
+    return {
+        "project_name": project_name,
+        "progression": progression,
+        "baseline_open": baseline_open,
+        "current_open": current_open,
+        "total_resolved": total_resolved,
+        "total_new": total_new,
+        "net_change": current_open - baseline_open,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main Transform
+# ---------------------------------------------------------------------------
+
+
 def security_progress_transform(
     data: list[dict[str, Any]] | pd.DataFrame,
     config: Config,
     additional_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Transform /findings data into security progress report.
+    Transform version progression data into a security progress report.
+
+    If additional_data["projects"] is available, uses version-progression model.
+    Otherwise, falls back to flat snapshot for backward compatibility.
 
     Returns dict with keys:
-    - main: flat DataFrame for CSV/XLSX
-    - summary: portfolio-level summary dict
-    - charts: dict of chart data (severity_distribution, triage_funnel, cve_changes)
-    - triage_funnel: dict {status: count}
-    - severity_distribution: dict {severity: count} for open findings
-    - cve_updates: classified CVE change data from /public/v0/cves/updates
+    - projects: list of per-project progression dicts
+    - portfolio_kpi: portfolio-level KPI summary
+    - portfolio_progression: combined timeline for trend chart
+    - main: DataFrame for CSV export
+    - summary: dict with period info for template
+    - charts: chart data dicts for template
+    - cve_updates: classified CVE change data
     - cve_update_summary: counts per CVE change category
     """
     additional_data = additional_data or {}
@@ -307,18 +511,208 @@ def security_progress_transform(
     cve_updates = _process_cve_updates(_fetch_cve_updates(api_client, config))
     cve_update_summary = _cve_update_summary(cve_updates)
 
+    projects_data = additional_data.get("projects")
+
+    if projects_data:
+        return _transform_with_projects(
+            projects_data, config, cve_updates, cve_update_summary
+        )
+
+    # Fallback: flat snapshot (backward compat)
+    return _transform_flat_snapshot(data, config, cve_updates, cve_update_summary)
+
+
+# ---------------------------------------------------------------------------
+# Version-Progression Transform
+# ---------------------------------------------------------------------------
+
+
+def _transform_with_projects(
+    projects_data: list[dict],
+    config: Config,
+    cve_updates: dict[str, list[dict]],
+    cve_update_summary: dict[str, int],
+) -> dict[str, Any]:
+    """Build progression report from per-project version data."""
+    if not projects_data:
+        return _empty_result(cve_updates, cve_update_summary)
+
+    # Build per-project progressions
+    project_progressions: list[dict[str, Any]] = []
+    for proj in projects_data:
+        prog = _build_project_progression(
+            proj.get("project_name", "Unknown"),
+            proj.get("versions", []),
+        )
+        project_progressions.append(prog)
+
+    # Sort by most improved (most negative net_change first)
+    project_progressions.sort(key=lambda p: p["net_change"])
+
+    # Portfolio KPIs
+    total_resolved = sum(p["total_resolved"] for p in project_progressions)
+    total_new = sum(p["total_new"] for p in project_progressions)
+    net_change = sum(p["net_change"] for p in project_progressions)
+    projects_improved = sum(1 for p in project_progressions if p["net_change"] < 0)
+    projects_regressed = sum(1 for p in project_progressions if p["net_change"] > 0)
+
+    portfolio_kpi = {
+        "total_resolved": total_resolved,
+        "total_new": total_new,
+        "net_change": net_change,
+        "projects_improved": projects_improved,
+        "projects_regressed": projects_regressed,
+    }
+
+    # Portfolio progression: combined open count at each timestamp
+    portfolio_progression = _build_portfolio_progression(project_progressions)
+
+    # Build main DataFrame for CSV export
+    main_df = _build_progression_df(project_progressions)
+
+    # Build charts
+    charts = _build_progression_charts(
+        project_progressions, portfolio_progression, cve_update_summary
+    )
+
+    # Build summary
+    summary = {
+        "period_start": getattr(config, "start_date", None),
+        "period_end": getattr(config, "end_date", None),
+        "total_projects": len(project_progressions),
+        "total_resolved": total_resolved,
+        "total_new": total_new,
+        "net_change": net_change,
+        "projects_improved": projects_improved,
+        "projects_regressed": projects_regressed,
+        "cve_update_summary": cve_update_summary,
+        "mode": "version_progression",
+    }
+
+    return {
+        "projects": project_progressions,
+        "portfolio_kpi": portfolio_kpi,
+        "portfolio_progression": portfolio_progression,
+        "main": main_df,
+        "summary": summary,
+        "charts": charts,
+        "cve_updates": cve_updates,
+        "cve_update_summary": cve_update_summary,
+    }
+
+
+def _build_portfolio_progression(
+    project_progressions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build combined timeline by aggregating open counts across projects at each timestamp."""
+    # Collect all (date, open_count) from each project
+    date_totals: dict[str, int] = {}
+    for proj in project_progressions:
+        for snap in proj.get("progression", []):
+            date = snap.get("date", "")
+            if date:
+                date_totals[date] = date_totals.get(date, 0) + snap["open_count"]
+
+    # Sort by date
+    sorted_dates = sorted(date_totals.keys())
+    return [{"date": d, "open_count": date_totals[d]} for d in sorted_dates]
+
+
+def _build_progression_df(
+    project_progressions: list[dict[str, Any]],
+) -> pd.DataFrame:
+    """Build a flat DataFrame for CSV export from progression data."""
+    rows: list[dict[str, Any]] = []
+    for proj in project_progressions:
+        for snap in proj.get("progression", []):
+            rows.append(
+                {
+                    "Project": proj["project_name"],
+                    "Version": snap["version"],
+                    "Date": snap["date"],
+                    "Open": snap["open_count"],
+                    "Resolved": snap["resolved"],
+                    "New": snap["new"],
+                    "Net": (
+                        snap["open_count"] - proj["progression"][0]["open_count"]
+                        if proj["progression"]
+                        else 0
+                    ),
+                }
+            )
+    if not rows:
+        return pd.DataFrame(
+            columns=["Project", "Version", "Date", "Open", "Resolved", "New", "Net"]
+        )
+    return pd.DataFrame(rows)
+
+
+def _build_progression_charts(
+    project_progressions: list[dict[str, Any]],
+    portfolio_progression: list[dict[str, Any]],
+    cve_update_summary: dict[str, int],
+) -> dict[str, Any]:
+    """Build chart data for the progression report."""
+    charts: dict[str, Any] = {}
+
+    # Portfolio trend line
+    if portfolio_progression:
+        charts["portfolio_trend"] = {
+            "x": [p["date"] for p in portfolio_progression],
+            "y": [p["open_count"] for p in portfolio_progression],
+        }
+
+    # Per-project bar chart: net change
+    if project_progressions:
+        charts["project_net_change"] = {
+            "x": [p["project_name"] for p in project_progressions],
+            "y": [p["net_change"] for p in project_progressions],
+        }
+
+    # CVE changes bar chart
+    change_labels = ["Added", "Retracted", "Severity Up", "Severity Down", "Exploit Up"]
+    change_values = [
+        cve_update_summary.get("added", 0),
+        cve_update_summary.get("retracted", 0),
+        cve_update_summary.get("severity_escalated", 0),
+        cve_update_summary.get("severity_downgraded", 0),
+        cve_update_summary.get("exploit_gained", 0),
+    ]
+    if any(v > 0 for v in change_values):
+        charts["cve_changes"] = {
+            "labels": [
+                lb for lb, v in zip(change_labels, change_values, strict=True) if v > 0
+            ],
+            "values": [v for v in change_values if v > 0],
+        }
+
+    return charts
+
+
+# ---------------------------------------------------------------------------
+# Flat Snapshot Fallback (backward compatibility)
+# ---------------------------------------------------------------------------
+
+
+def _transform_flat_snapshot(
+    data: list[dict[str, Any]] | pd.DataFrame,
+    config: Config,
+    cve_updates: dict[str, list[dict]],
+    cve_update_summary: dict[str, int],
+) -> dict[str, Any]:
+    """Fallback: flat snapshot transform when version data is not available."""
     # Accept list-of-dicts or DataFrame
     if isinstance(data, pd.DataFrame):
         if data.empty:
-            return _empty_result()
+            return _empty_result(cve_updates, cve_update_summary)
         df = data.copy()
     elif not data:
-        return _empty_result()
+        return _empty_result(cve_updates, cve_update_summary)
     else:
         df = pd.DataFrame(data)
 
     if df.empty:
-        return _empty_result()
+        return _empty_result(cve_updates, cve_update_summary)
 
     # Normalize nested fields into flat columns
     df = _normalize_fields(df)
@@ -334,7 +728,7 @@ def security_progress_transform(
             before = len(df)
             df = df[df["detected_at"] >= cutoff].copy()
             logger.debug(
-                "start_date filter: %d → %d findings (cutoff %s)",
+                "start_date filter: %d -> %d findings (cutoff %s)",
                 before,
                 len(df),
                 start_date,
@@ -345,7 +739,7 @@ def security_progress_transform(
             )
 
     if df.empty:
-        return _empty_result()
+        return _empty_result(cve_updates, cve_update_summary)
 
     # --- Triage funnel snapshot ---
     triage_funnel = _build_triage_funnel(df)
@@ -363,10 +757,10 @@ def security_progress_transform(
     main_df = _build_main_df(df)
 
     # --- Build chart data ---
-    charts = _build_charts(severity_dist, triage_funnel, cve_update_summary)
+    charts = _build_flat_charts(severity_dist, triage_funnel, cve_update_summary)
 
     # --- Build summary ---
-    summary = _build_summary(
+    summary = _build_flat_summary(
         df=df,
         triage_funnel=triage_funnel,
         severity_dist=severity_dist,
@@ -387,20 +781,30 @@ def security_progress_transform(
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers (shared)
 # ---------------------------------------------------------------------------
 
 
-def _empty_result() -> dict[str, Any]:
+def _empty_result(
+    cve_updates: dict[str, list[dict]] | None = None,
+    cve_update_summary: dict[str, int] | None = None,
+) -> dict[str, Any]:
     return {
         "main": pd.DataFrame(),
         "summary": {},
         "charts": {},
         "triage_funnel": {},
         "severity_distribution": {},
-        "cve_updates": {},
-        "cve_update_summary": {},
+        "cve_updates": cve_updates if cve_updates is not None else {},
+        "cve_update_summary": (
+            cve_update_summary if cve_update_summary is not None else {}
+        ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Helpers (flat snapshot)
+# ---------------------------------------------------------------------------
 
 
 def _normalize_fields(df: pd.DataFrame) -> pd.DataFrame:
@@ -448,7 +852,7 @@ def _normalize_fields(df: pd.DataFrame) -> pd.DataFrame:
     if "title" not in df.columns:
         df["title"] = ""
 
-    # CVSS score: API returns risk as 0–100; divide by 10 for standard scale
+    # CVSS score: API returns risk as 0-100; divide by 10 for standard scale
     if "risk" in df.columns:
         df["cvss_score"] = pd.to_numeric(df["risk"], errors="coerce") / 10.0
     else:
@@ -495,15 +899,7 @@ def _build_severity_distribution(df: pd.DataFrame) -> dict[str, int]:
 def _build_period_comparison(
     df: pd.DataFrame, baseline_date: str
 ) -> dict[str, Any] | None:
-    """
-    Split findings into baseline vs current period and compute severity delta.
-
-    baseline period: detected_at < baseline_date
-    current period:  detected_at >= baseline_date
-
-    Returns dict with baseline_counts, current_counts, delta per severity.
-    Note: this is a detected-count delta, not a triage-state delta (API limitation).
-    """
+    """Split findings into baseline vs current period and compute severity delta."""
     try:
         cutoff = pd.to_datetime(baseline_date, utc=True)
     except Exception as exc:
@@ -533,7 +929,10 @@ def _build_period_comparison(
         "baseline_counts": baseline_counts,
         "current_counts": current_counts,
         "delta": delta,
-        "note": "Detected-count delta only; triage state delta requires status_changed_at (not yet in API)",
+        "note": (
+            "Detected-count delta only; triage state delta requires "
+            "status_changed_at (not yet in API)"
+        ),
     }
 
 
@@ -554,17 +953,17 @@ def _build_main_df(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def _build_charts(
+def _build_flat_charts(
     severity_dist: dict[str, int],
     triage_funnel: dict[str, int],
     cve_update_summary: dict[str, int],
 ) -> dict[str, Any]:
-    """Build chart-ready data structures."""
-    # Severity distribution bar chart — filter out zeros for cleaner chart
+    """Build chart-ready data structures for flat snapshot."""
+    # Severity distribution bar chart
     sev_x = [s for s in _SEVERITY_ORDER if severity_dist.get(s, 0) > 0]
     sev_y = [severity_dist[s] for s in sev_x]
 
-    # Triage funnel pie chart — filter out zeros
+    # Triage funnel pie chart
     funnel_labels = [s for s in _ALL_STATUSES if triage_funnel.get(s, 0) > 0]
     funnel_values = [triage_funnel[s] for s in funnel_labels]
 
@@ -573,8 +972,8 @@ def _build_charts(
         "triage_funnel": {"labels": funnel_labels, "values": funnel_values},
     }
 
-    # CVE changes bar chart — only include if any changes exist
-    change_labels = ["Added", "Retracted", "Severity ↑", "Severity ↓", "Exploit ↑"]
+    # CVE changes bar chart
+    change_labels = ["Added", "Retracted", "Severity Up", "Severity Down", "Exploit Up"]
     change_values = [
         cve_update_summary.get("added", 0),
         cve_update_summary.get("retracted", 0),
@@ -593,7 +992,7 @@ def _build_charts(
     return charts
 
 
-def _build_summary(
+def _build_flat_summary(
     df: pd.DataFrame,
     triage_funnel: dict[str, int],
     severity_dist: dict[str, int],
@@ -601,7 +1000,7 @@ def _build_summary(
     config: Config,
     cve_update_summary: dict[str, int],
 ) -> dict[str, Any]:
-    """Build portfolio-level summary dict."""
+    """Build portfolio-level summary dict for flat snapshot."""
     total_findings = len(df)
 
     open_findings = sum(triage_funnel.get(s, 0) for s in _OPEN_STATUSES)
@@ -632,6 +1031,7 @@ def _build_summary(
         "cve_updates_note": cve_updates_note,
         "period_start": getattr(config, "start_date", None),
         "period_end": getattr(config, "end_date", None),
+        "mode": "flat_snapshot",
     }
 
     baseline_date = getattr(config, "baseline_date", None)

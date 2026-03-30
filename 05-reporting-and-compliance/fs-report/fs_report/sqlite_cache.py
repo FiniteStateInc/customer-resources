@@ -1121,6 +1121,10 @@ class SQLiteCache:
                     "components",
                     "projects",
                     "audit_events",
+                    "cves",
+                    "cve_detail_cache",
+                    "exploit_detail_cache",
+                    "version_lists",
                     "cache_meta",
                 ]:
                     conn.execute(f"DROP TABLE IF EXISTS {table}")
@@ -1134,7 +1138,7 @@ class SQLiteCache:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute("VACUUM")
         except Exception as e:
-            logger.debug(f"VACUUM after clear failed (non-fatal): {e}")
+            logger.warning(f"VACUUM after clear failed (non-fatal): {e}")
 
         logger.info(
             f"Cache cleared and schema reset{f' for {endpoint}' if endpoint else ''}"

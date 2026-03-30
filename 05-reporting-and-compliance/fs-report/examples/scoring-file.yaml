@@ -1,0 +1,51 @@
+# scoring-file.yaml — Custom scoring weights and thresholds
+#
+# Usage:
+#   fs-report run --recipe "Triage Prioritization" --scoring-file scoring-file.yaml
+#   fs-report run --recipe "Scan Quality" --scoring-file scoring-file.yaml
+#
+# This file is optional. Default values are used when no scoring file is provided.
+
+# ---------------------------------------------------------------------------
+# Triage Prioritization — scoring weights
+# ---------------------------------------------------------------------------
+# Additive weights applied to findings not matched by gates.
+# Higher weight = higher priority score.
+scoring_weights:
+  reachability: 30       # Reachable code paths (default: 30)
+  exploit: 25            # Known exploit or KEV listing (default: 25)
+  attack_vector: 15      # NETWORK vector (default: 15)
+  epss: 15               # EPSS percentile (default: 15)
+  cvss: 15               # CVSS base score (default: 15)
+
+# ---------------------------------------------------------------------------
+# Triage Prioritization — gate definitions
+# ---------------------------------------------------------------------------
+# Gates are evaluated in order. A finding matching a gate gets assigned to
+# that band (CRITICAL, HIGH, etc.) and skips additive scoring.
+#
+# Uncomment to override the default gates:
+#
+# gates:
+#   - name: GATE_1
+#     band: CRITICAL
+#     conditions:
+#       reachable: true
+#       has_exploit: true
+#   - name: GATE_2
+#     band: HIGH
+#     conditions:
+#       not_unreachable: true
+#       attack_vector: NETWORK
+#       epss_above: 0.9
+
+# ---------------------------------------------------------------------------
+# Scan Quality — staleness thresholds (days since last scan)
+# ---------------------------------------------------------------------------
+# Projects are classified as FRESH, AGING, STALE, or DORMANT based on
+# how many days have passed since their last completed scan.
+staleness_thresholds:
+  fresh: 30              # Scanned within 30 days (default: 90)
+  aging: 90              # Scanned within 90 days (default: 180)
+  stale: 180             # Scanned within 180 days (default: 365)
+  # Anything older than "stale" is classified as DORMANT

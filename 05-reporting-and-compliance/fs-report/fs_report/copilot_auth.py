@@ -68,8 +68,16 @@ def get_copilot_token(github_token: str | None = None) -> tuple[str, str]:
     """
     # 1. Explicit token provided
     if github_token:
-        data = _exchange_for_copilot_token(github_token)
-        return data["token"], data["endpoints"]["api"]
+        try:
+            data = _exchange_for_copilot_token(github_token)
+            return data["token"], data["endpoints"]["api"]
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response else "unknown"
+            raise ValueError(
+                f"GitHub Copilot token exchange failed (HTTP {status}). "
+                f"Fine-grained personal access tokens may not support Copilot. "
+                f"Use a classic PAT or run 'gh auth login' with Copilot access."
+            ) from exc
 
     # 2. Check cache for a still-valid Copilot token
     cache = _load_cached_token()

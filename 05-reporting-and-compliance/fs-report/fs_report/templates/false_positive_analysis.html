@@ -72,43 +72,6 @@ function copyPrompt(btn) {
   </div>
 </section>
 
-<!-- AI Component Prompts (run these first — if not_affected, skip finding prompts for that component) -->
-{% if ai_component_prompts and ai_component_prompts|length > 0 %}
-<section class="report-section">
-  <h2>Component Applicability Prompts</h2>
-  <p style="color: #6c757d;">{{ ai_component_prompts|length }} component prompts. Start here — if the LLM says <code>not_affected</code>, all findings on that component are likely FP.</p>
-  {% for p in ai_component_prompts %}
-  <details style="margin-bottom: 8px;">
-    <summary style="cursor:pointer;color:#007bff;font-weight:600;font-size:0.9em;">{{ p.component }}</summary>
-    <div style="position:relative;margin-top:6px;">
-      <button onclick="copyPrompt(this)" style="position:absolute;top:5px;right:5px;padding:4px 10px;font-size:0.8em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
-      <pre style="background:#f8f9fa;padding:15px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:400px;overflow-y:auto;">{{ p.prompt }}</pre>
-    </div>
-  </details>
-  {% endfor %}
-</section>
-{% endif %}
-
-<!-- AI Per-Finding Prompts -->
-{% if ai_triage_prompts and ai_triage_prompts|length > 0 %}
-<section class="report-section">
-  <h2>Per-Finding Applicability Prompts</h2>
-  <p style="color: #6c757d;">{{ ai_triage_prompts|length }} finding prompts. Only needed for findings on components not already ruled out above.</p>
-  {% for p in ai_triage_prompts[:20] %}
-  <details style="margin-bottom: 8px;">
-    <summary style="cursor:pointer;color:#007bff;font-weight:600;font-size:0.9em;">{{ p.finding_id }} — {{ p.component }}</summary>
-    <div style="position:relative;margin-top:6px;">
-      <button onclick="copyPrompt(this)" style="position:absolute;top:5px;right:5px;padding:4px 10px;font-size:0.8em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
-      <pre style="background:#f8f9fa;padding:15px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:400px;overflow-y:auto;">{{ p.prompt }}</pre>
-    </div>
-  </details>
-  {% endfor %}
-  {% if ai_triage_prompts|length > 20 %}
-  <p style="color: #888; font-size: 0.85em;">Showing first 20 of {{ ai_triage_prompts|length }}. Full set in the _prompts.md file.</p>
-  {% endif %}
-</section>
-{% endif %}
-
 <!-- FP Review Queue -->
 <section class="report-section">
   <h2>False Positive Review Queue</h2>
@@ -122,6 +85,7 @@ function copyPrompt(btn) {
         <th>Confidence</th>
         <th>Signals</th>
         <th>Reason / AI Rationale</th>
+        {% if ai_finding_prompts %}<th>AI Prompt</th>{% endif %}
         <th>Action</th>
       </tr>
     </thead>
@@ -131,7 +95,7 @@ function copyPrompt(btn) {
         <td><strong>{{ row.cve_id or row.finding_id or '—' }}</strong></td>
         <td>{{ row.component_name or '—' }} {{ row.component_version or '' }}</td>
         <td><span class="badge badge-sev-{{ row.severity or 'INFO' }}">{{ row.severity or 'UNKNOWN' }}</span></td>
-        <td><span class="badge badge-{{ row.fp_confidence or 'LOW' }}">{{ row.fp_confidence or '—' }}</span></td>
+        <td>{{ row.fp_confidence or '—' }}</td>
         <td>
           {% if row.fp_signals %}
             {% for sig in row.fp_signals.split(',') if row.fp_signals is string %}
@@ -156,6 +120,20 @@ function copyPrompt(btn) {
           </details>
           {% endif %}
         </td>
+        {% if ai_finding_prompts %}
+        <td>
+            {% set fid = row.finding_id or row.cve_id %}
+            {% if fid and fid in ai_finding_prompts %}
+            <details>
+                <summary style="cursor:pointer;color:#007bff;font-size:0.85em;">View</summary>
+                <div style="position:relative;margin-top:6px;">
+                    <button onclick="copyPrompt(this)" style="position:absolute;top:2px;right:2px;padding:2px 8px;font-size:0.75em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
+                    <pre style="background:#f8f9fa;padding:10px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:300px;overflow-y:auto;max-width:400px;">{{ ai_finding_prompts[fid] }}</pre>
+                </div>
+            </details>
+            {% else %}—{% endif %}
+        </td>
+        {% endif %}
         <td>{{ row.recommended_action or 'Review' }}</td>
       </tr>
       {% endfor %}
@@ -165,6 +143,78 @@ function copyPrompt(btn) {
   <p style="color: #888;">No false positive candidates detected. {% if not summary or summary.ai_detections == 0 %}Try running with <code>--ai</code> for AI-based applicability analysis.{% endif %}</p>
   {% endif %}
 </section>
+
+<!-- AI Component Analysis -->
+{% if ai_component_results and ai_component_results|length > 0 %}
+{% set comp_prompt_map = {} %}
+{% for p in ai_component_prompts %}{% if comp_prompt_map.update({p.component: p.prompt}) %}{% endif %}{% endfor %}
+<section class="report-section">
+  <h2>Component Applicability Analysis</h2>
+  <p style="color: #6c757d;">{{ ai_component_results|length }} components analysed. Components marked <code>not_affected</code> have all their findings flagged as likely FP.</p>
+  <table class="review-queue">
+    <thead>
+      <tr>
+        <th>Component</th>
+        <th>Version</th>
+        <th>Verdict</th>
+        <th>Confidence</th>
+        <th>Rationale</th>
+        <th>Guidance</th>
+        {% if ai_component_prompts %}<th>AI Prompt</th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in ai_component_results %}
+      <tr>
+        <td><strong>{{ row.component }}</strong></td>
+        <td>{{ row.version }}</td>
+        <td>{{ row.verdict }}</td>
+        <td>{{ row.confidence }}</td>
+        <td class="reason-cell">{{ row.rationale or '—' }}</td>
+        <td class="reason-cell">
+          {{ row.guidance or '—' }}
+          {% if row.fix_version and row.fix_version != 'Unknown' %}
+          <br><strong>Fix:</strong> {{ row.fix_version }}
+          {% endif %}
+          {% if row.workaround %}
+          <br><strong>Workaround:</strong> {{ row.workaround }}
+          {% endif %}
+        </td>
+        {% if ai_component_prompts %}
+        <td>
+            {% set comp_key = row.component ~ ' ' ~ row.version %}
+            {% if comp_key in comp_prompt_map %}
+            <details>
+                <summary style="cursor:pointer;color:#007bff;font-size:0.85em;">View</summary>
+                <div style="position:relative;margin-top:6px;">
+                    <button onclick="copyPrompt(this)" style="position:absolute;top:2px;right:2px;padding:2px 8px;font-size:0.75em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
+                    <pre style="background:#f8f9fa;padding:10px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:300px;overflow-y:auto;max-width:400px;">{{ comp_prompt_map[comp_key] }}</pre>
+                </div>
+            </details>
+            {% else %}—{% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% elif ai_component_prompts and ai_component_prompts|length > 0 %}
+<!-- Prompts-only mode (--ai-prompts without --ai) -->
+<section class="report-section">
+  <h2>Component Applicability Prompts</h2>
+  <p style="color: #6c757d;">{{ ai_component_prompts|length }} component prompts. Start here — if the LLM says <code>not_affected</code>, all findings on that component are likely FP.</p>
+  {% for p in ai_component_prompts %}
+  <details style="margin-bottom: 8px;">
+    <summary style="cursor:pointer;color:#007bff;font-weight:600;font-size:0.9em;">{{ p.component }}</summary>
+    <div style="position:relative;margin-top:6px;">
+      <button onclick="copyPrompt(this)" style="position:absolute;top:5px;right:5px;padding:4px 10px;font-size:0.8em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
+      <pre style="background:#f8f9fa;padding:15px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:400px;overflow-y:auto;">{{ p.prompt }}</pre>
+    </div>
+  </details>
+  {% endfor %}
+</section>
+{% endif %}
 
 <!-- Signal Distribution -->
 {% if summary and summary.by_signal_type %}
