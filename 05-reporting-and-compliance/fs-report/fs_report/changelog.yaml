@@ -1,4 +1,57 @@
 releases:
+  - version: "1.9.3"
+    date: "2026-04-02"
+    changes:
+      - report: "Configuration Analysis Triage"
+        type: added
+        description: "New recipe triaging CREDENTIALS, CONFIG_ISSUES, and CRYPTO_MATERIAL findings with tiered-gates scoring. Parses additionalDetails to distinguish private keys from public keys/certs. Gate 1: Private keys → CRITICAL. Gate 2: High-severity credentials → HIGH. Gate 3: High-severity config issues → MEDIUM."
+      - report: "Configuration Analysis Triage"
+        type: added
+        description: "VEX recommendations: public keys/certs → NOT_AFFECTED, gate matches → IN_TRIAGE. Supports --autotriage and --autotriage-status."
+      - report: "Configuration Analysis Triage"
+        type: added
+        description: "Dedicated HTML template with category badges, gate funnel chart, band distribution, and findings detail table"
+      - report: ~
+        type: added
+        description: "includeAdditionalDetails API parameter support in QueryParams — recipes can request extended finding details (description, remediation, mitigation)"
+      - report: ~
+        type: added
+        description: "Recipe default_finding_types parameter — recipes can declare their own default finding type filter, overriding the CLI default"
+      - report: ~
+        type: fixed
+        description: "_fetch_with_version_batching now forwards include_additional_details from base query to per-batch queries"
+      - report: ~
+        type: fixed
+        description: "--top=0 (CLI default) no longer truncates output to zero rows"
+
+  - version: "1.9.2"
+    date: "2026-03-30"
+    changes:
+      - report: "Security Progress"
+        type: improved
+        description: "Severity breakdown columns (Critical/High/Medium/Low) in CSV export"
+      - report: "Security Progress"
+        type: improved
+        description: "Human-readable date formatting in HTML and CSV"
+      - report: "Security Progress"
+        type: added
+        description: "Stacked severity trend chart (Critical/High/Medium/Low areas with dashed Total line)"
+      - report: "Security Progress"
+        type: added
+        description: "Portfolio LOCF (last-observation-carried-forward) so each chart point represents the full portfolio"
+      - report: "Security Progress"
+        type: improved
+        description: "Hide zero-activity projects in table and detail sections with summary count"
+      - report: "Security Progress"
+        type: fixed
+        description: "Severity-by-version showing all zeros (template key mismatch)"
+      - report: "Security Progress"
+        type: fixed
+        description: "Projects Improved KPI showing 'N / 0' (missing total_projects)"
+      - report: ~
+        type: added
+        description: "--autotriage-status flag to filter VEX application by status (e.g., --autotriage-status NOT_AFFECTED)"
+
   - version: "1.9.1"
     date: "2026-03-29"
     changes:

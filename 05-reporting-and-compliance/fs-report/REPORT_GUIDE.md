@@ -18,6 +18,7 @@ This guide explains each report available in the Finite State Reporting Kit, wha
    - [Component List](#component-list) *(Assessment)*
    - [License Report](#license-report) *(Assessment, on-demand: license risk by category)*
    - [Triage Prioritization](#triage-prioritization) *(Assessment)*
+   - [Configuration Analysis Triage](#configuration-analysis-triage) *(Assessment, on-demand: config/secrets/crypto triage)*
    - [False Positive Analysis](#false-positive-analysis) *(Assessment, on-demand: FP candidate identification)*
    - [Scan Quality](#scan-quality) *(Assessment, on-demand: per-asset coverage and quality signals)*
    - [CRA Compliance](#cra-compliance) *(Assessment, on-demand: EU Cyber Resilience Act notification scope)*
@@ -87,6 +88,7 @@ Assessment reports show the current security state of the target — the latest 
 | **Component List** | Current software component inventory with license analysis |
 | **License Report** | License risk distribution by category (on-demand) |
 | **Triage Prioritization** | Current triage priorities based on today's data |
+| **Configuration Analysis Triage** | Config/secrets/crypto triage with tiered gates (on-demand) |
 | **False Positive Analysis** | FP candidates identified by mechanical signals and AI (on-demand) |
 | **Scan Quality** | Per-asset scan type coverage and unpack quality scores (on-demand) |
 | **CRA Compliance** | KEV and known-exploit findings requiring EU CRA notification (on-demand) |
@@ -872,6 +874,71 @@ fs-report run --recipe "Triage Prioritization" --serve --serve-port 9090
 ```
 
 The `--serve` flag starts a lightweight local server on `http://localhost:8080` (or custom port), which provides a proper HTTP origin and avoids CORS issues. Press `Ctrl+C` to stop the server.
+
+---
+
+### Configuration Analysis Triage
+
+**Category:** Assessment (on-demand) — triages current config/secrets/crypto findings regardless of time period.
+
+**Purpose:** Separates signal from noise in CREDENTIALS, CONFIG_ISSUES, and CRYPTO_MATERIAL findings. Parses structured fields from the API's `additionalDetails` to distinguish private keys (critical) from public keys/certs (noise), and ranks all findings using a tiered-gates scoring model.
+
+**Who should use it:** Security teams, firmware analysts, compliance auditors reviewing configuration and secrets hygiene.
+
+**Important:** This report does **not** run by default. You must explicitly request it:
+
+```bash
+fs-report run --recipe "Configuration Analysis Triage" --project mydevice
+```
+
+The recipe automatically sets `--finding-types credentials,config_issues,crypto_material` — you don't need to pass it manually.
+
+**What it shows:**
+- Priority bands (CRITICAL, HIGH, MEDIUM, LOW, INFO) based on finding category and severity
+- Gate classification: private keys short-circuit to CRITICAL, high-severity credentials to HIGH
+- Category breakdown showing CRYPTO_MATERIAL vs CREDENTIALS vs CONFIG_ISSUES distribution
+- Per-project risk summary with band distribution
+- VEX recommendations (public keys/certs → NOT_AFFECTED, gate matches → IN_TRIAGE)
+
+**Scoring Model:**
+
+| Gate | Criteria | Result |
+|------|----------|--------|
+| **GATE_1** | CRYPTO_MATERIAL AND private_key=True | → CRITICAL (score=100) |
+| **GATE_2** | CREDENTIALS AND severity in (critical, high) | → HIGH (score=85) |
+| **GATE_3** | CONFIG_ISSUES AND severity in (critical, high) | → MEDIUM (score=70) |
+
+**Additive Scoring (findings that don't hit a gate):**
+
+| Factor | Points |
+|--------|--------|
+| Severity critical | +30 |
+| Severity high | +20 |
+| Severity medium | +10 |
+| Severity low | +5 |
+| Risk score (scaled) | 0–10 |
+| VEX resolved status | -50 |
+
+Bands: HIGH ≥ 70, MEDIUM ≥ 40, LOW ≥ 25, INFO < 25.
+
+Gates and weights are customizable via `--scoring-file` (same YAML format as Triage Prioritization).
+
+**VEX Recommendations:**
+
+```bash
+# Generate report with VEX recommendations:
+fs-report run --recipe "Configuration Analysis Triage" --project mydevice --output ./reports
+
+# Auto-apply NOT_AFFECTED for public keys:
+fs-report run --recipe "Configuration Analysis Triage" --project mydevice \
+  --autotriage --autotriage-status NOT_AFFECTED --output ./reports
+
+# Filter to critical gate only (private keys):
+fs-report run --recipe "Configuration Analysis Triage" --project mydevice \
+  --tp-gate GATE_1 --output ./reports
+```
+
+**Output formats:** HTML, CSV, XLSX, JSON, Markdown
 
 ---
 

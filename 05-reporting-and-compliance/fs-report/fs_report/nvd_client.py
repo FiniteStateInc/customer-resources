@@ -365,6 +365,10 @@ class NVDClient:
         self._request_count = 0
         self._cancel_event = cancel_event
 
+        # Hosted NVD service backend (preferred when available)
+        self._service_url = os.environ.get("FS_NVD_SERVICE_URL", "").rstrip("/")
+        self._service_token = os.environ.get("FS_TOKEN", "")
+
         # In-memory cache (session-scoped)
         self._db_lock = threading.Lock()
         self._mem_cache: dict[str, NVDCveRecord] = {}
@@ -405,6 +409,48 @@ class NVDClient:
             self.close()
         except Exception:
             pass
+
+    def _fetch_batch_from_service(
+        self, cve_ids: list[str]
+    ) -> dict[str, NVDCveRecord] | None:
+        """Fetch CVE records from the hosted NVD mirror service.
+
+        Returns dict of results, or None if the service is unavailable
+        (caller should fall back to direct NVD API).
+        """
+        if not self._service_url or not self._service_token:
+            return None
+
+        try:
+            resp = requests.post(
+                f"{self._service_url}/cves",
+                json={"ids": cve_ids},
+                headers={
+                    "Authorization": f"Bearer {self._service_token}",
+                    "Accept": "application/x-ndjson",
+                },
+                timeout=60,
+            )
+            if not resp.ok:
+                logger.warning(
+                    f"NVD service returned {resp.status_code}, "
+                    f"falling back to NVD API"
+                )
+                return None
+
+            results: dict[str, NVDCveRecord] = {}
+            for line in resp.text.strip().split("\n"):
+                if not line:
+                    continue
+                data = json.loads(line)
+                if "_meta" in data:
+                    continue
+                record = NVDCveRecord._deserialize(data)
+                results[record.cve_id] = record
+            return results
+        except Exception as e:
+            logger.warning(f"NVD service unavailable ({e}), falling back to NVD API")
+            return None
 
     def _cancellable_sleep(self, seconds: float) -> None:
         """Sleep in short intervals, checking for cancellation."""
@@ -594,6 +640,27 @@ class NVDClient:
         if not to_fetch:
             return results
 
+        # Try hosted service first (all uncached IDs in one batch)
+        if self._service_url:
+            service_results = self._fetch_batch_from_service(to_fetch)
+            if service_results is not None:
+                for cve_id, record in service_results.items():
+                    self._mem_cache[cve_id] = record
+                    self._save_to_sqlite(cve_id, record)
+                    results[cve_id] = record
+                # Track missing
+                self.last_batch_missing = [
+                    cve_id for cve_id in cve_ids if cve_id not in results
+                ]
+                if self.last_batch_missing:
+                    preview = self.last_batch_missing[:10]
+                    logger.warning(
+                        f"NVD: {len(self.last_batch_missing)}/{len(cve_ids)} CVEs could "
+                        f"not be resolved: {', '.join(preview)}"
+                        + (" ..." if len(self.last_batch_missing) > 10 else "")
+                    )
+                return results
+
         logger.info(f"NVD: {len(results)} cached, {len(to_fetch)} to fetch from API")
 
         iterator: Any = to_fetch
@@ -614,11 +681,11 @@ class NVDClient:
                 from fs_report.report_engine import ReportCancelled
 
                 raise ReportCancelled("Report cancelled by user")
-            record = self._fetch_from_api(cve_id)
-            if record:
-                self._mem_cache[cve_id] = record
-                self._save_to_sqlite(cve_id, record)
-                results[cve_id] = record
+            api_record = self._fetch_from_api(cve_id)
+            if api_record:
+                self._mem_cache[cve_id] = api_record
+                self._save_to_sqlite(cve_id, api_record)
+                results[cve_id] = api_record
 
         # Track CVEs that could not be resolved
         self.last_batch_missing = [

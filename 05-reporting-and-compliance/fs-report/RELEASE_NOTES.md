@@ -1,5 +1,23 @@
 # Release Notes
 
+## Version 1.9.3 (April 2026)
+
+### New Recipes
+
+- **Configuration Analysis Triage** — Triages CREDENTIALS, CONFIG_ISSUES, and CRYPTO_MATERIAL findings using a tiered-gates scoring model tuned for config/secrets severity. Parses structured fields from `includeAdditionalDetails` to distinguish private keys from public keys/certs. Gate 1: Private keys → CRITICAL. Gate 2: High-severity credentials → HIGH. Gate 3: High-severity config issues → MEDIUM. Generates VEX recommendations (public keys → NOT_AFFECTED). Dedicated HTML template with category badges, gate funnel, and findings detail table.
+
+### New Features
+
+- **`includeAdditionalDetails` API parameter** — Recipes can now request extended finding details (description, remediation, mitigation) from the API by setting `includeAdditionalDetails: true` in their query params. Used by Configuration Analysis Triage to parse structured fields for gate classification.
+- **Recipe `default_finding_types` parameter** — Recipes can now declare their own default finding type filter via `default_finding_types` in recipe parameters, overriding the CLI default (`cve`) without requiring the user to pass `--finding-types` explicitly.
+
+### Bug Fixes
+
+- **`_fetch_with_version_batching` dropped `include_additional_details`** — Per-batch queries in version-batched fetch now correctly forward the `includeAdditionalDetails` parameter from the base query.
+- **`--top=0` treated as "show 0 rows"** — The CLI default of `top=0` (meaning no limit) was incorrectly truncating output to zero rows. Now treats `0` as no limit.
+
+---
+
 ## Version 1.9.0 (March 2026)
 
 ### New Recipes

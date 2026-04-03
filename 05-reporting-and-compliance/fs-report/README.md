@@ -33,6 +33,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Findings by Project | Complete findings inventory per project with CVE details, severity, and platform links |
 | Component List | Software inventory (SBOM) for compliance |
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
+| Configuration Analysis Triage | Config/secrets/crypto triage — private keys, hardcoded credentials, insecure configs *(on-demand)* |
 | License Report | Component license risk classification (Permissive, Copyleft, Proprietary) with policy analysis |
 | Executive Dashboard | 11-section executive-level security report with KPI cards, risk donut, severity trends, and more *(on-demand)* |
 | CVE Impact | CVE-centric dossier with affected projects, reachability, and exploit intelligence *(on-demand)* |

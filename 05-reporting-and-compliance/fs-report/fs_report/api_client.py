@@ -153,6 +153,10 @@ class APIClient:
             params["excluded"] = str(query.params.excluded).lower()
         if query.params.finding_type:
             params["type"] = query.params.finding_type
+        if query.params.include_additional_details is not None:
+            params["includeAdditionalDetails"] = str(
+                query.params.include_additional_details
+            ).lower()
 
         # Log the actual API request parameters
         self.logger.debug(f"Actual API request params: {params}")

@@ -73,6 +73,10 @@ class QueryParams(BaseModel):
     finding_type: str | None = Field(
         None, description="Finding type filter: cve, sast, thirdparty, or all"
     )
+    include_additional_details: bool | None = Field(
+        None,
+        description="Include additional details (description, remediation, mitigation) in findings response",
+    )
 
     @field_validator("filter")
     @classmethod

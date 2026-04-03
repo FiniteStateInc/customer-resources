@@ -707,6 +707,15 @@ def scan_quality_transform(
     charts = _build_charts(summary_df, detail_df)
     summary_dict = _build_summary_dict(summary_df)
 
+    # Build scope label for template subtitle/metadata
+    scope_label = "All Projects"
+    cfg = additional_data.get("config") or config if additional_data else config
+    if cfg is not None:
+        if hasattr(cfg, "project_filter") and cfg.project_filter:
+            scope_label = cfg.project_filter
+        elif hasattr(cfg, "folder_filter") and cfg.folder_filter:
+            scope_label = f"Folder: {cfg.folder_filter}"
+
     return {
         "main": summary_df,
         "summary_table": summary_df,
@@ -714,4 +723,5 @@ def scan_quality_transform(
         "summary": summary_dict,
         "charts": charts,
         "thresholds": thresholds,
+        "scope_label": scope_label,
     }

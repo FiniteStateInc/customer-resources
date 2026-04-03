@@ -1194,6 +1194,7 @@ class ReportEngine:
         category_filter: str | None = None,
         entity_type: str = "findings",
         on_records: "Callable[[list[dict]], None] | None" = None,
+        include_additional_details: bool | None = None,
     ) -> list[dict]:
         """Reassemble data from per-version cache, fetching any missing versions first.
 
@@ -1253,6 +1254,7 @@ class ReportEngine:
                     finding_type=finding_type if entity_type == "findings" else None,
                     archived=False if entity_type == "findings" else None,
                     excluded=False if entity_type == "findings" else None,
+                    include_additional_details=include_additional_details,
                 ),
             )
             if entity_type == "components":
@@ -1392,6 +1394,7 @@ class ReportEngine:
                         finding_type=base_query.params.finding_type,
                         archived=False if entity_type == "findings" else None,
                         excluded=False if entity_type == "findings" else None,
+                        include_additional_details=base_query.params.include_additional_details,
                     ),
                 )
 
@@ -3143,15 +3146,26 @@ class ReportEngine:
                         if recipe.name == "Executive Dashboard":
                             type_params = build_findings_type_params("all")
                         elif _uses_gates:
-                            # Recipes with gate-based triage scoring need
-                            # reachabilityScore which the API omits when the
-                            # ``type=cve`` URL param is used.  Use a category
-                            # RSQL filter instead so the full field set is
-                            # returned.
-                            type_params = {
-                                "type": None,
-                                "category_filter": "category==CVE",
-                            }
+                            # Check if the recipe defines its own default finding types
+                            _recipe_default_ft = (
+                                recipe.parameters.get("default_finding_types")
+                                if recipe.parameters
+                                else None
+                            )
+                            if _recipe_default_ft:
+                                type_params = build_findings_type_params(
+                                    _recipe_default_ft
+                                )
+                            else:
+                                # Recipes with gate-based triage scoring need
+                                # reachabilityScore which the API omits when the
+                                # ``type=cve`` URL param is used.  Use a category
+                                # RSQL filter instead so the full field set is
+                                # returned.
+                                type_params = {
+                                    "type": None,
+                                    "category_filter": "category==CVE",
+                                }
                         else:
                             type_params = build_findings_type_params(
                                 self.config.finding_types
@@ -3242,6 +3256,16 @@ class ReportEngine:
                         _cva_pre_flattened = False
                         if _is_cva and (post_filter_categories or post_filter_types):
                             _cva_extra_keep = frozenset({"category", "type"})
+
+                        # --- Per-batch description parse-and-discard for Config Analysis Triage ---
+                        _is_config_triage = (
+                            recipe.name == "Configuration Analysis Triage"
+                        )
+                        _config_extract: Callable | None = None
+                        if _is_config_triage:
+                            from fs_report.transforms.pandas.configuration_analysis_triage import (
+                                extract_detail_columns as _config_extract,
+                            )
 
                         # --- NVD pipeline: start background lookups during fetch ---
                         if _is_findings_by_project and not getattr(
@@ -3417,6 +3441,9 @@ class ReportEngine:
                                             finding_type,
                                             category_filter,
                                             on_records=_nvd_on_records,
+                                            include_additional_details=(
+                                                True if _is_config_triage else None
+                                            ),
                                         )
                                         raw_data = (
                                             pd.DataFrame(_vf) if _vf else pd.DataFrame()
@@ -3446,6 +3473,13 @@ class ReportEngine:
                                             raw_data = _prune_exec_dashboard(
                                                 raw_data, _ed_extra_keep
                                             )
+                                        # Per-batch parse-and-discard for Config Analysis Triage
+                                        if (
+                                            _is_config_triage
+                                            and _config_extract is not None
+                                            and not raw_data.empty
+                                        ):
+                                            raw_data = _config_extract(raw_data)
                                         needs_date_postfilter = True
                                     else:
                                         self.logger.warning(
@@ -3463,6 +3497,9 @@ class ReportEngine:
                                         finding_type=finding_type,
                                         archived=False,
                                         excluded=False,
+                                        include_additional_details=(
+                                            True if _is_config_triage else None
+                                        ),
                                     ),
                                 )
 
@@ -3491,6 +3528,13 @@ class ReportEngine:
                                     raw_data = _prune_exec_dashboard(
                                         raw_data, _ed_extra_keep
                                     )
+                                # Per-batch parse-and-discard for Config Analysis Triage
+                                if (
+                                    _is_config_triage
+                                    and _config_extract is not None
+                                    and not raw_data.empty
+                                ):
+                                    raw_data = _config_extract(raw_data)
                         elif self._folder_project_ids:
                             # Folder scoping active — use folder's project set directly
                             # Sort for deterministic batching (ensures SQLite cache hits across runs)
@@ -3527,6 +3571,9 @@ class ReportEngine:
                                     finding_type,
                                     category_filter,
                                     on_records=_nvd_on_records,
+                                    include_additional_details=(
+                                        True if _is_config_triage else None
+                                    ),
                                 )
                                 raw_data = pd.DataFrame(_vf) if _vf else pd.DataFrame()
                                 del _vf
@@ -3561,6 +3608,13 @@ class ReportEngine:
                                     raw_data = _prune_exec_dashboard(
                                         raw_data, _ed_extra_keep
                                     )
+                                # Per-batch parse-and-discard for Config Analysis Triage
+                                if (
+                                    _is_config_triage
+                                    and _config_extract is not None
+                                    and not raw_data.empty
+                                ):
+                                    raw_data = _config_extract(raw_data)
                                 needs_date_postfilter = True
                             else:
                                 # Batch by project IDs — all versions
@@ -3819,6 +3873,9 @@ class ReportEngine:
                                     finding_type,
                                     category_filter,
                                     on_records=_nvd_on_records,
+                                    include_additional_details=(
+                                        True if _is_config_triage else None
+                                    ),
                                 )
                                 raw_data = pd.DataFrame(_vf) if _vf else pd.DataFrame()
                                 del _vf
@@ -3846,6 +3903,13 @@ class ReportEngine:
                                     raw_data = _prune_exec_dashboard(
                                         raw_data, _ed_extra_keep
                                     )
+                                # Per-batch parse-and-discard for Config Analysis Triage
+                                if (
+                                    _is_config_triage
+                                    and _config_extract is not None
+                                    and not raw_data.empty
+                                ):
+                                    raw_data = _config_extract(raw_data)
                                 needs_date_postfilter = True
                             else:
                                 # Get findings for all scanned projects (all versions)
@@ -4017,24 +4081,58 @@ class ReportEngine:
                             # _apply_scan_filters for project/folder scoping, then
                             # _fetch_scans_with_early_termination for robust retry +
                             # date-based early termination + SQLite cache.
-                            _scan_query = self._apply_scan_filters(recipe.query)
-                            self.logger.info(
-                                f"Fetching {recipe.name} via scan filters"
-                                + (
-                                    f", filter: {_scan_query.params.filter}"
-                                    if _scan_query.params.filter
-                                    else ""
-                                )
-                            )
                             # Assessment recipes (e.g. Scan Quality) need ALL scans,
                             # not just those in the --period window.
                             _saved_start = self.config.start_date
                             if recipe.category == "assessment":
                                 self.config.start_date = "2020-01-01"
                             try:
-                                _fetched = self._fetch_scans_with_early_termination(
-                                    _scan_query
-                                )
+                                # Batch folder project IDs to avoid 414 URL Too Long
+                                if (
+                                    self._folder_project_ids
+                                    and not self.config.project_filter
+                                    and len(self._folder_project_ids) > 25
+                                ):
+                                    _folder_pids = sorted(self._folder_project_ids)
+                                    _batch_sz = 15 if len(_folder_pids) > 200 else 25
+                                    _all_scans: list[dict] = []
+                                    _saved_pids = self._folder_project_ids
+                                    self.logger.info(
+                                        f"Batching {recipe.name} scan fetch: "
+                                        f"{len(_folder_pids)} projects, "
+                                        f"batch_size={_batch_sz}"
+                                    )
+                                    try:
+                                        for _bi in range(
+                                            0, len(_folder_pids), _batch_sz
+                                        ):
+                                            self._folder_project_ids = set(
+                                                _folder_pids[_bi : _bi + _batch_sz]
+                                            )
+                                            _scan_query = self._apply_scan_filters(
+                                                recipe.query
+                                            )
+                                            _batch_data = self._fetch_scans_with_early_termination(
+                                                _scan_query
+                                            )
+                                            if _batch_data:
+                                                _all_scans.extend(_batch_data)
+                                    finally:
+                                        self._folder_project_ids = _saved_pids
+                                    _fetched = _all_scans
+                                else:
+                                    _scan_query = self._apply_scan_filters(recipe.query)
+                                    self.logger.info(
+                                        f"Fetching {recipe.name} via scan filters"
+                                        + (
+                                            f", filter: {_scan_query.params.filter}"
+                                            if _scan_query.params.filter
+                                            else ""
+                                        )
+                                    )
+                                    _fetched = self._fetch_scans_with_early_termination(
+                                        _scan_query
+                                    )
                             finally:
                                 if recipe.category == "assessment":
                                     self.config.start_date = _saved_start

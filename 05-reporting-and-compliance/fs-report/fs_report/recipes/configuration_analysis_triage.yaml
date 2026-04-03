@@ -1,0 +1,92 @@
+name: "Configuration Analysis Triage"
+category: assessment
+template: "configuration_analysis_triage.html"
+description: >
+  Triages CREDENTIALS, CONFIG_ISSUES, and CRYPTO_MATERIAL findings using a tiered-gates
+  scoring model. Parses structured fields from additionalDetails to distinguish private
+  keys from public keys/certs. Gate 1: Private keys → CRITICAL. Gate 2: High-severity
+  credentials → HIGH. Gate 3: High-severity config issues → MEDIUM. Generates VEX
+  recommendations.
+execution_order: 25
+auto_run: false
+
+parameters:
+  gates:
+    - name: GATE_1
+      band: CRITICAL
+      score: 100
+      conditions:
+        all:
+          - field: category
+            op: "=="
+            value: "CRYPTO_MATERIAL"
+          - field: detail_private_key
+            op: "=="
+            value: true
+
+    - name: GATE_2
+      band: HIGH
+      score: 85
+      conditions:
+        all:
+          - field: category
+            op: "=="
+            value: "CREDENTIALS"
+          - field: severity
+            op: in
+            value: ["critical", "high"]
+
+    - name: GATE_3
+      band: MEDIUM
+      score: 70
+      conditions:
+        all:
+          - field: category
+            op: "=="
+            value: "CONFIG_ISSUES"
+          - field: severity
+            op: in
+            value: ["critical", "high"]
+
+  scoring_weights:
+    severity_critical: 30
+    severity_high: 20
+    severity_medium: 10
+    severity_low: 5
+    risk_max: 10
+    vex_resolved: -50
+    band_high_threshold: 70
+    band_medium_threshold: 40
+    band_low_threshold: 25
+
+  default_finding_types: "credentials,config_issues,crypto_material"
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+    includeAdditionalDetails: true
+
+transform_function: configuration_analysis_triage_transform
+
+output:
+  table: true
+  formats:
+    - csv
+    - xlsx
+    - html
+    - json
+    - md
+  charts:
+    - name: band_distribution
+      chart: bar
+      title: "Priority Band Distribution"
+      description: "Distribution of findings across risk priority bands."
+      x_column: priority_band
+      y_column: count
+    - name: gate_funnel
+      chart: bar
+      title: "Gate Classification Funnel"
+      description: "How findings flow through Gate 1 (Private Keys), Gate 2 (Credentials), Gate 3 (Config Issues), and additive scoring."
+      x_column: gate
+      y_column: count
