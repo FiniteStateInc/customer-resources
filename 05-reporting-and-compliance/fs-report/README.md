@@ -151,6 +151,13 @@ fs-report run --finding-types all                      # All finding types
 
 > **Project glob patterns:** `--project` accepts `*`, `?`, and `[…]` wildcards (case-insensitive). A single match scopes to that project; multiple matches scope to all matched projects (like `--folder`). Glob cannot be combined with `--version`.
 
+**Project dependencies** — when a project has dependencies, findings from dependent projects are automatically included:
+
+```bash
+fs-report run --project "MyProduct"                    # Includes findings from all dependencies
+fs-report run --project "MyProduct" --standalone       # Only direct findings (no dependencies)
+```
+
 **Version scope** — by default only the latest version of each project is analysed:
 
 ```bash

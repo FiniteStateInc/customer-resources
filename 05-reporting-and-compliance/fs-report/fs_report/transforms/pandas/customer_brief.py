@@ -669,7 +669,7 @@ def customer_brief_transform(
         "has_data": False,
     }
     if total > 0 and "reachability_score" in df.columns:
-        rs = df["reachability_score"]
+        rs = df["reachability_score"].fillna(0)
         has_any = (rs != 0).any()
         if has_any:
             reachability_summary = {

@@ -365,9 +365,17 @@ class NVDClient:
         self._request_count = 0
         self._cancel_event = cancel_event
 
-        # Hosted NVD service backend (preferred when available)
-        self._service_url = os.environ.get("FS_NVD_SERVICE_URL", "").rstrip("/")
-        self._service_token = os.environ.get("FS_TOKEN", "")
+        # Hosted NVD mirror service (default backend).
+        # Set FS_NVD_SERVICE_URL to override, or "off" to disable.
+        _DEFAULT_SERVICE_URL = "https://finite-state-mirror.vercel.app"
+        _env_url = os.environ.get("FS_NVD_SERVICE_URL", "").strip()
+        if _env_url.lower() == "off":
+            self._service_url = ""
+        else:
+            self._service_url = (_env_url or _DEFAULT_SERVICE_URL).rstrip("/")
+        self._service_token = os.environ.get("FS_TOKEN", "") or os.environ.get(
+            "FINITE_STATE_AUTH_TOKEN", ""
+        )
 
         # In-memory cache (session-scoped)
         self._db_lock = threading.Lock()
@@ -421,10 +429,16 @@ class NVDClient:
         if not self._service_url or not self._service_token:
             return None
 
+        # Filter to valid CVE IDs only — non-CVE finding IDs (e.g. FS-602-0005)
+        # will cause a 400 from the service's CVE ID validation.
+        valid_ids = [cid for cid in cve_ids if cid.startswith("CVE-")]
+        if not valid_ids:
+            return {}
+
         try:
             resp = requests.post(
-                f"{self._service_url}/cves",
-                json={"ids": cve_ids},
+                f"{self._service_url}/api/v1/cves",
+                json={"ids": valid_ids},
                 headers={
                     "Authorization": f"Bearer {self._service_token}",
                     "Accept": "application/x-ndjson",

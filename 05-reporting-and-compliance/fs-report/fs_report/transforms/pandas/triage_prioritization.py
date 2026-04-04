@@ -1212,6 +1212,9 @@ def triage_prioritization_transform(
         "_pts_vector",
         "_pts_epss",
         "_pts_cvss",
+        # Dependency path (present when project has dependencies)
+        "dependency_path",
+        "component_dependency_path",
     ]
     # Only keep columns that exist
     output_columns = [c for c in output_columns if c in df.columns]

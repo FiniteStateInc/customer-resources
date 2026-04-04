@@ -116,6 +116,11 @@ def findings_by_project_pandas_transform(
         if internal_col in df.columns:
             output_df[internal_col] = df[internal_col].values
 
+    # Carry over dependency path columns (added by dependency expansion)
+    for dep_col in ("dependency_path", "component_dependency_path"):
+        if dep_col in df.columns:
+            output_df[dep_col] = df[dep_col].values
+
     # Free the large intermediate DataFrame now that we've extracted needed columns
     del df
 
@@ -191,8 +196,11 @@ def findings_by_project_pandas_transform(
         errors="ignore",
     )
 
-    # Apply canonical column ordering
+    # Apply canonical column ordering (+ dependency columns when present)
     csv_cols = [c for c in _CSV_COLUMNS if c in output_df.columns]
+    for dep_col in ("dependency_path", "component_dependency_path"):
+        if dep_col in output_df.columns:
+            csv_cols.append(dep_col)
     output_df = output_df[csv_cols]
 
     # Sort by CVSS score (descending) and then by Project Name

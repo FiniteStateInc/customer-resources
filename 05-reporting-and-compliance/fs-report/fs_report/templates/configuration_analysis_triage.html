@@ -438,7 +438,7 @@
                         </td>
                         <td>{{ rec.gate if rec.gate and rec.gate != 'NONE' else '—' }}</td>
                         <td>
-                            {% set rstatus = rec.recommended_status|default('') %}
+                            {% set rstatus = rec.recommended_vex_status|default('') %}
                             {% if rstatus %}
                             <span class="vex-rec-badge vex-rec-{{ rstatus }}">{{ rstatus }}</span>
                             {% else %}—{% endif %}

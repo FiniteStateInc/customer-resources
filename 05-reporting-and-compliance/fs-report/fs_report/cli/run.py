@@ -128,6 +128,7 @@ def create_config(
     compare_token: Union[str, None] = None,
     compare_project: Union[str, None] = None,
     compare_version: Union[str, None] = None,
+    standalone: bool = False,
 ) -> Config:
     """Build a Config object from CLI args, config file, and env vars."""
     _component_match: Literal["contains", "exact"] = cast(
@@ -436,6 +437,7 @@ def create_config(
         compare_auth_token=compare_token,
         compare_project=compare_project,
         compare_version=compare_version,
+        standalone=standalone,
     )
 
 
@@ -507,6 +509,7 @@ def run_reports(
     compare_token: Union[str, None] = None,
     compare_project: Union[str, None] = None,
     compare_version: Union[str, None] = None,
+    standalone: bool = False,
 ) -> Any:
     """Execute the report generation pipeline."""
     run_id = setup_logging(verbose)
@@ -581,6 +584,7 @@ def run_reports(
             compare_token=compare_token,
             compare_project=compare_project,
             compare_version=compare_version,
+            standalone=standalone,
         )
 
         file_handler = attach_file_logging(run_id, config.auth_token)
@@ -603,6 +607,8 @@ def run_reports(
             logger.info(f"  Version: {config.version_filter}")
         if config.folder_filter:
             logger.info(f"  Folder scope: {config.folder_filter}")
+        if config.standalone:
+            logger.info("  Standalone mode: Yes (no dependency traversal)")
         if config.compare_domain:
             logger.info("  Cross-server comparison:")
             logger.info(f"    Compare domain: {config.compare_domain}")
@@ -672,8 +678,21 @@ def run_reports(
             logger.info(f"  Autotriage: {config.autotriage}")
         if config.autotriage_status:
             logger.info(f"  Autotriage status filter: {config.autotriage_status}")
-        if config.nvd_api_key:
-            logger.info("  NVD API key: configured")
+        _nvd_svc = os.environ.get("FS_NVD_SERVICE_URL", "").strip().lower()
+        if _nvd_svc == "off":
+            logger.info(
+                "  NVD: direct API"
+                + (
+                    " (key configured)"
+                    if config.nvd_api_key
+                    else " (no key — rate limited)"
+                )
+            )
+        else:
+            logger.info(
+                "  NVD: hosted mirror"
+                + (" + API key fallback" if config.nvd_api_key else "")
+            )
         if config.logo:
             logger.info(f"  Logo: {config.logo}")
 
@@ -1196,7 +1215,7 @@ def run_command(
         None,
         "--nvd-api-key",
         envvar="NVD_API_KEY",
-        help="NVD API key for faster fix-version lookups (10x rate limit).",
+        help="NVD API key (optional). A hosted mirror is used by default. Only needed as fallback if the mirror is unavailable.",
         rich_help_panel=_AI,
     ),
     baseline_date: Union[str, None] = typer.Option(
@@ -1370,6 +1389,13 @@ def run_command(
         help="Overwrite existing report files.",
         rich_help_panel=_OUTPUT,
     ),
+    standalone: bool = typer.Option(
+        False,
+        "--standalone",
+        help="Skip project dependency resolution. Report only direct findings "
+        "for the target project, excluding findings from dependent projects.",
+        rich_help_panel=_SCOPE,
+    ),
     logo: Union[str, None] = typer.Option(
         None,
         "--logo",
@@ -1514,6 +1540,7 @@ def run_command(
         compare_token=compare_token,
         compare_project=compare_project,
         compare_version=compare_version,
+        standalone=standalone,
     )
 
     # In headless mode, print a structured JSON summary to stdout

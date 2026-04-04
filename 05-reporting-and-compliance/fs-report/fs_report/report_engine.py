@@ -42,6 +42,7 @@ import pandas as pd
 from fs_report.api_client import APIClient
 from fs_report.data_cache import DataCache
 from fs_report.data_transformer import DataTransformer
+from fs_report.dependency_resolver import DependencyNode, DependencyResolver
 from fs_report.models import Config, QueryConfig, Recipe, ReportData
 from fs_report.recipe_loader import RecipeLoader
 from fs_report.renderers import ReportRenderer
@@ -484,6 +485,226 @@ class ReportEngine:
         self._project_folder_map: dict[str, str] = {}  # project_id -> folder_name
         self._folder_name: str | None = None
         self._folder_path: str | None = None  # e.g. "Division A / Medical Products"
+
+        # Dependency resolver for project dependency tree traversal
+        self._dependency_resolver = DependencyResolver(self.api_client)
+
+        # Cache: dependency tree per root version ID
+        self._dependency_tree_cache: dict[int, DependencyNode] = {}
+
+        # Current dependency tree for the active recipe run
+        self._current_dependency_tree: DependencyNode | None = None
+
+    def _resolve_dependency_tree(
+        self,
+        project_id: int,
+        project_name: str,
+        version_id: int,
+    ) -> DependencyNode:
+        """Resolve the dependency tree for a project version.
+
+        When ``self.config.standalone`` is True, returns a single-node tree
+        with no children (no dependency traversal).
+        """
+        if self.config.standalone:
+            return DependencyNode(
+                project_id=project_id,
+                project_name=project_name,
+                version_id=version_id,
+                path=[project_name],
+                children=[],
+            )
+
+        if version_id in self._dependency_tree_cache:
+            return self._dependency_tree_cache[version_id]
+
+        self.logger.info(
+            f"Resolving dependency tree for {project_name} (version {version_id})..."
+        )
+        tree = self._dependency_resolver.resolve(
+            project_id=project_id,
+            project_name=project_name,
+            version_id=version_id,
+        )
+
+        dep_count = len(tree.all_version_ids()) - 1
+        if dep_count > 0:
+            self.logger.info(f"Found {dep_count} dependencies for {project_name}")
+        else:
+            self.logger.info(f"No dependencies found for {project_name}")
+
+        self._dependency_tree_cache[version_id] = tree
+        return tree
+
+    def _expand_version_ids_with_dependencies(
+        self,
+        version_ids: list[int],
+        project_id: int,
+        project_name: str,
+    ) -> tuple[list[int], DependencyNode | None]:
+        """Expand version IDs to include dependency project versions.
+
+        For single-project mode (--project), resolves the dependency tree
+        and returns all version IDs in the tree.
+
+        Returns:
+            Tuple of (expanded_version_ids, dependency_tree_or_None).
+            The tree is None when no expansion happened (no project scope).
+        """
+        if len(version_ids) != 1:
+            return version_ids, None
+
+        root_version_id = version_ids[0]
+        tree = self._resolve_dependency_tree(
+            project_id=project_id,
+            project_name=project_name,
+            version_id=root_version_id,
+        )
+
+        expanded = tree.all_version_ids()
+        return expanded, tree
+
+    def _expand_folder_version_ids_with_dependencies(
+        self,
+        version_ids: list[int],
+    ) -> tuple[list[int], DependencyNode | None]:
+        """Expand version IDs for folder mode by resolving each project's deps.
+
+        Builds a synthetic root DependencyNode whose children are per-project
+        trees, so that annotation can produce correct dependency paths.
+
+        Uses the same /projects batch + per-project fallback as
+        ``_get_latest_version_ids_for_projects`` to build a version→project
+        mapping, avoiding "unknown" nodes when the batch response omits
+        ``defaultBranch``.
+
+        Returns:
+            Tuple of (expanded_version_ids, synthetic_tree_or_None).
+            The tree is None when standalone mode or no dependencies found.
+        """
+        if self.config.standalone:
+            return version_ids, None
+
+        # Build version_id -> (project_id, project_name) mapping.
+        # Step 1: Try batch /projects (same data already cached by DataCache).
+        from fs_report.models import QueryConfig, QueryParams
+
+        projects_query = QueryConfig(
+            endpoint="/public/v0/projects",
+            params=QueryParams(limit=10000, archived=False, excluded=False),
+        )
+        all_projects = self.api_client.fetch_all_with_resume(projects_query)
+
+        version_id_set = set(version_ids)
+        vid_to_project: dict[int, tuple[int, str]] = {}
+        for proj in all_projects:
+            pid = proj.get("id")
+            pname = proj.get("name", "")
+            db = proj.get("defaultBranch") or {}
+            lv = db.get("latestVersion") or {} if isinstance(db, dict) else {}
+            vid = lv.get("id") if isinstance(lv, dict) else None
+            if pid and vid is not None:
+                try:
+                    vid_int = int(vid)
+                except (ValueError, TypeError):
+                    continue
+                if vid_int in version_id_set:
+                    vid_to_project[vid_int] = (int(pid), pname)
+
+        # Step 2: Fallback — for any version IDs not matched from batch,
+        # look up project details individually (handles API responses that
+        # omit defaultBranch in list payloads).
+        unmapped = [v for v in version_ids if v not in vid_to_project]
+        if unmapped and self._folder_project_ids:
+            self.logger.info(
+                f"Folder dep expansion: {len(unmapped)} version(s) not matched "
+                f"from batch /projects; trying per-project detail calls"
+            )
+            for pid_str in sorted(self._folder_project_ids):
+                try:
+                    url = f"{self.api_client.base_url}/public/v0/projects/{pid_str}"
+                    resp = self.api_client.client.get(url)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    db = data.get("defaultBranch") or {}
+                    lv = db.get("latestVersion") or {} if isinstance(db, dict) else {}
+                    vid = lv.get("id") if isinstance(lv, dict) else None
+                    if vid is not None:
+                        vid_int = int(vid)
+                        if vid_int in version_id_set and vid_int not in vid_to_project:
+                            vid_to_project[vid_int] = (
+                                int(pid_str),
+                                data.get("name", pid_str),
+                            )
+                except Exception:
+                    self.logger.debug(
+                        f"Failed to fetch project detail for {pid_str}",
+                        exc_info=True,
+                    )
+                # Stop once all unmapped versions are resolved
+                if all(v in vid_to_project for v in unmapped):
+                    break
+
+        # Resolve dependency tree per project
+        all_expanded: list[int] = []
+        has_any_deps = False
+        per_project_trees: list[DependencyNode] = []
+
+        for vid in version_ids:
+            proj_info = vid_to_project.get(vid)
+            if not proj_info:
+                # Still unmapped after fallback — include version without deps
+                self.logger.warning(
+                    f"Could not resolve project for version {vid}; "
+                    "skipping dependency expansion for this version"
+                )
+                all_expanded.append(vid)
+                per_project_trees.append(
+                    DependencyNode(
+                        project_id=0,
+                        project_name=str(vid),
+                        version_id=vid,
+                        path=[str(vid)],
+                        children=[],
+                    )
+                )
+                continue
+
+            proj_id, proj_name = proj_info
+            tree = self._resolve_dependency_tree(proj_id, proj_name, vid)
+            per_project_trees.append(tree)
+            expanded = tree.all_version_ids()
+            all_expanded.extend(expanded)
+            if tree.has_dependencies:
+                has_any_deps = True
+
+        if not has_any_deps:
+            return version_ids, None
+
+        # Deduplicate while preserving order
+        seen: set[int] = set()
+        deduped: list[int] = []
+        for vid in all_expanded:
+            if vid not in seen:
+                seen.add(vid)
+                deduped.append(vid)
+
+        # Build synthetic root for annotation
+        synthetic_root = DependencyNode(
+            project_id=0,
+            project_name="__folder__",
+            version_id=0,
+            path=[],
+            children=per_project_trees,
+        )
+
+        dep_count = len(deduped) - len(version_ids)
+        self.logger.info(
+            f"Folder dependency expansion: {len(version_ids)} projects "
+            f"expanded to {len(deduped)} versions (+{dep_count} from dependencies)"
+        )
+
+        return deduped, synthetic_root
 
     @staticmethod
     def _cache_key(*parts: str | None) -> str:
@@ -1266,7 +1487,7 @@ class ReportEngine:
 
             new_records = self._fetch_with_version_batching(
                 base_query,
-                sorted(missing),
+                sorted(missing, key=lambda x: int(x)),
                 finding_type=finding_type,
                 category_filter=category_filter,
                 entity_type=entity_type,
@@ -1642,6 +1863,7 @@ class ReportEngine:
         recipe_results: list[RecipeResult] = []
         total = len(recipes)
         for idx, recipe in enumerate(recipes, 1):
+            self._current_dependency_tree = None  # Reset per recipe
             self._check_cancel()
             try:
                 self.logger.info(f"[{idx}/{total}] Generating: {recipe.name} ...")
@@ -3417,9 +3639,79 @@ class ReportEngine:
                                 filters.append(f"project=={self.config.project_filter}")
 
                             if self.config.version_filter:
-                                filters.append(
-                                    f"projectVersion=={self.config.version_filter}"
+                                # Resolve dependencies for pinned version
+                                try:
+                                    _vf_proj_id = int(self.config.project_filter)
+                                except ValueError:
+                                    _vf_proj_id = None
+                                try:
+                                    _vf_ver_id = int(self.config.version_filter)
+                                except (ValueError, TypeError):
+                                    _vf_ver_id = None
+                                _vf_proj_name = self.resolved_project_name or str(
+                                    _vf_proj_id or self.config.project_filter
                                 )
+                                if _vf_proj_id is not None and _vf_ver_id is not None:
+                                    _dep_vids, self._current_dependency_tree = (
+                                        self._expand_version_ids_with_dependencies(
+                                            [_vf_ver_id],
+                                            _vf_proj_id,
+                                            _vf_proj_name,
+                                        )
+                                    )
+                                else:
+                                    _dep_vids = (
+                                        [_vf_ver_id] if _vf_ver_id is not None else []
+                                    )
+                                if len(_dep_vids) > 1:
+                                    # Has dependencies — use version batching
+                                    _vf = self._get_findings_for_versions(
+                                        _dep_vids,
+                                        finding_type,
+                                        category_filter,
+                                        on_records=_nvd_on_records,
+                                        include_additional_details=(
+                                            True if _is_config_triage else None
+                                        ),
+                                    )
+                                    raw_data = (
+                                        pd.DataFrame(_vf) if _vf else pd.DataFrame()
+                                    )
+                                    del _vf
+                                    # Pre-flatten nested dicts for Findings by Project
+                                    if (
+                                        _is_findings_by_project
+                                        and _flatten_findings_data is not None
+                                        and not raw_data.empty
+                                    ):
+                                        raw_data = _flatten_findings_data(raw_data)
+                                        _drop = [
+                                            c
+                                            for c in _FBP_DROP_AFTER_FLATTEN
+                                            if c in raw_data.columns
+                                        ]
+                                        if _drop:
+                                            raw_data = raw_data.drop(columns=_drop)
+                                    if _is_exec_summary and not raw_data.empty:
+                                        raw_data = _prune_exec_summary(
+                                            raw_data, _exec_extra_keep
+                                        )
+                                    if _is_exec_dashboard and not raw_data.empty:
+                                        raw_data = _prune_exec_dashboard(
+                                            raw_data, _ed_extra_keep
+                                        )
+                                    if (
+                                        _is_config_triage
+                                        and _config_extract is not None
+                                        and not raw_data.empty
+                                    ):
+                                        raw_data = _config_extract(raw_data)
+                                    needs_date_postfilter = True
+                                else:
+                                    # No dependencies — use existing filter path
+                                    filters.append(
+                                        f"projectVersion=={self.config.version_filter}"
+                                    )
                             elif self.config.current_version_only:
                                 # Use entity-level caching (consistent with folder/scan paths)
                                 try:
@@ -3433,6 +3725,17 @@ class ReportEngine:
                                         )
                                     )
                                     if latest_vids:
+                                        # Expand with dependency versions
+                                        _proj_name = self.resolved_project_name or str(
+                                            _proj_id
+                                        )
+                                        latest_vids, self._current_dependency_tree = (
+                                            self._expand_version_ids_with_dependencies(
+                                                latest_vids,
+                                                _proj_id,
+                                                _proj_name,
+                                            )
+                                        )
                                         self.logger.info(
                                             f"--current-version-only: scoping to latest version {latest_vids[0]}"
                                         )
@@ -3560,6 +3863,12 @@ class ReportEngine:
                                 version_ids = sorted(
                                     self._get_latest_version_ids_for_projects(
                                         folder_pids
+                                    )
+                                )
+                                # Expand with dependency versions per project
+                                version_ids, self._current_dependency_tree = (
+                                    self._expand_folder_version_ids_with_dependencies(
+                                        version_ids
                                     )
                                 )
                                 self.logger.info(
@@ -4385,6 +4694,16 @@ class ReportEngine:
                     raw_data = raw_data.copy()
                 _inject_folder_names_df(raw_data, pf_map)
 
+            # --- Inject dependency path if tree has dependencies ---
+            if (
+                self._current_dependency_tree is not None
+                and self._current_dependency_tree.has_dependencies
+                and not raw_data.empty
+            ):
+                raw_data = self._annotate_dependency_paths(
+                    raw_data, self._current_dependency_tree
+                )
+
             # --- SBOM-based group enrichment for Component List ---
             if (
                 recipe.name in ("Component List", "License Report")
@@ -4904,6 +5223,7 @@ class ReportEngine:
                     # Write VEX recommendations JSON
                     if recipe.name in (
                         "Triage Prioritization",
+                        "Configuration Analysis Triage",
                         "False Positive Analysis",
                     ):
                         vex_recs = transform_result.get("vex_recommendations", [])
@@ -5967,6 +6287,67 @@ class ReportEngine:
         )
 
         return raw_data
+
+    @staticmethod
+    def _annotate_dependency_paths(
+        df: pd.DataFrame,
+        tree: DependencyNode,
+    ) -> pd.DataFrame:
+        """Add dependency_path and component_dependency_path columns.
+
+        Only adds columns when the tree has dependencies (children).
+        Uses the version ID from each finding's projectVersion to look up
+        the dependency path in the tree.
+        """
+        if not tree.has_dependencies:
+            return df
+
+        path_map = tree.version_id_to_path_map()
+
+        def _get_version_id(row: pd.Series) -> int | None:
+            pv = row.get("projectVersion")
+            if isinstance(pv, dict):
+                return pv.get("id")
+            for col in ("projectVersion.id", "project_version_id"):
+                val = row.get(col)
+                if val is not None:
+                    try:
+                        return int(val)
+                    except (ValueError, TypeError):
+                        pass
+            return None
+
+        def _get_component_str(row: pd.Series) -> str:
+            comp = row.get("component")
+            if isinstance(comp, dict):
+                name = comp.get("name", "")
+                version = comp.get("version", "")
+                if name and version:
+                    return f"{name} {version}"
+                return name or ""
+            name = row.get("component_name", row.get("component.name", ""))
+            version = row.get("component_version", row.get("component.version", ""))
+            if name and version:
+                return f"{name} {version}"
+            return str(name) if name else ""
+
+        df = df.copy()
+        dep_paths = []
+        comp_dep_paths = []
+
+        for _, row in df.iterrows():
+            vid = _get_version_id(row)
+            dep_path = path_map.get(vid, "") if vid else ""
+            comp_str = _get_component_str(row)
+            comp_path = (
+                f"{dep_path} -> {comp_str}" if (dep_path and comp_str) else dep_path
+            )
+            dep_paths.append(dep_path)
+            comp_dep_paths.append(comp_path)
+
+        df["dependency_path"] = dep_paths
+        df["component_dependency_path"] = comp_dep_paths
+        return df
 
     def clear_cache(self) -> None:
         """Clear the data cache."""

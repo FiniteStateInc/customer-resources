@@ -1332,10 +1332,9 @@ def main(
         None,
         "--nvd-api-key",
         envvar="NVD_API_KEY",
-        help="NVD API key for faster fix-version lookups (10x rate limit). "
-        "Free from https://nvd.nist.gov/developers/request-an-api-key. "
-        "Also reads NVD_API_KEY env var. "
-        "Per NVD terms, keys must not be shared with other individuals or organisations.",
+        help="NVD API key (optional). A hosted mirror is used by default. "
+        "Only needed as fallback if the mirror is unavailable. "
+        "Also reads NVD_API_KEY env var.",
     ),
     baseline_date: str | None = typer.Option(
         None,

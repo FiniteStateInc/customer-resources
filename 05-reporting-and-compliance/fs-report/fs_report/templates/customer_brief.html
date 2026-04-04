@@ -433,7 +433,7 @@
           <td>{{ f.component }}</td>
           <td>{{ f.component_version }}</td>
           <td>{{ "%.1f"|format(f.cvss_score) if f.cvss_score else "—" }}</td>
-          <td>{% if f.reachability_score is defined %}{% if f.reachability_score > 0 %}<span class="reach-badge reach-REACHABLE">Reachable</span>{% elif f.reachability_score < 0 %}<span class="reach-badge reach-UNREACHABLE">Unreachable</span>{% else %}<span class="reach-badge reach-UNKNOWN">—</span>{% endif %}{% else %}<span class="reach-badge reach-UNKNOWN">—</span>{% endif %}</td>
+          <td>{% if f.reachability_score is defined and f.reachability_score is not none %}{% if f.reachability_score > 0 %}<span class="reach-badge reach-REACHABLE">Reachable</span>{% elif f.reachability_score < 0 %}<span class="reach-badge reach-UNREACHABLE">Unreachable</span>{% else %}<span class="reach-badge reach-UNKNOWN">—</span>{% endif %}{% else %}<span class="reach-badge reach-UNKNOWN">—</span>{% endif %}</td>
           <td>{% if f.in_kev %}<span class="pill pill-kev">KEV</span>{% else %}<span class="pill pill-none">—</span>{% endif %}</td>
           <td>{% if f.has_exploit %}<span class="pill pill-exploit">Exploit</span>{% else %}<span class="pill pill-none">—</span>{% endif %}</td>
           <td>{{ status_labels.get(f.status, f.status) }}</td>

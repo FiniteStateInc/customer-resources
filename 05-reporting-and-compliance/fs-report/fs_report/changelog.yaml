@@ -1,4 +1,20 @@
 releases:
+  - version: "1.9.4"
+    date: "2026-04-04"
+    changes:
+      - report: ~
+        type: added
+        description: "Project dependency support — reports automatically include findings from dependent projects. Dependency tree resolved recursively via the platform API. New `dependency_path` and `component_dependency_path` columns in Findings by Project and Triage Prioritization."
+      - report: ~
+        type: added
+        description: "`--standalone` CLI flag to opt out of dependency resolution and report only direct findings"
+      - report: ~
+        type: changed
+        description: "NVD lookups now default to hosted mirror service with NVD API as fallback"
+      - report: "Triage Prioritization"
+        type: fixed
+        description: "VEX recommendations tightened to high-confidence actions only; fixed missing id and project_version_id fields"
+
   - version: "1.9.3"
     date: "2026-04-02"
     changes:

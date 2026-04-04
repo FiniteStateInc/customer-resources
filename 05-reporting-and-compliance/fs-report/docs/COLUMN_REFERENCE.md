@@ -26,6 +26,8 @@ This document lists all CSV/XLSX column names produced by each report, in the or
 | 16 | `CVSS v3 Vector` | string | CVSS v3.1 vector string (fallback v3.0) |
 | 17 | `NVD URL` | string | Link to NVD detail page |
 | 18 | `FS Link` | string | Direct link to finding in Finite State platform |
+| 19 | `dependency_path` | string | Project dependency chain (e.g., `ProjectA -> ProjectB`). Only present when the target project has dependencies. |
+| 20 | `component_dependency_path` | string | Full path including component (e.g., `ProjectA -> ProjectB -> openssl 1.1.1`). Only present when the target project has dependencies. |
 
 ---
 
@@ -60,6 +62,8 @@ This document lists all CSV/XLSX column names produced by each report, in the or
 | 23 | `component_id` | string | Component identifier |
 | 24 | `project_id` | string | Project identifier |
 | 25 | `project_version_id` | string | Project version identifier |
+| 26 | `dependency_path` | string | Project dependency chain (e.g., `ProjectA -> ProjectB`). Only present when the target project has dependencies. |
+| 27 | `component_dependency_path` | string | Full path including component (e.g., `ProjectA -> ProjectB -> openssl 1.1.1`). Only present when the target project has dependencies. |
 
 ### portfolio_summary Dict
 

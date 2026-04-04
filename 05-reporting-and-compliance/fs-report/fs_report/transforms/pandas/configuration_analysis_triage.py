@@ -561,29 +561,31 @@ def generate_vex_recommendations(
         band = row.get("band", "INFO")
         detail_private_key = row.get("detail_private_key")
 
-        # Determine recommended_status and reason
-        if gate not in (None, "NONE", ""):
+        # Only recommend when we have high confidence in the action:
+        # - Gate 1 (private keys) → IN_TRIAGE (needs human review)
+        # - Public keys/certs → NOT_AFFECTED (clear signal from detail_private_key)
+        # - Everything else → no recommendation (just scored and displayed)
+        if gate == "GATE_1":
             recommended_status = "IN_TRIAGE"
-            reason = f"Gate match ({gate}): requires human review"
+            reason = "Private key detected: requires human review"
         elif category == "CRYPTO_MATERIAL" and detail_private_key is not True:
             recommended_status = "NOT_AFFECTED"
             reason = "Public key or certificate — not a security risk"
-        elif band in ("LOW", "INFO"):
-            recommended_status = "NOT_AFFECTED"
-            reason = f"Low-priority {category} finding"
         else:
-            recommended_status = "IN_TRIAGE"
-            reason = "Medium-priority finding: review recommended"
+            continue  # No recommendation for other findings
 
         rec: dict[str, Any] = {
-            "finding_id": row.get("id"),
-            "finding_common_id": row.get("findingId"),
+            "id": row.get("id", ""),  # Internal numeric PK (for API calls)
+            "finding_id": row.get("findingId", ""),  # Human-readable ID
+            "project_version_id": row.get("version_id", ""),
+            "project_name": str(row.get("project_name", "")),
+            "project_id": str(row.get("project_id", "")),
             "category": category,
             "severity": row.get("severity"),
             "triage_score": row.get("triage_score"),
             "priority_band": band,
             "gate": gate,
-            "recommended_status": recommended_status,
+            "recommended_vex_status": recommended_status,
             "reason": reason,
         }
         recommendations.append(rec)

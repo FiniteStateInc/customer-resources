@@ -381,6 +381,11 @@ class Config(BaseModel):
         description="Reduce peak memory for large findings reports. "
         "Drops heavy intermediate columns after per-batch scoring.",
     )
+    standalone: bool = Field(
+        False,
+        description="Skip project dependency resolution. When True, only "
+        "include direct findings for the target project (no dependency traversal).",
+    )
     current_version_only: bool = Field(
         True,
         description="Only include latest version per project (default for performance). Use --all-versions for full history.",
@@ -477,9 +482,9 @@ class Config(BaseModel):
     )
     nvd_api_key: str | None = Field(
         None,
-        description="NVD API key for faster fix-version lookups. "
-        "Free from https://nvd.nist.gov/developers/request-an-api-key. "
-        "Also reads NVD_API_KEY env var. Increases rate limit from 5 to 50 req/30s.",
+        description="NVD API key (optional). A hosted mirror is used by default for "
+        "NVD lookups. Only needed as fallback if the mirror is unavailable. "
+        "Also reads NVD_API_KEY env var.",
     )
     # Version comparison / progress options
     baseline_date: str | None = Field(
