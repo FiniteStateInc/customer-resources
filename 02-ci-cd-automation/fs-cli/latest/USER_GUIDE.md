@@ -210,7 +210,7 @@ fs-cli scan --name myproject --version v2.1.0 --release .
 
 `--release` creates a clean version snapshot at release time, preventing component accumulation from repeated scans to the same version name.
 
-**Workflow:**
+**When the version already exists:**
 
 1. Finds the existing version by name.
 2. Creates a temporary version and uploads to it.
@@ -219,6 +219,8 @@ fs-cli scan --name myproject --version v2.1.0 --release .
 5. Renames the temporary version to the original name.
 
 If the final rename fails, the checkpoint rename is rolled back automatically.
+
+**When the version does not exist** (including brand-new projects): the version is created normally and the upload proceeds directly -- the same behavior as without `--release`. This means `--release` is safe to use in CI/CD pipelines where the first run for a new version or project should just work.
 
 **Constraints:** requires `--version`; mutually exclusive with `--test` and `--version-id`. Set via `FS_RELEASE` env var as an alternative to the flag.
 
@@ -239,7 +241,7 @@ fs-cli upload <file> [flags]
 | `--name` / `--project` | (required) | Project name |
 | `--version` | today's date | Version string |
 | `--release` | `false` | Release mode: upload to a clean snapshot (requires `--version`, mutually exclusive with `--version-id`) |
-| `--type` | `sca` | Scan types, comma-separated: `sca`, `sast`, `config`, `vulnerability_analysis` |
+| `--type` | `sca` | Scan types, comma-separated: `sca`, `sast`, `config`, `vulnerability_analysis`, `python` |
 | `--timeout` | `30` | Overall timeout in minutes |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
@@ -257,9 +259,14 @@ fs-cli upload firmware.bin --name my-device
 # Upload with multiple scan types
 fs-cli upload app.bin --name myapp --type sca,sast
 
+# Upload Python source for Bandit security scanning
+fs-cli upload myapp.tar.gz --name myapp --type python
+
 # Upload with explicit version
 fs-cli upload release.bin --name myapp --version 2.1.0
 ```
+
+> **Scan type notes:** The `python` type runs a [Bandit](https://bandit.readthedocs.io/en/latest/) security scan on the uploaded Python source code.
 
 ---
 

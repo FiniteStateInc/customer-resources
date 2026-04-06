@@ -48,7 +48,7 @@ fs-cli upload <file> --name <project-name>
 
 Key flags:
 - `--name` / `--project` (required): project name
-- `--type sca,sast,config,vulnerability_analysis`: scan types (default: sca)
+- `--type sca,sast,config,vulnerability_analysis,python`: scan types (default: sca). The `python` type runs a [Bandit](https://bandit.readthedocs.io/en/latest/) security scan on Python source code.
 - `--version <string>`: version (default: today's date)
 - `--release`: release mode — upload to a clean snapshot (requires `--version`, mutually exclusive with `--version-id`; env: `FS_RELEASE`)
 - `--folder <name>`: scope project find/create to a folder by name (supports globs)
@@ -257,7 +257,7 @@ When the user wants to:
 - **Scope project to a folder**: use `--folder <name>` or `--folder-id <uuid>` (all commands)
 - **Skip project lookup**: use `--project-id <uuid>` to go straight to version creation
 - **Skip version creation**: use `--version-id <uuid>` to upload to an existing version directly
-- **Create a clean release snapshot**: use `--version <name> --release` — archives the previous state as a checkpoint and replaces it with fresh scan results
+- **Create a clean release snapshot**: use `--version <name> --release` — if the version already exists, archives the previous state as a checkpoint and replaces it with fresh scan results; if the version does not exist (or the project is new), creates it normally and uploads directly
 
 ## Error guidance
 
