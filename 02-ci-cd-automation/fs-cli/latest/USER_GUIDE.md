@@ -32,21 +32,35 @@ fs-cli is a software composition analysis tool that scans project dependencies a
 
 ### Automated install
 
+**macOS / Linux:**
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/install.sh | sh
 ```
-
-The installer:
-- Detects your OS (Linux, macOS, Windows) and architecture (x86_64, ARM64)
-- Downloads the correct binary
-- Verifies its SHA-256 checksum
-- Installs to `/usr/local/bin` (or `~/.local/bin` if `/usr/local/bin` is not writable)
 
 Custom install directory:
 
 ```sh
 curl -fsSL .../install.sh | INSTALL_DIR=/opt/tools sh
 ```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/install.ps1 | iex
+```
+
+Custom install directory:
+
+```powershell
+$env:INSTALL_DIR = "C:\tools"; irm .../install.ps1 | iex
+```
+
+The installer:
+- Detects your OS (Linux, macOS, Windows) and architecture (x86_64, ARM64)
+- Downloads the correct binary
+- Verifies its SHA-256 checksum
+- Installs to `/usr/local/bin` (or `~/.local/bin`) on Unix, `%LOCALAPPDATA%\fs-cli` on Windows
 
 ### Manual install
 

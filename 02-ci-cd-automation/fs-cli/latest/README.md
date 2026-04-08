@@ -8,17 +8,31 @@ Single binary, no runtime dependencies. Supports 19 package ecosystems with tran
 
 ### Automated (recommended)
 
+**macOS / Linux:**
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/install.sh | sh
 ```
-
-This detects your OS and architecture, downloads the correct binary, verifies its SHA-256 checksum, and installs to `/usr/local/bin` (or `~/.local/bin` if `/usr/local/bin` is not writable).
 
 To install to a custom directory:
 
 ```sh
 curl -fsSL .../install.sh | INSTALL_DIR=/opt/tools sh
 ```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/install.ps1 | iex
+```
+
+To install to a custom directory:
+
+```powershell
+$env:INSTALL_DIR = "C:\tools"; irm .../install.ps1 | iex
+```
+
+This detects your OS and architecture, downloads the correct binary, verifies its SHA-256 checksum, and installs to `/usr/local/bin` (or `~/.local/bin`) on Unix, `%LOCALAPPDATA%\fs-cli` on Windows.
 
 ### Manual
 
