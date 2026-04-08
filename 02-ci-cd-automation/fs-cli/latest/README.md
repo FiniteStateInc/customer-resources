@@ -45,6 +45,7 @@ Download the binary for your platform from the `latest/` directory in this repos
 | macOS x86_64   | `fs-cli-darwin-amd64`       |
 | macOS ARM64    | `fs-cli-darwin-arm64`       |
 | Windows x86_64 | `fs-cli-windows-amd64.exe`  |
+| Windows ARM64  | `fs-cli-windows-arm64.exe`  |
 
 Verify the checksum against `checksums.txt`, then make it executable:
 
