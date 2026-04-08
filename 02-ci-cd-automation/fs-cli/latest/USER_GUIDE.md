@@ -422,7 +422,9 @@ Update fs-cli to the latest version.
 fs-cli update
 ```
 
-Downloads the latest binary for your platform, verifies its SHA-256 checksum, and atomically replaces the running binary. No arguments or flags required.
+Downloads the latest binary for your platform, verifies its SHA-256 checksum, and replaces the running binary. No arguments or flags required.
+
+On **Windows**, the running executable cannot be deleted, so fs-cli renames the old binary to `fs-cli.exe.old` and writes the new one in its place. The `.old` file is automatically cleaned up on the next invocation.
 
 ---
 

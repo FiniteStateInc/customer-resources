@@ -106,7 +106,7 @@ Key flags:
 fs-cli update
 ```
 
-Self-updates the binary in place.
+Self-updates the binary in place. On Windows, renames the old binary to `.old` and cleans it up on the next run.
 
 ### Version
 
