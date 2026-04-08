@@ -9,10 +9,16 @@ For full usage, flags, and CI/CD integration guidance, see:
 
 ## Quick Start
 
-**Install:**
+**Install (macOS / Linux):**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/install.sh | sh
+```
+
+**Install (Windows PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/install.ps1 | iex
 ```
 
 **Or run directly in CI (no install needed):**
@@ -33,7 +39,8 @@ irm https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-
 
 | File | Description |
 |------|-------------|
-| `install.sh` | One-line installer (detects OS/arch, verifies checksum) |
+| `install.sh` | One-line installer for macOS/Linux (detects OS/arch, verifies checksum) |
+| `install.ps1` | One-line installer for Windows (PowerShell, verifies checksum) |
 | `run-fs-cli.sh` | CI wrapper for Linux/macOS (downloads, caches, and runs fs-cli) |
 | `run-fs-cli.ps1` | CI wrapper for Windows (PowerShell equivalent) |
 | `latest/` | Current release binaries, checksums, and documentation |
