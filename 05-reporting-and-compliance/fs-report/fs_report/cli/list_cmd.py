@@ -59,7 +59,7 @@ def recipes(
     ),
 ) -> None:
     """List all available recipes."""
-    setup_logging(verbose)
+    setup_logging(verbose, json_output=output_json)
     logger = logging.getLogger(__name__)
 
     dir_str = str(recipes_dir) if recipes_dir else None
@@ -212,7 +212,7 @@ def projects(
     ),
 ) -> None:
     """List all available projects."""
-    setup_logging(verbose)
+    setup_logging(verbose, json_output=output_json)
     logger = logging.getLogger(__name__)
 
     try:
@@ -336,7 +336,7 @@ def folders(
     ),
 ) -> None:
     """List all available folders with hierarchy."""
-    setup_logging(verbose)
+    setup_logging(verbose, json_output=output_json)
     logger = logging.getLogger(__name__)
 
     try:
@@ -481,7 +481,7 @@ def versions(
     ),
 ) -> None:
     """List versions for a project, or all versions across the portfolio."""
-    setup_logging(verbose)
+    setup_logging(verbose, json_output=json_output)
     logger = logging.getLogger(__name__)
 
     try:
@@ -978,7 +978,7 @@ def components(
     ),
 ) -> None:
     """List software components (SBOM) for a project's latest version."""
-    setup_logging(verbose)
+    setup_logging(verbose, json_output=json_output)
     logger = logging.getLogger(__name__)
 
     try:

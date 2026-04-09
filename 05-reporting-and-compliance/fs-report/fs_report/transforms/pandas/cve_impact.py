@@ -1025,6 +1025,7 @@ def _enrich_dossiers_with_ai(
                 api_key=nvd_api_key,
                 cache_dir=cache_dir,
                 cache_ttl=max(cache_ttl, 86400),
+                domain=getattr(config, "domain", None),
             )
             logger.info(NVD_ATTRIBUTION)
 

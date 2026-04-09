@@ -19,16 +19,21 @@ _GLOBAL_CONFIG_DIR = Path.home() / ".fs-report"
 _GLOBAL_CONFIG_FILENAMES = ["config.yaml", "config.yml"]
 
 
-def setup_logging(verbose: bool) -> str:
-    """Configure logging with RichHandler and return a unique run ID."""
+def setup_logging(verbose: bool, *, json_output: bool = False) -> str:
+    """Configure logging with RichHandler and return a unique run ID.
+
+    When *json_output* is True the log handler writes to stderr so that
+    log messages do not corrupt machine-readable stdout.
+    """
     from fs_report.logging_utils import generate_run_id
 
     level = logging.DEBUG if verbose else logging.INFO
+    stderr_console = Console(stderr=True) if json_output else console
     logging.basicConfig(
         level=level,
         format="%(message)s",
         datefmt="[%X]",
-        handlers=[RichHandler(console=console, rich_tracebacks=True)],
+        handlers=[RichHandler(console=stderr_console, rich_tracebacks=True)],
         force=True,
     )
     return generate_run_id()

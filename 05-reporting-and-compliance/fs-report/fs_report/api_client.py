@@ -63,6 +63,7 @@ class APIClient:
         sqlite_cache: SQLiteCache | None = None,
         cache_ttl: int = 0,
         cache_refresh: bool = False,
+        is_v2: bool | None = None,
     ) -> None:
         """
         Initialize the API client.
@@ -74,6 +75,9 @@ class APIClient:
             cache_ttl: Cache TTL in seconds. 0 = no cross-run caching (default)
             cache_refresh: If True, bypass cache reads but still write fresh
                 data to cache for future runs.
+            is_v2: Override v2 backend detection.  ``True`` forces v2 backend
+                mode (page-size cap 1000), ``False`` forces legacy mode, and
+                ``None`` (default) triggers auto-detection at init time.
         """
         self.config = config
         self.logger = logging.getLogger(__name__)
@@ -116,6 +120,37 @@ class APIClient:
             headers=self.headers,
         )
 
+        # v2 backend detection
+        if is_v2 is not None:
+            self.is_v2 = is_v2
+        elif getattr(self.config, "data_file", None):
+            self.is_v2 = False
+        else:
+            self.is_v2 = self._detect_v2()
+        self.max_page_size: int = 1000 if self.is_v2 else 10000
+
+    def _detect_v2(self) -> bool:
+        """Auto-detect v2 backend by probing pagination limit cap.
+
+        The v2 backend rejects limit>1000 with a 400 ZodError.
+        Legacy accepts limit=10000+.
+        """
+        try:
+            response = self.client.get(
+                f"{self.base_url}/public/v0/projects",
+                params={"limit": "1001", "archived": "false"},
+                timeout=10,
+            )
+            if response.status_code == 400:
+                self.logger.info(
+                    "Detected v2 backend (limit>1000 rejected). "
+                    "Capping page size at 1000."
+                )
+                return True
+            return False
+        except Exception:
+            return False
+
     def fetch_data(self, query: QueryConfig) -> list[dict[str, Any]]:
         """Fetch a single page of data from the API based on query configuration."""
         self.logger.debug(f"Fetching data from endpoint: {query.endpoint}")
@@ -144,7 +179,7 @@ class APIClient:
         if query.params.sort:
             params["sort"] = query.params.sort
         if query.params.limit is not None:
-            params["limit"] = str(query.params.limit)
+            params["limit"] = str(min(query.params.limit, self.max_page_size))
         if query.params.offset is not None:
             params["offset"] = str(query.params.offset)
         if query.params.archived is not None:
@@ -181,8 +216,14 @@ class APIClient:
                 return data
             elif isinstance(data, dict):
                 # Check for common pagination response formats
-                items = data.get("items") or data.get("scans") or data.get("data")
-                if items and isinstance(items, list):
+                # Use sentinel to distinguish "key absent" from "key present but empty list"
+                _sentinel = object()
+                items = data.get("items", _sentinel)
+                if items is _sentinel:
+                    items = data.get("scans", _sentinel)
+                if items is _sentinel:
+                    items = data.get("data", _sentinel)
+                if items is not _sentinel and isinstance(items, list):
                     self.logger.debug(
                         f"Retrieved {len(items)} records (single page, object format with items/scans/data key)"
                     )
@@ -314,7 +355,8 @@ class APIClient:
             query_hash = self.sqlite_cache.start_fetch(endpoint, params, self.cache_ttl)
 
         # Fetch remaining data
-        limit = getattr(query.params, "limit", 10000) or 10000
+        limit = getattr(query.params, "limit", self.max_page_size) or self.max_page_size
+        limit = min(limit, self.max_page_size)
         consecutive_empty_pages = 0
         max_consecutive_empty = 3
         retry_count = 0
@@ -445,6 +487,15 @@ class APIClient:
                     f"Stored {stored} records in SQLite cache (total: {total_stored})"
                 )
 
+                # The v2 backend returns exact pages — a short page means last page.
+                # Legacy can return short pages mid-stream, so keep going.
+                if self.is_v2 and len(page) < limit:
+                    self.logger.debug(
+                        f"Short page ({len(page)} < {limit}): last page reached (v2 backend)."
+                    )
+                    fetch_completed = True
+                    break
+
                 # Throttle between pages to avoid overloading the server
                 if self.request_delay > 0:
                     time.sleep(self.request_delay)
@@ -478,7 +529,8 @@ class APIClient:
             show_progress: Whether to show tqdm progress bar
         """
         endpoint = query.endpoint
-        limit = getattr(query.params, "limit", 10000) or 10000
+        limit = getattr(query.params, "limit", self.max_page_size) or self.max_page_size
+        limit = min(limit, self.max_page_size)
         offset = 0
         consecutive_empty_pages = 0
         max_consecutive_empty = 3
@@ -592,6 +644,14 @@ class APIClient:
 
                 pbar.update(len(page))
 
+                # The v2 backend returns exact pages — a short page means last page.
+                # Legacy can return short pages mid-stream, so keep going.
+                if self.is_v2 and len(page) < limit:
+                    self.logger.debug(
+                        f"Short page ({len(page)} < {limit}): last page reached (v2 backend)."
+                    )
+                    break
+
                 if self.request_delay > 0:
                     time.sleep(self.request_delay)
 
@@ -617,7 +677,7 @@ class APIClient:
         if query.params.sort:
             params["sort"] = query.params.sort
         if query.params.limit is not None:
-            params["limit"] = str(query.params.limit)
+            params["limit"] = str(min(query.params.limit, self.max_page_size))
         if query.params.offset is not None:
             params["offset"] = str(query.params.offset)
         if query.params.archived is not None:
@@ -635,8 +695,13 @@ class APIClient:
         if isinstance(data, list):
             return data
         elif isinstance(data, dict):
-            items = data.get("items") or data.get("scans") or data.get("data")
-            if items and isinstance(items, list):
+            _sentinel = object()
+            items = data.get("items", _sentinel)
+            if items is _sentinel:
+                items = data.get("scans", _sentinel)
+            if items is _sentinel:
+                items = data.get("data", _sentinel)
+            if items is not _sentinel and isinstance(items, list):
                 return cast(list[dict[str, Any]], items)
             return [data] if data else []
         return [data] if data else []
@@ -683,7 +748,8 @@ class APIClient:
         # Only proceed with API calls if not using cache
         offset = 0
         all_results = []
-        limit = getattr(query.params, "limit", 10000) or 10000
+        limit = getattr(query.params, "limit", self.max_page_size) or self.max_page_size
+        limit = min(limit, self.max_page_size)
         consecutive_empty_pages = 0
         max_consecutive_empty = 3  # Stop after 3 consecutive empty pages
         self.logger.debug(
@@ -827,14 +893,17 @@ class APIClient:
                     f"Fetched {len(all_results)} records so far (page had {len(page)} records). Progress saved to {progress_file}."
                 )
 
+                # The v2 backend returns exact pages — a short page means last page.
+                # Legacy can return short pages mid-stream, so keep going.
+                if self.is_v2 and len(page) < limit:
+                    self.logger.debug(
+                        f"Short page ({len(page)} < {limit}): last page reached (v2 backend)."
+                    )
+                    break
+
                 # Throttle between pages to avoid overloading the server
                 if self.request_delay > 0:
                     time.sleep(self.request_delay)
-
-                # Continue pagination until we get an empty page or duplicates
-                # Don't stop just because a page has fewer than limit records - the API may return
-                # fewer records on the last page, but we should continue to check for more
-                # The loop will continue and check the next page, which will be empty if we've reached the end
         finally:
             pbar.close()
         self.logger.debug(f"Total records fetched: {len(all_results)}")
@@ -929,14 +998,14 @@ class APIClient:
 
     def fetch_sbom(
         self,
-        project_version_id: int,
+        project_version_id: int | str,
         sbom_format: str = "cyclonedx",
         include_vex: bool = True,
     ) -> dict[str, Any]:
         """Download a CycloneDX or SPDX SBOM for a project version.
 
         Args:
-            project_version_id: Numeric project version ID.
+            project_version_id: Project version ID (integer or UUID string).
             sbom_format: ``"cyclonedx"`` or ``"spdx"``.
             include_vex: Whether to include VEX vulnerability data.
 

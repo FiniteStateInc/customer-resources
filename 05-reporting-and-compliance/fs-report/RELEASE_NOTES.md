@@ -1,5 +1,14 @@
 # Release Notes
 
+## Version 1.9.5 (April 2026)
+
+### Bug Fixes
+
+- Fixed CLI `--json` output being corrupted by log messages written to stdout.
+- Improved API compatibility and performance for various backend configurations.
+
+---
+
 ## Version 1.9.3 (April 2026)
 
 ### New Recipes

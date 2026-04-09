@@ -1029,10 +1029,12 @@ def _init_nvd_client(cfg: Any) -> Any:
         cache_dir = getattr(cfg, "cache_dir", None) if cfg else None
         cache_ttl = getattr(cfg, "cache_ttl", 0) if cfg else 0
         nvd_api_key = getattr(cfg, "nvd_api_key", None) if cfg else None
+        domain = getattr(cfg, "domain", None) if cfg else None
         client = NVDClient(
             api_key=nvd_api_key,
             cache_dir=cache_dir,
             cache_ttl=max(cache_ttl or 0, 86400),  # min 24h cache
+            domain=domain,
         )
         logger.info(NVD_ATTRIBUTION)
         return client

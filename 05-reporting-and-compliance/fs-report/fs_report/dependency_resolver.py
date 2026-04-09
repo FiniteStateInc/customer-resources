@@ -36,9 +36,9 @@ logger = logging.getLogger(__name__)
 class DependencyNode:
     """A node in a project version dependency tree."""
 
-    project_id: int
+    project_id: int | str
     project_name: str
-    version_id: int
+    version_id: int | str
     path: list[str]  # e.g. ["Root", "Child", "Grandchild"]
     children: list[DependencyNode] = field(default_factory=list)
 
@@ -51,27 +51,27 @@ class DependencyNode:
     def has_dependencies(self) -> bool:
         return len(self.children) > 0
 
-    def all_version_ids(self) -> list[int]:
+    def all_version_ids(self) -> list:
         """Return all unique version IDs in tree (depth-first)."""
-        seen: set[int] = set()
-        result: list[int] = []
+        seen: set = set()
+        result: list = []
         self._collect_version_ids(seen, result)
         return result
 
-    def _collect_version_ids(self, seen: set[int], result: list[int]) -> None:
+    def _collect_version_ids(self, seen: set, result: list) -> None:
         if self.version_id not in seen:
             seen.add(self.version_id)
             result.append(self.version_id)
         for child in self.children:
             child._collect_version_ids(seen, result)
 
-    def version_id_to_path_map(self) -> dict[int, str]:
+    def version_id_to_path_map(self) -> dict:
         """Map version ID -> dependency path string. First path wins for diamonds."""
-        result: dict[int, str] = {}
+        result: dict = {}
         self._collect_path_map(result)
         return result
 
-    def _collect_path_map(self, result: dict[int, str]) -> None:
+    def _collect_path_map(self, result: dict) -> None:
         if self.version_id not in result:
             result[self.version_id] = self.dependency_path_str
         for child in self.children:
@@ -83,10 +83,10 @@ class DependencyResolver:
 
     def __init__(self, api_client: APIClient) -> None:
         self._api_client = api_client
-        self._cache: dict[int, DependencyNode] = {}
+        self._cache: dict[int | str, DependencyNode] = {}
 
     def resolve(
-        self, project_id: int, project_name: str, version_id: int
+        self, project_id: int | str, project_name: str, version_id: int | str
     ) -> DependencyNode:
         """Resolve full dependency tree. Cached by version_id."""
         if version_id in self._cache:
@@ -99,11 +99,11 @@ class DependencyResolver:
 
     def _resolve_recursive(
         self,
-        project_id: int,
+        project_id: int | str,
         project_name: str,
-        version_id: int,
+        version_id: int | str,
         path: list[str],
-        _visited: set[int] | None = None,
+        _visited: set | None = None,
     ) -> DependencyNode:
         if _visited is None:
             _visited = set()
@@ -133,12 +133,6 @@ class DependencyResolver:
             child_ver_id = dep_version.get("id")
             if not child_proj_id or not child_ver_id:
                 continue
-            # Coerce IDs to int — the API returns string IDs
-            try:
-                child_proj_id = int(child_proj_id)
-                child_ver_id = int(child_ver_id)
-            except (ValueError, TypeError):
-                continue
             child_path = path + [child_proj_name]
             child_node = self._resolve_recursive(
                 child_proj_id, child_proj_name, child_ver_id, child_path, _visited
@@ -152,7 +146,7 @@ class DependencyResolver:
             children=children,
         )
 
-    def _fetch_dependencies(self, version_id: int) -> list[dict]:
+    def _fetch_dependencies(self, version_id: int | str) -> list[dict]:
         url = f"{self._api_client.base_url}/public/v0/project-versions/{version_id}/dependencies"
         try:
             resp = self._api_client.client.get(url, params={"limit": 100})

@@ -163,7 +163,7 @@ def _evaluate_condition(df: pd.DataFrame, condition: dict[str, Any]) -> pd.Serie
     value = condition.get("value")
 
     if field not in df.columns:
-        logger.warning(
+        logger.debug(
             f"Gate condition references unknown column '{field}'; treating as False"
         )
         return pd.Series(False, index=df.index)
@@ -500,10 +500,14 @@ def _init_nvd_client(
             cache_dir = getattr(cfg, "cache_dir", None)
             cache_ttl = getattr(cfg, "cache_ttl", 0) or 0
             nvd_api_key = getattr(cfg, "nvd_api_key", None)
+        domain = getattr(config, "domain", None) if config else None
+        if not domain and additional_data and "config" in additional_data:
+            domain = getattr(additional_data["config"], "domain", None)
         client = NVDClient(
             api_key=nvd_api_key,
             cache_dir=cache_dir,
             cache_ttl=max(cache_ttl, 86400),  # NVD data is stable; cache >= 24 h
+            domain=domain,
         )
         logger.info(NVD_ATTRIBUTION)
         return client
@@ -1023,6 +1027,7 @@ def triage_prioritization_transform(
                 additional_data.get("deployment_context") if additional_data else None
             ),
             nvd_client=nvd_client,
+            domain=getattr(config, "domain", None) if config else None,
         )
 
     # Enrich VEX IN_TRIAGE recommendations with AI mitigation data
@@ -3172,6 +3177,7 @@ def _generate_ai_guidance(
     scoring_config: dict[str, Any] | None = None,
     deployment_context: Any | None = None,
     nvd_client: Any = _UNSET,
+    domain: str | None = None,
 ) -> tuple[str, dict[str, str], dict[str, dict[str, Any]], dict[str, dict[str, str]]]:
     """
     Generate AI remediation guidance at all requested scopes.
@@ -3218,6 +3224,7 @@ def _generate_ai_guidance(
                 api_key=nvd_api_key,
                 cache_dir=cache_dir,
                 cache_ttl=max(cache_ttl, 86400),  # NVD data is stable; cache >= 24 h
+                domain=domain,
             )
             logger.info(NVD_ATTRIBUTION)
             if nvd._api_key:  # noqa: SLF001

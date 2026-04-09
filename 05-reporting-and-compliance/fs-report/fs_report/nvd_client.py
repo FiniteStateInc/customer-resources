@@ -355,8 +355,10 @@ class NVDClient:
         cache_dir: str | None = None,
         cache_ttl: int = 86400,  # 24 hours default
         cancel_event: threading.Event | None = None,
+        domain: str | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("NVD_API_KEY", "")
+        self._domain = domain or os.environ.get("FINITE_STATE_DOMAIN", "")
         self._rate_limit = (
             _RATE_LIMIT_WITH_KEY if self._api_key else _RATE_LIMIT_WITHOUT_KEY
         )
@@ -436,13 +438,16 @@ class NVDClient:
             return {}
 
         try:
+            headers = {
+                "Authorization": f"Bearer {self._service_token}",
+                "Accept": "application/x-ndjson",
+            }
+            if self._domain:
+                headers["X-FS-Domain"] = self._domain
             resp = requests.post(
                 f"{self._service_url}/api/v1/cves",
                 json={"ids": valid_ids},
-                headers={
-                    "Authorization": f"Bearer {self._service_token}",
-                    "Accept": "application/x-ndjson",
-                },
+                headers=headers,
                 timeout=60,
             )
             if not resp.ok:

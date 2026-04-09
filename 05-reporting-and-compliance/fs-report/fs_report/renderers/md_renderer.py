@@ -105,7 +105,7 @@ class MarkdownRenderer:
                     break
 
         if renderer is None:
-            self.logger.warning(
+            self.logger.debug(
                 f"No Markdown renderer for recipe '{recipe.name}'; "
                 f"falling back to generic table export."
             )

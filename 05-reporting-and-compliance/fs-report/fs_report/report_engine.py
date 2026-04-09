@@ -292,6 +292,19 @@ TYPE_TO_CATEGORY = {
     "source_sca": [],
 }
 
+# v2 backend per-version endpoints ignore RSQL category== filters (the category
+# field is always null).  Map legacy API category values to the v2 backend `type`
+# URL param instead.
+_V2_CATEGORY_TO_TYPE = {
+    "CVE": "cve",
+    "SAST_ANALYSIS": "sast",
+}
+
+
+def _v2_category_to_type(category: str) -> str | None:
+    """Convert a legacy API category value to a v2 backend type URL param value."""
+    return _V2_CATEGORY_TO_TYPE.get(category.upper())
+
 
 def build_findings_type_params(finding_types: str) -> dict[str, Any]:
     """
@@ -315,9 +328,10 @@ def build_findings_type_params(finding_types: str) -> dict[str, Any]:
     ]  # credentials, config_issues, etc.
     simple_types = [v for v in values if v in TYPE_VALUES]  # cve, sast, thirdparty
 
-    # CVE-only: use type=cve directly (most efficient)
+    # CVE-only: use category==CVE RSQL filter (preserves reachabilityScore;
+    # type=cve URL param silently drops it — see API quirk #2)
     if simple_types == ["cve"] and not categories:
-        return {"type": "cve", "category_filter": None}
+        return {"type": None, "category_filter": "category==CVE"}
 
     # Single non-CVE type: use type param directly (API accepts sast, thirdparty)
     if (
@@ -414,6 +428,11 @@ class ReportEngine:
             cache_ttl=getattr(config, "cache_ttl", 0),
             cache_refresh=getattr(config, "cache_refresh", False),
         )
+        if self.api_client.is_v2:
+            self.logger.info(
+                "v2 backend detected — page size capped at 1000, "
+                "scan filters use versionId"
+            )
         # Secondary API client for cross-server version comparison
         if config.compare_domain and config.compare_auth_token:
             compare_config = Config(
@@ -450,10 +469,10 @@ class ReportEngine:
         self.data_override = data_override
 
         # Cache for latest version IDs when current_version_only is enabled
-        self._latest_version_ids: list[int] | None = None
+        self._latest_version_ids: list | None = None
 
         # In-memory cache: folder project IDs → latest version IDs (avoids re-resolving per report)
-        self._folder_version_ids_cache: dict[str, list[int]] = {}
+        self._folder_version_ids_cache: dict[str, list] = {}
 
         # In-memory cache: findings data keyed by (endpoint, filter, finding_type, version_ids_hash)
         # Avoids redundant API fetches when multiple reports need the same data
@@ -497,7 +516,7 @@ class ReportEngine:
 
     def _resolve_dependency_tree(
         self,
-        project_id: int,
+        project_id: int | str,
         project_name: str,
         version_id: int,
     ) -> DependencyNode:
@@ -538,10 +557,10 @@ class ReportEngine:
 
     def _expand_version_ids_with_dependencies(
         self,
-        version_ids: list[int],
-        project_id: int,
+        version_ids: list,
+        project_id: int | str,
         project_name: str,
-    ) -> tuple[list[int], DependencyNode | None]:
+    ) -> tuple[list, DependencyNode | None]:
         """Expand version IDs to include dependency project versions.
 
         For single-project mode (--project), resolves the dependency tree
@@ -566,8 +585,8 @@ class ReportEngine:
 
     def _expand_folder_version_ids_with_dependencies(
         self,
-        version_ids: list[int],
-    ) -> tuple[list[int], DependencyNode | None]:
+        version_ids: list,
+    ) -> tuple[list, DependencyNode | None]:
         """Expand version IDs for folder mode by resolving each project's deps.
 
         Builds a synthetic root DependencyNode whose children are per-project
@@ -595,8 +614,8 @@ class ReportEngine:
         )
         all_projects = self.api_client.fetch_all_with_resume(projects_query)
 
-        version_id_set = set(version_ids)
-        vid_to_project: dict[int, tuple[int, str]] = {}
+        version_id_set = {str(v) for v in version_ids}
+        vid_to_project: dict[str, tuple[str, str]] = {}
         for proj in all_projects:
             pid = proj.get("id")
             pname = proj.get("name", "")
@@ -604,17 +623,14 @@ class ReportEngine:
             lv = db.get("latestVersion") or {} if isinstance(db, dict) else {}
             vid = lv.get("id") if isinstance(lv, dict) else None
             if pid and vid is not None:
-                try:
-                    vid_int = int(vid)
-                except (ValueError, TypeError):
-                    continue
-                if vid_int in version_id_set:
-                    vid_to_project[vid_int] = (int(pid), pname)
+                vid_str = str(vid)
+                if vid_str in version_id_set:
+                    vid_to_project[vid_str] = (str(pid), pname)
 
         # Step 2: Fallback — for any version IDs not matched from batch,
         # look up project details individually (handles API responses that
         # omit defaultBranch in list payloads).
-        unmapped = [v for v in version_ids if v not in vid_to_project]
+        unmapped = [v for v in version_ids if str(v) not in vid_to_project]
         if unmapped and self._folder_project_ids:
             self.logger.info(
                 f"Folder dep expansion: {len(unmapped)} version(s) not matched "
@@ -630,10 +646,10 @@ class ReportEngine:
                     lv = db.get("latestVersion") or {} if isinstance(db, dict) else {}
                     vid = lv.get("id") if isinstance(lv, dict) else None
                     if vid is not None:
-                        vid_int = int(vid)
-                        if vid_int in version_id_set and vid_int not in vid_to_project:
-                            vid_to_project[vid_int] = (
-                                int(pid_str),
+                        vid_str = str(vid)
+                        if vid_str in version_id_set and vid_str not in vid_to_project:
+                            vid_to_project[vid_str] = (
+                                str(pid_str),
                                 data.get("name", pid_str),
                             )
                 except Exception:
@@ -642,19 +658,19 @@ class ReportEngine:
                         exc_info=True,
                     )
                 # Stop once all unmapped versions are resolved
-                if all(v in vid_to_project for v in unmapped):
+                if all(str(v) in vid_to_project for v in unmapped):
                     break
 
         # Resolve dependency tree per project
-        all_expanded: list[int] = []
+        all_expanded: list = []
         has_any_deps = False
         per_project_trees: list[DependencyNode] = []
 
         for vid in version_ids:
-            proj_info = vid_to_project.get(vid)
+            proj_info = vid_to_project.get(str(vid))
             if not proj_info:
                 # Still unmapped after fallback — include version without deps
-                self.logger.warning(
+                self.logger.debug(
                     f"Could not resolve project for version {vid}; "
                     "skipping dependency expansion for this version"
                 )
@@ -682,8 +698,8 @@ class ReportEngine:
             return version_ids, None
 
         # Deduplicate while preserving order
-        seen: set[int] = set()
-        deduped: list[int] = []
+        seen: set = set()
+        deduped: list = []
         for vid in all_expanded:
             if vid not in seen:
                 seen.add(vid)
@@ -721,7 +737,7 @@ class ReportEngine:
         if self._cancel_event is not None and self._cancel_event.is_set():
             raise ReportCancelled("Report cancelled by user")
 
-    def _validate_numeric_project_id(self, project_id: int) -> bool:
+    def _validate_numeric_project_id(self, project_id: int | str) -> bool:
         """Check whether *project_id* is a valid project in the API.
 
         Returns ``True`` if the API returns project data for this ID,
@@ -769,11 +785,22 @@ class ReportEngine:
         return None
 
     @staticmethod
+    @staticmethod
+    def _is_id_like(value: str) -> bool:
+        """Return True if *value* looks like an API ID (integer or UUID)."""
+        import re
+
+        if value.isdigit():
+            return True
+        # UUID v4/v5 pattern (with or without hyphens)
+        return bool(re.match(r"^[0-9a-fA-F-]{32,36}$", value))
+
+    @staticmethod
     def _is_glob(value: str) -> bool:
         """Return True if *value* contains glob metacharacters (``*``, ``?``, ``[``)."""
         return any(c in value for c in ("*", "?", "["))
 
-    def _resolve_project_glob(self, pattern: str) -> list[tuple[int, str]]:
+    def _resolve_project_glob(self, pattern: str) -> list[tuple[int | str, str]]:
         """Resolve a glob pattern against all project names.
 
         Returns a list of ``(id, name)`` tuples for every project whose name
@@ -808,7 +835,7 @@ class ReportEngine:
 
         # Match projects against the glob pattern
         pat_lower = pattern.lower()
-        matches: list[tuple[int, str]] = []
+        matches: list[tuple[int | str, str]] = []
         for p in projects:
             name = p.get("name", "")
             pid = p.get("id")
@@ -817,8 +844,8 @@ class ReportEngine:
 
         return matches
 
-    def _resolve_project_id_to_name(self, project_id: int) -> str | None:
-        """Resolve a numeric project ID to its display name.
+    def _resolve_project_id_to_name(self, project_id: int | str) -> str | None:
+        """Resolve a project ID to its display name.
 
         Returns the project name, or None if the lookup fails.
         """
@@ -831,11 +858,13 @@ class ReportEngine:
         except Exception:
             return None
 
-    def _resolve_version_name(self, project_id: int, version_name: str) -> int | None:
-        """Resolve a version name to its numeric API ID within a project.
+    def _resolve_version_name(
+        self, project_id: int | str, version_name: str
+    ) -> int | str | None:
+        """Resolve a version name to its API ID within a project.
 
         Fetches the version list for *project_id* and performs a
-        case-insensitive name match.  Returns the numeric version ID,
+        case-insensitive name match.  Returns the version ID,
         or None if not found.
         """
         try:
@@ -855,7 +884,7 @@ class ReportEngine:
         for v in versions:
             name = v.get("version") or v.get("name") or ""
             if str(name).lower() == version_name.lower():
-                vid: int | None = v.get("id")
+                vid: int | str | None = v.get("id")
                 return vid
 
         # Fuzzy hint: show close matches
@@ -1084,7 +1113,7 @@ class ReportEngine:
         self._project_map_cache = pf_map
         return pf_map
 
-    def _get_latest_version_ids(self) -> list[int]:
+    def _get_latest_version_ids(self) -> list:
         """Fetch latest version IDs for all projects (cached)."""
         if self._latest_version_ids is not None:
             return self._latest_version_ids
@@ -1121,7 +1150,7 @@ class ReportEngine:
         self._latest_version_ids = version_ids
         return version_ids
 
-    def _get_latest_version_ids_for_projects(self, project_ids: list) -> list[int]:
+    def _get_latest_version_ids_for_projects(self, project_ids: list) -> list:
         """Fetch the current (latest) version ID for each given project.
 
         Uses the project's defaultBranch.latestVersion.id which is the
@@ -1193,10 +1222,10 @@ class ReportEngine:
     @staticmethod
     def _extract_version_ids_from_projects(
         projects: list[dict], requested_ids: set[str]
-    ) -> list[int]:
+    ) -> list:
         """Extract defaultBranch.latestVersion.id from a list of project dicts."""
         logger = logging.getLogger(__name__)
-        version_ids: list[int] = []
+        version_ids: list = []
         for project in projects:
             pid = str(project.get("id", ""))
             if pid not in requested_ids:
@@ -1219,7 +1248,7 @@ class ReportEngine:
                 )
         return version_ids
 
-    def _fetch_version_ids_per_project(self, project_ids: list) -> list[int]:
+    def _fetch_version_ids_per_project(self, project_ids: list) -> list:
         """Fetch defaultBranch.latestVersion.id one project at a time.
 
         Used as a fallback when the batch /projects list doesn't include
@@ -1228,7 +1257,7 @@ class ReportEngine:
         from tqdm import tqdm
 
         delay = max(0.5, self.config.request_delay)
-        version_ids: list[int] = []
+        version_ids: list = []
         for pid in tqdm(
             project_ids,
             desc="Fetching latest versions",
@@ -1271,7 +1300,7 @@ class ReportEngine:
         entity_type: str,
         finding_type: str = "",
         category_filter: str | None = None,
-        batch_version_ids: list[int] | None = None,
+        batch_version_ids: list | None = None,
     ) -> None:
         """Split batch results by projectVersion.id and cache each version individually.
 
@@ -1437,7 +1466,7 @@ class ReportEngine:
             Merged list of records across all requested versions.
         """
         all_records: list[dict] = []
-        missing: list[int] = []
+        missing: list = []
 
         for vid in version_ids:
             cached = self._check_version_in_cache(
@@ -1487,7 +1516,7 @@ class ReportEngine:
 
             new_records = self._fetch_with_version_batching(
                 base_query,
-                sorted(missing, key=lambda x: int(x)),
+                sorted(missing, key=str),
                 finding_type=finding_type,
                 category_filter=category_filter,
                 entity_type=entity_type,
@@ -1514,7 +1543,7 @@ class ReportEngine:
     def _fetch_with_version_batching(
         self,
         base_query: "QueryConfig",
-        version_ids: list[int],
+        version_ids: list,
         batch_size: int | None = None,
         finding_type: str = "",
         category_filter: str | None = None,
@@ -1589,42 +1618,132 @@ class ReportEngine:
             for i in pbar:
                 batch_ids = uncached_ids[i : i + batch_size]
 
-                # Build version filter
-                version_filter = (
-                    f"projectVersion=in=({','.join(str(v) for v in batch_ids)})"
-                )
-
-                # Combine with existing filter (MUST preserve base filter like type!=file)
-                if base_query.params.filter:
-                    combined_filter = f"{base_query.params.filter};{version_filter}"
-                else:
-                    combined_filter = version_filter
-
-                self.logger.debug(
-                    f"Batch {i//batch_size + 1}/{total_batches} filter: {combined_filter[:100]}..."
-                )
-
-                # Create batch query
                 from fs_report.models import QueryConfig, QueryParams
 
-                batch_query = QueryConfig(
-                    endpoint=base_query.endpoint,
-                    params=QueryParams(
-                        limit=base_query.params.limit,
-                        filter=combined_filter,
-                        finding_type=base_query.params.finding_type,
-                        archived=False if entity_type == "findings" else None,
-                        excluded=False if entity_type == "findings" else None,
-                        include_additional_details=base_query.params.include_additional_details,
-                    ),
-                )
+                if self.api_client.is_v2:
+                    # v2 backend path: fetch each version individually via
+                    # /versions/{vid}/findings (or /components).  The
+                    # portfolio-wide /findings endpoint returns 500 on the
+                    # v2 backend when RSQL filters are used.
+                    batch_results: list[dict] = []
+                    for vid_idx, vid in enumerate(batch_ids):
+                        per_version_endpoint = (
+                            f"/public/v0/versions/{vid}/{entity_type}"
+                        )
 
-                # Use skip_cache_store to avoid duplicating batch-level SQLite entries
-                batch_results = self.api_client.fetch_all_with_resume(
-                    batch_query,
-                    show_progress=False,
-                    skip_cache_store=True,
-                )
+                        # Build per-version filter and type param.
+                        # v2 backend per-version endpoints don't support RSQL
+                        # category== filters (the category field is always
+                        # null).  Convert category filters to the `type`
+                        # URL param instead, and strip projectVersion
+                        # clauses (endpoint is already version-scoped).
+                        per_version_filter: str | None = None
+                        v2_finding_type = base_query.params.finding_type
+                        if base_query.params.filter:
+                            kept_parts: list[str] = []
+                            for p in base_query.params.filter.split(";"):
+                                stripped = p.strip()
+                                if stripped.startswith("projectVersion"):
+                                    continue
+                                # Convert category==CVE -> type=cve URL param
+                                if stripped.startswith("category=="):
+                                    cat_val = stripped.split("==", 1)[1]
+                                    v2_finding_type = (
+                                        _v2_category_to_type(cat_val) or v2_finding_type
+                                    )
+                                    continue
+                                # Convert category=in=(...) -> type param
+                                # (only if single category; multi not
+                                # supported via URL param, fetch all and
+                                # post-filter)
+                                if stripped.startswith("category=in="):
+                                    cats = stripped.split("(", 1)[1].rstrip(")")
+                                    cat_list = [c.strip() for c in cats.split(",")]
+                                    if len(cat_list) == 1:
+                                        v2_finding_type = (
+                                            _v2_category_to_type(cat_list[0])
+                                            or v2_finding_type
+                                        )
+                                    # else: skip filter, fetch all and post-filter
+                                    continue
+                                kept_parts.append(p)
+                            if kept_parts:
+                                per_version_filter = ";".join(kept_parts)
+
+                        self.logger.debug(
+                            f"v2 backend per-version fetch {vid_idx + 1}/"
+                            f"{len(batch_ids)} in batch "
+                            f"{i // batch_size + 1}/{total_batches}: "
+                            f"endpoint={per_version_endpoint} "
+                            f"filter={per_version_filter} "
+                            f"type={v2_finding_type}"
+                        )
+
+                        vid_query = QueryConfig(
+                            endpoint=per_version_endpoint,
+                            params=QueryParams(
+                                limit=base_query.params.limit,
+                                filter=per_version_filter,
+                                finding_type=v2_finding_type,
+                                archived=(False if entity_type == "findings" else None),
+                                excluded=(False if entity_type == "findings" else None),
+                                include_additional_details=base_query.params.include_additional_details,
+                            ),
+                        )
+
+                        vid_results = self.api_client.fetch_all_with_resume(
+                            vid_query,
+                            show_progress=False,
+                            skip_cache_store=True,
+                        )
+                        batch_results.extend(vid_results)
+
+                        # Cooldown between individual versions within a batch
+                        if vid_idx + 1 < len(batch_ids):
+                            cooldown_between = self._volume_based_cooldown(
+                                len(vid_results)
+                            )
+                            if cooldown_between > 0:
+                                time.sleep(cooldown_between)
+
+                else:
+                    # Legacy path: batch version IDs with RSQL filter against
+                    # the portfolio-wide /findings endpoint.
+
+                    # Build version filter
+                    version_filter = (
+                        f"projectVersion=in=({','.join(str(v) for v in batch_ids)})"
+                    )
+
+                    # Combine with existing filter (MUST preserve base filter like type!=file)
+                    if base_query.params.filter:
+                        combined_filter = f"{base_query.params.filter};{version_filter}"
+                    else:
+                        combined_filter = version_filter
+
+                    self.logger.debug(
+                        f"Batch {i//batch_size + 1}/{total_batches} filter: {combined_filter[:100]}..."
+                    )
+
+                    # Create batch query
+                    batch_query = QueryConfig(
+                        endpoint=base_query.endpoint,
+                        params=QueryParams(
+                            limit=base_query.params.limit,
+                            filter=combined_filter,
+                            finding_type=base_query.params.finding_type,
+                            archived=False if entity_type == "findings" else None,
+                            excluded=False if entity_type == "findings" else None,
+                            include_additional_details=base_query.params.include_additional_details,
+                        ),
+                    )
+
+                    # Use skip_cache_store to avoid duplicating batch-level SQLite entries
+                    batch_results = self.api_client.fetch_all_with_resume(
+                        batch_query,
+                        show_progress=False,
+                        skip_cache_store=True,
+                    )
 
                 # Split and cache per-version (in-memory + SQLite).
                 # Pass batch_ids so versions with 0 results are cached as
@@ -1749,11 +1868,11 @@ class ReportEngine:
             if not self._resolve_folder_scope():
                 return _fail
 
-        # Resolve project name to numeric ID if needed (API filters require numeric IDs)
+        # Resolve project name to ID if needed (API filters require IDs)
         if self.config.project_filter and not self.data_override:
-            try:
-                pid = int(self.config.project_filter)
-                # Numeric ID — validate it actually refers to a project
+            if self._is_id_like(self.config.project_filter):
+                pid = self.config.project_filter
+                # ID-like value — validate it actually refers to a project
                 if not self._validate_numeric_project_id(pid):
                     self.logger.error(
                         f"No project found with ID {pid}. "
@@ -1763,9 +1882,9 @@ class ReportEngine:
                         "Use 'fs-report list-projects' to see available projects."
                     )
                     return _fail
-                # Resolve numeric ID to project name for display
+                # Resolve ID to project name for display
                 self.resolved_project_name = self._resolve_project_id_to_name(pid)
-            except ValueError:
+            else:
                 filter_value = self.config.project_filter
                 if self._is_glob(filter_value):
                     matches = self._resolve_project_glob(filter_value)
@@ -1820,7 +1939,7 @@ class ReportEngine:
             )
             return _fail
 
-        # Resolve version name to numeric ID if needed (API filters require numeric IDs)
+        # Resolve version name to ID if needed (API filters require IDs)
         if self.config.version_filter and not self.data_override:
             if not self.config.project_filter:
                 self.logger.error(
@@ -1828,27 +1947,24 @@ class ReportEngine:
                     "Use --project-filter to specify the project."
                 )
                 return _fail
-            try:
-                int(self.config.version_filter)
-                # Already a numeric ID — no resolution needed
-            except ValueError:
-                try:
-                    project_id = int(self.config.project_filter)
-                except ValueError:
+            if self._is_id_like(self.config.version_filter):
+                pass  # Already an ID — no resolution needed
+            else:
+                if not self._is_id_like(self.config.project_filter):
                     # project_filter should already be resolved above
                     self.logger.error(
                         f"Cannot resolve version name '{self.config.version_filter}': "
-                        f"project filter '{self.config.project_filter}' is not a numeric ID."
+                        f"project filter '{self.config.project_filter}' is not an ID."
                     )
                     return _fail
-                resolved_id = self._resolve_version_name(
-                    project_id, self.config.version_filter
+                resolved_ver_id = self._resolve_version_name(
+                    self.config.project_filter, self.config.version_filter
                 )
-                if resolved_id:
+                if resolved_ver_id:
                     self.logger.info(
-                        f"Resolved version '{self.config.version_filter}' to ID {resolved_id}"
+                        f"Resolved version '{self.config.version_filter}' to ID {resolved_ver_id}"
                     )
-                    self.config.version_filter = str(resolved_id)
+                    self.config.version_filter = str(resolved_ver_id)
                 else:
                     self.logger.error(
                         f"Could not resolve version name '{self.config.version_filter}' "
@@ -2038,7 +2154,7 @@ class ReportEngine:
         base_output.mkdir(parents=True, exist_ok=True)
 
         for pi, pid in enumerate(project_ids, 1):
-            project_name = self._resolve_project_id_to_name(int(pid))
+            project_name = self._resolve_project_id_to_name(pid)
             if not project_name:
                 project_name = pid
             self.logger.info(
@@ -2109,7 +2225,7 @@ class ReportEngine:
 
     def _search_components(
         self,
-    ) -> tuple[list[dict[str, Any]], set[int]] | None:
+    ) -> tuple[list[dict[str, Any]], set] | None:
         """Search for components by name via /public/v0/components/search.
 
         Uses ``self.config.component_filter`` (comma-separated specs).
@@ -2255,7 +2371,7 @@ class ReportEngine:
         _folder_pid_strs = (
             {str(p) for p in folder_project_ids} if folder_project_ids else None
         )
-        version_ids: set[int] = set()
+        version_ids: set = set()
         for comp in all_components:
             # Handle both search endpoint shape and ComponentV0 shape
             proj = comp.get("project") or {}
@@ -2281,7 +2397,7 @@ class ReportEngine:
                 if str(proj_id) not in _folder_pid_strs:
                     continue
 
-            version_ids.add(int(pv_id))
+            version_ids.add(str(pv_id))
 
         # Cap version IDs to avoid URL-too-long (414) on the findings RSQL
         _MAX_VERSION_IDS = 200
@@ -3500,7 +3616,7 @@ class ReportEngine:
                         # components by name first to get version IDs, then scope
                         # the findings query to only those versions.
                         _component_search_results: list[dict] | None = None
-                        _component_version_ids: set[int] | None = None
+                        _component_version_ids: set | None = None
                         _is_component_scoped = getattr(
                             self.config, "component_filter", None
                         ) and recipe.name in (
@@ -3640,29 +3756,18 @@ class ReportEngine:
 
                             if self.config.version_filter:
                                 # Resolve dependencies for pinned version
-                                try:
-                                    _vf_proj_id = int(self.config.project_filter)
-                                except ValueError:
-                                    _vf_proj_id = None
-                                try:
-                                    _vf_ver_id = int(self.config.version_filter)
-                                except (ValueError, TypeError):
-                                    _vf_ver_id = None
+                                _vf_proj_id = self.config.project_filter
+                                _vf_ver_id = self.config.version_filter
                                 _vf_proj_name = self.resolved_project_name or str(
-                                    _vf_proj_id or self.config.project_filter
+                                    _vf_proj_id
                                 )
-                                if _vf_proj_id is not None and _vf_ver_id is not None:
-                                    _dep_vids, self._current_dependency_tree = (
-                                        self._expand_version_ids_with_dependencies(
-                                            [_vf_ver_id],
-                                            _vf_proj_id,
-                                            _vf_proj_name,
-                                        )
+                                _dep_vids, self._current_dependency_tree = (
+                                    self._expand_version_ids_with_dependencies(
+                                        [_vf_ver_id],
+                                        _vf_proj_id,
+                                        _vf_proj_name,
                                     )
-                                else:
-                                    _dep_vids = (
-                                        [_vf_ver_id] if _vf_ver_id is not None else []
-                                    )
+                                )
                                 if len(_dep_vids) > 1:
                                     # Has dependencies — use version batching
                                     _vf = self._get_findings_for_versions(
@@ -3714,10 +3819,7 @@ class ReportEngine:
                                     )
                             elif self.config.current_version_only:
                                 # Use entity-level caching (consistent with folder/scan paths)
-                                try:
-                                    _proj_id = int(self.config.project_filter)
-                                except ValueError:
-                                    _proj_id = None
+                                _proj_id = self.config.project_filter
                                 if _proj_id is not None:
                                     latest_vids = (
                                         self._get_latest_version_ids_for_projects(
@@ -4788,6 +4890,7 @@ class ReportEngine:
                         api_key=getattr(self.config, "nvd_api_key", None),
                         cache_dir=getattr(self.config, "cache_dir", None),
                         cache_ttl=max(getattr(self.config, "cache_ttl", 0), 86400),
+                        domain=getattr(self.config, "domain", None),
                     )
                     additional_data["nvd_client"] = _fpa_nvd
                 except Exception as e:
@@ -4912,11 +5015,7 @@ class ReportEngine:
             if recipe.name == "Executive Dashboard" and not raw_data.empty:
                 comp_filters = ["type!=file"]
                 if self.config.project_filter:
-                    try:
-                        _proj_id = int(self.config.project_filter)
-                        comp_filters.append(f"project=={_proj_id}")
-                    except ValueError:
-                        comp_filters.append(f"project=={self.config.project_filter}")
+                    comp_filters.append(f"project=={self.config.project_filter}")
                 elif self._folder_project_ids:
                     folder_pids = sorted(self._folder_project_ids)
                     # Batch folder project IDs to avoid 414 URL Too Long
@@ -4964,7 +5063,7 @@ class ReportEngine:
                 if comp_filters is not None:
                     # For portfolio-wide (no project, no folder), extract
                     # project IDs from already-fetched findings to batch.
-                    _portfolio_pids: list[int] = []
+                    _portfolio_pids: list = []
                     if (
                         not self.config.project_filter
                         and not self._folder_project_ids
@@ -4974,9 +5073,9 @@ class ReportEngine:
                         for col in ("projectId", "project_id"):
                             if col in raw_data.columns:
                                 _portfolio_pids = sorted(
-                                    int(float(p))
+                                    str(p)
                                     for p in raw_data[col].dropna().unique()
-                                    if str(p).replace(".", "", 1).isdigit()
+                                    if p is not None and str(p).strip()
                                 )
                                 break
 
@@ -5395,7 +5494,7 @@ class ReportEngine:
     @staticmethod
     def _filter_findings_by_version_ids(
         findings: list[dict],
-        version_ids: set[int],
+        version_ids: set,
     ) -> list[dict]:
         """Keep only findings whose projectVersion.id is in *version_ids*.
 
@@ -5403,6 +5502,8 @@ class ReportEngine:
         (SQLite cache).  Findings with no extractable version ID are kept
         as a safety net.
         """
+        # Normalize IDs to strings so int/UUID comparisons work uniformly
+        str_version_ids = {str(v) for v in version_ids}
         result: list[dict] = []
         for f in findings:
             pv_obj = f.get("projectVersion")
@@ -5410,11 +5511,8 @@ class ReportEngine:
                 ver_id = pv_obj.get("id")
             else:
                 ver_id = f.get("projectVersion.id") or f.get("project_version_id")
-            try:
-                ver_int = int(ver_id) if ver_id is not None else None
-            except (ValueError, TypeError):
-                ver_int = None
-            if ver_int is None or ver_int in version_ids:
+            ver_str = str(ver_id) if ver_id is not None else None
+            if ver_str is None or ver_str in str_version_ids:
                 result.append(f)
         return result
 
@@ -5559,6 +5657,7 @@ class ReportEngine:
                 cache_dir=getattr(self.config, "cache_dir", None),
                 cache_ttl=max(getattr(self.config, "cache_ttl", 0) or 0, 86400),
                 cancel_event=self._cancel_event,
+                domain=getattr(self.config, "domain", None),
             )
             self.logger.info(NVD_ATTRIBUTION)
             nvd_results = nvd.get_batch(cve_ids_ordered, progress=True)
@@ -5577,18 +5676,11 @@ class ReportEngine:
         # Pre-fetch authoritative latest version IDs (from
         # defaultBranch.latestVersion.id) so we can filter per-CVE
         # findings to only the current version of each project.
-        latest_version_ids: set[int] | None = None
+        latest_version_ids: set | None = None
         if self.config.current_version_only:
             try:
                 auth_ids = self._get_latest_version_ids()
-                # Force int conversion — the helpers don't always coerce,
-                # and SQLite cache can stringify values.
-                latest_version_ids = set()
-                for v in auth_ids:
-                    try:
-                        latest_version_ids.add(int(v))
-                    except (ValueError, TypeError):
-                        pass
+                latest_version_ids = {str(v) for v in auth_ids if v is not None}
             except Exception:
                 self.logger.warning(
                     "Failed to resolve authoritative version IDs",
@@ -5695,6 +5787,7 @@ class ReportEngine:
                 cache_dir=getattr(self.config, "cache_dir", None),
                 cache_ttl=max(getattr(self.config, "cache_ttl", 0) or 0, 86400),
                 cancel_event=self._cancel_event,
+                domain=getattr(self.config, "domain", None),
             )
             self.logger.info(NVD_ATTRIBUTION)
 
@@ -5796,6 +5889,7 @@ class ReportEngine:
             cache_dir=getattr(self.config, "cache_dir", None),
             cache_ttl=max(getattr(self.config, "cache_ttl", 0) or 0, 86400),
             cancel_event=self._cancel_event,
+            domain=getattr(self.config, "domain", None),
         )
         self.logger.info(NVD_ATTRIBUTION)
 
@@ -6145,9 +6239,10 @@ class ReportEngine:
             )
 
         if self.config.version_filter:
-            additional_filters.append(f"projectVersion=={self.config.version_filter}")
+            field = "versionId" if self.api_client.is_v2 else "projectVersion"
+            additional_filters.append(f"{field}=={self.config.version_filter}")
             self.logger.debug(
-                f"Added version filter to scans: projectVersion=={self.config.version_filter}"
+                f"Added version filter to scans: {field}=={self.config.version_filter}"
             )
 
         if getattr(self.config, "scan_types", None):
@@ -6226,8 +6321,8 @@ class ReportEngine:
         from fs_report.sbom_parser import parse_cyclonedx
 
         # Collect unique version IDs (drop unknowns / empty strings)
-        vid_series = pd.to_numeric(raw_data[version_id_col], errors="coerce").dropna()
-        version_ids = sorted({int(v) for v in vid_series})
+        vid_series = raw_data[version_id_col].dropna().astype(str)
+        version_ids = sorted({v for v in vid_series if v.strip() and v != "nan"})
 
         if not version_ids:
             return raw_data
