@@ -608,24 +608,52 @@ def customer_brief_transform(
     scan_metadata["organization"] = organization
 
     # ---- Severity distribution ----
+    # "OTHER" captures findings whose severity is not one of the five CVSS
+    # classifications — SAST/config/crypto findings normalized to "UNKNOWN",
+    # or CVE findings missing CVSS scoring. Surfacing this bucket so the
+    # Total Open KPI reconciles with the severity breakdown instead of
+    # leaving a silent gap.
+    _STANDARD_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"}
     severity_distribution: dict[str, int] = {
         "CRITICAL": 0,
         "HIGH": 0,
         "MEDIUM": 0,
         "LOW": 0,
         "INFORMATIONAL": 0,
+        "OTHER": 0,
     }
+    other_count = 0
     if total > 0:
         vc = df["severity"].value_counts().to_dict()
-        for sev in severity_distribution:
+        for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"):
             severity_distribution[sev] = int(vc.get(sev, 0))
+        other_count = int((~df["severity"].isin(_STANDARD_SEVERITIES)).sum())
+        severity_distribution["OTHER"] = other_count
+    summary["other_count"] = other_count
 
     # ---- Component license distribution (from components additional_data) ----
+    # Apply the same project-version filter as sbom_stats so the chart's
+    # universe matches the "N Components" KPI. Track components missing
+    # license metadata so the template can render a footnote explaining
+    # any gap between the two numbers.
     component_license_distribution: list[dict[str, Any]] = []
+    components_missing_license = 0
     if raw_components:
         license_counter: dict[str, int] = {}
+        _lic_version_ids = (
+            set(df["project_version_id"].dropna().astype(str).unique())
+            if total > 0
+            else set()
+        )
         for comp in raw_components:
             if not isinstance(comp, dict):
+                continue
+            pv_field = comp.get("projectVersion") or comp.get("projectVersionId") or ""
+            if isinstance(pv_field, dict):
+                pv = _safe_str(pv_field.get("id"))
+            else:
+                pv = _safe_str(pv_field)
+            if _lic_version_ids and pv not in _lic_version_ids:
                 continue
             lic_str = (
                 _safe_str(comp.get("declaredLicenses"))
@@ -637,6 +665,8 @@ def customer_brief_transform(
                     part = part.strip()
                     if part:
                         license_counter[part] = license_counter.get(part, 0) + 1
+            else:
+                components_missing_license += 1
         for lic, cnt in sorted(
             license_counter.items(), key=lambda x: x[1], reverse=True
         )[:10]:
@@ -756,6 +786,7 @@ def customer_brief_transform(
         "logo_image_b64": logo_image_b64,
         "severity_distribution": severity_distribution,
         "component_license_distribution": component_license_distribution,
+        "components_missing_license": components_missing_license,
         "component_risk_ranking": component_risk_ranking,
         "reachability_summary": reachability_summary,
         "exploit_maturity_summary": exploit_maturity_summary,

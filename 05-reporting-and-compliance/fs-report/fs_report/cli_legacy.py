@@ -116,7 +116,11 @@ def create_config(
     vex_override: bool = False,
     overwrite: bool = False,
     logo: str | None = None,
+    detailed: bool = False,
 ) -> Config:
+    # Track whether the user explicitly specified the period. Defaults set at
+    # line 63 mean start_date/end_date are always populated.
+    period_explicit = bool(period)
     # Handle period parameter
     if period:
         try:
@@ -149,20 +153,31 @@ def create_config(
                 "[red]Error: Domain required. Set FINITE_STATE_DOMAIN environment variable or use --domain.[/red]"
             )
             raise typer.Exit(2)
-    # Validate finding_types
+    # Validate finding_types. binary_sca / source_sca are accepted for
+    # backward compatibility but stripped with a deprecation warning —
+    # they are scan types, not finding-type filters, and the API has no
+    # equivalent filter for them.
     valid_finding_types = {
         "cve",
         "sast",
         "thirdparty",
-        "binary_sca",
-        "source_sca",
         "credentials",
         "config_issues",
         "crypto_material",
         "all",
     }
+    deprecated_finding_types = {"binary_sca", "source_sca"}
     if finding_types:
         types_list = [t.strip().lower() for t in finding_types.split(",")]
+        deprecated = [t for t in types_list if t in deprecated_finding_types]
+        if deprecated:
+            console.print(
+                f"[yellow]Warning: --finding-types value(s) {', '.join(sorted(set(deprecated)))} "
+                "are deprecated and ignored — these are scan types, not "
+                "finding-type filters; the API has no equivalent filter.[/yellow]"
+            )
+            types_list = [t for t in types_list if t not in deprecated_finding_types]
+            finding_types = ",".join(types_list) if types_list else "cve"
         invalid_types = set(types_list) - valid_finding_types
         if invalid_types:
             console.print(
@@ -220,6 +235,7 @@ def create_config(
         output_dir=str(Path(output or "./output").expanduser()),
         start_date=start,
         end_date=end,
+        period_explicit=period_explicit,
         verbose=verbose,
         recipe_filter=recipe,
         project_filter=project_filter,
@@ -256,6 +272,7 @@ def create_config(
         vex_override=vex_override,
         overwrite=overwrite,
         logo=logo,
+        detailed_mode=detailed,
     )
 
 
@@ -376,6 +393,8 @@ def list_projects(
             output_dir="./output",
             start_date="2025-01-01",
             end_date="2025-01-31",
+            period_explicit=False,
+            detailed_mode=False,
             verbose=verbose,
         )
 
@@ -480,6 +499,8 @@ def list_folders(
             output_dir="./output",
             start_date="2025-01-01",
             end_date="2025-01-31",
+            period_explicit=False,
+            detailed_mode=False,
             verbose=verbose,
         )
 
@@ -610,6 +631,8 @@ def list_versions(
             output_dir="./output",
             start_date="2025-01-01",
             end_date="2025-01-31",
+            period_explicit=False,
+            detailed_mode=False,
             verbose=verbose,
         )
 
@@ -1019,6 +1042,7 @@ def run_reports(
     vex_override: bool = False,
     overwrite: bool = False,
     logo: str | None = None,
+    detailed: bool = False,
 ) -> None:
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
@@ -1073,6 +1097,7 @@ def run_reports(
             vex_override=vex_override,
             overwrite=overwrite,
             logo=logo,
+            detailed=detailed,
         )
         logger.info("Configuration:")
         logger.info(f"  Domain: {config.domain}")
@@ -1252,13 +1277,15 @@ def main(
         "cve",
         "--finding-types",
         "-ft",
-        help="Finding types to include. Types: cve, sast, thirdparty, binary_sca, source_sca. Categories: credentials, config_issues, crypto_material. Use 'all' for everything. Comma-separated for multiple (e.g. cve,sast).",
+        help="Finding types to include. Types: cve, sast, thirdparty. Categories: credentials, config_issues, crypto_material. Use 'all' for everything. Comma-separated for multiple (e.g. cve,sast). Note: thirdparty cannot be combined with other types in one query — pass it alone or use 'all'.",
     ),
     current_version_only: bool = typer.Option(
         True,
         "--current-version-only/--all-versions",
         "-cvo/-av",
-        help="Latest version only (default, fast) or all versions (slow, includes historical data)",
+        help="Only include latest version per project (default). "
+        "Note: Executive Dashboard summary mode is inherently current-version-only; "
+        "this flag is inert in that mode and only affects --detailed runs.",
     ),
     cache_ttl: str | None = typer.Option(
         None,
@@ -1441,6 +1468,13 @@ def main(
         help="Logo image for HTML reports. Filename (resolved in ~/.fs-report/logos/) "
         "or absolute path. Supports PNG, SVG, JPG, WebP.",
     ),
+    detailed: bool = typer.Option(
+        False,
+        "--detailed",
+        help="Executive Dashboard: use legacy findings-fetch pipeline "
+        "(slower; enables Critical/High severity-over-time and per-finding "
+        "detection histograms). Default is summary mode.",
+    ),
     no_bundled_recipes: bool = typer.Option(
         False,
         "--no-bundled-recipes",
@@ -1549,6 +1583,7 @@ def main(
         vex_override=vex_override,
         overwrite=overwrite,
         logo=logo,
+        detailed=detailed,
     )
 
     # Launch local HTTP server if requested (helps with CORS for interactive buttons)

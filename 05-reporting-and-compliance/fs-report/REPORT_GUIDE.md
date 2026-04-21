@@ -1269,45 +1269,68 @@ fs-report run --recipe "Version Comparison" \
 **Important:** This report does **not** run by default. You must explicitly request it:
 
 ```bash
-fs-report run --recipe "Executive Dashboard" --period 90d
+fs-report run --recipe "Executive Dashboard"
 ```
 
-**What it shows (11 sections):**
+**Modes (1.9.6+):** summary (default) and detailed (`--detailed`).
 
-| Section | Description |
-|---------|-------------|
-| **KPI Cards** | Projects, policy violations, warnings, components, total findings — each with a delta indicator |
+- **Summary mode** uses platform summary-count endpoints to render all 13 panels in under 10 minutes portfolio-wide. No per-finding data is fetched. RSQL-batched `/components` and `/versions` prefetching cuts round-trip count by 10–50x; warm-cache reruns skip the batch phases entirely when every id is already cached.
+- **Detailed mode** (`--detailed`) runs the legacy per-finding fetch pipeline. Slower (10+ hours on large portfolios) but enables per-severity Critical/High trend lines and per-finding detection histograms.
+
+**Period scoping (1.9.6+):** when `--period`, `--start`, or `--end` is explicit, summary mode restricts KPIs and charts to projects whose current version was scanned within that window. Default runs (no explicit period) aggregate the entire portfolio. Pass `--period 10y` to force all-time aggregation with an explicit window.
+
+**What it shows (13 panels):**
+
+| Panel | Description |
+|-------|-------------|
+| **SCA Summary KPIs** | Projects, Components, Total Findings, Policy Violations, Policy Warnings. Sourced from live summary counts + fetched components list, not cached rollups. |
 | **Findings by Folder** | Stacked bar chart of severity distribution across folders (portfolio view) |
 | **Findings by Project** | Stacked bar chart of severity distribution across projects (`--folder` view) |
-| **Severity Trends** | Line chart tracking Critical & High findings over the last 12 months |
-| **Highest-Risk Products** | Doughnut chart + table with a composite risk score (Critical×10 + High×5 + Medium×2 + Low×0.5) |
-| **Open Issues by Severity** | Pie chart of unresolved findings by severity level |
-| **License Distribution** | Horizontal bar chart of the top 10 licenses by component count |
-| **Exploit Intelligence** | Horizontal bar chart showing CISA KEV and known exploit counts |
-| **Findings by Type** | Horizontal bar chart of CVE, Crypto, Credentials, Config Issues, etc. |
-| **Finding Age Distribution** | Horizontal bar chart bucketed by 0–30, 30–90, 90–180, and 180+ days |
-| **Project Findings Summary** | Full-width table listing every project with per-severity counts |
+| **Severity Trends** | Summary mode: single "Total Findings" line, month-end inventory from `/versions` history, titled with the actual period window. Detailed mode: per-severity Critical & High lines. |
+| **Highest-Risk Products (Risk Donut)** | Doughnut chart + table with a composite risk score (Critical×10 + High×5 + Medium×2 + Low×0.5) |
+| **Findings by Triage Status** | Summary mode: 7-slice pie of VEX statuses (No Status, Not Affected, False Positive, In Triage, Resolved, Resolved w/ Pedigree, Exploitable). Detailed mode keeps the original "Open Issues by Severity" title. |
+| **License Distribution** | Horizontal bar chart of top licenses by component count |
+| **License KPIs** | Strong Copyleft, Permissive, No License counts + Copyleft % |
+| **Exploit Intelligence** | 9-bucket horizontal bar: KEV, VC KEV, PoC, Weaponized, Ransomware, Botnets, Threat Actors, Commercial, Reported |
+| **Findings by Type** | Horizontal bar of CVE, Config Issues, Credentials, Crypto Material, SAST |
+| **Finding Age Distribution** | Summary mode: bucketed by *version age* (how old is the code these findings live in) — 0-30d / 30-90d / 90-180d / 180d-1y / 1y+. Detailed mode uses per-finding detection date. |
+| **Policy Health** | Component policy status rollup — Permitted / Warning / Violation counts |
+| **Project Findings Summary** | Full-width table listing every project with per-severity counts, KEV indicator, risk score |
 
 **Portfolio vs folder scope:**
 
-- Without `--folder`: the report groups findings by **folder** (portfolio-level view).
-- With `--folder "Product Line A"`: the report groups findings by **project** within that folder.
+- Without `--folder`: groups findings by **folder** (portfolio-level view).
+- With `--folder "Product Line A"`: groups findings by **project** within that folder.
+- Empty-folder handling (1.9.6+): if `--folder` resolves to zero projects, the dashboard produces an empty report in seconds instead of silently scanning the entire portfolio.
 
-**Finding types:** The report automatically overrides `--finding-types` to `all` so that every finding category (CVE, SAST, credentials, etc.) is represented in the executive view.
+**Finding types:** The report automatically uses all finding categories regardless of `--finding-types`.
 
-**Output format:** HTML only (standalone, self-contained).
+**Partial-data resilience (1.9.6+):** per-project summary-count failures no longer abort the run. The dashboard renders with remaining data and names the failed projects in a banner.
+
+**Concurrency:** `FS_REPORT_EXEC_DASHBOARD_WORKERS` env var (default `1`) controls the per-version summary-count fan-out. Raise to `10` on environments with generous API quotas; keep at `1` when the platform rate-limits aggressively.
+
+**Output format:** HTML, CSV, XLSX (all produced together).
 
 **Example commands:**
 
 ```bash
-# Portfolio-wide executive dashboard
-fs-report run --recipe "Executive Dashboard" --period 90d
+# Portfolio-wide summary-mode dashboard (fast path)
+fs-report run --recipe "Executive Dashboard"
 
 # Scoped to a specific folder
-fs-report run --recipe "Executive Dashboard" --folder "Product Line A" --period 90d
+fs-report run --recipe "Executive Dashboard" --folder "Product Line A"
 
-# With AI remediation guidance
-fs-report run --recipe "Executive Dashboard" --ai --period 90d
+# 30-day window — restricts KPIs to recently-scanned projects
+fs-report run --recipe "Executive Dashboard" --period 30d
+
+# Force full-portfolio aggregation with an explicit window
+fs-report run --recipe "Executive Dashboard" --period 10y
+
+# Legacy per-finding pipeline (slow; enables Critical/High severity lines)
+fs-report run --recipe "Executive Dashboard" --detailed --period 90d
+
+# Tune concurrency for a generous-quota environment
+FS_REPORT_EXEC_DASHBOARD_WORKERS=10 fs-report run --recipe "Executive Dashboard"
 ```
 
 ---

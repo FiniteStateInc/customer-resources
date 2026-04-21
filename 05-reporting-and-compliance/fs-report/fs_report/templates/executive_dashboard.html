@@ -74,6 +74,18 @@
 <body>
     <span id="fsConnectionBadge"></span>
     <div class="container">
+        {% if mode == "summary" %}
+        <div class="mode-banner" style="background:#e3f2fd;border:1px solid #90caf9;padding:10px 14px;margin-bottom:14px;border-radius:4px;font-size:0.95em;">
+          <strong>Summary mode:</strong> dashboard built from platform summary endpoints (not per-finding scan). For per-finding detection histograms and Critical/High severity-over-time lines, rerun with <code>--detailed</code>.
+        </div>
+        {% endif %}
+        {% if partial_report %}
+        <div class="partial-report-banner" style="background:#fff3cd;border:1px solid #ffeeba;padding:10px 14px;margin-bottom:14px;border-radius:4px;">
+          <strong>&#9888; Partial data:</strong>
+          {{ failed_projects | length }} project(s) could not be fetched
+          ({{ failed_projects | join(", ") }}). Totals below exclude them.
+        </div>
+        {% endif %}
         <!-- Header -->
         <div class="header">
             {% if logo_path %}
@@ -103,28 +115,35 @@
             <strong>Records:</strong> {{ metadata.transformed_count if metadata and metadata.transformed_count else 'N/A' }}
         </div>
 
-        <!-- KPI Cards -->
+        <!-- Portfolio Summary KPIs -->
         {% if sca_summary %}
+        <h2 class="chart-title" style="margin-bottom: 15px;">Portfolio Summary</h2>
         <div class="kpi-row">
             <div class="kpi-card">
                 <div class="kpi-title">Projects</div>
                 <div class="kpi-value">{{ sca_summary.projects | default(0) }}</div>
             </div>
-            {% if sca_summary.components | default(0) > 0 %}
-            <div class="kpi-card">
-                <div class="kpi-title">Policy Violations</div>
-                <div class="kpi-value" {% if sca_summary.violations | default(0) > 0 %}style="color: #d32f2f;"{% endif %}>{{ sca_summary.violations | default(0) }}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Policy Warnings</div>
-                <div class="kpi-value" {% if sca_summary.warnings | default(0) > 0 %}style="color: #f57c00;"{% endif %}>{{ sca_summary.warnings | default(0) }}</div>
-            </div>
             <div class="kpi-card">
                 <div class="kpi-title">Components</div>
                 <div class="kpi-value">{{ sca_summary.components | default(0) }}</div>
             </div>
-            {% endif %}
-            {% if license_kpis and license_kpis.total | default(0) > 0 %}
+            <div class="kpi-card">
+                <div class="kpi-title">Total Findings</div>
+                <div class="kpi-value">{{ sca_summary.findings | default(0) }}</div>
+                {% if sca_summary.findings_delta is not none and sca_summary.findings_delta is defined %}
+                <div class="kpi-delta {% if sca_summary.findings_delta > 0 %}delta-up{% elif sca_summary.findings_delta < 0 %}delta-down{% else %}delta-neutral{% endif %}">
+                    {% if sca_summary.findings_delta > 0 %}&#9650;{% elif sca_summary.findings_delta < 0 %}&#9660;{% else %}&#9644;{% endif %}
+                    {{ sca_summary.findings_delta }}%
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- License Summary KPIs -->
+        {% if license_kpis and license_kpis.total | default(0) > 0 %}
+        <h2 class="chart-title" style="margin-bottom: 15px;">License Summary</h2>
+        <div class="kpi-row">
             <div class="kpi-card">
                 <div class="kpi-title">Copyleft %</div>
                 <div class="kpi-value" {% if license_kpis.copyleft_pct | default(0) > 20 %}style="color: #d32f2f;"{% endif %}>{{ license_kpis.copyleft_pct | default(0) }}%</div>
@@ -141,27 +160,41 @@
                 <div class="kpi-title">No License</div>
                 <div class="kpi-value" {% if license_kpis.no_license | default(0) > 0 %}style="color: #f57c00;"{% endif %}>{{ license_kpis.no_license | default(0) }}</div>
             </div>
-            {% endif %}
-            <div class="kpi-card">
-                <div class="kpi-title">Total Findings</div>
-                <div class="kpi-value">{{ sca_summary.findings | default(0) }}</div>
-                {% if sca_summary.findings_delta is not none and sca_summary.findings_delta is defined %}
-                <div class="kpi-delta {% if sca_summary.findings_delta > 0 %}delta-up{% elif sca_summary.findings_delta < 0 %}delta-down{% else %}delta-neutral{% endif %}">
-                    {% if sca_summary.findings_delta > 0 %}&#9650;{% elif sca_summary.findings_delta < 0 %}&#9660;{% else %}&#9644;{% endif %}
-                    {{ sca_summary.findings_delta }}%
-                </div>
-                {% endif %}
+        </div>
+        {% endif %}
+
+        <!-- Policy Health (Horizontal Stacked Bar) -->
+        {% if policy_health and policy_health.datasets | default([]) | length > 0 %}
+        {% set ph_has_data = policy_health.datasets[0].data | default([]) | sum > 0 or policy_health.datasets[1].data | default([]) | sum > 0 %}
+        {% if ph_has_data %}
+        <div class="chart-container">
+            <h2 class="chart-title">Policy Health</h2>
+            <p class="chart-description">Security and license policy violations and warnings across the portfolio.</p>
+            <div class="chart-wrapper" style="height: 200px;">
+                <canvas id="policyHealthChart"></canvas>
+            </div>
+        </div>
+        {% endif %}
+        {% endif %}
+
+        <!-- Stacked Bar: Findings by Folder -->
+        {% if findings_by_folder and findings_by_folder.labels | default([]) | length > 0 %}
+        <div class="chart-container">
+            <h2 class="chart-title">Findings by Folder</h2>
+            <p class="chart-description">Distribution of security findings across folders by severity.</p>
+            <div class="chart-wrapper-tall">
+                <canvas id="findingsByFolderChart"></canvas>
             </div>
         </div>
         {% endif %}
 
-        <!-- Stacked Bar: Findings by Folder/Project -->
-        {% if findings_by_group and findings_by_group.labels | default([]) | length > 0 %}
+        <!-- Stacked Bar: Findings by Project -->
+        {% if findings_by_project and findings_by_project.labels | default([]) | length > 0 %}
         <div class="chart-container">
-            <h2 class="chart-title">Findings by {{ group_label | default('Folder') }}</h2>
-            <p class="chart-description">Distribution of security findings across {{ group_label | default('folder') | lower }}s by severity.</p>
+            <h2 class="chart-title">Findings by Project</h2>
+            <p class="chart-description">Distribution of security findings across projects by severity.</p>
             <div class="chart-wrapper-tall">
-                <canvas id="findingsByGroupChart"></canvas>
+                <canvas id="findingsByProjectChart"></canvas>
             </div>
         </div>
         {% endif %}
@@ -170,8 +203,14 @@
         <div class="two-col">
             <!-- Severity Trends (Line) -->
             <div class="chart-container">
-                <h2 class="chart-title">Severity Trends ({{ severity_trends.month_count | default(12) }} Months)</h2>
-                <p class="chart-description">Critical and High severity findings over the report period.</p>
+                <h2 class="chart-title">Severity Trends ({% if severity_trends.start_date and severity_trends.end_date %}{{ severity_trends.start_date }} to {{ severity_trends.end_date }}{% else %}{{ severity_trends.month_count | default(12) }} Months{% endif %})</h2>
+                <p class="chart-description">
+                  {% if mode == "summary" %}
+                    Total findings per month: for each month, we pick each project's version in effect at month-end and sum their findingCount.
+                  {% else %}
+                    Critical and High severity findings over the report period.
+                  {% endif %}
+                </p>
                 <div class="chart-wrapper">
                     <canvas id="severityTrendsChart"></canvas>
                 </div>
@@ -213,8 +252,16 @@
         {% if has_license_data %}
         <div class="two-col">
             <div class="chart-container">
-                <h2 class="chart-title">Open Issues by Severity</h2>
-                <p class="chart-description">Distribution of unresolved findings by severity (excluding resolved/triaged).</p>
+                <h2 class="chart-title">
+                  {% if mode == "summary" %}Findings by Triage Status{% else %}Open Issues by Severity{% endif %}
+                </h2>
+                <p class="chart-description">
+                  {% if mode == "summary" %}
+                    Distribution of findings by VEX triage status across the portfolio.
+                  {% else %}
+                    Distribution of unresolved findings by severity (excluding resolved/triaged).
+                  {% endif %}
+                </p>
                 <div class="chart-wrapper">
                     <canvas id="openIssuesPieChart"></canvas>
                 </div>
@@ -229,8 +276,16 @@
         </div>
         {% else %}
         <div class="chart-container">
-            <h2 class="chart-title">Open Issues by Severity</h2>
-            <p class="chart-description">Distribution of unresolved findings by severity (excluding resolved/triaged).</p>
+            <h2 class="chart-title">
+              {% if mode == "summary" %}Findings by Triage Status{% else %}Open Issues by Severity{% endif %}
+            </h2>
+            <p class="chart-description">
+              {% if mode == "summary" %}
+                Distribution of findings by VEX triage status across the portfolio.
+              {% else %}
+                Distribution of unresolved findings by severity (excluding resolved/triaged).
+              {% endif %}
+            </p>
             <div class="chart-wrapper">
                 <canvas id="openIssuesPieChart"></canvas>
             </div>
@@ -270,7 +325,13 @@
         {% if finding_age and finding_age.labels | default([]) | length > 0 %}
         <div class="chart-container">
             <h2 class="chart-title">Finding Age Distribution</h2>
-            <p class="chart-description">Open findings bucketed by days since detection.</p>
+            <p class="chart-description">
+              {% if mode == "summary" %}
+                Findings bucketed by the age of the version they live in.
+              {% else %}
+                Open findings bucketed by days since detection.
+              {% endif %}
+            </p>
             <div class="chart-wrapper">
                 <canvas id="findingAgeChart"></canvas>
             </div>
@@ -326,18 +387,15 @@
         };
 
         // =============================================
-        // 1. Findings by Group (Stacked Bar)
+        // 1a. Findings by Folder (Stacked Bar)
         // =============================================
-        {% if findings_by_group and findings_by_group.labels | default([]) | length > 0 %}
+        {% if findings_by_folder and findings_by_folder.labels | default([]) | length > 0 %}
         (function() {
-            const ctx = document.getElementById('findingsByGroupChart');
+            const ctx = document.getElementById('findingsByFolderChart');
             if (!ctx) return;
-            const chartData = {{ findings_by_group | tojson }};
+            const chartData = {{ findings_by_folder | tojson }};
             if (!chartData.labels || chartData.labels.length === 0) return;
 
-            // Use logarithmic scale when data range exceeds 100x between
-            // smallest and largest group totals (avoids small projects
-            // being invisible next to large ones).
             var totals = chartData.labels.map(function(_, i) {
                 return chartData.datasets.reduce(function(sum, ds) {
                     return sum + (ds.data[i] || 0);
@@ -356,7 +414,62 @@
                     scales: {
                         x: {
                             stacked: true,
-                            title: { display: true, text: '{{ group_label | default("Folder") }}' },
+                            title: { display: true, text: 'Folder' },
+                            ticks: { maxRotation: 45, font: { size: 10 } }
+                        },
+                        y: {
+                            stacked: true,
+                            type: useLog ? 'logarithmic' : 'linear',
+                            beginAtZero: !useLog,
+                            title: { display: true, text: 'Number of Findings' + (useLog ? ' (log scale)' : '') },
+                            ticks: useLog ? {
+                                callback: function(value) {
+                                    if (value >= 10000) return (value/1000) + 'K';
+                                    if (value >= 1000) return (value/1000) + 'K';
+                                    if ([1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000].indexOf(value) >= 0) return value.toLocaleString();
+                                    return '';
+                                }
+                            } : {}
+                        }
+                    },
+                    plugins: {
+                        legend: { position: 'top' },
+                        datalabels: { display: false }
+                    }
+                }
+            });
+        })();
+        {% endif %}
+
+        // =============================================
+        // 1b. Findings by Project (Stacked Bar)
+        // =============================================
+        {% if findings_by_project and findings_by_project.labels | default([]) | length > 0 %}
+        (function() {
+            const ctx = document.getElementById('findingsByProjectChart');
+            if (!ctx) return;
+            const chartData = {{ findings_by_project | tojson }};
+            if (!chartData.labels || chartData.labels.length === 0) return;
+
+            var totals = chartData.labels.map(function(_, i) {
+                return chartData.datasets.reduce(function(sum, ds) {
+                    return sum + (ds.data[i] || 0);
+                }, 0);
+            }).filter(function(v) { return v > 0; });
+            var maxTotal = Math.max.apply(null, totals.length ? totals : [0]);
+            var minTotal = Math.min.apply(null, totals.length ? totals : [0]);
+            var useLog = minTotal > 0 && maxTotal / minTotal > 100;
+
+            new Chart(ctx.getContext('2d'), {
+                type: 'bar',
+                data: chartData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            stacked: true,
+                            title: { display: true, text: 'Project' },
                             ticks: { maxRotation: 45, font: { size: 10 } }
                         },
                         y: {
@@ -520,7 +633,45 @@
         {% endif %}
 
         // =============================================
-        // 5. License Distribution (Horizontal Bar)
+        // 5. Policy Health (Horizontal Stacked Bar)
+        // =============================================
+        {% if policy_health and policy_health.datasets | default([]) | length > 0 %}
+        (function() {
+            const ctx = document.getElementById('policyHealthChart');
+            if (!ctx) return;
+            const ph = {{ policy_health | tojson }};
+            if (!ph.labels || ph.labels.length === 0) return;
+
+            new Chart(ctx.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: ph.labels,
+                    datasets: ph.datasets
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: true, position: 'top' },
+                        datalabels: {
+                            font: { weight: 'bold', size: 12 },
+                            color: '#fff',
+                            formatter: function(v) { return v > 0 ? v : ''; }
+                        }
+                    },
+                    scales: {
+                        x: { stacked: true, title: { display: true, text: 'Count' }, beginAtZero: true },
+                        y: { stacked: true, ticks: { font: { size: 13 } }, grid: { display: false } }
+                    }
+                },
+                plugins: [ChartDataLabels]
+            });
+        })();
+        {% endif %}
+
+        // =============================================
+        // 6a. License Distribution (Horizontal Bar)
         // =============================================
         {% if license_bar and license_bar.labels | default([]) | length > 0 %}
         (function() {
@@ -576,7 +727,17 @@
             const ei = {{ exploit_intel | tojson }};
             if (!ei.labels || ei.labels.length === 0) return;
 
-            const palette = ['#d32f2f', '#e65100', '#f57c00', '#ff8f00', '#6f42c1', '#c62828'];
+            const palette = [
+                '#d32f2f',  // KEV
+                '#c2185b',  // VC KEV
+                '#7b1fa2',  // PoC
+                '#512da8',  // Weaponized
+                '#303f9f',  // Ransomware
+                '#1976d2',  // Botnets
+                '#0288d1',  // Threat Actors
+                '#00796b',  // Commercial
+                '#689f38',  // Reported
+            ];
 
             new Chart(ctx.getContext('2d'), {
                 type: 'bar',

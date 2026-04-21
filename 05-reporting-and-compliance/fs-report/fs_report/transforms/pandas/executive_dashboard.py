@@ -569,6 +569,51 @@ def _extract_policy(comp: dict[str, Any]) -> str:
     return best_policy
 
 
+def _build_policy_health(
+    components: list[dict[str, Any]],
+    project_ids: set[str],
+) -> dict[str, Any]:
+    """Build Policy Health chart data (security policy + license policy)."""
+    security_violations = 0
+    security_warnings = 0
+    license_violations = 0
+    license_warnings = 0
+
+    for comp in components:
+        pid = comp.get("projectId") or ""
+        if isinstance(pid, dict):
+            pid = str(pid.get("id", ""))
+        else:
+            pid = str(pid)
+        if project_ids and pid and pid not in project_ids:
+            continue
+
+        security_violations += int(comp.get("violations") or 0)
+        security_warnings += int(comp.get("warnings") or 0)
+
+        policy = _extract_policy(comp)
+        if policy == "VIOLATION":
+            license_violations += 1
+        elif policy == "WARNING":
+            license_warnings += 1
+
+    return {
+        "labels": ["Security Policy", "License Policy"],
+        "datasets": [
+            {
+                "label": "Violations",
+                "data": [security_violations, license_violations],
+                "backgroundColor": "#d32f2f",
+            },
+            {
+                "label": "Warnings",
+                "data": [security_warnings, license_warnings],
+                "backgroundColor": "#f57c00",
+            },
+        ],
+    }
+
+
 def _build_sca_summary(
     df: pd.DataFrame,
     components: list[dict[str, Any]],
@@ -757,9 +802,12 @@ def executive_dashboard_transform(
     if isinstance(recipe_params, dict):
         max_projects = int(recipe_params.get("max_projects", 0))
 
-    # Build all sections
-    findings_by_group, group_label = _build_findings_by_group(
-        df, folder_filter, max_projects
+    # Build all sections — always produce both folder and project views
+    findings_by_folder, _ = _build_findings_by_group(
+        df, None, max_projects  # folder_filter=None → group by folder
+    )
+    findings_by_project, _ = _build_findings_by_group(
+        df, "force_project", max_projects  # truthy → group by project
     )
     severity_trends = _build_severity_trends(df, start_date, end_date)
     risk_donut, top_risk_products = _build_risk_donut_and_table(df)
@@ -770,6 +818,7 @@ def executive_dashboard_transform(
     exploit_intel = _build_exploit_intel(df)
     findings_by_type = _build_findings_by_type(df)
     sca_summary = _build_sca_summary(df, components, project_ids, start_date)
+    policy_health = _build_policy_health(components, project_ids)
     finding_age = _build_finding_age(df)
 
     # Build main DataFrame for CSV/XLSX export (aggregated project table)
@@ -777,8 +826,8 @@ def executive_dashboard_transform(
 
     result = {
         "main": main_df,
-        "findings_by_group": findings_by_group,
-        "group_label": group_label,
+        "findings_by_folder": findings_by_folder,
+        "findings_by_project": findings_by_project,
         "severity_trends": severity_trends,
         "risk_donut": risk_donut,
         "top_risk_products": top_risk_products,
@@ -789,6 +838,7 @@ def executive_dashboard_transform(
         "exploit_intel": exploit_intel,
         "findings_by_type": findings_by_type,
         "sca_summary": sca_summary,
+        "policy_health": policy_health,
         "finding_age": finding_age,
         "scope_label": scope_label,
     }

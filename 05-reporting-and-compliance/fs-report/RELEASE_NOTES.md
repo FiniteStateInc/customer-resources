@@ -1,5 +1,62 @@
 # Release Notes
 
+## Version 1.9.6 (April 2026)
+
+### Executive Dashboard — summary mode + warm-cache correctness
+
+- **Summary mode by default** — 13-panel dashboard now renders portfolio-wide in under 10 minutes using platform summary-count endpoints. The legacy per-finding pipeline (10+ hours on large portfolios) is still available via `--detailed`.
+- **Batched `/components` and `/versions`** — summary mode prefetches both via RSQL `=in=(...)` batches (batch size 15 for >200 ids, else 25), cutting round-trip count by 10-50x. Each batch logs a progress line so long fetch phases aren't silent.
+- **Warm-cache reruns skip the batch phases** — per-PV cache lookup before the batch fetch; if every requested id is already cached, no API call is issued.
+- **KPIs derive from live data** — Components, Total Findings, Policy Violations, Policy Warnings tiles now come from `summary_counts.severities.total` and the fetched component list, not the `/projects` cache rollups (which the structured cache strips on write). Fixes "Components: 0 / Total Findings: 0" on warm-cache runs.
+- **`--period` scopes the dashboard** — when `--period`, `--start`, or `--end` is explicit, summary mode restricts KPIs and charts to projects whose current version was scanned in that window. Default runs (no explicit period) continue to aggregate the entire portfolio. Pass `--period 10y` to force all-time aggregation.
+- **Severity Trends title reflects the window** — a 30-day window that crosses a month boundary no longer renders as "Severity Trends (2 Months)"; the title now shows the actual period (e.g. `Severity Trends (2026-03-21 to 2026-04-20)`).
+- **Finding Age works on warm cache** — previously all five age buckets rendered zero because the finding-count lookup hit a stripped cache field. Now sourced from summary counts with a rollup fallback.
+- **Concurrency knob** — `FS_REPORT_EXEC_DASHBOARD_WORKERS` (default 1) controls the summary-count fan-out parallelism. Raise to 10 on environments with generous API quotas; keep at 1 when the platform rate-limits aggressively.
+
+### Recipe Fixes
+
+- **Security Progress** — recipe was issuing `sort=detectedDate:asc` which the `/findings` API rejects with HTTP 400, causing every run to return no data. Fixed to `detected:asc`. Two follow-on bugs surfaced once data started flowing and are fixed in this release:
+  - `_fetch_cve_updates` called `api_client.get(...)` on a class that has no `get` attribute — every CVE-update fetch silently returned `[]`. Now routes through `api_client.client.get(...)` with `raise_for_status()` + `.json()`, the pattern used elsewhere in the codebase.
+  - The tz-naive `NaT` fallback in `_parse_detected_at` raised `Invalid comparison between dtype=datetime64[ns] and Timestamp` against the tz-aware `start_date` cutoff. Fallback is now initialised as tz-aware UTC so the comparison returns an all-False mask instead of raising.
+- **Component Remediation Package** — HTML renderer no longer crashes with `'summary' is undefined` when the component search returns zero matching versions. Template now defaults missing keys so empty-result runs produce a valid page.
+- **Component List / License Report** — `--folder <empty-folder>` no longer silently processes the entire portfolio. The empty-set fall-through case now short-circuits to an empty report in seconds (observed going from 10+ minutes on a 155-project env to <10 seconds).
+- **Customer Brief (forge)** — five PDF rendering issues in the Security Overview / cover / tables, all fixed in this release after end-to-end visual review on a real project (Candy Crush Soda Saga, which exercises the Reachability column):
+  - **KPI cards**: flex layout overflowed the right margin, then `grid auto-fit minmax(140px, 1fr)` collapsed to one card per row in WeasyPrint print output (auto-fit keyword has limited support). Switched to an explicit `repeat(5, 1fr)` grid that lays the cards out as 2 rows of 5 and renders identically in browser and PDF.
+  - **KPI ordering**: cards are now ordered as size → severity (descending) → exposure → posture (Total Open, Critical, High, Medium, Low, KEV Listed, With Exploits, Components, % Triaged). Prior order interleaved % Triaged and KEV between Critical and Medium.
+  - **Cover page footer overlap**: the global `@bottom-center` page footer rendered underneath the cover image and overlapped the "CONFIDENTIAL — ..." banner. Cover now uses a named `@page cover` rule with no `@bottom-center` and runs full-bleed (margin: 0).
+  - **Table headers shattering mid-word**: `word-break: break-word` was applied to both `th` and `td`, so short headers like "Severity" and "Reachability" broke as "Severi"/"y" and "Reachabili"/"ty" in the PDF. `th` now uses `word-break: normal`; `td` keeps `break-word` so long unbreakable strings (purls, CVE IDs) still wrap inside cells.
+  - **Severity badges shattering**: the `td` `break-word` cascaded into `.badge`, splitting "CRITICAL" into "CRITICA"/"L". `.badge` now has `white-space: nowrap`.
+  - **Risk Overview empty**: the section used a Chart.js `<canvas>` with JavaScript, but WeasyPrint does not execute JS so the canvas left an empty section in the PDF. Replaced with a server-rendered horizontal stacked severity bar (`.sev-bar` + segments) that matches the existing Triage Status pattern and renders identically in browser and PDF, with a labeled legend underneath.
+
+### CLI Fixes
+
+- **`--scoring-file`** — missing, unreadable, malformed, empty, or non-dict YAML now fails fast with a red error at CLI startup. Previously these all silently fell back to default scoring weights, leaving users unaware their custom profile wasn't being applied.
+- **`--ai-export`** — no longer a silent no-op when used without `--ai-prompts`. The export block lives inside the `--ai-prompts` path; the CLI now implies `--ai-prompts=True` when `--ai-export` is set so the airgap workflow ("export prompts, process offline, import responses") works as documented.
+- **`--finding-types` multi-type filter** — requests like `--finding-types cve,sast,thirdparty,binary_sca,source_sca` previously fetched all findings then post-filtered them to zero rows (silent failure: empty report, no error). Three stacked defects: the post-filter matched on a `category` field that the API always returns null; `binary_sca` / `source_sca` were never functional finding-type filters (they're scan types — the API has no equivalent); and the `type` post-filter expected underscored values (`binary_sca`) when the API returns dashed (`binary-sast`). Fixed by stripping `binary_sca` / `source_sca` at the CLI with a deprecation warning, dropping the broken post-filter entirely, and resolving every multi-type request to a single API-level `category=in=(...)` query. `thirdparty` cannot be combined with category-mappable types in one query; mixed requests log a warning and drop `thirdparty` (use `--finding-types thirdparty` alone or `--finding-types all` to include thirdparty findings).
+- **Negative int64 project/version IDs** (#44) — every project-scoped recipe (`Findings by Project`, `Triage Prioritization`, `Remediation Package`, `Version Comparison`, `Configuration Analysis Triage`, `Component Vulnerability Analysis`, `Scan Quality`, `CRA Compliance`, `Customer Brief`, `Assessment Overview`, `Component Remediation Package`) failed on tenants whose project IDs are negative int64s (e.g. `-3483615751038881210`). Root cause: `_is_id_like` used `value.isdigit()` which returns False for any string starting with `-`, so the version-resolution step rejected freshly-resolved IDs with `project filter '-...' is not an ID.` Fixed by relaxing the validator to `re.fullmatch(r"-?\d+", value)`.
+
+### AI Cache Correctness
+
+- **Cache keys include provider and model** — `cve_remediations` + summary caches now key on `{provider}:{model}` so swapping `--ai-model-high` or `--ai-model-low` forces a fresh LLM call instead of returning another model's cached answer.
+- **Model flags reach all four AI recipes** — Remediation Package, Component Remediation Package, False Positive Analysis, and Triage Prioritization now correctly pass `--ai-provider` / `--ai-model-high` / `--ai-model-low` through to `LLMClient`. Previously three of these ignored the flags entirely; the fourth (False Positive Analysis) was reading from non-existent config fields.
+- **`generated_by` records the actual model** — was hard-coded to the literal string `"llm"`.
+
+### Internal
+
+- **SQLite cache preserves `defaultBranch.latestVersion.created`** — projects table schema now stores the latest-version scan timestamp, needed by the Executive Dashboard period filter to survive warm-cache rebuilds.
+- **Dependency security updates** — bumped `pillow` 12.1.0 → 12.2.0 (CVE-2026-25990, GHSA-cfh3-3jmp-rvhc), `requests` 2.32.5 → 2.33.1 (CVE-2026-25645), `python-multipart` 0.0.22 → 0.0.26 (CVE-2026-40347). WeasyPrint came along for the ride (60.2 → 68.1); Customer Brief PDF rendering verified against the new version.
+- **Windows CI** (#45) — tests that read rendered HTML/MD output (or the UTF-8 `customer_brief.html` template) now pass `encoding="utf-8"` to `Path.read_text()`. The `windows-latest` runner defaults to cp1252, so the em-dash and `⚠` glyphs in rendered output mojibaked or failed to decode, surfacing as spurious assertion failures on Windows.
+
+### Version Comparison (from earlier in the 1.9.6 cycle)
+
+- `--folder` + `--project` now narrows to the named project within the folder instead of scanning every project.
+- `--baseline-version` / `--current-version` accept version names, not just IDs.
+- `--period` trims single-project runs to versions created in the window, with the most recent pre-window version as implicit baseline.
+- Per-version fetch failures no longer abort the run; failed versions appear as placeholders with a banner naming them.
+- `_Progression.xlsx` no longer crashes on nested-dict columns.
+
+---
+
 ## Version 1.9.5 (April 2026)
 
 ### Bug Fixes

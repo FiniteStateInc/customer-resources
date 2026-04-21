@@ -1505,7 +1505,16 @@ def _enrich_with_llm_guidance(
     cache_ttl = getattr(cfg, "ai_cache_ttl", 0) if cfg else 0
 
     try:
-        llm = LLMClient(cache_dir=cache_dir, cache_ttl=cache_ttl)
+        llm = LLMClient(
+            cache_dir=cache_dir,
+            cache_ttl=cache_ttl,
+            provider=getattr(cfg, "ai_provider", None) if cfg else None,
+            model_high=getattr(cfg, "ai_model_high", None) if cfg else None,
+            model_low=getattr(cfg, "ai_model_low", None) if cfg else None,
+            deployment_context=(
+                additional_data.get("deployment_context") if additional_data else None
+            ),
+        )
     except Exception as e:
         logger.warning(f"Failed to initialize LLM client: {e}")
         df["llm_guidance"] = ""
@@ -1566,106 +1575,6 @@ def _enrich_with_llm_guidance(
     stats = llm.get_stats()
     logger.info(
         f"LLM guidance: {stats['api_calls']} API calls, "
-        f"{stats['cache_hits']} cache hits"
-    )
-    return df
-
-
-# ---------------------------------------------------------------------------
-# AI analysis enrichment (summary model deep analysis)
-# ---------------------------------------------------------------------------
-
-
-def _enrich_with_ai_analysis(
-    df: pd.DataFrame,
-    cfg: Any,
-) -> pd.DataFrame:
-    """Generate deep AI analysis for each action using the summary model.
-
-    Requires the ``agent_prompt`` column to already be populated. Each action's
-    agent prompt is sent to the summary (high-capability) model which produces
-    a detailed markdown analysis.
-    """
-    if "agent_prompt" not in df.columns:
-        logger.info("No agent_prompt column — skipping AI analysis")
-        df["ai_analysis"] = ""
-        return df
-
-    try:
-        from fs_report.llm_client import LLMClient
-    except ImportError:
-        logger.warning("LLM client not available, skipping AI analysis")
-        df["ai_analysis"] = ""
-        return df
-
-    # Check for AI credentials
-    import hashlib
-    import os
-
-    has_creds = any(
-        os.getenv(v)
-        for v in (
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            "OPENAI_API_KEY",
-            "GEMINI_API_KEY",
-            "GOOGLE_API_KEY",
-            "GITHUB_TOKEN",
-        )
-    )
-    if not has_creds:
-        logger.info("No AI provider credentials found, skipping AI analysis")
-        df["ai_analysis"] = ""
-        return df
-
-    cache_dir = getattr(cfg, "cache_dir", None) if cfg else None
-    cache_ttl = getattr(cfg, "ai_cache_ttl", 0) if cfg else 0
-
-    try:
-        llm = LLMClient(cache_dir=cache_dir, cache_ttl=cache_ttl)
-    except Exception as e:
-        logger.warning(f"Failed to initialize LLM client: {e}")
-        df["ai_analysis"] = ""
-        return df
-
-    # Build (action_key, agent_prompt) tuples
-    actions: list[tuple[str, str]] = []
-    for _, row in df.iterrows():
-        prompt = str(row.get("agent_prompt", ""))
-        if not prompt:
-            continue
-        comp = str(row.get("component_name", ""))
-        ver = str(row.get("component_version", ""))
-        cve_ids = str(row.get("cve_ids", "[]"))
-        key_hash = hashlib.sha256(cve_ids.encode()).hexdigest()[:12]
-        action_key = f"action:{comp}:{ver}:{key_hash}"
-        actions.append((action_key, prompt))
-
-    if not actions:
-        df["ai_analysis"] = ""
-        return df
-
-    results = llm.generate_batch_action_analysis(actions)
-
-    # Map results back to DataFrame rows
-    analyses = []
-    for _, row in df.iterrows():
-        prompt = str(row.get("agent_prompt", ""))
-        if not prompt:
-            analyses.append("")
-            continue
-        comp = str(row.get("component_name", ""))
-        ver = str(row.get("component_version", ""))
-        cve_ids = str(row.get("cve_ids", "[]"))
-        key_hash = hashlib.sha256(cve_ids.encode()).hexdigest()[:12]
-        action_key = f"action:{comp}:{ver}:{key_hash}"
-        analyses.append(results.get(action_key, ""))
-
-    df["ai_analysis"] = analyses
-
-    stats = llm.get_stats()
-    logger.info(
-        f"AI analysis: {stats['api_calls']} API calls, "
         f"{stats['cache_hits']} cache hits"
     )
     return df
@@ -1769,8 +1678,7 @@ def _enrich_with_combined_analysis(
 ) -> pd.DataFrame:
     """Single high-model pass: structured verdict + deep analysis per action.
 
-    Replaces both ``_enrich_with_llm_guidance`` (Haiku) and
-    ``_enrich_with_ai_analysis`` (Opus) when ``ai_analysis=True``.
+    Replaces ``_enrich_with_llm_guidance`` (Haiku) when ``ai_analysis=True``.
     """
     try:
         from fs_report.llm_client import LLMClient
@@ -1802,7 +1710,16 @@ def _enrich_with_combined_analysis(
     cache_ttl = getattr(cfg, "ai_cache_ttl", 0) if cfg else 0
 
     try:
-        llm = LLMClient(cache_dir=cache_dir, cache_ttl=cache_ttl)
+        llm = LLMClient(
+            cache_dir=cache_dir,
+            cache_ttl=cache_ttl,
+            provider=getattr(cfg, "ai_provider", None) if cfg else None,
+            model_high=getattr(cfg, "ai_model_high", None) if cfg else None,
+            model_low=getattr(cfg, "ai_model_low", None) if cfg else None,
+            deployment_context=(
+                additional_data.get("deployment_context") if additional_data else None
+            ),
+        )
     except Exception as e:
         logger.warning(f"Failed to initialize LLM client: {e}")
         df["ai_analysis"] = ""

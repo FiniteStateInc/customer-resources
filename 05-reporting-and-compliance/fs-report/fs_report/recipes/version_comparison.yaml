@@ -1,7 +1,7 @@
 name: "Version Comparison"
 category: assessment
 template: "version_comparison.html"
-description: "Full version and component changelog for every project: progression across all versions with fixed/new findings and component churn per version pair. Scope with --project or --folder; use --baseline-version and --current-version to limit to a single pair. Use --version-sort (created|name) and --version-sort-desc to control ordering."
+description: "Full version and component changelog: progression across versions with fixed/new findings and component churn per version pair. Scope with --project, --folder, or both (--project narrows to that project within --folder). Use --period to trim single-project runs to a [predecessor + in-window] slice (ignored for folder/portfolio and explicit-pair modes). Use --baseline-version and --current-version (ID or name) to limit to a single pair. Use --version-sort (created|name) and --version-sort-desc to control ordering. Per-version fetch failures are logged and reported as unavailable rather than aborting the run."
 execution_order: 50
 auto_run: false
 

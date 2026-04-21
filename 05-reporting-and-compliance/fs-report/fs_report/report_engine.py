@@ -23,6 +23,7 @@
 import gc
 import hashlib
 import logging
+import os
 import platform
 import threading
 import time
@@ -43,7 +44,7 @@ from fs_report.api_client import APIClient
 from fs_report.data_cache import DataCache
 from fs_report.data_transformer import DataTransformer
 from fs_report.dependency_resolver import DependencyNode, DependencyResolver
-from fs_report.models import Config, QueryConfig, Recipe, ReportData
+from fs_report.models import Config, QueryConfig, QueryParams, Recipe, ReportData
 from fs_report.recipe_loader import RecipeLoader
 from fs_report.renderers import ReportRenderer
 from fs_report.sqlite_cache import _trim_factors
@@ -262,17 +263,29 @@ def _inject_project_names_df(df: pd.DataFrame, project_map: dict[str, str]) -> N
 # Finding type/category mapping for --finding-types flag
 #
 # The API has two filtering mechanisms:
-#   - `type` query parameter: accepts cve, sast, thirdparty (single value only)
-#   - `category` RSQL filter: accepts CVE, SAST_ANALYSIS, CREDENTIALS,
-#     CONFIG_ISSUES, CRYPTO_MATERIAL (uppercase, per Swagger)
+#   - `?type=` URL parameter: accepts exactly cve, sast, thirdparty, all
+#     (single value only; verified against the server's own enum error)
+#   - `category==` RSQL filter: accepts CVE, SAST_ANALYSIS, CREDENTIALS,
+#     CONFIG_ISSUES, CRYPTO_MATERIAL (uppercase)
 #
-# For single-type requests, we use the `type` parameter (most efficient).
-# For multi-type requests where all types map to a known API category, we use
-# an RSQL `category=in=(...)` filter at the API level.  When some types lack a
-# documented category (binary_sca, source_sca, thirdparty), we fall back to
-# fetching all findings and post-filtering in Python.
+# Routing strategy:
+#   - "all" → no filter (returns everything)
+#   - cve only → category==CVE (preserves reachabilityScore that ?type=cve drops)
+#   - sast only → ?type=sast
+#   - thirdparty only → ?type=thirdparty
+#   - any combination of {cve, sast, credentials, config_issues, crypto_material}
+#     → category=in=(...) RSQL filter
+#   - thirdparty mixed with other types → no clean way to combine in one query;
+#     thirdparty is dropped with a logged warning and the rest filtered via
+#     category=in=(...). To include only thirdparty findings, run with
+#     --finding-types thirdparty alone, or use --finding-types all.
+#
+# binary_sca and source_sca were historically advertised as --finding-types
+# values but were never functional (the API has no equivalent filter — they're
+# scan types, not finding types). They're stripped by the CLI with a
+# deprecation warning before reaching this function.
 CATEGORY_VALUES = {"credentials", "config_issues", "crypto_material", "sast_analysis"}
-TYPE_VALUES = {"cve", "sast", "thirdparty", "binary_sca", "source_sca"}
+TYPE_VALUES = {"cve", "sast", "thirdparty"}
 CATEGORY_MAP = {
     "credentials": "CREDENTIALS",
     "config_issues": "CONFIG_ISSUES",
@@ -280,16 +293,12 @@ CATEGORY_MAP = {
     "sast_analysis": "SAST_ANALYSIS",
     "cve": "CVE",
 }
-# Map CLI type names to API category values (uppercase, per Swagger).
-# Only includes types that have a known API category.
-# binary_sca, source_sca, thirdparty have no documented category value;
-# their findings are matched by the type's own category field at runtime.
+# CLI type → API category values (uppercase, per Swagger). Only types that
+# have a documented category mapping. `thirdparty` has no category equivalent
+# and is handled separately by the URL-param route.
 TYPE_TO_CATEGORY = {
     "cve": ["CVE"],
     "sast": ["SAST_ANALYSIS"],
-    "thirdparty": [],
-    "binary_sca": [],
-    "source_sca": [],
 }
 
 # v2 backend per-version endpoints ignore RSQL category== filters (the category
@@ -310,30 +319,45 @@ def build_findings_type_params(finding_types: str) -> dict[str, Any]:
     """
     Build API parameters for finding type/category filtering.
 
-    Args:
-        finding_types: Comma-separated finding types from config
+    Returns a dict with `type` (URL param) and `category_filter` (RSQL).
+    Exactly one of them is populated, or both are None for "fetch everything".
 
-    Returns:
-        Dict with 'type' and optional 'category_filter' keys
+    Args:
+        finding_types: Comma-separated finding types from config.
     """
+    logger = logging.getLogger("fs-report.report_engine")
+
     values = [v.strip().lower() for v in finding_types.split(",")]
 
-    # "all" means no filtering — don't send type= param
+    # Drop legacy fictitious values that were never functional. The CLI
+    # surfaces these as a deprecation warning, so this is a safety net for
+    # callers that bypass CLI validation (programmatic use, recipe params).
+    fake = [v for v in values if v in {"binary_sca", "source_sca"}]
+    if fake:
+        logger.warning(
+            "Ignoring --finding-types value(s) %s — these are scan types, not "
+            "finding-type filters; the API has no equivalent filter.",
+            ",".join(sorted(set(fake))),
+        )
+        values = [v for v in values if v not in {"binary_sca", "source_sca"}]
+
+    # "all" anywhere in the list wins — fetch everything, no filter.
     if "all" in values:
         return {"type": None, "category_filter": None}
 
-    # Separate into categories (need RSQL filter) and simple types (use type param)
-    categories = [
-        v for v in values if v in CATEGORY_VALUES
-    ]  # credentials, config_issues, etc.
-    simple_types = [v for v in values if v in TYPE_VALUES]  # cve, sast, thirdparty
+    categories = [v for v in values if v in CATEGORY_VALUES]
+    simple_types = [v for v in values if v in TYPE_VALUES]
 
-    # CVE-only: use category==CVE RSQL filter (preserves reachabilityScore;
-    # type=cve URL param silently drops it — see API quirk #2)
+    # If stripping fakes left nothing, fall back to the default cve filter.
+    if not categories and not simple_types:
+        return {"type": "cve", "category_filter": None}
+
+    # CVE-only: use category==CVE RSQL (preserves reachabilityScore that
+    # ?type=cve silently drops — see API quirk #2 in CLAUDE.md memory).
     if simple_types == ["cve"] and not categories:
         return {"type": None, "category_filter": "category==CVE"}
 
-    # Single non-CVE type: use type param directly (API accepts sast, thirdparty)
+    # Single non-CVE type alone: use the URL param directly.
     if (
         len(simple_types) == 1
         and simple_types[0] in ("sast", "thirdparty")
@@ -341,53 +365,92 @@ def build_findings_type_params(finding_types: str) -> dict[str, Any]:
     ):
         return {"type": simple_types[0], "category_filter": None}
 
-    # Multiple types, or binary_sca/source_sca (category-only), or named categories
-    if (
-        categories
-        or len(simple_types) > 1
-        or set(simple_types) & {"binary_sca", "source_sca"}
-    ):
-        # Build category + type sets.
-        # Match on uppercase `category` field (CVE, SAST_ANALYSIS, etc.)
-        # and lowercase `type` field (cve, sast, thirdparty) as fallback
-        # for types without a documented category mapping.
-        filter_categories: set[str] = set()
-        filter_types: set[str] = set()
-        for t in simple_types:
-            mapped = TYPE_TO_CATEGORY.get(t, [])
-            if mapped:
-                filter_categories.update(mapped)
-            else:
-                # No category mapping — match on `type` field instead
-                filter_types.add(t)
-        for c in categories:
-            mapped_cat = CATEGORY_MAP.get(c)
-            if mapped_cat:
-                filter_categories.add(mapped_cat)
+    # Multi-type or named-category path: build a category=in=(...) RSQL filter.
+    # `thirdparty` cannot be combined with category filters in a single API
+    # query (no `category` enum equivalent, and the response `type` field is
+    # unreliable for post-filtering — see fs-report-finding-types report).
+    # Drop it with a warning and filter the rest via category.
+    if "thirdparty" in simple_types and (categories or len(simple_types) > 1):
+        logger.warning(
+            "--finding-types includes 'thirdparty' alongside other types. "
+            "There is no API filter that combines `?type=thirdparty` with "
+            "`category=in=(...)`, so 'thirdparty' will be excluded from "
+            "this run. Run with `--finding-types thirdparty` alone, or use "
+            "`--finding-types all`, to include thirdparty findings."
+        )
+        simple_types = [t for t in simple_types if t != "thirdparty"]
 
-        if not filter_categories and not filter_types:
-            return {"type": None, "category_filter": None}
+    filter_categories: set[str] = set()
+    for t in simple_types:
+        filter_categories.update(TYPE_TO_CATEGORY.get(t, []))
+    for c in categories:
+        mapped_cat = CATEGORY_MAP.get(c)
+        if mapped_cat:
+            filter_categories.add(mapped_cat)
 
-        # If ALL types map to known API categories, filter at the API level
-        # using RSQL category== or category=in=() — avoids fetching extra data.
-        if filter_categories and not filter_types:
-            cats_sorted = sorted(filter_categories)
-            if len(cats_sorted) == 1:
-                cat_filter = f"category=={cats_sorted[0]}"
-            else:
-                cat_filter = f"category=in=({','.join(cats_sorted)})"
-            return {"type": None, "category_filter": cat_filter}
+    if not filter_categories:
+        # Only thirdparty was requested via a multi-type call — already
+        # warned and stripped above; fall back to the default cve filter.
+        return {"type": "cve", "category_filter": None}
 
-        # Some types lack category mapping — must post-filter in Python
-        return {
-            "type": None,
-            "category_filter": None,
-            "post_filter_categories": filter_categories or None,
-            "post_filter_types": filter_types or None,
-        }
+    cats_sorted = sorted(filter_categories)
+    if len(cats_sorted) == 1:
+        return {"type": None, "category_filter": f"category=={cats_sorted[0]}"}
+    return {"type": None, "category_filter": f"category=in=({','.join(cats_sorted)})"}
 
-    # Default to cve only
-    return {"type": "cve", "category_filter": None}
+
+def _trim_versions_by_period(
+    versions: list[dict],
+    start_iso: str,
+    end_iso: str,
+) -> list[dict]:
+    """Filter versions to a [start..end] window, including the most recent
+    pre-window version as implicit baseline.
+
+    Returns a list of version dicts: [predecessor?] + in_window (predecessor
+    first when present). Caller-side sort may re-order afterward; the returned
+    order reflects chronological "predecessor, then in-window oldest→newest".
+
+    Versions with missing or unparseable `created` are dropped from
+    consideration entirely — they cannot be in-window and cannot serve
+    as predecessor.
+
+    Args:
+      versions: list of dicts with at least `{"id", "name", "created"}`.
+        `created` is expected as ISO-8601 string (e.g. "2026-02-01T12:00:00Z").
+      start_iso: "YYYY-MM-DD" window start (inclusive, 00:00:00 UTC).
+      end_iso: "YYYY-MM-DD" window end (inclusive, 23:59:59 UTC).
+    """
+    window_start = f"{start_iso}T00:00:00Z"
+    window_end = f"{end_iso}T23:59:59Z"
+
+    dated: list[tuple[str, dict]] = []
+    for v in versions:
+        created = v.get("created")
+        if not created or not isinstance(created, str):
+            continue
+        # Strict lexicographic validity check: first 10 chars must look
+        # like YYYY-MM-DD. This catches obvious garbage like "not-a-date".
+        if len(created) < 10 or created[4] != "-" or created[7] != "-":
+            continue
+        dated.append((created, v))
+
+    in_window = [v for c, v in dated if window_start <= c <= window_end]
+    pre_window = [(c, v) for c, v in dated if c < window_start]
+
+    predecessor = None
+    if pre_window:
+        # Sort by created asc; last one is most recent pre-window.
+        pre_window.sort(key=lambda cv: cv[0])
+        predecessor = pre_window[-1][1]
+
+    # Preserve in_window input order among its members; sort by `created` asc
+    # so downstream sort still receives a deterministic list.
+    in_window.sort(key=lambda v: v.get("created", ""))
+
+    if predecessor is not None:
+        return [predecessor] + in_window
+    return in_window
 
 
 class ReportCancelled(Exception):
@@ -443,6 +506,8 @@ class ReportEngine:
                 output_dir=config.output_dir,
                 start_date=config.start_date,
                 end_date=config.end_date,
+                period_explicit=config.period_explicit,
+                detailed_mode=config.detailed_mode,  # NEW
                 verbose=config.verbose,
                 finding_types=config.finding_types,
                 request_delay=config.request_delay,
@@ -785,12 +850,15 @@ class ReportEngine:
         return None
 
     @staticmethod
-    @staticmethod
     def _is_id_like(value: str) -> bool:
-        """Return True if *value* looks like an API ID (integer or UUID)."""
+        """Return True if *value* looks like an API ID (signed integer or UUID).
+
+        Accepts an optional leading ``-`` because some Finite State tenants
+        issue negative int64 project/version IDs.
+        """
         import re
 
-        if value.isdigit():
+        if re.fullmatch(r"-?\d+", value):
             return True
         # UUID v4/v5 pattern (with or without hyphens)
         return bool(re.match(r"^[0-9a-fA-F-]{32,36}$", value))
@@ -898,6 +966,62 @@ class ReportEngine:
             self.logger.info(f"Did you mean one of these versions? {close[:5]}")
 
         return None
+
+    def _resolve_baseline_current_versions(self) -> bool:
+        """Resolve --baseline-version / --current-version name → ID.
+
+        Runs before recipe execution. ID-like values pass through.
+        Name values require config.project_filter to be a numeric ID
+        (already resolved by the project-filter block upstream).
+
+        Not re-entrant: if _resolve_version_name returns a non-numeric
+        ID (e.g. a slug), a second call would re-enter the name path
+        and re-query the API. Call this exactly once per run.
+
+        Returns False on resolution failure; the caller should abort.
+        """
+        bv = self.config.baseline_version
+        cv = self.config.current_version
+
+        if not bv and not cv:
+            return True
+
+        def _resolve_one(label: str, value: str) -> str | None:
+            if self._is_id_like(value):
+                return value
+            if not self.config.project_filter or not self._is_id_like(
+                self.config.project_filter
+            ):
+                self.logger.error(
+                    f"Cannot resolve {label} name '{value}' without a --project. "
+                    "Pass --project <name-or-id> so the version name can be looked up, "
+                    "or supply the version ID directly."
+                )
+                return None
+            resolved = self._resolve_version_name(self.config.project_filter, value)
+            if not resolved:
+                self.logger.error(
+                    f"Could not resolve {label} name '{value}' in project "
+                    f"{self.config.project_filter}. "
+                    "Use 'fs-report list-versions <project>' to see available versions."
+                )
+                return None
+            self.logger.info(f"Resolved {label} '{value}' to ID {resolved}")
+            return str(resolved)
+
+        if bv:
+            new_bv = _resolve_one("--baseline-version", bv)
+            if new_bv is None:
+                return False
+            self.config.baseline_version = new_bv
+
+        if cv:
+            new_cv = _resolve_one("--current-version", cv)
+            if new_cv is None:
+                return False
+            self.config.current_version = new_cv
+
+        return True
 
     def _fetch_all_folders(self) -> list[dict]:
         """Fetch all folders from the API (cached per run)."""
@@ -1973,6 +2097,14 @@ class ReportEngine:
                     )
                     return _fail
 
+        # Resolve --baseline-version / --current-version names to IDs
+        # (Version Comparison's explicit-pair short-circuit needs IDs)
+        if (
+            self.config.baseline_version or self.config.current_version
+        ) and not self.data_override:
+            if not self._resolve_baseline_current_versions():
+                return _fail
+
         # Process each recipe
         all_succeeded = True
         generated_files: list[str] = []
@@ -2774,6 +2906,13 @@ class ReportEngine:
                 "Use 'fs-report list-versions <project>' to find version IDs."
             )
 
+        # Warn once if --period was specified alongside --baseline/--current.
+        if bv and cv and self.config.period_explicit:
+            self.logger.warning(
+                "Version Comparison: --period ignored because --baseline-version "
+                "and --current-version were provided."
+            )
+
         # ── Short-circuit: explicit version pair ──────────────────────
         if bv and cv:
             if bv == cv:
@@ -2903,7 +3042,29 @@ class ReportEngine:
             show_progress=False,
         )
 
-        if self._folder_project_ids:
+        if self.config.project_filter:
+            # --project (alone or with --folder) → narrow to that single project.
+            # _resolve_folder_scope has already validated project ∈ folder when both set.
+            if self._folder_project_ids:
+                self.logger.info(
+                    "Version Comparison: project '%s' within folder '%s'",
+                    self.config.project_filter,
+                    self._folder_name or "unknown",
+                )
+            else:
+                self.logger.info(
+                    "Version Comparison: single project '%s'",
+                    self.config.project_filter,
+                )
+            pf = self.config.project_filter
+            for p in all_projects:
+                pid = str(p.get("id", ""))
+                pname = p.get("name", "")
+                if pid == pf or pname.lower() == pf.lower():
+                    project_ids_and_names.append((pid, pname))
+                    break
+
+        elif self._folder_project_ids:
             self.logger.info(
                 "Version Comparison: %d project(s) from folder '%s'",
                 len(self._folder_project_ids),
@@ -2914,18 +3075,6 @@ class ReportEngine:
                 if pid in self._folder_project_ids:
                     project_ids_and_names.append((pid, p.get("name", pid)))
 
-        elif self.config.project_filter:
-            self.logger.info(
-                "Version Comparison: single project '%s'",
-                self.config.project_filter,
-            )
-            pf = self.config.project_filter
-            for p in all_projects:
-                pid = str(p.get("id", ""))
-                pname = p.get("name", "")
-                if pid == pf or pname.lower() == pf.lower():
-                    project_ids_and_names.append((pid, pname))
-                    break
         else:
             self.logger.info("Version Comparison: all projects in portfolio")
             for p in all_projects:
@@ -3004,6 +3153,54 @@ class ReportEngine:
                     if sqlite_cache and cache_ttl > 0:
                         sqlite_cache.store_version_list(pid, versions)
 
+                # Apply --period filter (single-project mode only; folder /
+                # portfolio modes and explicit-pair mode skip this).
+                trim_applied = False
+                if (
+                    self.config.period_explicit
+                    and self.config.project_filter
+                    and not (
+                        self.config.baseline_version or self.config.current_version
+                    )
+                ):
+                    before_n = len(versions)
+                    versions = _trim_versions_by_period(
+                        versions,
+                        self.config.start_date,
+                        self.config.end_date,
+                    )
+                    trim_applied = True
+                    pre_name = (
+                        versions[0].get("version", versions[0].get("name", ""))
+                        if versions
+                        and versions[0].get("created", "")
+                        < f"{self.config.start_date}T00:00:00Z"
+                        else None
+                    )
+                    if pre_name:
+                        self.logger.info(
+                            "Version Comparison: period %s..%s applied to '%s' → "
+                            "%d in-window version(s), predecessor '%s' included "
+                            "(trimmed from %d total)",
+                            self.config.start_date,
+                            self.config.end_date,
+                            pname,
+                            len(versions) - 1,
+                            pre_name,
+                            before_n,
+                        )
+                    else:
+                        self.logger.info(
+                            "Version Comparison: period %s..%s applied to '%s' → "
+                            "%d in-window version(s), no predecessor available "
+                            "(trimmed from %d total)",
+                            self.config.start_date,
+                            self.config.end_date,
+                            pname,
+                            len(versions),
+                            before_n,
+                        )
+
                 if len(versions) < 2:
                     self.logger.debug(
                         "%s has %d version(s) — skipping",
@@ -3012,12 +3209,20 @@ class ReportEngine:
                     )
                     continue
 
-                # Sort versions by configured key (default: created ascending)
-                _vs = self.config.version_sort or "created"
-                versions.sort(
-                    key=lambda v: v.get(_vs, v.get("id", "")),
-                    reverse=self.config.version_sort_desc,
-                )
+                if trim_applied:
+                    # Preserve trim order: [predecessor, in_window ASC]. This
+                    # keeps the predecessor at index 0 so the transform treats
+                    # it as the baseline. User-configured --version-sort[-desc]
+                    # is ignored on period-filtered runs to preserve the
+                    # "what entered the period" semantic.
+                    pass
+                else:
+                    # Sort versions by configured key (default: created ascending)
+                    _vs = self.config.version_sort or "created"
+                    versions.sort(
+                        key=lambda v: v.get(_vs, v.get("id", "")),
+                        reverse=self.config.version_sort_desc,
+                    )
                 project_version_lists.append((pname, versions))
 
         if cache_hits > 0:
@@ -3055,25 +3260,55 @@ class ReportEngine:
                     created = v.get("created", "")
                     pbar.set_postfix({"project": pname[:20], "version": vname[:20]})
 
-                    findings = _fetch_findings(vid)
-                    if delay > 0:
-                        time.sleep(delay)
-                    components = _fetch_components(vid)
-
-                    version_records.append(
-                        {
-                            "id": vid,
-                            "name": vname,
-                            "created": created,
-                            "findings": findings,
-                            "components": components,
-                        }
-                    )
+                    try:
+                        findings = _fetch_findings(vid)
+                        if delay > 0:
+                            time.sleep(delay)
+                        components = _fetch_components(vid)
+                        version_records.append(
+                            {
+                                "id": vid,
+                                "name": vname,
+                                "created": created,
+                                "findings": findings,
+                                "components": components,
+                            }
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            "Version Comparison: failed to fetch data for "
+                            "version %s (%s) after retries: %s. "
+                            "Marking as unavailable and continuing.",
+                            vname,
+                            vid,
+                            str(e)[:200],
+                        )
+                        version_records.append(
+                            {
+                                "id": vid,
+                                "name": vname,
+                                "created": created,
+                                "fetch_failed": True,
+                                "findings": [],
+                                "components": [],
+                            }
+                        )
                     pbar.update(1)
 
                     # Throttle between versions to avoid overloading the server
                     if delay > 0:
                         time.sleep(delay)
+
+                n_failed = sum(1 for rec in version_records if rec.get("fetch_failed"))
+                if n_failed:
+                    self.logger.warning(
+                        "Version Comparison: %d of %d version(s) had fetch failures "
+                        "for project '%s'. Report is partial — see per-version "
+                        "warnings above.",
+                        n_failed,
+                        len(version_records),
+                        pname,
+                    )
 
                 projects_data.append(
                     {
@@ -3094,9 +3329,6 @@ class ReportEngine:
             # Track whether entity-level caching was used (needs date post-filtering)
             needs_date_postfilter = False
             is_operational = False
-            # Track whether multi-type post-filtering is needed
-            post_filter_categories: set[str] | None = None
-            post_filter_types: set[str] | None = None
 
             # --- NVD pipeline handles (initialised here so both branches see them) ---
             _nvd_on_records = None
@@ -3167,7 +3399,15 @@ class ReportEngine:
                     "/public/v0/components",
                 }
                 _endpoint = recipe.query.endpoint if recipe.query else ""
-                if _endpoint in _ROBUST_ENDPOINTS or recipe.name in (
+                # Short-circuit for Executive Dashboard in summary mode —
+                # bypass the findings fetch entirely; all data comes from
+                # _fetch_exec_dashboard_summary (called later at transform time).
+                _is_ed_summary = recipe.name == "Executive Dashboard" and not getattr(
+                    self.config, "detailed_mode", True
+                )
+                if _is_ed_summary:
+                    raw_data = pd.DataFrame()
+                elif _endpoint in _ROBUST_ENDPOINTS or recipe.name in (
                     "Version Comparison",
                     "User Activity",
                     "Scan Analysis",
@@ -3383,81 +3623,114 @@ class ReportEngine:
                                 f"created>={self.config.detected_after}T00:00:00"
                             )
 
-                        if self.config.project_filter:
-                            try:
-                                project_id = int(self.config.project_filter)
-                                filters.append(f"project=={project_id}")
-                            except ValueError:
-                                filters.append(f"project=={self.config.project_filter}")
-                        elif self._folder_project_ids:
-                            # Folder scoping — add project=in=() filter (sorted for deterministic cache keys)
-                            folder_pids = sorted(self._folder_project_ids)
-                            filters.append(
-                                f"project=in=({','.join(str(pid) for pid in folder_pids)})"
-                            )
-
-                        if self.config.version_filter:
-                            filters.append(
-                                f"projectVersion=={self.config.version_filter}"
-                            )
-
-                        combined_filter = ";".join(filters)
-
-                        unified_query = QueryConfig(
-                            endpoint=recipe.query.endpoint,
-                            params=QueryParams(
-                                limit=recipe.query.params.limit,
-                                filter=combined_filter,
-                                archived=False,
-                                excluded=False,
-                            ),
-                        )
-
-                        # Use batched version filtering if current_version_only is enabled
+                        # Short-circuit on empty folder: `_folder_project_ids`
+                        # is an empty set when --folder resolves to a real
+                        # folder that happens to contain zero projects. Without
+                        # this guard the falsy `elif self._folder_project_ids:`
+                        # checks below fall through to the "no folder" branch
+                        # and silently process the entire portfolio (observed
+                        # on rolandl with --folder Routers: 0 projects in
+                        # folder, 155 processed over 10+ minutes). Skip the
+                        # fetch and return an empty DataFrame — downstream
+                        # transform/render handle empty input.
                         if (
-                            self.config.current_version_only
-                            and not self.config.version_filter
+                            self._folder_project_ids is not None
+                            and not self._folder_project_ids
+                            and not self.config.project_filter
                         ):
-                            # Scope version resolution to only the projects
-                            # being queried — avoids fetching version IDs (and
-                            # then components) for projects that the filter will
-                            # exclude anyway.
-                            if self.config.project_filter:
-                                # Single project → resolve just that one version
-                                version_ids = self._get_latest_version_ids_for_projects(
-                                    [self.config.project_filter]
-                                )
-                            elif self._folder_project_ids:
-                                # Folder scope → resolve only folder projects
-                                version_ids = self._get_latest_version_ids_for_projects(
-                                    list(self._folder_project_ids)
-                                )
-                            else:
-                                # No project/folder filter → resolve all
-                                version_ids = self._get_latest_version_ids()
                             self.logger.info(
-                                f"Fetching components for {recipe.name} with --current-version-only ({len(version_ids)} versions), base filter: {combined_filter}"
+                                "%s: --folder '%s' resolved to 0 projects — "
+                                "skipping component fetch",
+                                recipe.name,
+                                self._folder_name or "(unknown)",
                             )
-                            _fetched = self._fetch_with_version_batching(
-                                unified_query,
-                                version_ids,
-                                entity_type="components",
-                            )
-                            raw_data = (
-                                pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
-                            )
-                            del _fetched
+                            raw_data = pd.DataFrame()
                         else:
-                            self.logger.info(
-                                f"Fetching components for {recipe.name} with filter: {combined_filter}"
+                            if self.config.project_filter:
+                                try:
+                                    project_id = int(self.config.project_filter)
+                                    filters.append(f"project=={project_id}")
+                                except ValueError:
+                                    filters.append(
+                                        f"project=={self.config.project_filter}"
+                                    )
+                            elif self._folder_project_ids:
+                                # Folder scoping — add project=in=() filter (sorted for deterministic cache keys)
+                                folder_pids = sorted(self._folder_project_ids)
+                                filters.append(
+                                    f"project=in=({','.join(str(pid) for pid in folder_pids)})"
+                                )
+
+                            if self.config.version_filter:
+                                filters.append(
+                                    f"projectVersion=={self.config.version_filter}"
+                                )
+
+                            combined_filter = ";".join(filters)
+
+                            unified_query = QueryConfig(
+                                endpoint=recipe.query.endpoint,
+                                params=QueryParams(
+                                    limit=recipe.query.params.limit,
+                                    filter=combined_filter,
+                                    archived=False,
+                                    excluded=False,
+                                ),
                             )
-                            _fetched = self.api_client.fetch_all_with_resume(
-                                unified_query
-                            )
-                            raw_data = (
-                                pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
-                            )
-                            del _fetched
+
+                            # Use batched version filtering if current_version_only is enabled
+                            if (
+                                self.config.current_version_only
+                                and not self.config.version_filter
+                            ):
+                                # Scope version resolution to only the projects
+                                # being queried — avoids fetching version IDs (and
+                                # then components) for projects that the filter will
+                                # exclude anyway.
+                                if self.config.project_filter:
+                                    # Single project → resolve just that one version
+                                    version_ids = (
+                                        self._get_latest_version_ids_for_projects(
+                                            [self.config.project_filter]
+                                        )
+                                    )
+                                elif self._folder_project_ids:
+                                    # Folder scope → resolve only folder projects
+                                    version_ids = (
+                                        self._get_latest_version_ids_for_projects(
+                                            list(self._folder_project_ids)
+                                        )
+                                    )
+                                else:
+                                    # No project/folder filter → resolve all
+                                    version_ids = self._get_latest_version_ids()
+                                self.logger.info(
+                                    f"Fetching components for {recipe.name} with --current-version-only ({len(version_ids)} versions), base filter: {combined_filter}"
+                                )
+                                _fetched = self._fetch_with_version_batching(
+                                    unified_query,
+                                    version_ids,
+                                    entity_type="components",
+                                )
+                                raw_data = (
+                                    pd.DataFrame(_fetched)
+                                    if _fetched
+                                    else pd.DataFrame()
+                                )
+                                del _fetched
+                            else:
+                                self.logger.info(
+                                    f"Fetching components for {recipe.name} with filter: {combined_filter}"
+                                )
+                                _fetched = self.api_client.fetch_all_with_resume(
+                                    unified_query
+                                )
+                                raw_data = (
+                                    pd.DataFrame(_fetched)
+                                    if _fetched
+                                    else pd.DataFrame()
+                                )
+                                del _fetched
                     elif recipe.query.endpoint == "/public/v0/findings":
                         # Report category determines period behaviour:
                         #   Operational (Executive Summary): period filters findings by detected date
@@ -3510,10 +3783,6 @@ class ReportEngine:
                             )
                         finding_type = type_params.get("type", "cve") or ""
                         category_filter = type_params.get("category_filter")
-                        post_filter_categories = type_params.get(
-                            "post_filter_categories"
-                        )
-                        post_filter_types = type_params.get("post_filter_types")
 
                         # Whether we need to post-filter by date (set True when entity-
                         # level caching is used and date filters are NOT in the API query)
@@ -3576,24 +3845,14 @@ class ReportEngine:
                         # dropping ~50+ nested-dict/API columns per batch.
                         _is_exec_summary = recipe.name == "Executive Summary"
                         _exec_extra_keep: frozenset[str] | None = None
-                        if _is_exec_summary and (
-                            post_filter_categories or post_filter_types
-                        ):
-                            _exec_extra_keep = frozenset({"category", "type"})
 
                         # --- Per-batch column pruning for Executive Dashboard ---
                         _is_exec_dashboard = recipe.name == "Executive Dashboard"
                         _ed_extra_keep: frozenset[str] | None = None
-                        if _is_exec_dashboard and (
-                            post_filter_categories or post_filter_types
-                        ):
-                            _ed_extra_keep = frozenset({"category", "type"})
 
                         # --- Per-batch flatten + pruning for CVA ---
                         _is_cva = recipe.name == "Component Vulnerability Analysis"
                         _cva_pre_flattened = False
-                        if _is_cva and (post_filter_categories or post_filter_types):
-                            _cva_extra_keep = frozenset({"category", "type"})
 
                         # --- Per-batch description parse-and-discard for Config Analysis Triage ---
                         _is_config_triage = (
@@ -3745,6 +4004,22 @@ class ReportEngine:
                                 pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
                             )
                             del _fetched
+
+                        elif (
+                            _is_component_scoped
+                            and _component_search_results is not None
+                        ):
+                            # Component search ran and returned 0 versions
+                            # (e.g. --component-match exact with no exact matches).
+                            # Skip all findings fetch paths below — without this
+                            # short-circuit, the `else` branch fetches every
+                            # project in the period and the transform's
+                            # contains-mode filter re-includes substring matches.
+                            self.logger.info(
+                                "Skipping findings fetch: component search "
+                                "returned 0 matching versions"
+                            )
+                            raw_data = pd.DataFrame()
 
                         elif self.config.project_filter:
                             # Single project filter - get findings for this project
@@ -4657,35 +4932,14 @@ class ReportEngine:
                     f"Open-only post-filter: {before_count} -> {len(raw_data)} findings"
                 )
 
-            # --- Category/type post-filtering for multi-type requests ---
-            # When --finding-types has multiple types (e.g. cve,sast), we fetch
-            # all findings (no type param) and post-filter here.
-            # Match on `category` field (uppercase: CVE, SAST_ANALYSIS, etc.)
-            # and/or `type` field (lowercase: cve, sast, thirdparty) for types
-            # without a documented category mapping.
-            if (
-                (post_filter_categories or post_filter_types)
-                and isinstance(raw_data, pd.DataFrame)
-                and not raw_data.empty
-            ):
-                before_count = len(raw_data)
-                _pf_cats = post_filter_categories or set()
-                _pf_types = post_filter_types or set()
-                cat_col = (
-                    raw_data.get("category", pd.Series("", index=raw_data.index))
-                    .fillna("")
-                    .str.upper()
-                )
-                type_col = (
-                    raw_data.get("type", pd.Series("", index=raw_data.index))
-                    .fillna("")
-                    .str.lower()
-                )
-                raw_data = raw_data[cat_col.isin(_pf_cats) | type_col.isin(_pf_types)]
-                self.logger.info(
-                    f"Finding-type post-filter (categories={_pf_cats}, types={_pf_types}): "
-                    f"{before_count} -> {len(raw_data)} findings"
-                )
+            # Multi-type filtering used to be implemented as a post-fetch
+            # filter on the response `category` and `type` fields, but the
+            # `category` field is always null in /findings responses and the
+            # `type` field uses dashed values (`binary-sast`) that did not
+            # match the underscored CLI values, so the filter dropped every
+            # row. The fix is upstream in build_findings_type_params, which
+            # now resolves multi-type requests to a single `category=in=(...)`
+            # RSQL query at the API layer (no post-filter needed).
 
             # Ensure raw_data is a DataFrame at this point
             if not isinstance(raw_data, pd.DataFrame):
@@ -4872,6 +5126,29 @@ class ReportEngine:
             # Pass recipe parameters so transforms can access them
             if recipe.parameters:
                 additional_data["recipe_parameters"] = recipe.parameters
+
+            # --- Executive Dashboard summary-mode: fetch all per-project data ---
+            # When detailed_mode is False, raw_data is empty (findings skipped).
+            # We fetch the summary bundle here and merge it into additional_data
+            # so _invoke_exec_dashboard_transform can pass it to the summary transform.
+            if recipe.name == "Executive Dashboard" and not getattr(
+                self.config, "detailed_mode", True
+            ):
+                # Default serial (1 worker): most platforms rate-limit hard
+                # enough that parallelism provides no speedup — the retry/backoff
+                # dominates wall time anyway. Customers with generous quotas
+                # can raise this via FS_REPORT_EXEC_DASHBOARD_WORKERS.
+                _ed_max_workers = int(
+                    os.environ.get("FS_REPORT_EXEC_DASHBOARD_WORKERS", "1")
+                )
+                self.logger.info(
+                    "Executive Dashboard summary mode: fetching per-project data "
+                    f"(max_workers={_ed_max_workers})"
+                )
+                _summary_bundle = self._fetch_exec_dashboard_summary(
+                    max_workers=_ed_max_workers
+                )
+                additional_data.update(_summary_bundle)
 
             # Add project data for Scan Analysis (for new vs existing analysis)
             if (
@@ -5300,9 +5577,25 @@ class ReportEngine:
             )
             _log_memory(self.logger, f"Before transform ({recipe.name})")
             raw_data_count = len(raw_data) if hasattr(raw_data, "__len__") else 0
-            transformed_data = self.transformer.transform(
-                raw_data, transforms_to_apply, additional_data=additional_data
-            )
+
+            # --- Executive Dashboard dispatch ---
+            # In summary mode use _invoke_exec_dashboard_transform (bypasses
+            # the data_transformer entirely — result dict goes straight into
+            # additional_data so the template receives all panel keys).
+            transformed_data: Any  # declared here; assigned in both branches below
+            if recipe.name == "Executive Dashboard" and not getattr(
+                self.config, "detailed_mode", True
+            ):
+                _ed_result = self._invoke_exec_dashboard_transform(
+                    raw_data, additional_data=additional_data
+                )
+                additional_data.update(_ed_result)
+                additional_data["transform_result"] = _ed_result
+                transformed_data = pd.DataFrame()
+            else:
+                transformed_data = self.transformer.transform(
+                    raw_data, transforms_to_apply, additional_data=additional_data
+                )
 
             # Handle custom transform functions that return dictionaries with additional data
             if hasattr(recipe, "transform_function") and recipe.transform_function:
@@ -6443,6 +6736,398 @@ class ReportEngine:
         df["dependency_path"] = dep_paths
         df["component_dependency_path"] = comp_dep_paths
         return df
+
+    def _invoke_exec_dashboard_transform(
+        self,
+        data: Any,
+        additional_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch Exec Dashboard transform by mode."""
+        if self.config.detailed_mode:
+            from fs_report.transforms.pandas.executive_dashboard import (
+                executive_dashboard_transform,
+            )
+
+            return executive_dashboard_transform(
+                data,
+                additional_data=additional_data,
+            )
+        from fs_report.transforms.pandas.executive_dashboard_summary import (
+            executive_dashboard_summary_transform,
+        )
+
+        return executive_dashboard_summary_transform(
+            data,
+            additional_data=additional_data,
+            start_date=self.config.start_date,
+            end_date=self.config.end_date,
+        )
+
+    def _batched_fetch_components_by_pv(
+        self, pv_ids: list[str]
+    ) -> dict[str, list[dict]]:
+        """Fetch /components for many projectVersions in RSQL `=in=(...)` batches.
+
+        Returns ``{pv_id: [components...]}`` with an entry for every requested
+        id (empty list if no components). Batch size follows the existing
+        convention (15 if >200 ids, else 25) to stay under URI length limits.
+
+        Per-PV cache read first: any projectVersion whose per-PV SQLite entry
+        (written by ``_split_and_cache_by_version``) is still valid bypasses
+        the API entirely. Only the cold remainder is batched.
+
+        Batched results feed ``_split_and_cache_by_version`` so later
+        ``projectVersion=={pv}`` fetches hit the same SQLite entries.
+        """
+        if not pv_ids:
+            return {}
+
+        sorted_ids = sorted(str(pv) for pv in pv_ids)
+        cache = getattr(self.api_client, "sqlite_cache", None)
+        ttl = getattr(self.api_client, "cache_ttl", 0) or 0
+
+        # Phase 1: consult per-PV SQLite cache, partition into hit/miss.
+        by_pv: dict[str, list[dict]] = {}
+        uncached: list[str] = []
+        if cache is not None and ttl > 0:
+            endpoint = "/public/v0/components"
+            for pv_id in sorted_ids:
+                params = {"filter": f"projectVersion=={pv_id}", "limit": 10000}
+                if cache.is_cache_valid(endpoint, params, ttl):
+                    data = cache.get_cached_data(endpoint, params, allow_empty=True)
+                    by_pv[pv_id] = data if data is not None else []
+                else:
+                    uncached.append(pv_id)
+        else:
+            uncached = list(sorted_ids)
+
+        if not uncached:
+            self.logger.info(
+                "Batched /components fetch: all %d projectVersion(s) cached, "
+                "skipping API",
+                len(by_pv),
+            )
+            return by_pv
+
+        batch_size = 15 if len(uncached) > 200 else 25
+        total_batches = (len(uncached) + batch_size - 1) // batch_size
+        self.logger.info(
+            "Batched /components fetch: %d uncached projectVersion(s) "
+            "(%d cached), batch_size=%d, %d batches",
+            len(uncached),
+            len(by_pv),
+            batch_size,
+            total_batches,
+        )
+
+        for i in range(0, len(uncached), batch_size):
+            batch_ids = uncached[i : i + batch_size]
+            batch_filter = f"projectVersion=in=({','.join(batch_ids)})"
+            batch_query = QueryConfig(
+                endpoint="/public/v0/components",
+                params=QueryParams(limit=10000, filter=batch_filter),
+            )
+            t0 = time.monotonic()
+            batch_records = (
+                self.api_client.fetch_all_with_resume(
+                    batch_query, show_progress=False, skip_cache_store=True
+                )
+                or []
+            )
+            elapsed = time.monotonic() - t0
+            self.logger.info(
+                "/components batch %d/%d: %d PVs, %d records, %.1fs",
+                i // batch_size + 1,
+                total_batches,
+                len(batch_ids),
+                len(batch_records),
+                elapsed,
+            )
+
+            # Warm per-version SQLite cache so later projectVersion=={pv}
+            # fetches (e.g. detailed mode, Version Comparison) hit the cache.
+            self._split_and_cache_by_version(
+                batch_records,
+                entity_type="components",
+                batch_version_ids=batch_ids,
+            )
+
+            for comp in batch_records:
+                pv = (comp.get("projectVersion") or {}).get("id")
+                if pv:
+                    by_pv.setdefault(str(pv), []).append(comp)
+            for pv_id in batch_ids:
+                by_pv.setdefault(pv_id, [])
+
+        return by_pv
+
+    def _batched_fetch_versions_histories(
+        self, project_ids: list[str]
+    ) -> dict[str, list[dict]]:
+        """Fetch /versions for many projects in RSQL `project=in=(...)` batches.
+
+        Returns ``{project_id: [versions asc by created...]}`` with an entry for
+        every requested id. Batch size matches the portfolio batching convention
+        (15 if >200 ids, else 25).
+
+        Writes each per-project partition to ``raw_cache`` under
+        ``versions_history:{project_id}`` so single-project callers of
+        ``fetch_versions_history`` (e.g. per-project reruns) hit warm cache.
+        """
+        if not project_ids:
+            return {}
+
+        sorted_ids = sorted(str(p) for p in project_ids)
+        cache = getattr(self.api_client, "sqlite_cache", None)
+        ttl = getattr(self.api_client, "cache_ttl", 0) or 0
+
+        # Phase 1: consult per-project raw_cache, partition into hit/miss.
+        by_project: dict[str, list[dict]] = {}
+        uncached: list[str] = []
+        if cache is not None and ttl > 0:
+            for pid in sorted_ids:
+                cached = cache.get_raw(f"versions_history:{pid}", ttl)
+                if isinstance(cached, list):
+                    by_project[pid] = cached
+                else:
+                    uncached.append(pid)
+        else:
+            uncached = list(sorted_ids)
+
+        if not uncached:
+            self.logger.info(
+                "Batched /versions fetch: all %d project(s) cached, skipping API",
+                len(by_project),
+            )
+            return by_project
+
+        batch_size = 15 if len(uncached) > 200 else 25
+        total_batches = (len(uncached) + batch_size - 1) // batch_size
+        self.logger.info(
+            "Batched /versions fetch: %d uncached project(s) (%d cached), "
+            "batch_size=%d, %d batches",
+            len(uncached),
+            len(by_project),
+            batch_size,
+            total_batches,
+        )
+
+        for i in range(0, len(uncached), batch_size):
+            batch_ids = uncached[i : i + batch_size]
+            batch_filter = f"project=in=({','.join(batch_ids)})"
+            batch_query = QueryConfig(
+                endpoint="/public/v0/versions",
+                params=QueryParams(
+                    limit=10000,
+                    filter=batch_filter,
+                    sort="created:asc",
+                ),
+            )
+            t0 = time.monotonic()
+            batch_records = (
+                self.api_client.fetch_all_with_resume(
+                    batch_query, show_progress=False, skip_cache_store=True
+                )
+                or []
+            )
+            elapsed = time.monotonic() - t0
+            self.logger.info(
+                "/versions batch %d/%d: %d projects, %d records, %.1fs",
+                i // batch_size + 1,
+                total_batches,
+                len(batch_ids),
+                len(batch_records),
+                elapsed,
+            )
+
+            partition: dict[str, list[dict]] = {}
+            for ver in batch_records:
+                proj_id = (ver.get("project") or {}).get("id")
+                if proj_id:
+                    partition.setdefault(str(proj_id), []).append(ver)
+            # API sort=created:asc applies across the batch; re-sort per project
+            # to be defensive against intermixed/bag-ordered responses.
+            for plist in partition.values():
+                plist.sort(key=lambda v: v.get("created", ""))
+
+            for pid in batch_ids:
+                plist = partition.get(pid, [])
+                by_project[pid] = plist
+                if cache is not None and ttl > 0:
+                    cache.put_raw(f"versions_history:{pid}", plist)
+
+        return by_project
+
+    def _filter_projects_to_period(self, projects: list[dict]) -> list[dict]:
+        """Keep only projects whose current version was scanned in the window.
+
+        Window is [start_date 00:00:00 UTC, end_date+1 day 00:00:00 UTC), so
+        both endpoint days are inclusive. Projects without a parseable
+        ``defaultBranch.latestVersion.created`` are excluded — for the
+        purposes of "what happened in this period", a project with no
+        recent scan didn't happen.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        try:
+            start = datetime.fromisoformat(self.config.start_date).replace(tzinfo=UTC)
+            end = datetime.fromisoformat(self.config.end_date).replace(
+                tzinfo=UTC
+            ) + timedelta(days=1)
+        except (ValueError, TypeError):
+            self.logger.warning(
+                "Could not parse period dates (%s, %s) — skipping period filter",
+                self.config.start_date,
+                self.config.end_date,
+            )
+            return projects
+
+        filtered: list[dict] = []
+        for proj in projects:
+            db = proj.get("defaultBranch") or {}
+            lv = db.get("latestVersion") or {} if isinstance(db, dict) else {}
+            created_str = lv.get("created")
+            if not created_str:
+                continue
+            try:
+                created = datetime.fromisoformat(
+                    str(created_str).replace("Z", "+00:00")
+                )
+            except (ValueError, TypeError):
+                continue
+            if start <= created < end:
+                filtered.append(proj)
+        return filtered
+
+    def _fetch_exec_dashboard_summary(self, max_workers: int = 10) -> dict[str, Any]:
+        """Fetch Executive Dashboard summary-mode data.
+
+        Pipeline:
+          1. GET /public/v0/projects (paginated) — once, up front
+          2. Optional period filter — projects whose current version was
+             scanned outside [start_date, end_date] are dropped when the
+             user explicitly requested a period (--period, --start, --end).
+          3. Batched fetch of /components (RSQL projectVersion=in=(...))
+          4. Batched fetch of /versions (RSQL project=in=(...))
+          5. per_project_parallel — 4 calls per project (summary counts only);
+             components and versions are served from the batched pre-fetch
+        Returns a dict consumable by executive_dashboard_summary_transform.
+        """
+        from fs_report.api.per_project_parallel import per_project_parallel
+        from fs_report.api.summary_counts import fetch_all_summary_counts
+
+        # 1. Paginated /projects fetch
+        projects_query = QueryConfig(
+            endpoint="/public/v0/projects",
+            params=QueryParams(limit=10000, archived=False, excluded=False),
+        )
+        all_projects = self.api_client.fetch_all_with_resume(
+            projects_query, show_progress=True
+        )
+
+        # Apply folder/project filters (existing engine state)
+        if self._folder_project_ids:
+            in_scope = [
+                p for p in all_projects if str(p.get("id")) in self._folder_project_ids
+            ]
+        elif self.config.project_filter:
+            pf = self.config.project_filter
+            in_scope = [
+                p
+                for p in all_projects
+                if str(p.get("id")) == pf or p.get("name", "").lower() == pf.lower()
+            ]
+        else:
+            in_scope = list(all_projects)
+
+        # Period scoping: when the user explicitly requested a period, restrict
+        # the KPI/chart totals to projects whose current version was scanned in
+        # that window. Without this, summary mode reports the full all-time
+        # portfolio regardless of --period. When period is the default, skip
+        # the filter — that path means "no time constraint was requested".
+        if getattr(self.config, "period_explicit", False):
+            before = len(in_scope)
+            in_scope = self._filter_projects_to_period(in_scope)
+            self.logger.info(
+                "Period scope [%s to %s]: %d/%d project(s) with current "
+                "version in window",
+                self.config.start_date,
+                self.config.end_date,
+                len(in_scope),
+                before,
+            )
+
+        self.logger.info(
+            "Executive Dashboard (summary): %d project(s) in scope",
+            len(in_scope),
+        )
+
+        # Collect pv_ids + project_ids for batched pre-fetch.
+        pv_ids: list[str] = []
+        project_ids: list[str] = []
+        for proj in in_scope:
+            db = proj.get("defaultBranch") or {}
+            lv = db.get("latestVersion") or {} if isinstance(db, dict) else {}
+            pv_id = lv.get("id")
+            pid = proj.get("id")
+            if pv_id and pid is not None:
+                pv_ids.append(str(pv_id))
+                project_ids.append(str(pid))
+
+        # 2. Batched /components fetch
+        components_by_pv = self._batched_fetch_components_by_pv(pv_ids)
+
+        # 3. Batched /versions fetch
+        versions_by_project = self._batched_fetch_versions_histories(project_ids)
+
+        # 4. Per-project summary-counts fan-out (path-parameterized endpoints
+        # can't be RSQL-batched, so this remains per-version).
+        def work(proj: dict) -> dict:
+            pid = proj.get("id")
+            db = proj.get("defaultBranch") or {}
+            lv = db.get("latestVersion") or {} if isinstance(db, dict) else {}
+            pv_id = lv.get("id")
+            if not pv_id:
+                return {"id": pid, "name": proj.get("name"), "skipped": True}
+
+            counts = fetch_all_summary_counts(self.api_client, pv_id)
+
+            return {
+                "id": str(pid),
+                "name": proj.get("name"),
+                "folder": proj.get("folder") or {"id": "", "name": ""},
+                "latestVersion": lv,
+                "components": components_by_pv.get(str(pv_id), []),
+                "versions_history": versions_by_project.get(str(pid), []),
+                "summary_counts": counts,
+            }
+
+        parallel_results = per_project_parallel(in_scope, work, max_workers=max_workers)
+
+        successes: list[dict] = []
+        failed_names: list[str] = []
+        for proj, outcome in parallel_results:
+            if isinstance(outcome, Exception):
+                self.logger.warning(
+                    "Summary fetch failed for project %s: %s",
+                    proj.get("name"),
+                    str(outcome)[:200],
+                )
+                failed_names.append(proj.get("name", str(proj.get("id"))))
+                continue
+            if outcome.get("skipped"):
+                self.logger.debug(
+                    "Project %s has no latest version; skipping", proj.get("name")
+                )
+                continue
+            successes.append(outcome)
+
+        return {
+            "projects": successes,
+            "mode": "summary",
+            "partial_report": bool(failed_names),
+            "failed_projects": failed_names,
+        }
 
     def clear_cache(self) -> None:
         """Clear the data cache."""

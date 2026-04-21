@@ -696,7 +696,13 @@ def _enrich_actions_with_llm(
     cache_ttl = getattr(cfg, "ai_cache_ttl", 0) if cfg else 0
 
     try:
-        llm = LLMClient(cache_dir=cache_dir, cache_ttl=cache_ttl)
+        llm = LLMClient(
+            cache_dir=cache_dir,
+            cache_ttl=cache_ttl,
+            provider=getattr(cfg, "ai_provider", None) if cfg else None,
+            model_high=getattr(cfg, "ai_model_high", None) if cfg else None,
+            model_low=getattr(cfg, "ai_model_low", None) if cfg else None,
+        )
     except Exception as e:
         logger.warning("Failed to initialize LLM client: %s", e)
         return

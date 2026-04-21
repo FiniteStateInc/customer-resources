@@ -196,74 +196,88 @@ class APIClient:
         # Log the actual API request parameters
         self.logger.debug(f"Actual API request params: {params}")
 
-        try:
-            self.logger.debug(f"Making API request to {url} with params {params}")
-            response = self.client.get(url, params=params, timeout=60)
-            self.logger.debug(f"API response received for {url}")
-            response.raise_for_status()
-            data = response.json()
+        _max_retries = 3
+        for _attempt in range(_max_retries + 1):
+            try:
+                self.logger.debug(f"Making API request to {url} with params {params}")
+                response = self.client.get(url, params=params, timeout=60)
+                self.logger.debug(f"API response received for {url}")
+                response.raise_for_status()
+                data = response.json()
 
-            # Handle different API response formats
-            # Some endpoints return a list directly, others return {"items": [...]} or {"scans": [...]}
-            if isinstance(data, list):
-                # Filter out null/empty rows (can appear for archived/excluded items)
-                data = [rec for rec in data if rec]
-                self.logger.debug(
-                    f"Retrieved {len(data)} records (single page, list format)"
-                )
-                # Cache the data for this page
-                self.cache.put(query, data)
-                return data
-            elif isinstance(data, dict):
-                # Check for common pagination response formats
-                # Use sentinel to distinguish "key absent" from "key present but empty list"
-                _sentinel = object()
-                items = data.get("items", _sentinel)
-                if items is _sentinel:
-                    items = data.get("scans", _sentinel)
-                if items is _sentinel:
-                    items = data.get("data", _sentinel)
-                if items is not _sentinel and isinstance(items, list):
+                # Handle different API response formats
+                # Some endpoints return a list directly, others return {"items": [...]} or {"scans": [...]}
+                if isinstance(data, list):
+                    # Filter out null/empty rows (can appear for archived/excluded items)
+                    data = [rec for rec in data if rec]
                     self.logger.debug(
-                        f"Retrieved {len(items)} records (single page, object format with items/scans/data key)"
+                        f"Retrieved {len(data)} records (single page, list format)"
                     )
                     # Cache the data for this page
-                    self.cache.put(query, items)
-                    return cast(list[dict[str, Any]], items)
+                    self.cache.put(query, data)
+                    return data
+                elif isinstance(data, dict):
+                    # Check for common pagination response formats
+                    # Use sentinel to distinguish "key absent" from "key present but empty list"
+                    _sentinel = object()
+                    items = data.get("items", _sentinel)
+                    if items is _sentinel:
+                        items = data.get("scans", _sentinel)
+                    if items is _sentinel:
+                        items = data.get("data", _sentinel)
+                    if items is not _sentinel and isinstance(items, list):
+                        self.logger.debug(
+                            f"Retrieved {len(items)} records (single page, object format with items/scans/data key)"
+                        )
+                        # Cache the data for this page
+                        self.cache.put(query, items)
+                        return cast(list[dict[str, Any]], items)
+                    else:
+                        # Single record as dict
+                        self.logger.debug("Retrieved single record (dict format)")
+                        result = [data] if data else []
+                        self.cache.put(query, result)
+                        return result
                 else:
-                    # Single record as dict
-                    self.logger.debug("Retrieved single record (dict format)")
+                    self.logger.debug("Retrieved single record")
                     result = [data] if data else []
                     self.cache.put(query, result)
                     return result
-            else:
-                self.logger.debug("Retrieved single record")
-                result = [data] if data else []
-                self.cache.put(query, result)
-                return result
-        except HTTPStatusError as e:
-            status_code = e.response.status_code
-            if status_code == 401:
-                raise ValueError(
-                    f"Authentication failed: Check your API token. Response: {e.response.text}"
-                ) from e
-            elif status_code == 403:
-                raise ValueError(
-                    f"Access denied: You may not have permission to access this resource. Response: {e.response.text}"
-                ) from e
-            elif status_code == 429:
-                raise ValueError(
-                    f"Rate limit exceeded: Please wait and try again. Response: {e.response.text}"
-                ) from e
-            else:
-                raise ValueError(
-                    f"API request failed: {status_code} - {e.response.text}"
-                ) from e
-        except httpx.RequestError as e:
-            raise ValueError(f"Network error: {e}") from e
-        except Exception as e:
-            self.logger.error(f"Error fetching data from {url}: {e}")
-            raise
+            except HTTPStatusError as e:
+                status_code = e.response.status_code
+                if _is_retryable(status_code) and _attempt < _max_retries:
+                    # Transient error — back off and retry
+                    _wait = (2**_attempt) + random.uniform(0, 1)
+                    self.logger.warning(
+                        f"{status_code} on {query.endpoint}, "
+                        f"retry {_attempt + 1}/{_max_retries} in {_wait:.1f}s"
+                    )
+                    time.sleep(_wait)
+                    continue
+                # Permanent error or retries exhausted — raise with descriptive message
+                if status_code == 401:
+                    raise ValueError(
+                        f"Authentication failed: Check your API token. Response: {e.response.text}"
+                    ) from e
+                elif status_code == 403:
+                    raise ValueError(
+                        f"Access denied: You may not have permission to access this resource. Response: {e.response.text}"
+                    ) from e
+                elif status_code == 429:
+                    raise ValueError(
+                        f"Rate limit exceeded: Please wait and try again. Response: {e.response.text}"
+                    ) from e
+                else:
+                    raise ValueError(
+                        f"API request failed: {status_code} - {e.response.text}"
+                    ) from e
+            except httpx.RequestError as e:
+                raise ValueError(f"Network error: {e}") from e
+            except Exception as e:
+                self.logger.error(f"Error fetching data from {url}: {e}")
+                raise
+        # Should never reach here (loop always returns or raises), but satisfy type checker
+        raise RuntimeError(f"fetch_data exhausted retries for {url}")
 
     def fetch_all_with_resume(
         self,

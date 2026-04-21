@@ -348,6 +348,19 @@ class Config(BaseModel):
     output_dir: str = Field("./output", description="Output directory for reports")
     start_date: str = Field(..., description="Start date in ISO8601 format")
     end_date: str = Field(..., description="End date in ISO8601 format")
+    period_explicit: bool = Field(
+        False,
+        description="True when the user passed --period, --start, or --end. "
+        "When False, start_date/end_date reflect internal defaults (30-day "
+        "window) that some consumers treat as 'not requested'.",
+    )
+    detailed_mode: bool = Field(
+        False,
+        description="Executive Dashboard: True opts into the legacy "
+        "findings-fetch pipeline (per-finding detection histograms, "
+        "Critical/High severity-over-time lines). Default False uses "
+        "summary-count endpoints for <10 min portfolio runs.",
+    )
     verbose: bool = Field(False, description="Enable verbose logging")
     recipe_filter: str | None = Field(
         None, description="Name of specific recipe to run"
@@ -366,7 +379,7 @@ class Config(BaseModel):
     )
     finding_types: str = Field(
         "cve",
-        description="Finding types to include. Types: cve, sast, thirdparty, binary_sca, source_sca. Categories: credentials, config_issues, crypto_material. Use 'all' for everything. Comma-separated for multiple.",
+        description="Finding types to include. Types: cve, sast, thirdparty. Categories: credentials, config_issues, crypto_material. Use 'all' for everything. Comma-separated for multiple. (binary_sca/source_sca are deprecated and stripped — they're scan types, not finding-type filters.)",
     )
     scan_types: str | None = Field(
         None,

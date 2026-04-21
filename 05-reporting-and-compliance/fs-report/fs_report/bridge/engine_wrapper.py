@@ -113,7 +113,7 @@ class EngineWrapper:
                 token=config_params.get("token"),
                 domain=config_params.get("domain"),
                 output=output_dir,
-                period=config_params.get("period", "30d"),
+                period=config_params.get("period") or None,
                 project_filter=config_params.get("projectFilter"),
                 folder_filter=config_params.get("folderFilter"),
                 version_filter=config_params.get("versionFilter"),

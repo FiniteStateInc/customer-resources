@@ -715,9 +715,9 @@ def false_positive_analysis_transform(
                 llm = LLMClient(
                     cache_dir=getattr(config, "cache_dir", None),
                     cache_ttl=getattr(config, "cache_ttl", 0),
-                    provider=getattr(config, "llm_provider", None),
-                    model_high=getattr(config, "model_high", None),
-                    model_low=getattr(config, "model_low", None),
+                    provider=getattr(config, "ai_provider", None),
+                    model_high=getattr(config, "ai_model_high", None),
+                    model_low=getattr(config, "ai_model_low", None),
                     deployment_context=(
                         additional_data.get("deployment_context")
                         if additional_data

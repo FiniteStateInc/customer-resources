@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "fs-report"
-version = "1.9.5"
+version = "1.9.6"
 description = "Finite State Stand-Alone Reporting Kit"
 authors = ["Finite State <support@finitestate.io>"]
 license = "MIT"
@@ -134,6 +134,10 @@ warn_no_return = true
 warn_unreachable = true
 strict_equality = true
 exclude = ["scripts/sample_data/", "scripts/test/", "scripts/analysis/"]
+
+[[tool.mypy.overrides]]
+module = ["openpyxl", "openpyxl.*"]
+ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true

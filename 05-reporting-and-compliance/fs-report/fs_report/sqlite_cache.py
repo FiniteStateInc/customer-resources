@@ -37,6 +37,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 import time
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -129,6 +130,11 @@ PROJECT_FIELDS = {
     "created": "created",
     "createdBy": "created_by",
     "defaultBranch.latestVersion.id": "default_branch_latest_version_id",
+    # Preserve the latest-version scan timestamp so period-scoped recipes
+    # (Executive Dashboard summary with --period/--start/--end) can filter
+    # on it from cached data. Without this, warm-cache runs lose the field
+    # on rebuild and every project falls outside the window.
+    "defaultBranch.latestVersion.created": "default_branch_latest_version_created",
 }
 
 CVE_FIELDS = {
@@ -274,6 +280,7 @@ CREATE TABLE IF NOT EXISTS projects (
     created TEXT,
     created_by TEXT,
     default_branch_latest_version_id TEXT,
+    default_branch_latest_version_created TEXT,
     PRIMARY KEY (query_hash, id)
 );
 
@@ -344,6 +351,13 @@ CREATE TABLE IF NOT EXISTS exploit_detail_cache (
 CREATE TABLE IF NOT EXISTS version_lists (
     project_id TEXT PRIMARY KEY,
     versions_json TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
+-- Lightweight key-value cache (used by summary_counts and similar helpers)
+CREATE TABLE IF NOT EXISTS raw_cache (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
     created_at REAL NOT NULL
 );
 
@@ -616,6 +630,11 @@ class SQLiteCache:
         self.cache_hits = 0
         self.cache_misses = 0
 
+        # Mutex that serializes all SQLite operations so ThreadPoolExecutor
+        # workers (e.g. per_project_parallel in Exec Dashboard summary mode)
+        # do not race on the shared connection/WAL file.
+        self._lock = threading.Lock()
+
         # Session start time - cache validity is checked against this, not current time
         # This ensures cache doesn't expire mid-report for long-running reports
         self.session_start_time = time.time()
@@ -664,6 +683,7 @@ class SQLiteCache:
             ("findings", "component_vc_id", "TEXT"),
             ("findings", "title", "TEXT"),
             ("projects", "default_branch_latest_version_id", "TEXT"),
+            ("projects", "default_branch_latest_version_created", "TEXT"),
             ("components", "license_details", "TEXT"),
             ("components", "declared_license_details", "TEXT"),
             ("components", "concluded_license_details", "TEXT"),
@@ -718,40 +738,41 @@ class SQLiteCache:
 
         query_hash = generate_query_hash(endpoint, params)
 
-        with self._get_connection() as conn:
-            cursor = conn.execute(
-                """
-                SELECT created_at, completed_at, record_count
-                FROM cache_meta
-                WHERE query_hash = ?
-                """,
-                (query_hash,),
-            )
-            row = cursor.fetchone()
-
-            if not row:
-                return False
-
-            # Check if fetch was completed
-            if row["completed_at"] is None:
-                logger.debug(
-                    f"Cache entry for {endpoint} exists but fetch was incomplete"
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT created_at, completed_at, record_count
+                    FROM cache_meta
+                    WHERE query_hash = ?
+                    """,
+                    (query_hash,),
                 )
-                return False
+                row = cursor.fetchone()
 
-            # Check TTL against session start time (not current time)
-            # This ensures cache doesn't expire mid-report for long-running reports
-            age_at_session_start = self.session_start_time - row["created_at"]
-            if age_at_session_start > ttl:
+                if not row:
+                    return False
+
+                # Check if fetch was completed
+                if row["completed_at"] is None:
+                    logger.debug(
+                        f"Cache entry for {endpoint} exists but fetch was incomplete"
+                    )
+                    return False
+
+                # Check TTL against session start time (not current time)
+                # This ensures cache doesn't expire mid-report for long-running reports
+                age_at_session_start = self.session_start_time - row["created_at"]
+                if age_at_session_start > ttl:
+                    logger.debug(
+                        f"Cache entry for {endpoint} expired at session start (age: {age_at_session_start:.0f}s, ttl: {ttl}s)"
+                    )
+                    return False
+
                 logger.debug(
-                    f"Cache entry for {endpoint} expired at session start (age: {age_at_session_start:.0f}s, ttl: {ttl}s)"
+                    f"Cache hit for {endpoint} (age at session start: {age_at_session_start:.0f}s, records: {row['record_count']})"
                 )
-                return False
-
-            logger.debug(
-                f"Cache hit for {endpoint} (age at session start: {age_at_session_start:.0f}s, records: {row['record_count']})"
-            )
-            return True
+                return True
 
     def get_cached_data(
         self, endpoint: str, params: dict, *, allow_empty: bool = False
@@ -780,32 +801,34 @@ class SQLiteCache:
         query_hash = generate_query_hash(endpoint, params)
         fields = get_fields_for_endpoint(endpoint)
 
-        with self._get_connection() as conn:
-            # Get all records for this query
-            try:
-                cursor = conn.execute(
-                    f"SELECT * FROM {table_name} WHERE query_hash = ?", (query_hash,)
-                )
-                rows = cursor.fetchall()
-            except sqlite3.OperationalError as e:
-                logger.warning(f"Error reading from cache table {table_name}: {e}")
-                return None
+        with self._lock:
+            with self._get_connection() as conn:
+                # Get all records for this query
+                try:
+                    cursor = conn.execute(
+                        f"SELECT * FROM {table_name} WHERE query_hash = ?",
+                        (query_hash,),
+                    )
+                    rows = cursor.fetchall()
+                except sqlite3.OperationalError as e:
+                    logger.warning(f"Error reading from cache table {table_name}: {e}")
+                    return None
 
-            if not rows:
-                # The query returned 0 data rows.  When allow_empty is set the
-                # caller has already confirmed (via is_cache_valid) that this
-                # entry was completed — so 0 rows is a legitimate cached result
-                # (e.g. a version with no components).
-                return [] if allow_empty else None
+                if not rows:
+                    # The query returned 0 data rows.  When allow_empty is set the
+                    # caller has already confirmed (via is_cache_valid) that this
+                    # entry was completed — so 0 rows is a legitimate cached result
+                    # (e.g. a version with no components).
+                    return [] if allow_empty else None
 
-            # Convert back to original API format
-            records = []
-            for row in rows:
-                record = self._row_to_record(dict(row), fields)
-                records.append(record)
+                # Convert back to original API format
+                records = []
+                for row in rows:
+                    record = self._row_to_record(dict(row), fields)
+                    records.append(record)
 
-            self.cache_hits += 1
-            return records
+                self.cache_hits += 1
+                return records
 
     def _row_to_record(self, row: dict, fields: dict) -> dict:
         """
@@ -893,28 +916,29 @@ class SQLiteCache:
 
         query_hash = generate_query_hash(endpoint, params)
 
-        with self._get_connection() as conn:
-            # Check if we have an incomplete fetch
-            cursor = conn.execute(
-                "SELECT completed_at FROM cache_meta WHERE query_hash = ?",
-                (query_hash,),
-            )
-            row = cursor.fetchone()
-
-            if not row or row["completed_at"] is not None:
-                # No incomplete fetch, or fetch was completed
-                return 0
-
-            # Count records in the table
-            try:
+        with self._lock:
+            with self._get_connection() as conn:
+                # Check if we have an incomplete fetch
                 cursor = conn.execute(
-                    f"SELECT COUNT(*) as count FROM {table_name} WHERE query_hash = ?",
+                    "SELECT completed_at FROM cache_meta WHERE query_hash = ?",
                     (query_hash,),
                 )
-                count_row = cursor.fetchone()
-                return count_row["count"] if count_row else 0
-            except sqlite3.OperationalError:
-                return 0
+                row = cursor.fetchone()
+
+                if not row or row["completed_at"] is not None:
+                    # No incomplete fetch, or fetch was completed
+                    return 0
+
+                # Count records in the table
+                try:
+                    cursor = conn.execute(
+                        f"SELECT COUNT(*) as count FROM {table_name} WHERE query_hash = ?",
+                        (query_hash,),
+                    )
+                    count_row = cursor.fetchone()
+                    return count_row["count"] if count_row else 0
+                except sqlite3.OperationalError:
+                    return 0
 
     def start_fetch(self, endpoint: str, params: dict, ttl: int | None = None) -> str:
         """
@@ -931,20 +955,21 @@ class SQLiteCache:
         query_hash = generate_query_hash(endpoint, params)
         ttl = ttl if ttl is not None else self.default_ttl
 
-        with self._get_connection() as conn:
-            # Clear any existing data for this query
-            self._clear_query_data(conn, query_hash, endpoint)
+        with self._lock:
+            with self._get_connection() as conn:
+                # Clear any existing data for this query
+                self._clear_query_data(conn, query_hash, endpoint)
 
-            # Insert new metadata entry
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO cache_meta
-                (query_hash, endpoint, query_params, created_at, completed_at, record_count, ttl_seconds)
-                VALUES (?, ?, ?, ?, NULL, 0, ?)
-                """,
-                (query_hash, endpoint, json.dumps(params), time.time(), ttl),
-            )
-            conn.commit()
+                # Insert new metadata entry
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO cache_meta
+                    (query_hash, endpoint, query_params, created_at, completed_at, record_count, ttl_seconds)
+                    VALUES (?, ?, ?, ?, NULL, 0, ?)
+                    """,
+                    (query_hash, endpoint, json.dumps(params), time.time(), ttl),
+                )
+                conn.commit()
 
         self.cache_misses += 1
         return query_hash
@@ -991,31 +1016,32 @@ class SQLiteCache:
         # Trim records to needed fields
         trimmed_records = [self._trim_record(r, fields) for r in records]
 
-        with self._get_connection() as conn:
-            stored = 0
-            for record in trimmed_records:
-                record["query_hash"] = query_hash
-                try:
-                    self._insert_record(conn, table_name, record)
-                    stored += 1
-                except sqlite3.IntegrityError:
-                    # Duplicate record, skip
-                    logger.debug(
-                        f"Skipping duplicate record: {record.get('id', 'unknown')}"
-                    )
-                except Exception as e:
-                    logger.warning(f"Error storing record: {e}")
+        with self._lock:
+            with self._get_connection() as conn:
+                stored = 0
+                for record in trimmed_records:
+                    record["query_hash"] = query_hash
+                    try:
+                        self._insert_record(conn, table_name, record)
+                        stored += 1
+                    except sqlite3.IntegrityError:
+                        # Duplicate record, skip
+                        logger.debug(
+                            f"Skipping duplicate record: {record.get('id', 'unknown')}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Error storing record: {e}")
 
-            # Update record count in metadata
-            conn.execute(
-                """
-                UPDATE cache_meta
-                SET record_count = record_count + ?
-                WHERE query_hash = ?
-                """,
-                (stored, query_hash),
-            )
-            conn.commit()
+                # Update record count in metadata
+                conn.execute(
+                    """
+                    UPDATE cache_meta
+                    SET record_count = record_count + ?
+                    WHERE query_hash = ?
+                    """,
+                    (stored, query_hash),
+                )
+                conn.commit()
 
         return stored
 
@@ -1085,12 +1111,13 @@ class SQLiteCache:
         Args:
             query_hash: Query hash from start_fetch
         """
-        with self._get_connection() as conn:
-            conn.execute(
-                "UPDATE cache_meta SET completed_at = ? WHERE query_hash = ?",
-                (time.time(), query_hash),
-            )
-            conn.commit()
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    "UPDATE cache_meta SET completed_at = ? WHERE query_hash = ?",
+                    (time.time(), query_hash),
+                )
+                conn.commit()
 
         logger.debug(f"Fetch completed for query {query_hash}")
 
@@ -1105,38 +1132,44 @@ class SQLiteCache:
         Raises:
             ValueError: If endpoint is specified but not recognized
         """
-        with self._get_connection() as conn:
-            if endpoint:
-                table_name = get_table_for_endpoint(endpoint)  # May raise ValueError
-                # Drop and recreate to get updated schema
-                conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-                conn.execute(
-                    "DELETE FROM cache_meta WHERE endpoint LIKE ?", (f"%{endpoint}%",)
-                )
-            else:
-                # Drop all tables to reset schema
-                for table in [
-                    "findings",
-                    "scans",
-                    "components",
-                    "projects",
-                    "audit_events",
-                    "cves",
-                    "cve_detail_cache",
-                    "exploit_detail_cache",
-                    "version_lists",
-                    "cache_meta",
-                ]:
-                    conn.execute(f"DROP TABLE IF EXISTS {table}")
-            conn.commit()
+        with self._lock:
+            with self._get_connection() as conn:
+                if endpoint:
+                    table_name = get_table_for_endpoint(
+                        endpoint
+                    )  # May raise ValueError
+                    # Drop and recreate to get updated schema
+                    conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+                    conn.execute(
+                        "DELETE FROM cache_meta WHERE endpoint LIKE ?",
+                        (f"%{endpoint}%",),
+                    )
+                else:
+                    # Drop all tables to reset schema
+                    for table in [
+                        "findings",
+                        "scans",
+                        "components",
+                        "projects",
+                        "audit_events",
+                        "cves",
+                        "cve_detail_cache",
+                        "exploit_detail_cache",
+                        "version_lists",
+                        "raw_cache",
+                        "cache_meta",
+                    ]:
+                        conn.execute(f"DROP TABLE IF EXISTS {table}")
+                conn.commit()
 
         # Recreate tables with current schema
         self._init_db()
 
         # Reclaim disk space — SQLite keeps freed pages in the file without VACUUM
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute("VACUUM")
+            with self._lock:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute("VACUUM")
         except Exception as e:
             logger.warning(f"VACUUM after clear failed (non-fatal): {e}")
 
@@ -1158,40 +1191,41 @@ class SQLiteCache:
         vid_list = list(version_ids)
         placeholders = ",".join("?" * len(vid_list))
 
-        with self._get_connection() as conn:
-            # Find query hashes that contain findings for these versions
-            cursor = conn.execute(
-                f"SELECT DISTINCT query_hash FROM findings "
-                f"WHERE project_version_id IN ({placeholders})",
-                vid_list,
-            )
-            affected_hashes = [row[0] for row in cursor.fetchall()]
+        with self._lock:
+            with self._get_connection() as conn:
+                # Find query hashes that contain findings for these versions
+                cursor = conn.execute(
+                    f"SELECT DISTINCT query_hash FROM findings "
+                    f"WHERE project_version_id IN ({placeholders})",
+                    vid_list,
+                )
+                affected_hashes = [row[0] for row in cursor.fetchall()]
 
-            if not affected_hashes:
-                return 0
+                if not affected_hashes:
+                    return 0
 
-            # Delete affected finding rows
-            conn.execute(
-                f"DELETE FROM findings "
-                f"WHERE project_version_id IN ({placeholders})",
-                vid_list,
-            )
+                # Delete affected finding rows
+                conn.execute(
+                    f"DELETE FROM findings "
+                    f"WHERE project_version_id IN ({placeholders})",
+                    vid_list,
+                )
 
-            # Remove cache_meta entries that now have zero findings
-            removed = 0
-            for qh in affected_hashes:
-                count = conn.execute(
-                    "SELECT COUNT(*) FROM findings WHERE query_hash = ?",
-                    (qh,),
-                ).fetchone()[0]
-                if count == 0:
-                    conn.execute(
-                        "DELETE FROM cache_meta WHERE query_hash = ?",
+                # Remove cache_meta entries that now have zero findings
+                removed = 0
+                for qh in affected_hashes:
+                    count = conn.execute(
+                        "SELECT COUNT(*) FROM findings WHERE query_hash = ?",
                         (qh,),
-                    )
-                    removed += 1
+                    ).fetchone()[0]
+                    if count == 0:
+                        conn.execute(
+                            "DELETE FROM cache_meta WHERE query_hash = ?",
+                            (qh,),
+                        )
+                        removed += 1
 
-            conn.commit()
+                conn.commit()
 
         logger.info(
             "Invalidated %d cache entries for %d version(s)",
@@ -1207,25 +1241,26 @@ class SQLiteCache:
         Returns:
             Dictionary with cache stats
         """
-        with self._get_connection() as conn:
-            # Count entries
-            cursor = conn.execute("SELECT COUNT(*) as count FROM cache_meta")
-            total_entries = cursor.fetchone()["count"]
+        with self._lock:
+            with self._get_connection() as conn:
+                # Count entries
+                cursor = conn.execute("SELECT COUNT(*) as count FROM cache_meta")
+                total_entries = cursor.fetchone()["count"]
 
-            # Count total records
-            total_records = 0
-            for table in [
-                "findings",
-                "scans",
-                "components",
-                "projects",
-                "audit_events",
-            ]:
-                try:
-                    cursor = conn.execute(f"SELECT COUNT(*) as count FROM {table}")
-                    total_records += cursor.fetchone()["count"]
-                except sqlite3.OperationalError:
-                    pass
+                # Count total records
+                total_records = 0
+                for table in [
+                    "findings",
+                    "scans",
+                    "components",
+                    "projects",
+                    "audit_events",
+                ]:
+                    try:
+                        cursor = conn.execute(f"SELECT COUNT(*) as count FROM {table}")
+                        total_records += cursor.fetchone()["count"]
+                    except sqlite3.OperationalError:
+                        pass
 
         # Get database size
         db_size = os.path.getsize(self.db_path) if self.db_path.exists() else 0
@@ -1250,34 +1285,91 @@ class SQLiteCache:
 
         Returns the list of version dicts, or None on cache miss / expiry.
         """
-        with self._get_connection() as conn:
-            cursor = conn.execute(
-                "SELECT versions_json, created_at FROM version_lists WHERE project_id = ?",
-                (project_id,),
-            )
-            row = cursor.fetchone()
-            if not row:
-                return None
-            age = self.session_start_time - row["created_at"]
-            if age > ttl:
-                return None
-            try:
-                result: list[dict[Any, Any]] | None = json.loads(row["versions_json"])
-                return result
-            except (json.JSONDecodeError, TypeError):
-                return None
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT versions_json, created_at FROM version_lists WHERE project_id = ?",
+                    (project_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                age = self.session_start_time - row["created_at"]
+                if age > ttl:
+                    return None
+                try:
+                    result: list[dict[Any, Any]] | None = json.loads(
+                        row["versions_json"]
+                    )
+                    return result
+                except (json.JSONDecodeError, TypeError):
+                    return None
 
     def store_version_list(self, project_id: str, versions: list[dict]) -> None:
         """Store a version list for a project (upsert)."""
-        with self._get_connection() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO version_lists (project_id, versions_json, created_at)
-                VALUES (?, ?, ?)
-                """,
-                (project_id, json.dumps(versions), time.time()),
-            )
-            conn.commit()
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO version_lists (project_id, versions_json, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (project_id, json.dumps(versions), time.time()),
+                )
+                conn.commit()
+
+    # ------------------------------------------------------------------
+    # Raw key-value cache (used by summary_counts and similar helpers)
+    # ------------------------------------------------------------------
+
+    def get_raw(self, key: str, ttl: int) -> dict | None:
+        """
+        Retrieve a raw key-value entry from the cache.
+
+        Args:
+            key: Cache key string.
+            ttl: Maximum age in seconds.  Entries older than ``ttl`` seconds
+                 relative to the session start time are treated as misses.
+
+        Returns:
+            The stored value dict, or None on miss / expiry.
+        """
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT value_json, created_at FROM raw_cache WHERE key = ?",
+                    (key,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                age = self.session_start_time - row["created_at"]
+                if age > ttl:
+                    return None
+                try:
+                    result: dict | None = json.loads(row["value_json"])
+                    return result
+                except (json.JSONDecodeError, TypeError):
+                    return None
+
+    def put_raw(self, key: str, value: dict) -> None:
+        """
+        Store a raw key-value entry in the cache (upsert).
+
+        Args:
+            key: Cache key string.
+            value: JSON-serialisable dict to store.
+        """
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO raw_cache (key, value_json, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (key, json.dumps(value), time.time()),
+                )
+                conn.commit()
 
     def _startup_cleanup(self) -> None:
         """Run cleanup tasks on initialization: expired entries and stale incomplete fetches."""
@@ -1298,44 +1390,45 @@ class SQLiteCache:
         now = time.time()
         removed = 0
 
-        with self._get_connection() as conn:
-            # Find expired completed entries
-            cursor = conn.execute(
-                """
-                SELECT query_hash, endpoint
-                FROM cache_meta
-                WHERE completed_at IS NOT NULL
-                  AND ttl_seconds > 0
-                  AND (created_at + ttl_seconds) < ?
-                """,
-                (now,),
-            )
-            expired = cursor.fetchall()
-
-            for row in expired:
-                query_hash = row["query_hash"]
-                endpoint = row["endpoint"]
-
-                # Clear data for this query
-                self._clear_query_data(conn, query_hash, endpoint)
-
-                # Remove metadata
-                conn.execute(
-                    "DELETE FROM cache_meta WHERE query_hash = ?", (query_hash,)
+        with self._lock:
+            with self._get_connection() as conn:
+                # Find expired completed entries
+                cursor = conn.execute(
+                    """
+                    SELECT query_hash, endpoint
+                    FROM cache_meta
+                    WHERE completed_at IS NOT NULL
+                      AND ttl_seconds > 0
+                      AND (created_at + ttl_seconds) < ?
+                    """,
+                    (now,),
                 )
-                removed += 1
+                expired = cursor.fetchall()
 
-            # Also clean expired version_lists (use default_ttl as threshold)
-            if self.default_ttl > 0:
-                try:
+                for row in expired:
+                    query_hash = row["query_hash"]
+                    endpoint = row["endpoint"]
+
+                    # Clear data for this query
+                    self._clear_query_data(conn, query_hash, endpoint)
+
+                    # Remove metadata
                     conn.execute(
-                        "DELETE FROM version_lists WHERE (created_at + ?) < ?",
-                        (self.default_ttl, now),
+                        "DELETE FROM cache_meta WHERE query_hash = ?", (query_hash,)
                     )
-                except sqlite3.OperationalError:
-                    pass  # Table may not exist yet
+                    removed += 1
 
-            conn.commit()
+                # Also clean expired version_lists (use default_ttl as threshold)
+                if self.default_ttl > 0:
+                    try:
+                        conn.execute(
+                            "DELETE FROM version_lists WHERE (created_at + ?) < ?",
+                            (self.default_ttl, now),
+                        )
+                    except sqlite3.OperationalError:
+                        pass  # Table may not exist yet
+
+                conn.commit()
 
         return removed
 
@@ -1353,31 +1446,32 @@ class SQLiteCache:
         one_hour_ago = now - 3600
         removed = 0
 
-        with self._get_connection() as conn:
-            # Find incomplete entries older than 1 hour
-            cursor = conn.execute(
-                """
-                SELECT query_hash, endpoint
-                FROM cache_meta
-                WHERE completed_at IS NULL AND created_at < ?
-                """,
-                (one_hour_ago,),
-            )
-            incomplete = cursor.fetchall()
-
-            for row in incomplete:
-                query_hash = row["query_hash"]
-                endpoint = row["endpoint"]
-
-                # Clear data for this query
-                self._clear_query_data(conn, query_hash, endpoint)
-
-                # Remove metadata
-                conn.execute(
-                    "DELETE FROM cache_meta WHERE query_hash = ?", (query_hash,)
+        with self._lock:
+            with self._get_connection() as conn:
+                # Find incomplete entries older than 1 hour
+                cursor = conn.execute(
+                    """
+                    SELECT query_hash, endpoint
+                    FROM cache_meta
+                    WHERE completed_at IS NULL AND created_at < ?
+                    """,
+                    (one_hour_ago,),
                 )
-                removed += 1
+                incomplete = cursor.fetchall()
 
-            conn.commit()
+                for row in incomplete:
+                    query_hash = row["query_hash"]
+                    endpoint = row["endpoint"]
+
+                    # Clear data for this query
+                    self._clear_query_data(conn, query_hash, endpoint)
+
+                    # Remove metadata
+                    conn.execute(
+                        "DELETE FROM cache_meta WHERE query_hash = ?", (query_hash,)
+                    )
+                    removed += 1
+
+                conn.commit()
 
         return removed

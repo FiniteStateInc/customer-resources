@@ -171,6 +171,46 @@ class ReportRenderer:
                 or detail_findings_churn is not None
                 or detail_component_churn is not None
             )
+            # Build the VC progression DataFrame (always, for all VC runs).
+            vc_progression_df: pd.DataFrame | None = None
+            if recipe.name == "Version Comparison":
+                vc_projects = additional_data.get("projects", [])
+                if vc_projects:
+                    rows: list[dict] = []
+                    for proj in vc_projects:
+                        proj_name = proj.get("project_name", "")
+                        for step in proj.get("progression", []):
+                            row = dict(step)
+                            row["project"] = proj_name
+                            rows.append(row)
+                    if rows:
+                        vc_progression_df = pd.DataFrame(rows)
+                        # Derive user-facing status column from fetch_failed flag.
+                        if "fetch_failed" in vc_progression_df.columns:
+                            vc_progression_df["status"] = vc_progression_df[
+                                "fetch_failed"
+                            ].apply(
+                                lambda v: (
+                                    "fetch_failed"
+                                    if (v is True or v == True)  # noqa: E712
+                                    else "ok"
+                                )
+                            )
+                        else:
+                            vc_progression_df["status"] = "ok"
+                        # Drop internal boolean flags (superseded by status).
+                        for _drop_col in ("fetch_failed", "delta_unavailable"):
+                            if _drop_col in vc_progression_df.columns:
+                                vc_progression_df = vc_progression_df.drop(
+                                    columns=[_drop_col]
+                                )
+                        # Reorder: project, version, status, then everything else.
+                        _cols = list(vc_progression_df.columns)
+                        for _anchor in ("status", "version", "project"):
+                            if _anchor in _cols:
+                                _cols.remove(_anchor)
+                                _cols.insert(0, _anchor)
+                        vc_progression_df = vc_progression_df[_cols]
             if has_detail:
                 detail_findings_df = (
                     detail_findings
@@ -231,6 +271,23 @@ class ReportRenderer:
                     detail_csv = output_dir / f"{base_filename}_Detail.csv"
                     self.csv_renderer.render(scan_quality_detail_df, detail_csv)
                     generated_files.append(str(detail_csv))
+                if vc_progression_df is not None and not vc_progression_df.empty:
+                    progression_csv = output_dir / f"{base_filename}_Progression.csv"
+                    self.csv_renderer.render(vc_progression_df, progression_csv)
+                    self.logger.debug(
+                        f"Generated VC Progression CSV: {progression_csv}"
+                    )
+                    generated_files.append(str(progression_csv))
+            # VC Progression XLSX (separate file, uses openpyxl for PatternFill support)
+            if (
+                "xlsx" in formats
+                and vc_progression_df is not None
+                and not vc_progression_df.empty
+            ):
+                progression_xlsx = output_dir / f"{base_filename}_Progression.xlsx"
+                self._write_vc_progression_xlsx(vc_progression_df, progression_xlsx)
+                self.logger.debug(f"Generated VC Progression XLSX: {progression_xlsx}")
+                generated_files.append(str(progression_xlsx))
             # XLSX output
             if "xlsx" in formats:
                 xlsx_path = output_dir / f"{base_filename}.xlsx"
@@ -388,6 +445,65 @@ class ReportRenderer:
             self.logger.error(f"Error generating table formats: {e}")
             raise
         return generated_files
+
+    def _write_vc_progression_xlsx(self, df: pd.DataFrame, output_path: Path) -> None:
+        """Write VC progression DataFrame to XLSX using openpyxl.
+
+        Failed rows (status == 'fetch_failed') get light-red cell fill and
+        their numeric columns are replaced with the literal string
+        'fetch failed' so the workbook is honest about which versions
+        could not be fetched.
+
+        Columns whose values contain lists or dicts (findings_in_version,
+        fixed_findings, new_findings, component_churn, externally_changed,
+        external_changes_window, etc.) are dropped from the XLSX because
+        openpyxl rejects non-scalar cell values. The full nested data is
+        still available in the sibling _Progression.csv file.
+        """
+        from openpyxl import Workbook
+        from openpyxl.styles import PatternFill
+
+        FAILED_FILL = PatternFill(
+            start_color="FFF2F2", end_color="FFF2F2", fill_type="solid"
+        )
+        NUMERIC_COLS = frozenset(
+            {"total", "critical", "high", "medium", "low", "components", "new", "fixed"}
+        )
+
+        # Drop columns containing non-scalar values (lists/dicts). openpyxl
+        # only accepts scalars in cells; the CSV output keeps these columns
+        # via pandas' repr-based stringification.
+        scalar_df = df.copy()
+        for col in list(scalar_df.columns):
+            sample_non_null = scalar_df[col].dropna()
+            if sample_non_null.empty:
+                continue
+            first_val = sample_non_null.iloc[0]
+            if isinstance(first_val, (list, dict, set, tuple)):
+                scalar_df = scalar_df.drop(columns=[col])
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Progression"
+
+        columns = list(scalar_df.columns)
+        ws.append(columns)
+
+        for _, series in scalar_df.iterrows():
+            is_failed = series.get("status") == "fetch_failed"
+            row_values: list[Any] = []
+            for col in columns:
+                val = series.get(col)
+                if is_failed and col in NUMERIC_COLS:
+                    row_values.append("fetch failed")
+                else:
+                    row_values.append(val)
+            ws.append(row_values)
+            if is_failed:
+                for cell in ws[ws.max_row]:
+                    cell.fill = FAILED_FILL
+
+        wb.save(output_path)
 
     def _render_chart_formats(
         self, recipe: Recipe, report_data: ReportData, output_dir: Path

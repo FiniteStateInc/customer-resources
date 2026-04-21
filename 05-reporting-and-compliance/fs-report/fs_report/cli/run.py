@@ -39,6 +39,65 @@ run_app = typer.Typer(
 # ── helpers ──────────────────────────────────────────────────────────
 
 
+_SCORING_FILE_EXPECTED_KEYS = frozenset(
+    {"scoring_weights", "gates", "staleness_thresholds"}
+)
+
+
+def _validate_scoring_file(path: str) -> None:
+    """Fail fast if --scoring-file is missing, unreadable, or malformed.
+
+    Prior behavior was a silent fallback to defaults with only a DEBUG log —
+    customers writing custom scoring profiles got their weights silently
+    ignored. Validate eagerly at the CLI layer so typos surface immediately.
+    """
+    import yaml
+
+    p = Path(path)
+    if not p.exists():
+        console.print(f"[red]Error: --scoring-file not found: {path}[/red]")
+        raise typer.Exit(1)
+    if not p.is_file():
+        console.print(f"[red]Error: --scoring-file is not a regular file: {path}[/red]")
+        raise typer.Exit(1)
+    try:
+        raw = p.read_text()
+    except OSError as exc:
+        console.print(f"[red]Error: cannot read --scoring-file {path}: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        console.print(
+            f"[red]Error: --scoring-file has invalid YAML ({path}): {exc}[/red]"
+        )
+        raise typer.Exit(1) from exc
+    if data is None:
+        console.print(f"[red]Error: --scoring-file is empty: {path}[/red]")
+        raise typer.Exit(1)
+    if not isinstance(data, dict):
+        console.print(
+            f"[red]Error: --scoring-file must be a YAML mapping (got "
+            f"{type(data).__name__}): {path}[/red]"
+        )
+        raise typer.Exit(1)
+    unknown = set(data.keys()) - _SCORING_FILE_EXPECTED_KEYS
+    if not data.keys() & _SCORING_FILE_EXPECTED_KEYS:
+        console.print(
+            f"[yellow]Warning: --scoring-file {path} has no recognized keys "
+            f"(expected one of: {', '.join(sorted(_SCORING_FILE_EXPECTED_KEYS))}). "
+            f"Scoring will fall back to defaults.[/yellow]"
+        )
+    elif unknown:
+        # Surface at console level — logger.info hides behind default log
+        # config, which would let a single typo (e.g. "staleness_threshold"
+        # without the trailing 's') fall through to defaults silently.
+        console.print(
+            f"[yellow]Warning: --scoring-file {path} has unknown keys that "
+            f"will be ignored: {', '.join(sorted(unknown))}[/yellow]"
+        )
+
+
 def _invalidate_findings_cache_for_versions(domain: str, results: list[dict]) -> None:
     """Invalidate cached findings for versions affected by VEX apply."""
     version_ids = {
@@ -129,6 +188,7 @@ def create_config(
     compare_project: Union[str, None] = None,
     compare_version: Union[str, None] = None,
     standalone: bool = False,
+    detailed: bool = False,
 ) -> Config:
     """Build a Config object from CLI args, config file, and env vars."""
     _component_match: Literal["contains", "exact"] = cast(
@@ -162,7 +222,9 @@ def create_config(
         config_data=cfg,
     )
 
-    # Handle period parameter
+    # Handle period parameter. period_explicit is True when any of --period,
+    # --start, or --end was user-supplied; False when all three are defaults.
+    period_explicit = bool(period) or (start is not None) or (end is not None)
     if period:
         try:
             start, end = PeriodParser.parse_period(period)
@@ -205,20 +267,31 @@ def create_config(
             )
             raise typer.Exit(2)
 
-    # Validate finding_types
+    # Validate finding_types. binary_sca / source_sca are accepted for
+    # backward compatibility but stripped with a deprecation warning —
+    # they are scan types, not finding-type filters, and were silently
+    # broken in every prior fs-report release that advertised them.
     valid_finding_types = {
         "cve",
         "sast",
         "thirdparty",
-        "binary_sca",
-        "source_sca",
         "credentials",
         "config_issues",
         "crypto_material",
         "all",
     }
+    deprecated_finding_types = {"binary_sca", "source_sca"}
     if finding_types:
         types_list = [t.strip().lower() for t in finding_types.split(",")]
+        deprecated = [t for t in types_list if t in deprecated_finding_types]
+        if deprecated:
+            console.print(
+                f"[yellow]Warning: --finding-types value(s) {', '.join(sorted(set(deprecated)))} "
+                "are deprecated and ignored — these are scan types, not "
+                "finding-type filters; the API has no equivalent filter.[/yellow]"
+            )
+            types_list = [t for t in types_list if t not in deprecated_finding_types]
+            finding_types = ",".join(types_list) if types_list else "cve"
         invalid_types = set(types_list) - valid_finding_types
         if invalid_types:
             console.print(
@@ -382,6 +455,7 @@ def create_config(
         output_dir=str(Path(output or "./output").expanduser()),
         start_date=start,
         end_date=end,
+        period_explicit=period_explicit,
         verbose=verbose,
         recipe_filter=recipe,
         project_filter=project_filter,
@@ -438,6 +512,7 @@ def create_config(
         compare_project=compare_project,
         compare_version=compare_version,
         standalone=standalone,
+        detailed_mode=detailed,
     )
 
 
@@ -510,6 +585,7 @@ def run_reports(
     compare_project: Union[str, None] = None,
     compare_version: Union[str, None] = None,
     standalone: bool = False,
+    detailed: bool = False,
 ) -> Any:
     """Execute the report generation pipeline."""
     run_id = setup_logging(verbose)
@@ -585,6 +661,7 @@ def run_reports(
             compare_project=compare_project,
             compare_version=compare_version,
             standalone=standalone,
+            detailed=detailed,
         )
 
         file_handler = attach_file_logging(run_id, config.auth_token)
@@ -1018,7 +1095,10 @@ def run_command(
         None,
         "--period",
         "-p",
-        help="Time period (e.g., '7d', '1m', 'Q1', '2024', 'monday', 'january-2024')",
+        help="Time period (e.g., '7d', '1m', 'Q1', '2024', 'monday', 'january-2024'). "
+        "Version Comparison single-project runs honor this as a version-window "
+        "filter (includes predecessor as implicit baseline). Other assessment "
+        "recipes (CVA, Triage, Findings by Project) ignore it.",
         rich_help_panel=_TIME_RANGE,
     ),
     token: Union[str, None] = typer.Option(
@@ -1073,9 +1153,10 @@ def run_command(
         "cve",
         "--finding-types",
         "-ft",
-        help="Finding types to include. Types: cve, sast, thirdparty, binary_sca, "
-        "source_sca. Categories: credentials, config_issues, crypto_material. "
-        "Use 'all' for everything. Comma-separated for multiple (e.g. cve,sast).",
+        help="Finding types to include. Types: cve, sast, thirdparty. Categories: "
+        "credentials, config_issues, crypto_material. Use 'all' for everything. "
+        "Comma-separated for multiple (e.g. cve,sast). Note: thirdparty cannot be "
+        "combined with other types in one query — pass it alone or use 'all'.",
         rich_help_panel=_SCOPE,
     ),
     scan_types: Union[str, None] = typer.Option(
@@ -1098,8 +1179,9 @@ def run_command(
         True,
         "--current-version-only/--all-versions",
         "-cvo/-av",
-        help="Latest version only (default, fast) or all versions "
-        "(slow, includes historical data)",
+        help="Only include latest version per project (default). "
+        "Note: Executive Dashboard summary mode is inherently current-version-only; "
+        "this flag is inert in that mode and only affects --detailed runs.",
         rich_help_panel=_SCOPE,
     ),
     cache_ttl: Union[str, None] = typer.Option(
@@ -1441,6 +1523,13 @@ def run_command(
     compare_version: Union[str, None] = typer.Option(
         None, "--compare-version", help="", hidden=True
     ),
+    detailed: bool = typer.Option(
+        False,
+        "--detailed",
+        help="Executive Dashboard: use legacy findings-fetch pipeline "
+        "(slower; enables Critical/High severity-over-time and per-finding "
+        "detection histograms). Default is summary mode.",
+    ),
 ) -> None:
     """Generate reports from recipes.
 
@@ -1471,6 +1560,21 @@ def run_command(
         )
     elif refresh:
         console.print("[cyan]Cache refresh: fetching fresh data this run[/cyan]")
+
+    # Validate --scoring-file early so typos/missing files fail fast instead of
+    # silently falling through to default scoring weights inside the transforms.
+    if scoring_file:
+        _validate_scoring_file(scoring_file)
+
+    # --ai-export alone produced no file because the export block runs inside the
+    # --ai-prompts path. Imply --ai-prompts so the airgap workflow works as
+    # documented.
+    if ai_export and not ai_prompts:
+        console.print(
+            "[cyan]--ai-export requires prompt generation — enabling --ai-prompts"
+            "[/cyan]"
+        )
+        ai_prompts = True
 
     run_result = run_reports(
         recipes=recipes,
@@ -1541,6 +1645,7 @@ def run_command(
         compare_project=compare_project,
         compare_version=compare_version,
         standalone=standalone,
+        detailed=detailed,
     )
 
     # In headless mode, print a structured JSON summary to stdout

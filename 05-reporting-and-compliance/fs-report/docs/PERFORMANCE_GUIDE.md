@@ -1,5 +1,35 @@
 # Performance Guide
 
+## Executive Dashboard: Summary Mode (Default)
+
+Starting in v1.9.6, Executive Dashboard runs in **summary mode** by default. Instead of fetching every finding in the portfolio, summary mode composes the dashboard from platform summary-count endpoints (`/findings/summary-counts`, version history, policy rollups).
+
+### When to use each mode
+
+| Mode | How it fetches | What you give up |
+|------|----------------|------------------|
+| Summary (default) | Platform count rollups; no per-finding fetch | Severity-over-time split into Critical/High lines; per-finding detection-date age histogram |
+| `--detailed` | Full per-finding pipeline (legacy) | Slower on large portfolios |
+
+### Semantic differences in summary mode
+
+- **Severity Trends** plots a single *Total Findings* line from month-end version inventory. Per-severity Critical/High lines require `--detailed`.
+- **Finding Age** buckets by the age of the version the finding lives in, not per-finding detection date.
+- **Open Issues** panel is renamed *Findings by Triage Status* and shows all 7 VEX statuses.
+- **Exploit Intelligence** expands from 2 bars (KEV, Known Exploits) to 9 categories.
+
+### Usage
+
+```bash
+# Default: summary mode
+poetry run fs-report run --recipe "Executive Dashboard" --output ./reports
+
+# Legacy per-finding pipeline
+poetry run fs-report run --recipe "Executive Dashboard" --detailed --output ./reports
+```
+
+---
+
 ## Version Filtering (Default: Latest Only)
 
 By default, fs-report only fetches findings from the **latest version** of each project. This dramatically improves performance for large portfolios.

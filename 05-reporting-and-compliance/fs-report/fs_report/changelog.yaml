@@ -1,4 +1,120 @@
 releases:
+  - version: "1.9.6"
+    date: "2026-04-21"
+    changes:
+      - report: "Executive Dashboard"
+        type: fixed
+        description: "Summary-mode SCA KPIs (Components, Total Findings, Policy Violations, Policy Warnings) now derive from live per-version data rather than cached `/projects` rollups. On warm-cache runs the rollup counts are stripped by the structured cache, which previously surfaced as `Components: 0 / Total Findings: 0` on the dashboard (#36)."
+      - report: "Executive Dashboard"
+        type: fixed
+        description: "Summary-mode Finding Age Distribution chart now populates correctly on warm-cache runs. Same cache-stripping issue affected the finding count lookup, causing every project to fall into the `continue` branch and all five age buckets to render empty (#38)."
+      - report: "Executive Dashboard"
+        type: changed
+        description: "Summary-mode Severity Trends title now shows the actual period window (e.g. `Severity Trends (2026-03-21 to 2026-04-20)`) instead of a derived calendar-month count. A 30-day window crossing a month boundary was producing the misleading label `Severity Trends (2 Months)` (#38)."
+      - report: "Executive Dashboard"
+        type: added
+        description: "Summary-mode now honors `--period` / `--start` / `--end` for the portfolio scope. When the user explicitly requests a period, projects whose current version was scanned outside the window are dropped from the KPIs and charts. Default runs (no explicit period) continue to aggregate all projects (#36)."
+      - report: "Executive Dashboard"
+        type: changed
+        description: "Summary-mode batched `/components` and `/versions` fetches for a 10-50x reduction in round-trip count on large portfolios. Each batch logs a progress line at INFO so long fetch phases aren't silent (#32, #35)."
+      - report: "Executive Dashboard"
+        type: changed
+        description: "Warm-cache reruns now skip `/components` and `/versions` entirely when every requested id is already cached per-PV, rather than re-issuing the batched fetch under a different cache key (#33)."
+      - report: "Security Progress"
+        type: fixed
+        description: "Recipe was issuing `sort=detectedDate:asc` which the `/findings` API rejects with HTTP 400, causing every Security Progress run to return no data. Fixed to `detected:asc` (#39)."
+      - report: "Component Remediation Package"
+        type: fixed
+        description: "HTML renderer no longer crashes with `'summary' is undefined` when the component search returns zero matching versions. The template now defaults missing keys so empty-result runs produce a valid page (#39)."
+      - report: "Component List"
+        type: fixed
+        description: "`--folder <empty-folder>` no longer silently processes the entire portfolio. The empty-set case was falling through a falsy-check and triggering a full-portfolio scan (155 projects / 10+ minutes on rolandl). Now short-circuits to an empty report in seconds (#40)."
+      - report: "License Report"
+        type: fixed
+        description: "Same empty-folder short-circuit as Component List — the two recipes share the same fetch path (#40)."
+      - component: "SQLite cache"
+        type: fixed
+        description: "Projects table now preserves `defaultBranch.latestVersion.created` across cache round-trips. Without it, the Executive Dashboard period filter dropped every project on warm-cache runs because every `latestVersion.created` came back None (#37)."
+      - cli: "--scoring-file"
+        type: fixed
+        description: "Missing / unreadable / malformed / empty / non-dict scoring-file YAML now fails fast with a red error at CLI startup. Previously these all fell through to default scoring weights with only a DEBUG log, leaving users unaware their custom profile wasn't being applied (#34)."
+      - cli: "--ai-export"
+        type: fixed
+        description: "`--ai-export <file>` without `--ai-prompts` no longer silently does nothing. The export block lives inside the `--ai-prompts` code path; the CLI now implies `--ai-prompts=True` when `--ai-export` is set so the airgap workflow works as documented (#34)."
+      - component: "AI cache"
+        type: fixed
+        description: "`cve_remediations` + summary caches now include the provider+model in their keys, so swapping `--ai-model-high` or `--ai-model-low` forces a fresh LLM call instead of returning another model's cached answer. Four recipes (Remediation Package, Component Remediation Package, False Positive Analysis, Triage Prioritization) also now correctly pass `--ai-provider` / `--ai-model-high` / `--ai-model-low` through to `LLMClient` (#34)."
+      - report: "Version Comparison"
+        type: fixed
+        description: "`--folder` + `--project` now narrows to the named project within the folder instead of scanning every project in the folder. Reported by TP-Link (#26)."
+      - report: "Version Comparison"
+        type: fixed
+        description: "`--baseline-version` / `--current-version` now accept version names (resolved against the scoped project) in addition to IDs. Names previously produced blank reports because the RSQL filter matched nothing (#26)."
+      - report: "Version Comparison"
+        type: added
+        description: "`--period` now trims single-project runs to versions created in the window, plus the most recent pre-window version as implicit baseline ('what entered the period'). Folder-wide, portfolio-wide, and explicit-pair modes still ignore `--period` (#27)."
+      - report: "Version Comparison"
+        type: added
+        description: "Per-version fetch failures no longer abort the run. Failed versions appear as placeholders ('fetch failed') in the progression; KPIs exclude them; a banner names the failed versions. HTML/CSV/XLSX/Markdown all surface the signal (#27)."
+      - report: "Version Comparison"
+        type: fixed
+        description: "`_Progression.xlsx` no longer crashes on nested-dict columns (findings_in_version, component_churn, etc.). Nested data remains available in the sibling `_Progression.csv` (#28)."
+      - report: "Executive Dashboard"
+        type: changed
+        description: "Greatly improved performance. Use `--detailed` to opt into the legacy per-finding pipeline."
+      - report: "Executive Dashboard"
+        type: changed
+        description: "Severity Trends in summary mode plots a single 'Total Findings' line (month-end inventory from version history). Per-severity Critical/High lines require --detailed."
+      - report: "Executive Dashboard"
+        type: changed
+        description: "Finding Age in summary mode buckets findings by the age of the version they live in, not by per-finding detection date. Use --detailed for the original semantic."
+      - report: "Executive Dashboard"
+        type: changed
+        description: "Open Issues panel renamed to 'Findings by Triage Status' in summary mode; shows all 7 VEX statuses (No Status, Not Affected, False Positive, In Triage, Resolved, Resolved w/ Pedigree, Exploitable). Detailed mode keeps the original 'Open Issues by Severity' title."
+      - report: "Executive Dashboard"
+        type: improved
+        description: "Exploit Intelligence expanded from 2 bars (KEV, Known Exploits) to 9 categories (kev, vckev, poc, weaponized, ransomware, botnets, threatactors, commercial, reported)."
+      - report: "Executive Dashboard"
+        type: added
+        description: "Policy Health panel: horizontal stacked bar chart showing Security Policy (component-level violations/warnings covering finding severity/exploit + Age/EOL/NTIA) and License Policy (from licenseDetails classifications) side by side. Addresses TP-Link's question about the violation/warning ratio on the SCA Summary KPIs."
+      - report: "Executive Dashboard"
+        type: changed
+        description: "`findings_by_group` dataset split into separate `findings_by_folder` and `findings_by_project` streams so both breakdowns can be rendered independently."
+      - report: "Component Impact"
+        type: fixed
+        description: "`--component-match exact` is now honored end-to-end. Previously, when the component search returned zero exact matches, the engine fell through to the portfolio-wide fetch and the transform's default contains filter re-included substring matches (e.g. `--component ssl --component-match exact` silently reported findings for openssl/libssl). Engine now short-circuits to an empty report, and the transform respects the match mode."
+      - report: "Customer Brief"
+        type: fixed
+        description: "HTML output no longer hugs the browser edge, and 9-column findings tables no longer overflow the PDF right margin. Added a screen-only container max-width/padding and cell-level wrap for long unbreakable strings (purls, versions, CVE IDs)."
+      - report: "Customer Brief"
+        type: fixed
+        description: "Severity breakdown now reconciles with Total Open. Findings whose severity is not one of the five CVSS classifications (SAST/config findings, CVEs missing CVSS scoring) now appear in a new 'Other' bucket on both the KPI row and the severity pie chart instead of silently disappearing."
+      - report: "Customer Brief"
+        type: improved
+        description: "Component Licenses chart now uses the same project-version filter as the 'N Components' KPI, and renders an inline footnote with the count of components missing license metadata so the two numbers reconcile."
+      - report: ~
+        type: added
+        description: "per_project_parallel reusable helper for API-bound per-project work units (ThreadPoolExecutor, captures per-project exceptions)."
+      - report: ~
+        type: added
+        description: "summary_counts API wrappers + SQLite-cached fetch_all_summary_counts convenience."
+      - report: ~
+        type: added
+        description: "fetch_data path now retries 429/500/502/503/504 with exponential backoff (3 attempts)."
+      - report: ~
+        type: fixed
+        description: "SQLite cache layer now thread-safe (added global lock) for concurrent access from ThreadPoolExecutor workers."
+      - report: ~
+        type: fixed
+        description: "LLM client no longer leaks SQLite file descriptors across batch AI-guidance runs. The prior `with sqlite3.connect(...) as conn:` pattern only commits — connections were reclaimed by cyclic GC, which on macOS (ulimit -n 256) exhausted FDs mid-batch and surfaced as `OSError: [Errno 24] Too many open files` during the next pandas lazy import. All cache operations now go through a context manager that explicitly closes."
+
+  - version: "1.9.5"
+    date: "2026-04-17"
+    changes:
+      - report: ~
+        type: fixed
+        description: "API compatibility, CLI JSON output, NVD auth improvements"
+
   - version: "1.9.4"
     date: "2026-04-04"
     changes:

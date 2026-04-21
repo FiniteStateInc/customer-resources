@@ -18,10 +18,22 @@
   td { border-bottom: 1px solid #dee2e6; }
   th, td { padding: 6px 8px; vertical-align: top; text-align: left; }
 
-  .kpi-row { display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
+  /* Fixed 5-column grid for KPI cards. WeasyPrint's CSS Grid `auto-fit`
+     handling collapses to a single column in printed output, so we use
+     an explicit `repeat(5, 1fr)` template that the engine renders
+     reliably. With 10 KPI cards in the Security Overview, this lays
+     them out as 2 rows of 5. The prior flex + `min-width: 140px` let
+     WeasyPrint round a row off the right page margin. */
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 16px;
+    margin-bottom: 28px;
+  }
   .kpi-card {
-    flex: 1; min-width: 140px; background: #fff; border: 1px solid #dee2e6;
+    background: #fff; border: 1px solid #dee2e6;
     border-radius: 8px; padding: 18px 16px; text-align: center;
+    min-width: 0;
   }
   .kpi-card.border-critical { border-top: 4px solid #d32f2f; }
   .kpi-card.border-high     { border-top: 4px solid #f57c00; }
@@ -36,7 +48,7 @@
   .kpi-green    .kpi-value { color: #388e3c; }
   .kpi-kev      .kpi-value { color: #6a1b9a; }
 
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.65em; font-weight: 600; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.65em; font-weight: 600; white-space: nowrap; }
   .badge-CRITICAL { background: #d32f2f; color: #fff; }
   .badge-HIGH     { background: #f57c00; color: #fff; }
   .badge-MEDIUM   { background: #fbc02d; color: #333; }
@@ -56,6 +68,21 @@
   .seg-not-affected { background: #388e3c; }
   .seg-false-pos    { background: #0288d1; }
   .seg-affected     { background: #7b1fa2; }
+
+  /* Risk Overview severity bar — server-rendered alternative to the
+     Chart.js doughnut, since WeasyPrint does not execute JS. Uses the
+     same severity palette as the KPI cards. */
+  .sev-bar { display: flex; height: 28px; border-radius: 4px; overflow: hidden; margin: 12px 0; }
+  .sev-seg { text-align: center; font-size: 0.75em; font-weight: 600; color: #fff; line-height: 28px; }
+  .sev-critical      { background: #d32f2f; }
+  .sev-high          { background: #f57c00; }
+  .sev-medium        { background: #fbc02d; color: #333; }
+  .sev-low           { background: #388e3c; }
+  .sev-informational { background: #0288d1; }
+  .sev-other         { background: #9e9e9e; }
+  .sev-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 0.75em; color: #444; margin-top: 6px; }
+  .sev-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .sev-legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 
   .remed-cols { display: flex; gap: 20px; }
   .remed-col  { flex: 1; }
@@ -111,6 +138,13 @@
       font-size: 7.5pt; color: #999;
     }
   }
+  /* Cover page gets its own named @page so the global @bottom-center footer
+     doesn't render underneath the dark cover image and overlap the
+     "CONFIDENTIAL — ..." banner inside the cover-page block. */
+  @page cover {
+    margin: 0;
+    @bottom-center { content: none; }
+  }
   @media print {
     .cover-page, .intro-page, .appendix { display: block; }
     section.report-section { page-break-inside: avoid; }
@@ -138,12 +172,32 @@
   @media screen {
     .cover-page, .intro-page, .appendix { display: none; }
     .print-header { display: none; }
+    /* Constrain and center content so wide tables (9-column findings tables)
+       don't run to the browser edge, and add breathing room around the body.
+       Print path is untouched — @page handles those margins. */
+    .report-container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px 28px;
+    }
+    /* Fallback scroll for very narrow viewports so wide tables do not force
+       horizontal page overflow. */
+    .table-scroll { overflow-x: auto; }
   }
+  /* Break long unbreakable strings (purls, CVE IDs, component versions)
+     inside data cells so they wrap instead of pushing the table wider
+     than its container. Headers stay intact — applying break-word to
+     `th` shatters short labels like "Severity" → "Severi" / "y" and
+     "Reachability" → "Reachabili" / "ty" in the PDF. Applies to both
+     screen and print. */
+  td { overflow-wrap: anywhere; word-break: break-word; }
+  th { overflow-wrap: normal; word-break: normal; hyphens: none; }
 
   .cover-page {
+    page: cover;
     page-break-after: always;
     position: relative;
-    width: 100%; height: 9.5in;
+    width: 100%; height: 11in;
     background-size: cover;
     background-position: center;
     background-color: #1a237e;
@@ -317,6 +371,8 @@
   <h2>Security Overview</h2>
   <div class="kpi-row">
     {% if summary %}
+    {# Row 1 — size + severity breakdown (descending). Other slots in
+       between Low and the row-2 risk indicators when present. #}
     <div class="kpi-card border-blue kpi-blue">
       <div class="kpi-value">{{ summary.open_count | default(0) }}</div>
       <div class="kpi-label">Total Open</div>
@@ -329,14 +385,6 @@
       <div class="kpi-value">{{ summary.high_count | default(0) }}</div>
       <div class="kpi-label">High</div>
     </div>
-    <div class="kpi-card border-green kpi-green">
-      <div class="kpi-value">{{ summary.pct_triaged | default(0) }}%</div>
-      <div class="kpi-label">% Triaged</div>
-    </div>
-    <div class="kpi-card border-kev kpi-kev">
-      <div class="kpi-value">{{ summary.kev_count | default(0) }}</div>
-      <div class="kpi-label">KEV Listed</div>
-    </div>
     <div class="kpi-card border-high kpi-high" style="border-top-color:#ff8f00;">
       <div class="kpi-value" style="color:#ff8f00;">{{ summary.medium_count | default(0) }}</div>
       <div class="kpi-label">Medium</div>
@@ -345,13 +393,28 @@
       <div class="kpi-value" style="color:#66bb6a;">{{ summary.low_count | default(0) }}</div>
       <div class="kpi-label">Low</div>
     </div>
-    <div class="kpi-card border-blue kpi-blue">
-      <div class="kpi-value">{{ summary.total_components | default(0) }}</div>
-      <div class="kpi-label">Components</div>
+    {% if summary.other_count and summary.other_count > 0 %}
+    <div class="kpi-card" style="border-top:4px solid #9e9e9e;">
+      <div class="kpi-value" style="color:#616161;">{{ summary.other_count }}</div>
+      <div class="kpi-label">Other</div>
+    </div>
+    {% endif %}
+    {# Row 2 — exploitation indicators, then posture. #}
+    <div class="kpi-card border-kev kpi-kev">
+      <div class="kpi-value">{{ summary.kev_count | default(0) }}</div>
+      <div class="kpi-label">KEV Listed</div>
     </div>
     <div class="kpi-card" style="border-top:4px solid #bf360c;">
       <div class="kpi-value" style="color:#bf360c;">{{ summary.exploit_count | default(0) }}</div>
       <div class="kpi-label">With Exploits</div>
+    </div>
+    <div class="kpi-card border-blue kpi-blue">
+      <div class="kpi-value">{{ summary.total_components | default(0) }}</div>
+      <div class="kpi-label">Components</div>
+    </div>
+    <div class="kpi-card border-green kpi-green">
+      <div class="kpi-value">{{ summary.pct_triaged | default(0) }}%</div>
+      <div class="kpi-label">% Triaged</div>
     </div>
     {% else %}
     <div class="kpi-card"><div class="kpi-value">—</div><div class="kpi-label">No data</div></div>
@@ -359,35 +422,32 @@
   </div>
 </section>
 
-<!-- Risk Overview Chart -->
+<!-- Risk Overview Chart — server-rendered stacked severity bar so it
+     renders identically in the browser and the WeasyPrint PDF (which
+     does not execute the prior Chart.js canvas script). -->
 {% if severity_distribution %}
+{% set sev = severity_distribution %}
+{% set sev_total = (sev.CRITICAL | default(0)) + (sev.HIGH | default(0)) + (sev.MEDIUM | default(0)) + (sev.LOW | default(0)) + (sev.INFORMATIONAL | default(0)) + (sev.OTHER | default(0)) %}
 <section class="report-section">
   <h2>Risk Overview</h2>
-  <div style="max-width:400px;margin:0 auto;">
-    <canvas id="severityChart" width="400" height="400"></canvas>
+  {% if sev_total > 0 %}
+  <div class="sev-bar">
+    {% if sev.CRITICAL > 0 %}<div class="sev-seg sev-critical" style="width:{{ (sev.CRITICAL / sev_total * 100)|round(1) }}%" title="Critical: {{ sev.CRITICAL }}">{{ sev.CRITICAL }}</div>{% endif %}
+    {% if sev.HIGH > 0 %}<div class="sev-seg sev-high" style="width:{{ (sev.HIGH / sev_total * 100)|round(1) }}%" title="High: {{ sev.HIGH }}">{{ sev.HIGH }}</div>{% endif %}
+    {% if sev.MEDIUM > 0 %}<div class="sev-seg sev-medium" style="width:{{ (sev.MEDIUM / sev_total * 100)|round(1) }}%" title="Medium: {{ sev.MEDIUM }}">{{ sev.MEDIUM }}</div>{% endif %}
+    {% if sev.LOW > 0 %}<div class="sev-seg sev-low" style="width:{{ (sev.LOW / sev_total * 100)|round(1) }}%" title="Low: {{ sev.LOW }}">{{ sev.LOW }}</div>{% endif %}
+    {% if sev.INFORMATIONAL > 0 %}<div class="sev-seg sev-informational" style="width:{{ (sev.INFORMATIONAL / sev_total * 100)|round(1) }}%" title="Informational: {{ sev.INFORMATIONAL }}">{{ sev.INFORMATIONAL }}</div>{% endif %}
+    {% if sev.OTHER > 0 %}<div class="sev-seg sev-other" style="width:{{ (sev.OTHER / sev_total * 100)|round(1) }}%" title="Other: {{ sev.OTHER }}">{{ sev.OTHER }}</div>{% endif %}
   </div>
-  <script>
-    (function() {
-      var ctx = document.getElementById('severityChart').getContext('2d');
-      var data = {{ severity_distribution | tojson }};
-      new Chart(ctx, {
-        type: 'doughnut',
-        data: {
-          labels: ['Critical', 'High', 'Medium', 'Low', 'Informational'],
-          datasets: [{
-            data: [data.CRITICAL || 0, data.HIGH || 0, data.MEDIUM || 0, data.LOW || 0, data.INFORMATIONAL || 0],
-            backgroundColor: ['#d32f2f', '#f57c00', '#fbc02d', '#388e3c', '#0288d1'],
-          }]
-        },
-        options: {
-          responsive: true,
-          plugins: {
-            legend: { position: 'bottom' }
-          }
-        }
-      });
-    })();
-  </script>
+  <div class="sev-legend">
+    {% if sev.CRITICAL > 0 %}<span class="sev-legend-item"><span class="sev-legend-swatch sev-critical"></span>Critical ({{ sev.CRITICAL }})</span>{% endif %}
+    {% if sev.HIGH > 0 %}<span class="sev-legend-item"><span class="sev-legend-swatch sev-high"></span>High ({{ sev.HIGH }})</span>{% endif %}
+    {% if sev.MEDIUM > 0 %}<span class="sev-legend-item"><span class="sev-legend-swatch sev-medium"></span>Medium ({{ sev.MEDIUM }})</span>{% endif %}
+    {% if sev.LOW > 0 %}<span class="sev-legend-item"><span class="sev-legend-swatch sev-low"></span>Low ({{ sev.LOW }})</span>{% endif %}
+    {% if sev.INFORMATIONAL > 0 %}<span class="sev-legend-item"><span class="sev-legend-swatch sev-informational"></span>Informational ({{ sev.INFORMATIONAL }})</span>{% endif %}
+    {% if sev.OTHER > 0 %}<span class="sev-legend-item"><span class="sev-legend-swatch sev-other"></span>Other ({{ sev.OTHER }})</span>{% endif %}
+  </div>
+  {% endif %}
 </section>
 {% endif %}
 
@@ -657,6 +717,11 @@
 <section class="report-section">
   <h2>Component Licenses</h2>
   <canvas id="licenseChart" width="600" height="300"></canvas>
+  {% if components_missing_license and components_missing_license > 0 %}
+  <p style="font-size:0.78em; color:#777; margin-top:8px; font-style:italic;">
+    {{ components_missing_license }} additional component{% if components_missing_license != 1 %}s{% endif %} not shown — no license metadata recorded in the SBOM.
+  </p>
+  {% endif %}
   <script>
     (function() {
       var ctx = document.getElementById('licenseChart').getContext('2d');

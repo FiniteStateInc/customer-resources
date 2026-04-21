@@ -120,10 +120,24 @@ def _fetch_cve_updates(api_client: Any, config: Config) -> list[dict]:
     if folder_filter:
         params["folderId"] = folder_filter
 
+    # APIClient exposes its httpx client directly (no `.get()` helper); use it
+    # the same way the rest of the codebase does for endpoints that don't fit
+    # the QueryConfig shape (see scan_quality.py, dependency_resolver.py).
+    url = f"{api_client.base_url}/public/v0/cves/updates"
+
     results: list[dict] = []
     while True:
         try:
-            batch = api_client.get("/public/v0/cves/updates", params=params)
+            response = api_client.client.get(url, params=params, timeout=60)
+            response.raise_for_status()
+            payload = response.json()
+            # Endpoint returns either a bare list or {"data": [...]}.
+            if isinstance(payload, dict) and "data" in payload:
+                batch = payload["data"]
+            elif isinstance(payload, list):
+                batch = payload
+            else:
+                batch = []
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Could not fetch CVE updates (offset=%d): %s", params["offset"], exc
@@ -944,7 +958,13 @@ def _normalize_fields(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _parse_detected_at(df: pd.DataFrame) -> pd.DataFrame:
-    """Parse detectedDate / firstDetected into a tz-aware datetime column."""
+    """Parse detectedDate / firstDetected into a tz-aware datetime column.
+
+    Always returns a UTC tz-aware Series, even when no valid dates are
+    found, so downstream comparisons against a tz-aware cutoff (e.g.
+    ``pd.to_datetime(start_date, utc=True)``) don't raise
+    "Invalid comparison between dtype=datetime64[ns] and Timestamp".
+    """
     df = df.copy()
     for col in ("detectedDate", "firstDetected", "detected_date"):
         if col in df.columns:
@@ -953,8 +973,11 @@ def _parse_detected_at(df: pd.DataFrame) -> pd.DataFrame:
             if parsed.notna().any():
                 df["detected_at"] = parsed
                 return df
-    # If no suitable column found, create a NaT column
-    df["detected_at"] = pd.NaT
+    # No suitable column, or all values unparseable — return a tz-AWARE NaT
+    # Series. `pd.NaT` assigned to a new column produces dtype
+    # `datetime64[ns]` (tz-naive), which fails to compare with tz-aware
+    # cutoffs downstream.
+    df["detected_at"] = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns, UTC]")
     return df
 
 

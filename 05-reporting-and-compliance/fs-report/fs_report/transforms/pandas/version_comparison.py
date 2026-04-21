@@ -281,6 +281,13 @@ def version_comparison_transform(
         sum(len(pr["progression"]) for pr in project_results),
     )
 
+    # Collect failed version names for renderer consumption
+    failed_names: list[str] = []
+    for proj in projects_raw:
+        for v in proj.get("versions", []):
+            if v.get("fetch_failed"):
+                failed_names.append(v.get("name", v.get("id", "?")))
+
     return {
         "projects": project_results,
         "kpi": agg_kpi,
@@ -292,6 +299,8 @@ def version_comparison_transform(
         "is_pair_comparison": any(
             pr.get("is_pair_comparison") for pr in project_results
         ),
+        "partial_report": bool(failed_names),
+        "failed_version_names": failed_names,
     }
 
 
@@ -315,9 +324,14 @@ def _process_single_project(
       - kpi: first→last KPI
     """
     # Filter out versions with 0 findings AND 0 components — these are failed scans
-    # (a legitimate scan always produces at least some components)
+    # (a legitimate scan always produces at least some components).
+    # Exception: versions explicitly marked fetch_failed=True are kept so the
+    # progression renders them as honest placeholders.
     valid_versions = []
     for v in versions:
+        if v.get("fetch_failed"):
+            valid_versions.append(v)
+            continue
         findings = v.get("findings", [])
         components = v.get("components", [])
         if len(findings) == 0 and len(components) == 0:
@@ -362,11 +376,43 @@ def _process_single_project(
         vname = v_meta.get("name", v_meta.get("id", f"v{i+1}"))
         created = v_meta.get("created", "")
 
+        # Failed-fetch placeholder: emit a progression row with None numeric fields
+        # and delta_unavailable=True so the renderer can show the version existed
+        # but its data was unavailable.
+        if v_meta.get("fetch_failed"):
+            step: dict[str, Any] = {
+                "version": vname,
+                "version_project_name": v_meta.get("project_name", ""),
+                "created": created[:10] if created else "",
+                "total": None,
+                "critical": None,
+                "high": None,
+                "medium": None,
+                "low": None,
+                "components": None,
+                "findings_in_version": [],
+                "new": None,
+                "fixed": None,
+                "from_version": version_dfs[i - 1][0].get("name", "") if i > 0 else "",
+                "fixed_findings": [],
+                "new_findings": [],
+                "fixed_severity_summary": "—",
+                "new_severity_summary": "—",
+                "component_churn": [],
+                "externally_changed": [],
+                "externally_changed_count": 0,
+                "external_changes_window": {},
+                "fetch_failed": True,
+                "delta_unavailable": True,
+            }
+            progression.append(step)
+            continue
+
         total = len(f_df)
         sev_counts = _severity_counts(f_df)
         comp_count = len(c_df["name"].unique()) if not c_df.empty else 0
 
-        step: dict[str, Any] = {
+        step = {
             "version": vname,
             "version_project_name": v_meta.get("project_name", ""),
             "created": created[:10] if created else "",
@@ -395,6 +441,23 @@ def _process_single_project(
             step["external_changes_window"] = {}
         else:
             prev_v_meta_i = version_dfs[i - 1][0]
+            # If the prior version failed to fetch, we have no baseline to compare
+            # against — emit the step with delta fields as unavailable.
+            if prev_v_meta_i.get("fetch_failed"):
+                step["delta_unavailable"] = True
+                step["new"] = None
+                step["fixed"] = None
+                step["from_version"] = prev_v_meta_i.get("name", "")
+                step["fixed_findings"] = []
+                step["new_findings"] = []
+                step["fixed_severity_summary"] = "—"
+                step["new_severity_summary"] = "—"
+                step["component_churn"] = []
+                step["externally_changed"] = []
+                step["externally_changed_count"] = 0
+                step["external_changes_window"] = {}
+                progression.append(step)
+                continue
             prev_f_df = version_dfs[i - 1][1]
             prev_c_df = version_dfs[i - 1][2]
             fixed_df, new_df, unchanged_df = _classify_findings(prev_f_df, f_df)
@@ -447,50 +510,94 @@ def _process_single_project(
 
         progression.append(step)
 
+    # Count fetch_failed versions for KPI tracking
+    n_versions_excluded = sum(
+        1 for v_meta, _, _ in version_dfs if v_meta.get("fetch_failed")
+    )
+
     # Latest pair: detailed tables
+    # Use last two non-failed versions for latest_delta so failed endpoints don't
+    # produce misleading "0 findings" comparisons.
+    non_failed_dfs = [
+        (vm, ff, cf) for vm, ff, cf in version_dfs if not vm.get("fetch_failed")
+    ]
+
     first_v_meta, first_f_df, first_c_df = version_dfs[0]
     last_v_meta, last_f_df, last_c_df = version_dfs[-1]
-    prev_v_meta, prev_f_df, prev_c_df = version_dfs[-2]
 
-    # Latest delta
-    fixed_latest, new_latest, unchanged_latest = _classify_findings(
-        prev_f_df, last_f_df
+    # For KPI and latest_delta, prefer non-failed endpoints when available
+    kpi_first_v_meta, kpi_first_f_df, kpi_first_c_df = (
+        non_failed_dfs[0] if non_failed_dfs else (first_v_meta, first_f_df, first_c_df)
     )
-    component_churn = _classify_components(prev_c_df, last_c_df)
-    component_churn = _attach_findings_impact(
-        component_churn,
-        fixed_latest,
-        new_latest,
-        prev_f_df,
-        last_f_df,
+    kpi_last_v_meta, kpi_last_f_df, kpi_last_c_df = (
+        non_failed_dfs[-1] if non_failed_dfs else (last_v_meta, last_f_df, last_c_df)
     )
 
-    # Annotate new_latest and compute externally_changed for the latest pair.
-    # Reuse _last_ext_updates from the loop (same pair) to avoid a double fetch.
-    if api_client is not None:
-        new_latest = _annotate_new_findings(new_latest, _last_ext_updates)
-        latest_externally_changed = _build_externally_changed(
-            unchanged_latest, _last_ext_updates
-        )
-        latest_ext_window: dict[str, str] = {
-            "from": prev_v_meta.get("created", "")[:10],
-            "to": last_v_meta.get("created", "")[:10],
-        }
+    # KPI prev: prefer the second-to-last non-failed version.
+    # When only one non-failed version exists (e.g. sequence is [failed, ok]),
+    # there is no valid baseline — set kpi_prev to None so the delta
+    # computation is skipped rather than using the failed version as baseline
+    # (which would produce a misleading "all findings are new" delta).
+    if len(non_failed_dfs) >= 2:
+        kpi_prev_v_meta, kpi_prev_f_df, kpi_prev_c_df = non_failed_dfs[-2]
+        _kpi_prev_available = True
     else:
+        _kpi_prev_available = False
+
+    # Latest delta — only computed when a valid (non-failed) baseline exists.
+    if _kpi_prev_available:
+        fixed_latest, new_latest, unchanged_latest = _classify_findings(
+            kpi_prev_f_df, kpi_last_f_df
+        )
+        component_churn = _classify_components(kpi_prev_c_df, kpi_last_c_df)
+        component_churn = _attach_findings_impact(
+            component_churn,
+            fixed_latest,
+            new_latest,
+            kpi_prev_f_df,
+            kpi_last_f_df,
+        )
+
+        # Annotate new_latest and compute externally_changed for the latest pair.
+        # Reuse _last_ext_updates from the loop (same pair) to avoid a double fetch.
+        if api_client is not None:
+            new_latest = _annotate_new_findings(new_latest, _last_ext_updates)
+            latest_externally_changed = _build_externally_changed(
+                unchanged_latest, _last_ext_updates
+            )
+            latest_ext_window: dict[str, str] = {
+                "from": kpi_prev_v_meta.get("created", "")[:10],
+                "to": kpi_last_v_meta.get("created", "")[:10],
+            }
+        else:
+            latest_externally_changed = []
+            latest_ext_window = {}
+
+        bv_name = kpi_prev_v_meta.get("name", "")
+        bv_proj = kpi_prev_v_meta.get("project_name", "")
+    else:
+        # No valid baseline — skip delta computation entirely.
+        fixed_latest = _make_findings_df([])
+        new_latest = _make_findings_df([])
+        unchanged_latest = _make_findings_df([])
+        component_churn = _classify_components(pd.DataFrame(), pd.DataFrame())
         latest_externally_changed = []
         latest_ext_window = {}
+        bv_name = ""
+        bv_proj = ""
 
-    # First→Last KPI
+    # First→Last KPI (using non-failed endpoints)
     kpi = _compute_kpi(
-        first_f_df,
-        last_f_df,
-        first_c_df,
-        last_c_df,
+        kpi_first_f_df,
+        kpi_last_f_df,
+        kpi_first_c_df,
+        kpi_last_c_df,
         fixed_latest,
         new_latest,
-        {"name": first_v_meta.get("name", "First")},
-        {"name": last_v_meta.get("name", "Latest")},
+        {"name": kpi_first_v_meta.get("name", "First")},
+        {"name": kpi_last_v_meta.get("name", "Latest")},
     )
+    kpi["n_versions_excluded"] = n_versions_excluded
 
     # Build summary rows for CSV export (one row per finding per version)
     for step in progression:
@@ -511,41 +618,43 @@ def _process_single_project(
         )
 
     # Build display labels for baseline/current that include project name
-    # when the two versions come from different projects
-    bv_name = prev_v_meta.get("name", "")
-    cv_name = last_v_meta.get("name", "")
-    bv_proj = prev_v_meta.get("project_name", "")
-    cv_proj = last_v_meta.get("project_name", "")
+    # when the two versions come from different projects.
+    # Use non-failed endpoints so labels reflect actual comparison targets.
+    cv_name = kpi_last_v_meta.get("name", "")
+    cv_proj = kpi_last_v_meta.get("project_name", "")
     cross_project = bv_proj and cv_proj and bv_proj != cv_proj
     baseline_label = f"{bv_proj} / {bv_name}" if cross_project else bv_name
     current_label = f"{cv_proj} / {cv_name}" if cross_project else cv_name
 
+    latest_delta: dict[str, Any] = {
+        "baseline_version": bv_name,
+        "current_version": cv_name,
+        "baseline_project_name": bv_proj,
+        "current_project_name": cv_proj,
+        "baseline_label": baseline_label,
+        "current_label": current_label,
+        "fixed_findings": _df_to_records(fixed_latest),
+        "new_findings": _df_to_records(new_latest),
+        "fixed_by_severity": _severity_counts(fixed_latest),
+        "new_by_severity": _severity_counts(new_latest),
+        "fixed_severity_summary": _severity_summary_str(_severity_counts(fixed_latest)),
+        "new_severity_summary": _severity_summary_str(_severity_counts(new_latest)),
+        "component_churn": _df_to_records(component_churn),
+        "fixed_count": len(fixed_latest),
+        "new_count": len(new_latest),
+        "unchanged_count": len(unchanged_latest),
+        "externally_changed": latest_externally_changed,
+        "externally_changed_count": len(latest_externally_changed),
+        "external_changes_window": latest_ext_window,
+    }
+    if not _kpi_prev_available:
+        latest_delta["unavailable"] = True
+        latest_delta["reason"] = "only_one_non_failed_version"
+
     return {
         "project_name": project_name,
         "progression": progression,
-        "latest_delta": {
-            "baseline_version": bv_name,
-            "current_version": cv_name,
-            "baseline_project_name": bv_proj,
-            "current_project_name": cv_proj,
-            "baseline_label": baseline_label,
-            "current_label": current_label,
-            "fixed_findings": _df_to_records(fixed_latest),
-            "new_findings": _df_to_records(new_latest),
-            "fixed_by_severity": _severity_counts(fixed_latest),
-            "new_by_severity": _severity_counts(new_latest),
-            "fixed_severity_summary": _severity_summary_str(
-                _severity_counts(fixed_latest)
-            ),
-            "new_severity_summary": _severity_summary_str(_severity_counts(new_latest)),
-            "component_churn": _df_to_records(component_churn),
-            "fixed_count": len(fixed_latest),
-            "new_count": len(new_latest),
-            "unchanged_count": len(unchanged_latest),
-            "externally_changed": latest_externally_changed,
-            "externally_changed_count": len(latest_externally_changed),
-            "external_changes_window": latest_ext_window,
-        },
+        "latest_delta": latest_delta,
         "kpi": kpi,
         "_summary_rows": summary_rows,
     }
@@ -580,18 +689,51 @@ def _severity_summary_str(sev_counts: dict[str, int]) -> str:
 
 
 def _aggregate_kpi(project_results: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build portfolio-level KPI from per-project results."""
-    total_first = sum(pr["progression"][0]["total"] for pr in project_results)
-    total_last = sum(pr["progression"][-1]["total"] for pr in project_results)
+    """Build portfolio-level KPI from per-project results.
 
-    crit_first = sum(pr["progression"][0]["critical"] for pr in project_results)
-    crit_last = sum(pr["progression"][-1]["critical"] for pr in project_results)
+    fetch_failed progression steps have None totals — skip them when computing
+    first/last endpoint values so failed versions don't skew the aggregate.
+    """
 
-    high_first = sum(pr["progression"][0]["high"] for pr in project_results)
-    high_last = sum(pr["progression"][-1]["high"] for pr in project_results)
+    def _first_non_none(progression: list[dict], key: str) -> int:
+        for step in progression:
+            val = step.get(key)
+            if val is not None:
+                return int(val)
+        return 0
 
-    comp_first = sum(pr["progression"][0]["components"] for pr in project_results)
-    comp_last = sum(pr["progression"][-1]["components"] for pr in project_results)
+    def _last_non_none(progression: list[dict], key: str) -> int:
+        for step in reversed(progression):
+            val = step.get(key)
+            if val is not None:
+                return int(val)
+        return 0
+
+    total_first = sum(
+        _first_non_none(pr["progression"], "total") for pr in project_results
+    )
+    total_last = sum(
+        _last_non_none(pr["progression"], "total") for pr in project_results
+    )
+
+    crit_first = sum(
+        _first_non_none(pr["progression"], "critical") for pr in project_results
+    )
+    crit_last = sum(
+        _last_non_none(pr["progression"], "critical") for pr in project_results
+    )
+
+    high_first = sum(
+        _first_non_none(pr["progression"], "high") for pr in project_results
+    )
+    high_last = sum(_last_non_none(pr["progression"], "high") for pr in project_results)
+
+    comp_first = sum(
+        _first_non_none(pr["progression"], "components") for pr in project_results
+    )
+    comp_last = sum(
+        _last_non_none(pr["progression"], "components") for pr in project_results
+    )
 
     total_fixed_latest = sum(
         pr["latest_delta"]["fixed_count"] for pr in project_results

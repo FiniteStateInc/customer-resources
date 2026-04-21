@@ -946,6 +946,8 @@ class MarkdownRenderer:
         kpi = tr.get("kpi", {})
         if not isinstance(kpi, dict):
             kpi = {}
+        partial_report = bool(tr.get("partial_report", False))
+        failed_version_names: list[str] = tr.get("failed_version_names", []) or []
         detail_findings = ad.get("detail_findings")
         if not isinstance(detail_findings, pd.DataFrame):
             detail_findings = tr.get("detail_findings")
@@ -961,6 +963,19 @@ class MarkdownRenderer:
         parts = ["# Version Comparison", ""]
         parts.append(self._metadata_block(report_data, recipe))
         parts.append("")
+
+        # Partial-report banner — shown right after metadata when some versions
+        # could not be fetched.
+        if partial_report:
+            failed_str = (
+                ", ".join(str(v) for v in failed_version_names)
+                if failed_version_names
+                else "unknown"
+            )
+            parts.append(
+                f"> ⚠ **Partial report:** could not fetch versions: {failed_str}"
+            )
+            parts.append("")
 
         # KPI Summary
         metrics: list[tuple[str, Any]] = []
@@ -999,8 +1014,43 @@ class MarkdownRenderer:
                 pname = proj.get("project_name", "Unknown")
                 parts.append(f"### {pname}")
 
-                versions = proj.get("versions", [])
-                if versions:
+                # Support both ``progression`` (transform output with fetch_failed
+                # support) and legacy ``versions`` (old-style / test data).
+                progression = proj.get("progression", [])
+                versions = proj.get("versions", []) if not progression else []
+
+                if progression:
+                    parts.append(
+                        "| Version | Total | Critical | High | Medium | Low | New | Fixed |"
+                    )
+                    parts.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+
+                    def _fmt_cell(val: Any) -> str:
+                        return "—" if val is None else str(_safe_int(val))
+
+                    for step in progression:
+                        if not isinstance(step, dict):
+                            continue
+                        is_failed = bool(step.get("fetch_failed"))
+                        raw_label = _safe_str(step.get("version", step.get("name", "")))
+                        if is_failed:
+                            vname = _escape_pipe(f"⚠ {raw_label} (fetch failed)")
+                        else:
+                            vname = _escape_pipe(raw_label)
+
+                        total = _fmt_cell(step.get("total"))
+                        crit = _fmt_cell(step.get("critical", step.get("CRITICAL")))
+                        high = _fmt_cell(step.get("high", step.get("HIGH")))
+                        med = _fmt_cell(step.get("medium", step.get("MEDIUM")))
+                        low = _fmt_cell(step.get("low", step.get("LOW")))
+                        new_v = _fmt_cell(step.get("new", step.get("new_findings")))
+                        fixed_v = _fmt_cell(
+                            step.get("fixed", step.get("fixed_findings"))
+                        )
+                        parts.append(
+                            f"| {vname} | {total} | {crit} | {high} | {med} | {low} | {new_v} | {fixed_v} |"
+                        )
+                elif versions:
                     parts.append(
                         "| Version | Total | Critical | High | Medium | Low | New | Fixed |"
                     )
@@ -1011,17 +1061,17 @@ class MarkdownRenderer:
                         vname = _escape_pipe(
                             _safe_str(ver.get("name", ver.get("version", "")))
                         )
-                        total = _safe_int(ver.get("total", 0))
-                        crit = _safe_int(ver.get("critical", ver.get("CRITICAL", 0)))
-                        high = _safe_int(ver.get("high", ver.get("HIGH", 0)))
-                        med = _safe_int(ver.get("medium", ver.get("MEDIUM", 0)))
-                        low = _safe_int(ver.get("low", ver.get("LOW", 0)))
-                        new = _safe_int(ver.get("new", ver.get("new_findings", 0)))
-                        fixed = _safe_int(
+                        v_total = _safe_int(ver.get("total", 0))
+                        v_crit = _safe_int(ver.get("critical", ver.get("CRITICAL", 0)))
+                        v_high = _safe_int(ver.get("high", ver.get("HIGH", 0)))
+                        v_med = _safe_int(ver.get("medium", ver.get("MEDIUM", 0)))
+                        v_low = _safe_int(ver.get("low", ver.get("LOW", 0)))
+                        v_new = _safe_int(ver.get("new", ver.get("new_findings", 0)))
+                        v_fixed = _safe_int(
                             ver.get("fixed", ver.get("fixed_findings", 0))
                         )
                         parts.append(
-                            f"| {vname} | {total} | {crit} | {high} | {med} | {low} | {new} | {fixed} |"
+                            f"| {vname} | {v_total} | {v_crit} | {v_high} | {v_med} | {v_low} | {v_new} | {v_fixed} |"
                         )
                 parts.append("")
 

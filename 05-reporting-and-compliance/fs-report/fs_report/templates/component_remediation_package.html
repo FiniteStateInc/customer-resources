@@ -1,3 +1,15 @@
+{#
+    When the component search returns zero matching versions (or a legitimate
+    search yields no findings and no zero-day actions), data_transformer exits
+    early before the transform function runs, so the transform's _empty_result
+    never populates `summary`/`actions`/`suppressed` in the template context.
+    Default them here so the template renders a structurally valid page
+    instead of blowing up on "'summary' is undefined".
+#}
+{% set summary = summary | default({}) %}
+{% set actions = actions | default([]) %}
+{% set suppressed = suppressed | default([]) %}
+{% set ai_prompts = ai_prompts | default([]) %}
 <!DOCTYPE html>
 <html lang="en">
 <head>

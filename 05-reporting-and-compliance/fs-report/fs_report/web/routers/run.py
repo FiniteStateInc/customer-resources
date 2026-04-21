@@ -148,7 +148,7 @@ def _execute_run(
             logger.info("Scope: (entire portfolio)")
 
         config = create_config(
-            period=effective.get("period", "30d"),
+            period=effective.get("period") or None,
             finding_types=effective.get("finding_types", "cve"),
             token=token,
             domain=domain,

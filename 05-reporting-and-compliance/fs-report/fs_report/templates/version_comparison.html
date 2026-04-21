@@ -204,6 +204,33 @@
         .change-removed { background-color: #ffebee; color: #c62828; }
         .change-updated { background-color: #e3f2fd; color: #1565c0; }
 
+        /* Partial report banner */
+        .partial-report-banner {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-left: 4px solid #e6a817;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            font-size: 0.95em;
+        }
+        .partial-report-banner strong { color: #856404; }
+
+        /* Fetch-failed rows */
+        .fetch-failed-row { background-color: #fef9f0 !important; color: #6c757d; }
+        .fetch-failed-row:hover { background-color: #fef3dc !important; }
+        .badge-fetch-fail {
+            display: inline-block;
+            background: #fd7e14;
+            color: #fff;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+
         /* Collapsible sections */
         .section { margin-bottom: 20px; }
 
@@ -330,6 +357,16 @@
         {% set result = transform_result %}
         {% set kpi = result.kpi %}
 
+        <!-- Partial Report Banner -->
+        {% if partial_report %}
+        <div class="partial-report-banner">
+            <strong>&#9888; Partial report:</strong>
+            {{ failed_version_names|length }} version{{ 's' if failed_version_names|length != 1 else '' }} could not be fetched
+            ({{ failed_version_names|join(", ") }}).
+            These appear as placeholders below.
+        </div>
+        {% endif %}
+
         <!-- Aggregate KPI Cards -->
         <div class="kpi-row">
             <div class="kpi-card">
@@ -421,28 +458,32 @@
                 <div class="mini-kpi-row">
                     <div class="mini-kpi">
                         <div class="label">{% if is_pair %}Baseline{% else %}First Version{% endif %}</div>
-                        <div class="value">{{ proj.progression[0].total }}</div>
+                        <div class="value">{% if proj.progression[0].total is none %}—{% else %}{{ proj.progression[0].total }}{% endif %}</div>
                         <div class="label">findings</div>
                     </div>
                     <div class="mini-kpi">
                         <div class="label">{% if is_pair %}Current{% else %}Latest Version{% endif %}</div>
-                        <div class="value">{{ proj.progression[-1].total }}</div>
+                        <div class="value">{% if proj.progression[-1].total is none %}—{% else %}{{ proj.progression[-1].total }}{% endif %}</div>
                         <div class="label">findings</div>
                     </div>
                     <div class="mini-kpi">
                         <div class="label">Net Change</div>
+                        {% if proj.progression[-1].total is none or proj.progression[0].total is none %}
+                        <div class="value" style="color:#757575">—</div>
+                        {% else %}
                         {% set net = proj.progression[-1].total - proj.progression[0].total %}
                         <div class="value" style="color:{% if net < 0 %}#2e7d32{% elif net > 0 %}#c62828{% else %}#757575{% endif %}">
                             {% if net > 0 %}+{% endif %}{{ net }}
                         </div>
+                        {% endif %}
                     </div>
                     <div class="mini-kpi">
                         <div class="label">Latest Fixed</div>
-                        <div class="value" style="color:#2e7d32">{{ proj.latest_delta.fixed_count }}</div>
+                        <div class="value" style="color:#2e7d32">{% if proj.latest_delta.fixed_count is defined %}{{ proj.latest_delta.fixed_count }}{% else %}—{% endif %}</div>
                     </div>
                     <div class="mini-kpi">
                         <div class="label">Latest New</div>
-                        <div class="value" style="color:#c62828">{{ proj.latest_delta.new_count }}</div>
+                        <div class="value" style="color:#c62828">{% if proj.latest_delta.new_count is defined %}{{ proj.latest_delta.new_count }}{% else %}—{% endif %}</div>
                     </div>
                 </div>
 
@@ -476,22 +517,25 @@
                         </thead>
                         <tbody>
                             {% for step in proj.progression %}
-                            <tr>
+                            <tr{% if step.fetch_failed %} class="fetch-failed-row"{% endif %}>
                                 <td>{{ step.version_project_name or proj.project_name }}</td>
-                                <td><strong>{{ step.version }}</strong></td>
+                                <td>
+                                    <strong>{{ step.version }}</strong>
+                                    {% if step.fetch_failed %}<span class="badge-fetch-fail">&#9888; fetch failed</span>{% endif %}
+                                </td>
                                 <td>{{ step.created }}</td>
-                                <td class="num">{{ step.total }}</td>
-                                <td class="num">{{ step.critical }}</td>
-                                <td class="num">{{ step.high }}</td>
-                                <td class="num">{{ step.medium }}</td>
-                                <td class="num">{{ step.low }}</td>
-                                <td class="num {% if step.fixed > 0 %}delta-negative{% else %}delta-zero{% endif %}">
-                                    {% if step.fixed > 0 %}-{{ step.fixed }}{% elif loop.index0 == 0 %}&mdash;{% else %}0{% endif %}
+                                <td class="num">{% if step.total is none %}&#8212;{% else %}{{ step.total }}{% endif %}</td>
+                                <td class="num">{% if step.critical is none %}&#8212;{% else %}{{ step.critical }}{% endif %}</td>
+                                <td class="num">{% if step.high is none %}&#8212;{% else %}{{ step.high }}{% endif %}</td>
+                                <td class="num">{% if step.medium is none %}&#8212;{% else %}{{ step.medium }}{% endif %}</td>
+                                <td class="num">{% if step.low is none %}&#8212;{% else %}{{ step.low }}{% endif %}</td>
+                                <td class="num {% if step.fixed and step.fixed > 0 %}delta-negative{% else %}delta-zero{% endif %}">
+                                    {% if step.fixed is none %}&mdash;{% elif step.fixed > 0 %}-{{ step.fixed }}{% elif loop.index0 == 0 %}&mdash;{% else %}0{% endif %}
                                 </td>
-                                <td class="num {% if step.new > 0 %}delta-positive{% else %}delta-zero{% endif %}">
-                                    {% if step.new > 0 %}+{{ step.new }}{% elif loop.index0 == 0 %}&mdash;{% else %}0{% endif %}
+                                <td class="num {% if step.new and step.new > 0 %}delta-positive{% else %}delta-zero{% endif %}">
+                                    {% if step.new is none %}&mdash;{% elif step.new > 0 %}+{{ step.new }}{% elif loop.index0 == 0 %}&mdash;{% else %}0{% endif %}
                                 </td>
-                                <td class="num">{{ step.components }}</td>
+                                <td class="num">{% if step.components is none %}&#8212;{% else %}{{ step.components }}{% endif %}</td>
                             </tr>
                             {% endfor %}
                         </tbody>
@@ -502,8 +546,8 @@
                 <div class="section">
                     <div class="section-header">
                         <h3>Changes ({{ proj.latest_delta.baseline_label | default(proj.latest_delta.baseline_version) }} &rarr; {{ proj.latest_delta.current_label | default(proj.latest_delta.current_version) }})</h3>
-                        <span class="badge badge-fixed">{{ proj.latest_delta.fixed_count }} fixed</span>
-                        <span class="badge badge-new">{{ proj.latest_delta.new_count }} new</span>
+                        <span class="badge badge-fixed">{{ proj.latest_delta.fixed_count|default('—') }} fixed</span>
+                        <span class="badge badge-new">{{ proj.latest_delta.new_count|default('—') }} new</span>
                         {% if proj.latest_delta.externally_changed_count | default(0) > 0 %}
                         <span class="badge" style="background-color:#fff3e0;color:#e65100;">{{ proj.latest_delta.externally_changed_count }} external</span>
                         {% endif %}
@@ -686,8 +730,8 @@
                     <div class="changelog-entry{% if loop.index == 2 %} expanded{% endif %}" id="changelog-{{ proj_idx }}-{{ loop.index }}">
                         <div class="changelog-entry-header" onclick="toggleChangelog('changelog-{{ proj_idx }}-{{ loop.index }}')">
                             <span class="changelog-version">{{ step.from_version }} &rarr; {{ step.version }}</span>
-                            <span class="badge badge-fixed">{{ step.fixed }} fixed</span>
-                            <span class="badge badge-new">{{ step.new }} new</span>
+                            <span class="badge badge-fixed">{% if step.fixed is none %}—{% else %}{{ step.fixed }}{% endif %} fixed</span>
+                            <span class="badge badge-new">{% if step.new is none %}—{% else %}{{ step.new }}{% endif %} new</span>
                             <span class="badge badge-churn">{{ step_churn_list | length }} component{{ 's' if step_churn_list | length != 1 else '' }}</span>
                         </div>
                         <div class="changelog-entry-body">
@@ -818,9 +862,9 @@
         if (!ctx) return;
 
         const labels = [{% for s in proj.progression %}'{{ s.version }}'{% if not loop.last %}, {% endif %}{% endfor %}];
-        const totals = [{% for s in proj.progression %}{{ s.total }}{% if not loop.last %}, {% endif %}{% endfor %}];
-        const fixed = [{% for s in proj.progression %}{{ s.fixed }}{% if not loop.last %}, {% endif %}{% endfor %}];
-        const newFindings = [{% for s in proj.progression %}{{ s.new }}{% if not loop.last %}, {% endif %}{% endfor %}];
+        const totals = [{% for s in proj.progression %}{% if s.total is none %}null{% else %}{{ s.total }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}];
+        const fixed = [{% for s in proj.progression %}{% if s.fixed is none %}null{% else %}{{ s.fixed }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}];
+        const newFindings = [{% for s in proj.progression %}{% if s.new is none %}null{% else %}{{ s.new }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}];
 
         new Chart(ctx, {
             type: 'line',
@@ -864,9 +908,17 @@
                             },
                             label: function(ctx) {
                                 const i = ctx.dataIndex;
-                                const lines = ['Total: ' + totals[i]];
+                                const current = totals[i];
+                                if (current === null || current === undefined) {
+                                    return 'Data unavailable';
+                                }
+                                const lines = ['Total: ' + current];
                                 if (i > 0) {
-                                    const delta = totals[i] - totals[i-1];
+                                    const prev = totals[i - 1];
+                                    if (prev === null || prev === undefined) {
+                                        return lines;
+                                    }
+                                    const delta = current - prev;
                                     const sign = delta > 0 ? '+' : '';
                                     lines[0] += '  (' + sign + delta + ' net)';
                                     if (fixed[i] > 0 || newFindings[i] > 0) {

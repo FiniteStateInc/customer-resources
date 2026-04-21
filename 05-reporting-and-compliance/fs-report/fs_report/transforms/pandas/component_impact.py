@@ -68,7 +68,8 @@ def component_impact_transform(
                     apply_component_filter,
                 )
 
-                df = apply_component_filter(df, component_name)
+                match_mode = getattr(config, "component_match", "contains")
+                df = apply_component_filter(df, component_name, match_mode=match_mode)
             except Exception as exc:
                 logger.warning(f"Component filter failed: {exc}")
 

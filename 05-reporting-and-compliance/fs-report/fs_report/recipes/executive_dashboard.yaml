@@ -3,10 +3,16 @@ category: assessment  # Current state: shows today's security posture regardless
 template: "executive_dashboard.html"
 description: >
   Executive-level security dashboard for senior leadership.
-  Provides a single-page overview with 11 visualization sections covering
-  findings distribution, severity trends, risk scoring, license analysis,
-  exploit intelligence, and finding age distribution.
-  Supports portfolio-level (grouped by folder) and folder-scoped (grouped by project) views.
+  Single-page overview with 13 visualization sections covering findings
+  distribution, severity trends, risk scoring, license analysis,
+  exploit intelligence, policy health, and finding age.
+  Supports portfolio-level (grouped by folder) and folder-scoped
+  (grouped by project) views.
+
+  DEFAULT: summary mode (fast, <10 min on large portfolios, derives
+  all panels from platform summary endpoints — no per-finding fetch).
+  Use --detailed to opt into the legacy per-finding pipeline for
+  detection-timeline histograms and Critical/High severity-over-time.
 execution_order: 25
 auto_run: false  # Only runs when explicitly requested with --recipe
 
@@ -31,11 +37,16 @@ output:
     - csv
     - xlsx
   charts:
-    - name: findings_by_group
+    - name: findings_by_folder
       chart: bar
       stacked: true
-      title: "Findings by Folder/Project"
-      description: "Distribution of findings across folders or projects by severity"
+      title: "Findings by Folder"
+      description: "Distribution of findings across folders by severity"
+    - name: findings_by_project
+      chart: bar
+      stacked: true
+      title: "Findings by Project"
+      description: "Distribution of findings across projects by severity"
     - name: severity_trends
       chart: line
       title: "Severity Trends (Last 12 Months)"
@@ -52,6 +63,10 @@ output:
       chart: bar
       title: "License Distribution"
       description: "Top 10 licenses by component count"
+    - name: policy_health
+      chart: bar
+      title: "Policy Health"
+      description: "Security and license policy violations and warnings"
     - name: exploit_intel
       chart: bar
       title: "Exploit Intelligence"

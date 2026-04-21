@@ -35,7 +35,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
 | Configuration Analysis Triage | Config/secrets/crypto triage — private keys, hardcoded credentials, insecure configs *(on-demand)* |
 | License Report | Component license risk classification (Permissive, Copyleft, Proprietary) with policy analysis |
-| Executive Dashboard | 11-section executive-level security report with KPI cards, risk donut, severity trends, and more *(on-demand)* |
+| Executive Dashboard | Portfolio-level security overview with KPI cards, risk donut, severity trends, policy health, and more. Runs in fast **summary mode** by default; use `--detailed` for the legacy per-finding pipeline *(on-demand)* |
 | CVE Impact | CVE-centric dossier with affected projects, reachability, and exploit intelligence *(on-demand)* |
 | Remediation Package | Actionable remediation plan with fix-version validation, structured options (upgrade/workaround/mitigation), and optional AI enrichment *(on-demand)* |
 | Component Remediation Package | Zero-day remediation guidance for a component — upgrade paths, breaking changes, mitigations, and AI-powered recommendations *(on-demand)* |
