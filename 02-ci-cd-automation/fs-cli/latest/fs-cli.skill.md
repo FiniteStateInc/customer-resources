@@ -24,7 +24,8 @@ Key flags:
 - `--all` or `--deep`: recursive monorepo scan
 - `--scope runtime|all`: filter dev/test deps (default: runtime)
 - `--test`: dry run — print JSON, don't upload
-- `--release`: release mode — upload to a clean snapshot (requires `--version`, mutually exclusive with `--test` and `--version-id`; env: `FS_RELEASE`)
+- `--release`: release mode (fast, default) — renames happen before upload and the CLI exits as soon as the upload completes; requires `--version`, mutually exclusive with `--test` and `--version-id`; env: `FS_RELEASE`
+- `--release-synchronous`: release mode variant — waits for scan completion and auto-rolls back on scan failure; implies `--release`; env: `FS_RELEASE_SYNCHRONOUS`
 - `--output platform|legacy|file`: output adapter (default: platform)
 - `--output-file <path>`: required when `--output=file`
 - `--strict`: fail immediately on any scanner error instead of continuing to the next ecosystem
@@ -50,7 +51,8 @@ Key flags:
 - `--name` / `--project` (required): project name
 - `--type sca,sast,config,vulnerability_analysis,python`: scan types (default: sca). The `python` type runs a [Bandit](https://bandit.readthedocs.io/en/latest/) security scan on Python source code.
 - `--version <string>`: version (default: today's date)
-- `--release`: release mode — upload to a clean snapshot (requires `--version`, mutually exclusive with `--version-id`; env: `FS_RELEASE`)
+- `--release`: release mode (fast, default) — renames happen before upload and the CLI exits as soon as the upload completes; requires `--version`, mutually exclusive with `--version-id`; env: `FS_RELEASE`
+- `--release-synchronous`: release mode variant — waits for scan completion and auto-rolls back on scan failure; implies `--release`; env: `FS_RELEASE_SYNCHRONOUS`
 - `--folder <name>`: scope project find/create to a folder by name (supports globs)
 - `--folder-id <uuid>`: scope project find/create to a folder by UUID
 - `--project-id <uuid>`: skip project find/create
@@ -65,7 +67,8 @@ fs-cli import <sbom-file> --name <project-name>
 Key flags:
 - `--name` / `--project` (required): project name
 - `--format cyclonedx|spdx`: auto-detected if omitted
-- `--release`: release mode — upload to a clean snapshot (requires `--version`, mutually exclusive with `--version-id`; env: `FS_RELEASE`)
+- `--release`: release mode (fast, default) — renames happen before upload and the CLI exits as soon as the upload completes; requires `--version`, mutually exclusive with `--version-id`; env: `FS_RELEASE`
+- `--release-synchronous`: release mode variant — waits for scan completion and auto-rolls back on scan failure; implies `--release`; env: `FS_RELEASE_SYNCHRONOUS`
 - `--folder <name>`: scope project find/create to a folder by name (supports globs)
 - `--folder-id <uuid>`: scope project find/create to a folder by UUID
 - `--project-id <uuid>`: skip project find/create
@@ -127,6 +130,7 @@ Credentials are resolved in order: CLI flags > environment variables > credentia
 - `FS_PROJECT_ID`: project UUID (skips project find/create)
 - `FS_VERSION_ID`: version UUID (skips version creation)
 - `FS_RELEASE`: enable release mode (equivalent to `--release`)
+- `FS_RELEASE_SYNCHRONOUS`: enable synchronous release mode (equivalent to `--release-synchronous`; implies `FS_RELEASE`)
 - `FS_NO_UPDATE_CHECK=1`: disable update notifications
 
 **Credential file** at `~/.finitestate/credential`:
@@ -257,7 +261,9 @@ When the user wants to:
 - **Scope project to a folder**: use `--folder <name>` or `--folder-id <uuid>` (all commands)
 - **Skip project lookup**: use `--project-id <uuid>` to go straight to version creation
 - **Skip version creation**: use `--version-id <uuid>` to upload to an existing version directly
-- **Create a clean release snapshot**: use `--version <name> --release` — if the version already exists, archives the previous state as a checkpoint and replaces it with fresh scan results; if the version does not exist (or the project is new), creates it normally and uploads directly
+- **Create a clean release snapshot (fast, default)**: `--version <name> --release` — archives the previous version as a checkpoint *before* upload and the CLI exits as soon as the upload completes. Best for CI/CD. If the version does not exist yet, creates it normally.
+- **Create a clean release snapshot (synchronous)**: `--version <name> --release-synchronous` — waits for the backend scan to finish, auto-rolls back on scan failure. Use when you want atomic swap semantics. Implies `--release`.
+- **Recover from a failed scan under fast release mode**: the current version now contains the failed scan and the checkpoint holds the previous good scan. Swap them back manually in the platform UI; re-running with `--release-synchronous` does *not* fix it (it would just layer another checkpoint).
 
 ## Error guidance
 

@@ -107,6 +107,7 @@ Configuration is resolved in this order (highest precedence first):
 | `FS_PROJECT_ID` | | Project UUID (skips project find/create) |
 | `FS_VERSION_ID` | | Version UUID (skips version creation) |
 | `FS_RELEASE` | | Enable release mode (equivalent to `--release`) |
+| `FS_RELEASE_SYNCHRONOUS` | | Enable synchronous release mode (equivalent to `--release-synchronous`; implies release mode) |
 | `FS_DEBUG` | | Enable debug logging |
 | `FS_NO_UPDATE_CHECK` | | Set to `1` to disable update notifications |
 
@@ -171,7 +172,8 @@ If no directory is given, scans the current directory. You can also point at a s
 | `--timeout` | `30` | Overall timeout in minutes |
 | `--scan-timeout` | `5` | Per-ecosystem scan timeout in minutes |
 | `--test` | `false` | Dry run: print JSON to stdout, do not upload |
-| `--release` | `false` | Release mode: upload to a clean snapshot (requires `--version`, mutually exclusive with `--test` and `--version-id`) |
+| `--release` | `false` | Release mode (fast, default): renames happen before upload; CLI exits as soon as upload completes (requires `--version`, mutually exclusive with `--test` and `--version-id`) |
+| `--release-synchronous` | `false` | Release mode variant that waits for scan completion and auto-rolls back on scan failure (implies `--release`) |
 | `--concurrency` | CPU count | Maximum number of parallel ecosystem scans |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
@@ -224,19 +226,42 @@ fs-cli scan --name myproject --version v2.1.0 --release .
 
 `--release` creates a clean version snapshot at release time, preventing component accumulation from repeated scans to the same version name.
 
-**When the version already exists:**
+Two modes are available. Both perform the same rename-before-upload swap; they differ only in whether the CLI waits for the backend scan afterwards.
+
+- **Fast (default, `--release`)** — CLI exits as soon as the upload finishes. Best for CI/CD because the job is not held up by backend scan queue time.
+- **Synchronous (`--release-synchronous`)** — CLI additionally polls until the scan reaches a terminal state and automatically rolls back on scan failure. `--release-synchronous` implies `--release`; passing only the synchronous flag is sufficient.
+
+**Shared flow — when the version already exists (both modes):**
 
 1. Finds the existing version by name.
-2. Creates a temporary version and uploads to it.
-3. Polls until the platform scan completes.
-4. Renames the old version to a checkpoint: `{version}-checkpoint-{YYYY-MM-DD}` (auto-increments on conflict, e.g. `-checkpoint-2026-03-12.1`).
-5. Renames the temporary version to the original name.
+2. Renames it to a checkpoint: `{version}-checkpoint-{YYYY-MM-DD}` (auto-increments on conflict, e.g. `-checkpoint-2026-03-12.1`).
+3. Creates a fresh version with the target name and uploads to it.
 
-If the final rename fails, the checkpoint rename is rolled back automatically.
+If the new version creation or upload fails, both modes automatically roll back: delete the new (empty) version and rename the checkpoint back to the original name.
 
-**When the version does not exist** (including brand-new projects): the version is created normally and the upload proceeds directly -- the same behavior as without `--release`. This means `--release` is safe to use in CI/CD pipelines where the first run for a new version or project should just work.
+**Fast mode ends here** — the CLI exits. The scan runs asynchronously on the platform. See "Recovering from a failed scan under fast mode" below.
 
-**Constraints:** requires `--version`; mutually exclusive with `--test` and `--version-id`. Set via `FS_RELEASE` env var as an alternative to the flag.
+**Synchronous mode adds:**
+
+4. Polls until the platform scan completes (up to 30 minutes or `--timeout`, whichever is smaller).
+5. If the scan fails or the poll times out, rolls back automatically: deletes the new version and renames the checkpoint back to the original name.
+
+Because the rename happens before the upload, the version named `{version}` temporarily points at the new, still-scanning build during steps 3–4 of synchronous mode. If scan succeeds the state is final; if it fails the rollback restores the previous known-good version under its original name. Callers who need the previous-known-good name to remain stable for the duration of the scan should not use release mode at all — create a separate version instead.
+
+**When the version does not exist** (including brand-new projects): in both modes the version is created normally and the upload proceeds directly, so release mode is safe for first runs. Synchronous mode still polls the scan on first-time releases and surfaces scan failure as a non-zero exit so CI can fail the job. Because there is no prior version to restore to, a failed first-time scan leaves the failed/partial version on the platform — the operator can delete it manually (or let the next successful run replace it, which will then create a checkpoint from the failed one).
+
+**Constraints:** `--release` requires `--version` and is mutually exclusive with `--test` and `--version-id`. `--release-synchronous` has the same constraints and auto-enables `--release`. Set via `FS_RELEASE` / `FS_RELEASE_SYNCHRONOUS` env vars as an alternative to the flags.
+
+##### Recovering from a failed scan under fast mode
+
+Under fast mode, if the scan fails **after** the CLI has already swapped names, the platform ends up with:
+
+- an empty/failed version as the current `{version}`
+- the previous known-good content as `{version}-checkpoint-{YYYY-MM-DD}`
+
+Recovery is a manual operation in the platform UI: rename the current (failed) version to a different name (or delete it), then rename the checkpoint back to the original version name.
+
+Re-running with `--release-synchronous` does **not** fix this — it would just layer another checkpoint on top of the already-swapped state. If you cannot tolerate this recovery path, use `--release-synchronous` from the start.
 
 ---
 
@@ -254,7 +279,8 @@ fs-cli upload <file> [flags]
 |---|---|---|
 | `--name` / `--project` | (required) | Project name |
 | `--version` | today's date | Version string |
-| `--release` | `false` | Release mode: upload to a clean snapshot (requires `--version`, mutually exclusive with `--version-id`) |
+| `--release` | `false` | Release mode (fast, default): renames happen before upload; CLI exits as soon as upload completes (requires `--version`, mutually exclusive with `--version-id`) |
+| `--release-synchronous` | `false` | Release mode variant that waits for scan completion and auto-rolls back on scan failure (implies `--release`) |
 | `--type` | `sca` | Scan types, comma-separated: `sca`, `sast`, `config`, `vulnerability_analysis`, `python` |
 | `--timeout` | `30` | Overall timeout in minutes |
 | `--endpoint` | | Finite State API endpoint |
@@ -298,7 +324,8 @@ fs-cli import <sbom-file> [flags]
 |---|---|---|
 | `--name` / `--project` | (required) | Project name |
 | `--version` | (auto-generated) | Version string |
-| `--release` | `false` | Release mode: upload to a clean snapshot (requires `--version`, mutually exclusive with `--version-id`) |
+| `--release` | `false` | Release mode (fast, default): renames happen before upload; CLI exits as soon as upload completes (requires `--version`, mutually exclusive with `--version-id`) |
+| `--release-synchronous` | `false` | Release mode variant that waits for scan completion and auto-rolls back on scan failure (implies `--release`) |
 | `--format` | (auto-detect) | SBOM format: `cyclonedx`, `cdx`, or `spdx` |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
