@@ -2,8 +2,6 @@
 
 All notable changes to fs-cli are documented in this file.
 
-## Unreleased
-
 ## v2.0.14
 
 ### Added
