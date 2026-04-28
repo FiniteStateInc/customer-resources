@@ -38,6 +38,9 @@ Key flags:
 - `--pip-file <path>`: custom requirements.txt path
 - `--folder <name>`: scope project find/create to a folder by name (supports globs)
 - `--folder-id <uuid>`: scope project find/create to a folder by UUID
+- `--create-folder`: find-or-create `--folder` if it doesn't exist
+- `--parent-folder <name>`: parent folder name when creating (defaults to root)
+- `--parent-folder-id <uuid>`: parent folder UUID when creating (defaults to root)
 - `--project-id <uuid>`: skip project find/create, use this project ID directly
 - `--version-id <uuid>`: skip version creation, upload to this version ID directly
 
@@ -55,6 +58,9 @@ Key flags:
 - `--release-synchronous`: release mode variant — waits for scan completion and auto-rolls back on scan failure; implies `--release`; env: `FS_RELEASE_SYNCHRONOUS`
 - `--folder <name>`: scope project find/create to a folder by name (supports globs)
 - `--folder-id <uuid>`: scope project find/create to a folder by UUID
+- `--create-folder`: find-or-create `--folder` if it doesn't exist
+- `--parent-folder <name>`: parent folder name when creating (defaults to root)
+- `--parent-folder-id <uuid>`: parent folder UUID when creating (defaults to root)
 - `--project-id <uuid>`: skip project find/create
 - `--version-id <uuid>`: skip version creation, upload to this version ID directly
 
@@ -71,6 +77,9 @@ Key flags:
 - `--release-synchronous`: release mode variant — waits for scan completion and auto-rolls back on scan failure; implies `--release`; env: `FS_RELEASE_SYNCHRONOUS`
 - `--folder <name>`: scope project find/create to a folder by name (supports globs)
 - `--folder-id <uuid>`: scope project find/create to a folder by UUID
+- `--create-folder`: find-or-create `--folder` if it doesn't exist
+- `--parent-folder <name>`: parent folder name when creating (defaults to root)
+- `--parent-folder-id <uuid>`: parent folder UUID when creating (defaults to root)
 - `--project-id <uuid>`: skip project find/create
 - `--version-id <uuid>`: skip version creation, upload to this version ID directly
 
@@ -86,6 +95,9 @@ Key flags:
 - `--name` / `--project` (required): project name
 - `--folder <name>`: scope project find/create to a folder by name (supports globs)
 - `--folder-id <uuid>`: scope project find/create to a folder by UUID
+- `--create-folder`: find-or-create `--folder` if it doesn't exist
+- `--parent-folder <name>`: parent folder name when creating (defaults to root)
+- `--parent-folder-id <uuid>`: parent folder UUID when creating (defaults to root)
 - `--project-id <uuid>`: skip project find/create
 - `--version-id <uuid>`: skip version creation, upload to this version ID directly
 
@@ -99,6 +111,9 @@ Key flags:
 - `--verify-key <path>`: PEM-encoded Ed25519 public key to verify signed envelopes
 - `--folder <name>`: scope project find/create to a folder by name (supports globs)
 - `--folder-id <uuid>`: scope project find/create to a folder by UUID
+- `--create-folder`: find-or-create `--folder` if it doesn't exist
+- `--parent-folder <name>`: parent folder name when creating (defaults to root)
+- `--parent-folder-id <uuid>`: parent folder UUID when creating (defaults to root)
 - `--project-id <uuid>`: skip project find/create
 - `--version-id <uuid>`: skip version creation, upload to this version ID directly
 - `--timeout <minutes>`: timeout (default: 5)
@@ -127,6 +142,9 @@ Credentials are resolved in order: CLI flags > environment variables > credentia
 - `FS_PROJECT_NAME`: default project name
 - `FS_FOLDER`: folder name for project scoping (resolved to UUID, supports globs)
 - `FS_FOLDER_ID`: folder UUID for project scoping
+- `FS_CREATE_FOLDER`: set to `true` to find-or-create `FS_FOLDER` if it doesn't exist
+- `FS_PARENT_FOLDER`: parent folder name when creating (defaults to root)
+- `FS_PARENT_FOLDER_ID`: parent folder UUID when creating (defaults to root)
 - `FS_PROJECT_ID`: project UUID (skips project find/create)
 - `FS_VERSION_ID`: version UUID (skips version creation)
 - `FS_RELEASE`: enable release mode (equivalent to `--release`)

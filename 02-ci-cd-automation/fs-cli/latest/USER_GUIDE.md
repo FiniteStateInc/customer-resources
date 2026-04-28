@@ -104,6 +104,9 @@ Configuration is resolved in this order (highest precedence first):
 | `FS_BRANCH` | | Git branch override |
 | `FS_FOLDER` | | Folder name for project scoping (resolved to UUID) |
 | `FS_FOLDER_ID` | | Folder UUID for project scoping |
+| `FS_CREATE_FOLDER` | | Set to `true` to find-or-create `FS_FOLDER` if it doesn't exist |
+| `FS_PARENT_FOLDER` | | Parent folder name when creating (defaults to root) |
+| `FS_PARENT_FOLDER_ID` | | Parent folder UUID when creating (defaults to root) |
 | `FS_PROJECT_ID` | | Project UUID (skips project find/create) |
 | `FS_VERSION_ID` | | Version UUID (skips version creation) |
 | `FS_RELEASE` | | Enable release mode (equivalent to `--release`) |
@@ -158,12 +161,12 @@ If no directory is given, scans the current directory. You can also point at a s
 | `--name` / `--project` | (required) | Project name |
 | `--branch` | (auto-detect) | Git branch |
 | `--version` | | Version string |
-| `--all`, `--deep` | `false` | Recursive monorepo scan — find all ecosystems in subdirectories |
+| `--all`, `--deep` | | Recursive monorepo scan — find all ecosystems in subdirectories |
 | `--scope` | `runtime` | Dependency scope: `runtime` excludes dev/test deps, `all` includes everything |
 | `--output` | `platform` | Output adapter: `platform`, `legacy`, `helix`, `file` |
 | `--output-file` | | Output file path (required when `--output=file`) |
 | `--sign-key` | | PEM-encoded Ed25519 private key for signing file output |
-| `--strict` | `false` | Fail immediately on any scanner error instead of continuing |
+| `--strict` | | Fail immediately on any scanner error instead of continuing |
 | `--tool-options` | | Pass-through options for build tools (Maven, Gradle, etc.) |
 | `--include-only` | | Gradle subproject include filter |
 | `--exclude` | | Gradle subproject exclusion filter |
@@ -171,14 +174,17 @@ If no directory is given, scans the current directory. You can also point at a s
 | `--pip-file` | | Custom path to requirements.txt |
 | `--timeout` | `30` | Overall timeout in minutes |
 | `--scan-timeout` | `5` | Per-ecosystem scan timeout in minutes |
-| `--test` | `false` | Dry run: print JSON to stdout, do not upload |
-| `--release` | `false` | Release mode (fast, default): renames happen before upload; CLI exits as soon as upload completes (requires `--version`, mutually exclusive with `--test` and `--version-id`) |
-| `--release-synchronous` | `false` | Release mode variant that waits for scan completion and auto-rolls back on scan failure (implies `--release`) |
+| `--test` | | Dry run: print JSON to stdout, do not upload |
+| `--release` | | Release mode (fast, default): renames happen before upload; CLI exits as soon as upload completes (requires `--version`, mutually exclusive with `--test` and `--version-id`) |
+| `--release-synchronous` | | Release mode variant that waits for scan completion and auto-rolls back on scan failure (implies `--release`) |
 | `--concurrency` | CPU count | Maximum number of parallel ecosystem scans |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
 | `--folder` | | Folder name — scope project find/create to this folder (supports globs) |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
+| `--create-folder` | | Find-or-create `--folder` if it doesn't exist |
+| `--parent-folder` | | Parent folder name when creating (defaults to root) |
+| `--parent-folder-id` | | Parent folder UUID when creating (defaults to root) |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 | `--version-id` | | Version UUID — skip version creation, upload to this version directly |
 
@@ -263,6 +269,22 @@ Recovery is a manual operation in the platform UI: rename the current (failed) v
 
 Re-running with `--release-synchronous` does **not** fix this — it would just layer another checkpoint on top of the already-swapped state. If you cannot tolerate this recovery path, use `--release-synchronous` from the start.
 
+#### Auto-creating a folder
+
+If the destination folder may not exist yet, pass `--create-folder` to have fs-cli create it in the same invocation. The new folder is placed under `--parent-folder` (name) or `--parent-folder-id` (UUID); when neither is set, it is created under the root folder. `--parent-folder` uses the same lookup as `--folder` and supports the same glob patterns (`*`, `?`, `[...]`); use `--parent-folder-id` instead if the parent name contains glob metacharacters.
+
+```sh
+fs-cli scan --name my-app \
+            --folder "Edge Gateway Team" \
+            --create-folder \
+            --parent-folder "Embedded Platforms" \
+            .
+```
+
+The operation is idempotent: if a folder with that name already exists under the given parent, it is reused silently. These flags are available on all five subcommands that accept `--folder` (`scan`, `upload`, `import`, `third-party`, `deliver`). The environment variables `FS_CREATE_FOLDER`, `FS_PARENT_FOLDER`, and `FS_PARENT_FOLDER_ID` set the same values.
+
+`--create-folder` is silently skipped (with a warning logged) when there is nothing to create — when no `--folder` is given, or when `--folder-id` already names a folder. `--parent-folder` / `--parent-folder-id` are likewise skipped (with a warning) when `--create-folder` is not set. The warnings make these misconfigurations visible in CI logs without aborting the run.
+
 ---
 
 ### upload
@@ -279,14 +301,17 @@ fs-cli upload <file> [flags]
 |---|---|---|
 | `--name` / `--project` | (required) | Project name |
 | `--version` | today's date | Version string |
-| `--release` | `false` | Release mode (fast, default): renames happen before upload; CLI exits as soon as upload completes (requires `--version`, mutually exclusive with `--version-id`) |
-| `--release-synchronous` | `false` | Release mode variant that waits for scan completion and auto-rolls back on scan failure (implies `--release`) |
+| `--release` | | Release mode (fast, default): renames happen before upload; CLI exits as soon as upload completes (requires `--version`, mutually exclusive with `--version-id`) |
+| `--release-synchronous` | | Release mode variant that waits for scan completion and auto-rolls back on scan failure (implies `--release`) |
 | `--type` | `sca` | Scan types, comma-separated: `sca`, `sast`, `config`, `vulnerability_analysis`, `python` |
 | `--timeout` | `30` | Overall timeout in minutes |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
 | `--folder` | | Folder name — scope project find/create to this folder (supports globs) |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
+| `--create-folder` | | Find-or-create `--folder` if it doesn't exist |
+| `--parent-folder` | | Parent folder name when creating (defaults to root) |
+| `--parent-folder-id` | | Parent folder UUID when creating (defaults to root) |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 | `--version-id` | | Version UUID — skip version creation, upload to this version directly |
 
@@ -324,13 +349,16 @@ fs-cli import <sbom-file> [flags]
 |---|---|---|
 | `--name` / `--project` | (required) | Project name |
 | `--version` | (auto-generated) | Version string |
-| `--release` | `false` | Release mode (fast, default): renames happen before upload; CLI exits as soon as upload completes (requires `--version`, mutually exclusive with `--version-id`) |
-| `--release-synchronous` | `false` | Release mode variant that waits for scan completion and auto-rolls back on scan failure (implies `--release`) |
+| `--release` | | Release mode (fast, default): renames happen before upload; CLI exits as soon as upload completes (requires `--version`, mutually exclusive with `--version-id`) |
+| `--release-synchronous` | | Release mode variant that waits for scan completion and auto-rolls back on scan failure (implies `--release`) |
 | `--format` | (auto-detect) | SBOM format: `cyclonedx`, `cdx`, or `spdx` |
 | `--endpoint` | | Finite State API endpoint |
 | `--token` | | Finite State API token |
 | `--folder` | | Folder name — scope project find/create to this folder (supports globs) |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
+| `--create-folder` | | Find-or-create `--folder` if it doesn't exist |
+| `--parent-folder` | | Parent folder name when creating (defaults to root) |
+| `--parent-folder-id` | | Parent folder UUID when creating (defaults to root) |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 | `--version-id` | | Version UUID — skip version creation, upload to this version directly |
 
@@ -368,6 +396,9 @@ fs-cli third-party <file> [flags]
 | `--token` | | Finite State API token |
 | `--folder` | | Folder name — scope project find/create to this folder (supports globs) |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
+| `--create-folder` | | Find-or-create `--folder` if it doesn't exist |
+| `--parent-folder` | | Parent folder name when creating (defaults to root) |
+| `--parent-folder-id` | | Parent folder UUID when creating (defaults to root) |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 | `--version-id` | | Version UUID — skip version creation, upload to this version directly |
 
@@ -400,6 +431,9 @@ fs-cli deliver <file> [flags]
 | `--verify-key` | | PEM-encoded Ed25519 public key for signature verification |
 | `--folder` | | Folder name — scope project find/create to this folder (supports globs) |
 | `--folder-id` | | Folder UUID — scope project find/create to this folder |
+| `--create-folder` | | Find-or-create `--folder` if it doesn't exist |
+| `--parent-folder` | | Parent folder name when creating (defaults to root) |
+| `--parent-folder-id` | | Parent folder UUID when creating (defaults to root) |
 | `--project-id` | | Project UUID — skip project find/create, use this ID directly |
 | `--version-id` | | Version UUID — skip version creation, upload to this version directly |
 | `--timeout` | `5` | Timeout in minutes |

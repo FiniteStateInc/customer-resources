@@ -6,6 +6,7 @@ For full usage, flags, and CI/CD integration guidance, see:
 
 - **[User Guide](./latest/USER_GUIDE.md)**
 - **[README](./latest/README.md)**
+- **[Changelog](./latest/CHANGELOG.md)**
 
 ## Quick Start
 
@@ -43,4 +44,4 @@ irm https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-
 | `install.ps1` | One-line installer for Windows (PowerShell, verifies checksum) |
 | `run-fs-cli.sh` | CI wrapper for Linux/macOS (downloads, caches, and runs fs-cli) |
 | `run-fs-cli.ps1` | CI wrapper for Windows (PowerShell equivalent) |
-| `latest/` | Current release binaries, checksums, and documentation |
+| `latest/` | Current release binaries, checksums, changelog, and documentation |
