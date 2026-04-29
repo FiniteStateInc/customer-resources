@@ -1,0 +1,380 @@
+# Yocto recipe name -> CPE vendor:product mapping
+# Used by yocto-spdx-merge to inject externalRefs for CVE correlation.
+# Version is injected at merge time from the SPDX package versionInfo.
+#
+# Format: recipe_name: {vendor: <cpe_vendor>, product: <cpe_product>}
+# CPE generated: cpe:2.3:a:<vendor>:<product>:<version>:*:*:*:*:*:*:*
+#
+# Sub-packages (e.g. busybox-syslog, util-linux-mount) are mapped via
+# suffix stripping to their base package entry.
+
+# Core utilities
+bash:
+  vendor: gnu
+  product: bash
+busybox:
+  vendor: busybox_project
+  product: busybox
+coreutils:
+  vendor: gnu
+  product: coreutils
+findutils:
+  vendor: gnu
+  product: findutils
+grep:
+  vendor: gnu
+  product: grep
+sed:
+  vendor: gnu
+  product: sed
+gawk:
+  vendor: gnu
+  product: gawk
+diffutils:
+  vendor: gnu
+  product: diffutils
+
+# Crypto / TLS
+openssl:
+  vendor: openssl
+  product: openssl
+libssl3:
+  vendor: openssl
+  product: openssl
+libcrypto3:
+  vendor: openssl
+  product: openssl
+
+# Networking
+curl:
+  vendor: haxx
+  product: curl
+libcurl4:
+  vendor: haxx
+  product: libcurl
+openssh:
+  vendor: openbsd
+  product: openssh
+wpa-supplicant:
+  vendor: w1.fi
+  product: wpa_supplicant
+avahi-daemon:
+  vendor: avahi
+  product: avahi
+avahi-dnsconfd:
+  vendor: avahi
+  product: avahi
+miniupnpc:
+  vendor: miniupnp_project
+  product: miniupnpc
+net-tools:
+  vendor: net-tools_project
+  product: net-tools
+iptables:
+  vendor: netfilter
+  product: iptables
+ethtool:
+  vendor: kernel
+  product: ethtool
+bridge-utils:
+  vendor: bridge-utils_project
+  product: bridge-utils
+
+# System libraries
+libc6:
+  vendor: gnu
+  product: glibc
+libglib-2.0-0:
+  vendor: gnome
+  product: glib
+libxml2:
+  vendor: xmlsoft
+  product: libxml2
+libexpat1:
+  vendor: libexpat_project
+  product: libexpat
+libffi8:
+  vendor: sourceware
+  product: libffi
+libarchive:
+  vendor: libarchive
+  product: libarchive
+libcap:
+  vendor: kernel
+  product: libcap
+libcap-ng:
+  vendor: libcap-ng_project
+  product: libcap-ng
+libseccomp:
+  vendor: libseccomp
+  product: libseccomp
+libselinux1:
+  vendor: selinuxproject
+  product: selinux
+liburcu:
+  vendor: lttng
+  product: liburcu
+libusb-1.0-0:
+  vendor: libusb
+  product: libusb
+libidn2-0:
+  vendor: gnu
+  product: libidn2
+libunistring5:
+  vendor: gnu
+  product: libunistring
+libreadline8:
+  vendor: gnu
+  product: readline
+libgmp10:
+  vendor: gmplib
+  product: gmp
+libpcre2:
+  vendor: pcre
+  product: pcre2
+liblzma5:
+  vendor: tukaani
+  product: xz
+libzstd1:
+  vendor: facebook
+  product: zstd
+libz1:
+  vendor: zlib
+  product: zlib
+libbz2-1:
+  vendor: bzip2_project
+  product: bzip2
+libprotobuf25.8.0:
+  vendor: google
+  product: protobuf
+libjson-c5:
+  vendor: json-c_project
+  product: json-c
+libical:
+  vendor: libical_project
+  product: libical
+
+# ICU
+libicudata74:
+  vendor: icu-project
+  product: international_components_for_unicode
+libicui18n74:
+  vendor: icu-project
+  product: international_components_for_unicode
+libicuuc74:
+  vendor: icu-project
+  product: international_components_for_unicode
+
+# Compression / filesystem
+btrfs-tools:
+  vendor: kernel
+  product: btrfs-progs
+xfsprogs:
+  vendor: sgi
+  product: xfsprogs
+e2fsprogs:
+  vendor: e2fsprogs_project
+  product: e2fsprogs
+dosfstools:
+  vendor: dosfstools_project
+  product: dosfstools
+ntfs-3g:
+  vendor: tuxera
+  product: ntfs-3g
+exfatprogs:
+  vendor: exfatprogs_project
+  product: exfatprogs
+parted:
+  vendor: gnu
+  product: parted
+gptfdisk:
+  vendor: rodsbooks
+  product: gdisk
+
+# System / init
+systemd:
+  vendor: systemd_project
+  product: systemd
+dbus-1:
+  vendor: freedesktop
+  product: dbus
+dbus-tools:
+  vendor: freedesktop
+  product: dbus
+udev:
+  vendor: systemd_project
+  product: systemd
+
+# Security / SELinux
+checkpolicy:
+  vendor: selinuxproject
+  product: selinux
+policycoreutils:
+  vendor: selinuxproject
+  product: selinux
+setools:
+  vendor: selinuxproject
+  product: selinux
+shadow-base:
+  vendor: shadow_project
+  product: shadow
+
+# PAM
+libpam:
+  vendor: linux-pam
+  product: linux-pam
+
+# Containers
+containerd-opencontainers:
+  vendor: linuxfoundation
+  product: containerd
+docker-moby:
+  vendor: mobyproject
+  product: moby
+docker-moby-cli:
+  vendor: mobyproject
+  product: moby
+docker-compose:
+  vendor: docker
+  product: docker_compose
+runc-opencontainers:
+  vendor: linuxfoundation
+  product: runc
+tini:
+  vendor: krallin
+  product: tini
+
+# Python
+python3-core:
+  vendor: python
+  product: python
+libpython3.12-1.0:
+  vendor: python
+  product: python
+
+# Perl
+perl:
+  vendor: perl
+  product: perl
+
+# Hardware / system tools
+dmidecode:
+  vendor: nongnu
+  product: dmidecode
+hdparm:
+  vendor: hdparm_project
+  product: hdparm
+pciutils:
+  vendor: kernel
+  product: pciutils
+usbutils:
+  vendor: kernel
+  product: usbutils
+usbguard:
+  vendor: usbguard_project
+  product: usbguard
+mcelog:
+  vendor: mcelog_project
+  product: mcelog
+numactl:
+  vendor: numactl_project
+  product: numactl
+lsof:
+  vendor: lsof_project
+  product: lsof
+lsscsi:
+  vendor: lsscsi_project
+  product: lsscsi
+procps:
+  vendor: procps-ng_project
+  product: procps-ng
+htop:
+  vendor: htop
+  product: htop
+kbd:
+  vendor: kbd_project
+  product: kbd
+kmod:
+  vendor: kernel
+  product: kmod
+fio:
+  vendor: fio_project
+  product: fio
+
+# GCC runtime
+libgcc1:
+  vendor: gnu
+  product: gcc
+libstdc++6:
+  vendor: gnu
+  product: gcc
+libatomic1:
+  vendor: gnu
+  product: gcc
+
+# Bluetooth
+bluez5:
+  vendor: bluez
+  product: bluez
+bluez5-obex:
+  vendor: bluez
+  product: bluez
+
+# Misc
+util-linux:
+  vendor: kernel
+  product: util-linux
+binutils:
+  vendor: gnu
+  product: binutils
+ncurses-terminfo-base:
+  vendor: gnu
+  product: ncurses
+libncurses5:
+  vendor: gnu
+  product: ncurses
+libncursesw5:
+  vendor: gnu
+  product: ncurses
+libtinfo5:
+  vendor: gnu
+  product: ncurses
+tzdata:
+  vendor: iana
+  product: tzdata
+ca-certificates:
+  vendor: mozilla
+  product: nss
+audit:
+  vendor: linux_audit_project
+  product: audit
+auditd:
+  vendor: linux_audit_project
+  product: audit
+libwrap0:
+  vendor: wietse_venema
+  product: tcp_wrappers
+shared-mime-info:
+  vendor: freedesktop
+  product: shared-mime-info
+gobject-introspection:
+  vendor: gnome
+  product: gobject-introspection
+fuse-overlayfs:
+  vendor: fuse-overlayfs_project
+  product: fuse-overlayfs
+libsolv1:
+  vendor: opensuse
+  product: libsolv
+dfu-util:
+  vendor: dfu-util_project
+  product: dfu-util
+cpuid:
+  vendor: cpuid_project
+  product: cpuid
+figlet:
+  vendor: figlet_project
+  product: figlet
+sedopal:
+  vendor: sedutil_project
+  product: sedutil
