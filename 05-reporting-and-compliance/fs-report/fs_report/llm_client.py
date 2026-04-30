@@ -1491,6 +1491,167 @@ Be specific with component names and versions."""
                 "confidence": "none",
             }
 
+    def generate_component_identity_verdict(
+        self,
+        component_name: str,
+        component_version: str,
+        cve_ids: list[str],
+        nvd_fix_snippet: str = "",
+    ) -> dict[str, str]:
+        """Determine whether a scanned component is the product NVD associates
+        with its CVEs, or a different product that happens to share a name.
+
+        Returns dict with keys: identity, likely_product, nvd_product,
+        evidence, confidence. All values are strings; missing fields are "".
+        """
+        cve_section = "\n".join(f"- {cve}" for cve in cve_ids[:15])
+        nvd_section = f"\n{nvd_fix_snippet}\n" if nvd_fix_snippet else ""
+        prompt = f"""You are a security analyst determining whether a scanned software component is actually the product that NVD associates with its CVEs, or a *different* product that happens to share a name or path.
+
+Scanned component: {component_name} version {component_version}
+
+CVEs attributed to it (sample):
+{cve_section}
+{nvd_section}
+Answer in this exact format:
+IDENTITY: <confirmed | mismatched | ambiguous>
+LIKELY_PRODUCT: <name of what the scanned component actually is — e.g., "musl libc">
+NVD_PRODUCT: <what NVD thinks it is, based on CPEs in the CVEs — e.g., "GNU glibc">
+EVIDENCE: <1–3 sentences citing CPE vendor/product, characteristic symbols, upstream repo, or other identifying signals>
+CONFIDENCE: <high | medium | low>
+"""
+        # Cache key scoped by provider/model/deployment-context so switching
+        # providers or contexts doesn't silently reuse stale verdicts.
+        # Mirrors the finding-guidance cache-key pattern at llm_client.py:1898.
+        ctx_hash = self._deployment_ctx.context_hash() if self._deployment_ctx else ""
+        model_tag = f"{self._provider}:{self._component_model}"
+        cache_key = (
+            f"identity:{component_name}:{component_version}:{model_tag}:"
+            f"{ctx_hash}:{','.join(sorted(cve_ids)[:15])}"
+        )
+        cached = self.get_cached_summary(cache_key)
+        if cached is not None:
+            self._cached_count += 1
+            try:
+                return dict(json.loads(cached))
+            except Exception:
+                pass  # fall through to live call on malformed cache
+
+        response = self._call_llm(prompt, model_tier="component", max_tokens=500)
+        parsed = self._parse_structured_response(
+            response,
+            {
+                "IDENTITY": "identity",
+                "LIKELY_PRODUCT": "likely_product",
+                "NVD_PRODUCT": "nvd_product",
+                "EVIDENCE": "evidence",
+                "CONFIDENCE": "confidence",
+            },
+        )
+        # _parse_structured_response already defaults missing fields to "" via
+        # dict.fromkeys, so no further normalization needed for string fields.
+        ident = parsed.get("identity", "").lower()
+        parsed["identity"] = (
+            ident if ident in ("confirmed", "mismatched", "ambiguous") else "ambiguous"
+        )
+        parsed["confidence"] = parsed.get("confidence", "").lower()
+
+        self.cache_summary(
+            cache_key,
+            scope="identity",
+            summary_text=json.dumps(parsed),
+            model=self._component_model or "",
+        )
+        return parsed
+
+    def generate_per_cve_applicability(
+        self,
+        component_name: str,
+        component_version: str,
+        likely_product: str,
+        nvd_product: str,
+        cve_ids: list[str],
+        nvd_fix_snippet: str = "",
+    ) -> dict[str, dict[str, str]]:
+        """Given that the scanned component's identity differs from NVD's,
+        classify each CVE as does_not_apply (CVE targets nvd_product only) or
+        might_still_apply (CVE may affect likely_product too).
+
+        Returns dict mapping cve_id -> {"verdict": ..., "rationale": ...}.
+        Missing CVEs default to might_still_apply (conservative).
+        """
+        cve_lines = "\n".join(f"- {cve}" for cve in cve_ids)
+        nvd_section = f"\n{nvd_fix_snippet}\n" if nvd_fix_snippet else ""
+        prompt = f"""Scanned component: {component_name} {component_version}
+This component is actually: {likely_product}
+NVD CVEs were authored against: {nvd_product}
+
+For each CVE below, determine whether it applies to {likely_product}
+(the real component), not {nvd_product}. Some CVEs described as affecting
+{nvd_product} may also have analogous bugs in {likely_product}; flag those
+as might_still_apply. CVEs that are specific to {nvd_product}'s code paths
+(unique symbols, implementation details, CPEs naming only {nvd_product})
+are does_not_apply.
+
+CVEs:
+{cve_lines}
+{nvd_section}
+Answer with ONE LINE PER CVE in this exact format:
+<CVE-ID>: <does_not_apply | might_still_apply> | <one-sentence rationale citing code path, symbol, or CPE evidence>
+"""
+        ctx_hash = self._deployment_ctx.context_hash() if self._deployment_ctx else ""
+        model_tag = f"{self._provider}:{self._component_model}"
+        cache_key = (
+            f"applic:{component_name}:{component_version}:{model_tag}:"
+            f"{ctx_hash}:{likely_product}:{nvd_product}:"
+            f"{','.join(sorted(cve_ids))}"
+        )
+        cached = self.get_cached_summary(cache_key)
+        if cached is not None:
+            self._cached_count += 1
+            try:
+                return dict(json.loads(cached))
+            except Exception:
+                pass
+
+        # Scale max_tokens with CVE count (~80 tokens per line).
+        max_tokens = min(4000, 200 + 80 * len(cve_ids))
+        response = self._call_llm(prompt, model_tier="component", max_tokens=max_tokens)
+        results: dict[str, dict[str, str]] = {}
+        valid_verdicts = {"does_not_apply", "might_still_apply"}
+        for line in response.strip().split("\n"):
+            line = line.strip()
+            if not line or ":" not in line:
+                continue
+            cve_part, _, rest = line.partition(":")
+            cve_id = cve_part.strip()
+            if not cve_id.upper().startswith("CVE-"):
+                continue
+            # rest = "<verdict> | <rationale>"
+            verdict_part, _, rationale = rest.partition("|")
+            verdict = verdict_part.strip().lower()
+            if verdict not in valid_verdicts:
+                verdict = "might_still_apply"
+            results[cve_id] = {
+                "verdict": verdict,
+                "rationale": rationale.strip(),
+            }
+        # Fill in any requested CVEs the model didn't answer for
+        for cve in cve_ids:
+            if cve not in results:
+                results[cve] = {
+                    "verdict": "might_still_apply",
+                    "rationale": "LLM did not classify; defaulting to conservative verdict.",
+                }
+
+        self.cache_summary(
+            cache_key,
+            scope="applicability",
+            summary_text=json.dumps(results),
+            model=self._component_model or "",
+        )
+        return results
+
     def _build_component_prompt(
         self,
         component_name: str,
@@ -1588,11 +1749,17 @@ CVEs:
 {reach_section}
 {nvd_section}
 {ctx_section}
+IMPORTANT — Output contract:
+- Produce exactly ONE response block for this component, covering all CVEs together. Do NOT emit per-CVE sections, per-CVE headers, or repeated field labels.
+- Do NOT wrap field labels in markdown emphasis (no ``**FIX_VERSION:**`` — use bare ``FIX_VERSION:``).
+- Each field appears exactly once. Use plain text; reserve markdown formatting for prose *inside* GUIDANCE / WORKAROUND values only.
+- FIX_VERSION should be a single recommended upgrade target for the component as a whole (the highest fix that clears the largest number of listed CVEs). If CVEs require different fix versions, state the consolidated upgrade target and mention the per-CVE spread inside RATIONALE.
+
 Respond in this exact format:
 VERDICT: <affected | not_affected | uncertain — {_verdict_block()}>
 FIX_VERSION: <{_fix_version_block(component_version)}>
-RATIONALE: <1 sentence explaining why this fix or version is recommended, citing the NVD data or advisory if available>
-GUIDANCE: <1-2 sentence upgrade guidance>
+RATIONALE: <1-2 sentences explaining why this fix or version is recommended, citing NVD data or advisories; if CVEs span multiple fix branches, summarize the spread here>
+GUIDANCE: <1-2 sentence upgrade guidance for the component as a whole>
 WORKAROUND: <{_workaround_block(self._deployment_ctx)}>
 CODE_SEARCH: <grep/search patterns to find affected code — use specific vulnerable function names if known from reachability analysis, e.g., "grep -r 'vulnerableFunction' src/">
 CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium (version estimated from known patterns), low (uncertain — verify independently)>"""
@@ -1625,10 +1792,18 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
             line = line.strip()
             if not line:
                 continue
+            # Tolerate markdown emphasis around the prefix (e.g.
+            # ``**FIX_VERSION:** 5.16.18`` or ``*FIX_VERSION:* ...``) — the
+            # LLM sometimes bolds its own field labels when asked to emit
+            # per-CVE structured blocks. Strip leading/trailing ``*``/``_``
+            # runs from the candidate token before prefix-matching.
+            probe = line.lstrip("*_").strip()
             matched = False
             for prefix, key in field_map.items():
-                if line.startswith(f"{prefix}:"):
-                    value = line.split(":", 1)[1].strip()
+                if probe.startswith(f"{prefix}:"):
+                    # Strip leading ``**`` the LLM may have left attached to
+                    # the value itself (e.g. ``FIX_VERSION:** 5.16.18``).
+                    value = probe.split(":", 1)[1].lstrip("*").strip()
                     result[key] = value
                     current_key = key
                     matched = True

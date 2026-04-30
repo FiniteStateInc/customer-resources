@@ -163,6 +163,7 @@ class ReportRenderer:
                 table_data = report_data.data
 
             additional_data = report_data.metadata.get("additional_data", {})
+            transform_result = additional_data.get("transform_result", {})
             detail_findings = additional_data.get("detail_findings")
             detail_findings_churn = additional_data.get("detail_findings_churn")
             detail_component_churn = additional_data.get("detail_component_churn")
@@ -240,6 +241,19 @@ class ReportRenderer:
                     else pd.DataFrame()
                 )
 
+            # License Report: summary + per-component detail
+            license_detail = (
+                transform_result.get("detail")
+                if isinstance(transform_result, dict)
+                else None
+            )
+            has_license_detail = (
+                recipe.name == "License Report"
+                and isinstance(license_detail, pd.DataFrame)
+                and not license_detail.empty
+            )
+            license_detail_df = license_detail if has_license_detail else pd.DataFrame()
+
             # Generate main files
             base_filename = self._sanitize_filename(recipe.name)
 
@@ -270,6 +284,10 @@ class ReportRenderer:
                 if has_scan_quality_detail and not scan_quality_detail_df.empty:
                     detail_csv = output_dir / f"{base_filename}_Detail.csv"
                     self.csv_renderer.render(scan_quality_detail_df, detail_csv)
+                    generated_files.append(str(detail_csv))
+                if has_license_detail:
+                    detail_csv = output_dir / f"{base_filename}_Detail.csv"
+                    self.csv_renderer.render(license_detail_df, detail_csv)
                     generated_files.append(str(detail_csv))
                 if vc_progression_df is not None and not vc_progression_df.empty:
                     progression_csv = output_dir / f"{base_filename}_Progression.csv"
@@ -414,6 +432,12 @@ class ReportRenderer:
                     sheets = [("Summary", table_data)]
                     if not scan_quality_detail_df.empty:
                         sheets.append(("Version Detail", scan_quality_detail_df))
+                    self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
+                elif has_license_detail:
+                    sheets = [
+                        ("Summary", table_data),
+                        ("Detail", license_detail_df),
+                    ]
                     self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
                 else:
                     self.xlsx_renderer.render(table_data, xlsx_path, recipe.name)

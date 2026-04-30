@@ -1,5 +1,29 @@
 # Release Notes
 
+## Version 1.9.7 (April 2026)
+
+### License Report — per-component detail + license filter
+
+Two customer-facing changes (asks from TP-Link):
+
+- **Per-component Detail table** — the recipe now emits `License Report_Detail.csv` (one row per component: License, Risk Category, Project, Component, Version) alongside the existing per-license summary. XLSX is a two-sheet workbook (`Summary` + `Detail`) and HTML renders both tables on one page. Replaces the prior approach of cramming a comma-separated component list into a single summary cell, which hit Excel's 32,767-char-per-cell limit on long-tail licenses (e.g. Apache-2.0 across thousands of components).
+- **`--license "GPL,AGPL"` flag** — comma-separated, case-insensitive substring match. Filters the summary, detail table, pie chart, and KPIs. Lets you narrow to violation licenses (e.g. strong copyleft) and list every project + component carrying them. Filtering is client-side; the full component list is still fetched from `/public/v0/components`.
+
+### False Positive Analysis — identity-first pipeline + correctness fixes
+
+- **Component-identity pipeline + narrative→VEX propagation** (#46) — FPA now fronts an identity-first verdict (`not_affected` / `affected` / `ambiguous`) ahead of the residual-candidate list, with a per-CVE applicability fan-out for ambiguous components. Triage Prioritization picks up the structured component verdicts at both `--ai-depth=summary` and `--ai-depth=full` so the VEX override loop can flip `IN_TRIAGE` → `NOT_AFFECTED` consistently. A summary-depth banner makes it explicit that per-finding narrative is non-authoritative when AI runs in summary mode. The TP narrative-fallback matcher now includes a hedge-word guard so phrases like "most versions" don't trigger blanket `NOT_AFFECTED`.
+- **Context-window safety on huge components** — components with thousands of attributed CVEs (e.g. Linux kernel) blew past the LLM context window, the exception was swallowed, and the entire AI tier silently produced `ai_detections=0` / `identity_assertions=[]`. The identity prompt's NVD snippet is now scoped to the same 15-CVE sample shown in the prompt, the per-CVE applicability fan-out is chunked into batches of 50, and each component is wrapped in its own `try`/`except` so one bad component no longer aborts the whole tier.
+- **Cross-project propagation downgraded HIGH → MEDIUM** — the same CVE+component pair can legitimately be FP in one project and exploitable in another, so cross-project hits are now a hint that needs corroboration before producing a VEX recommendation (which is gated to HIGH confidence).
+- **Finding-level fallback removed** — FPA was carved out of Triage Prioritization to be the focused FP-detection action, but the AI tier was re-running the full triage prompt on top-200 findings for confirmed/ambiguous components and discarding everything except the APPLICABILITY field. Per-finding triage belongs in TP, not here.
+- **Historical-pattern signal removed** — the `historical_component_pattern` signal extrapolated from ~10 prior triaged findings to thousands of new ones with no lookback window. Pulling it out to rethink the design rather than ship a flaky over-generalisation.
+- **VEX gated on HIGH confidence only** — `_build_vex_recommendation` previously hardcoded `recommended_vex_status=NOT_AFFECTED` regardless of the rolled-up confidence, so MEDIUM/LOW candidates flagged as "Review" in the CSV were simultaneously written as `NOT_AFFECTED` in `vex_recommendations.json` — any autotriage consumer would auto-apply them. MEDIUM/LOW now surface in the report as review notes but produce no VEX artifact.
+
+### Triage Prioritization
+
+- **AI guidance tables now render markdown** — Rationale / Guidance / Workaround / Action cells render through the existing `marked.parse` + DOMPurify pipeline so bold, inline code, and headings in LLM prose display correctly instead of as literal `**` and backticks. The structured-response parser also tolerates markdown-bolded field prefixes (e.g. `**FIX_VERSION:**`) — the LLM's multi-CVE markdown output was triggering the fallback that dumps the raw response into the guidance column. The component prompt includes an explicit output contract forbidding per-CVE sections, bolded labels, or repeated labels.
+
+---
+
 ## Version 1.9.6 (April 2026)
 
 ### Executive Dashboard — summary mode + warm-cache correctness

@@ -9,9 +9,7 @@ query:
   params:
     limit: 10000
 
-parameters:
-  min_triaged_for_patterns: 3
-  historical_fp_ratio_threshold: 0.5
+parameters: {}
 
 transform_function: false_positive_analysis_transform
 

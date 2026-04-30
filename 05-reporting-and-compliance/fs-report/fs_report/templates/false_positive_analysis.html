@@ -72,9 +72,71 @@ function copyPrompt(btn) {
   </div>
 </section>
 
-<!-- FP Review Queue -->
+<!-- Component Identity Assertions -->
+{% if identity_assertions and identity_assertions|length > 0 %}
 <section class="report-section">
-  <h2>False Positive Review Queue</h2>
+  <h2>Component Identity Assertions</h2>
+  <p style="color: #6c757d;">
+    {{ identity_assertions|length }} component(s) detected as misidentified relative
+    to NVD. Each assertion groups the CVEs attributed to the scanned component and
+    classifies whether they apply to the actual product.
+  </p>
+  {% for a in identity_assertions %}
+  <details open style="margin-bottom: 18px; border: 1px solid #dee2e6; border-radius: 6px; padding: 12px;">
+    <summary style="cursor:pointer; font-weight: 600;">
+      {{ a.component_name }} {{ a.component_version }} —
+      scanned as <code>{{ a.likely_product or '?' }}</code>, NVD expected
+      <code>{{ a.nvd_product or '?' }}</code>
+      <span class="badge badge-HIGH" style="margin-left: 8px;">MISMATCHED</span>
+      <span class="pill pill-signal" style="margin-left: 6px;">confidence: {{ a.confidence or 'medium' }}</span>
+    </summary>
+    <div style="margin-top: 10px;">
+      <p><strong>Evidence:</strong> {{ a.evidence or '—' }}</p>
+      <table class="review-queue">
+        <thead>
+          <tr>
+            <th>CVE</th>
+            <th>Verdict</th>
+            <th>Rationale</th>
+            <th>Recommended VEX</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for cv in a.cve_verdicts %}
+          <tr>
+            <td><strong>{{ cv.cve_id }}</strong></td>
+            <td>
+              {% if cv.verdict == 'does_not_apply' %}
+                <span class="badge badge-HIGH">does_not_apply</span>
+              {% else %}
+                <span class="badge badge-MEDIUM">might_still_apply</span>
+              {% endif %}
+            </td>
+            <td class="reason-cell">{{ cv.rationale or '—' }}</td>
+            <td>
+              {% if cv.verdict == 'does_not_apply' %}
+                NOT_AFFECTED / CODE_NOT_PRESENT
+              {% else %}
+                Review individually
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  {% endfor %}
+</section>
+{% endif %}
+
+<!-- Residual FP Candidates (finding-level fallback) -->
+<section class="report-section">
+  <h2>Residual FP Candidates</h2>
+  <p style="color: #6c757d;">
+    Findings on components whose identity was confirmed or ambiguous, flagged as
+    likely FP by finding-level applicability analysis.
+  </p>
   {% if candidates and candidates|length > 0 %}
   <table class="review-queue">
     <thead>
@@ -85,7 +147,6 @@ function copyPrompt(btn) {
         <th>Confidence</th>
         <th>Signals</th>
         <th>Reason / AI Rationale</th>
-        {% if ai_finding_prompts %}<th>AI Prompt</th>{% endif %}
         <th>Action</th>
       </tr>
     </thead>
@@ -98,10 +159,11 @@ function copyPrompt(btn) {
         <td>{{ row.fp_confidence or '—' }}</td>
         <td>
           {% if row.fp_signals %}
-            {% for sig in row.fp_signals.split(',') if row.fp_signals is string %}
-              <span class="pill pill-signal">{{ sig.strip() }}</span>
-            {% endfor %}
-            {% if row.fp_signals is not string %}
+            {% if row.fp_signals is string %}
+              {% for sig in row.fp_signals.split(',') %}
+                <span class="pill pill-signal">{{ sig.strip() }}</span>
+              {% endfor %}
+            {% else %}
               {% for sig in row.fp_signals %}
                 <span class="pill pill-signal">{{ sig }}</span>
               {% endfor %}
@@ -120,90 +182,27 @@ function copyPrompt(btn) {
           </details>
           {% endif %}
         </td>
-        {% if ai_finding_prompts %}
-        <td>
-            {% set fid = row.finding_id or row.cve_id %}
-            {% if fid and fid in ai_finding_prompts %}
-            <details>
-                <summary style="cursor:pointer;color:#007bff;font-size:0.85em;">View</summary>
-                <div style="position:relative;margin-top:6px;">
-                    <button onclick="copyPrompt(this)" style="position:absolute;top:2px;right:2px;padding:2px 8px;font-size:0.75em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
-                    <pre style="background:#f8f9fa;padding:10px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:300px;overflow-y:auto;max-width:400px;">{{ ai_finding_prompts[fid] }}</pre>
-                </div>
-            </details>
-            {% else %}—{% endif %}
-        </td>
-        {% endif %}
         <td>{{ row.recommended_action or 'Review' }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <p style="color: #888;">No false positive candidates detected. {% if not summary or summary.ai_detections == 0 %}Try running with <code>--ai</code> for AI-based applicability analysis.{% endif %}</p>
+  <p style="color: #888;">No residual FP candidates.</p>
   {% endif %}
 </section>
 
-<!-- AI Component Analysis -->
-{% if ai_component_results and ai_component_results|length > 0 %}
-{% set comp_prompt_map = {} %}
-{% for p in ai_component_prompts %}{% if comp_prompt_map.update({p.component: p.prompt}) %}{% endif %}{% endfor %}
+<!-- Component Identity Prompts (air-gapped --ai-prompts workflow) -->
+{% if ai_component_prompts and ai_component_prompts|length > 0 %}
 <section class="report-section">
-  <h2>Component Applicability Analysis</h2>
-  <p style="color: #6c757d;">{{ ai_component_results|length }} components analysed. Components marked <code>not_affected</code> have all their findings flagged as likely FP.</p>
-  <table class="review-queue">
-    <thead>
-      <tr>
-        <th>Component</th>
-        <th>Version</th>
-        <th>Verdict</th>
-        <th>Confidence</th>
-        <th>Rationale</th>
-        <th>Guidance</th>
-        {% if ai_component_prompts %}<th>AI Prompt</th>{% endif %}
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in ai_component_results %}
-      <tr>
-        <td><strong>{{ row.component }}</strong></td>
-        <td>{{ row.version }}</td>
-        <td>{{ row.verdict }}</td>
-        <td>{{ row.confidence }}</td>
-        <td class="reason-cell">{{ row.rationale or '—' }}</td>
-        <td class="reason-cell">
-          {{ row.guidance or '—' }}
-          {% if row.fix_version and row.fix_version != 'Unknown' %}
-          <br><strong>Fix:</strong> {{ row.fix_version }}
-          {% endif %}
-          {% if row.workaround %}
-          <br><strong>Workaround:</strong> {{ row.workaround }}
-          {% endif %}
-        </td>
-        {% if ai_component_prompts %}
-        <td>
-            {% set comp_key = row.component ~ ' ' ~ row.version %}
-            {% if comp_key in comp_prompt_map %}
-            <details>
-                <summary style="cursor:pointer;color:#007bff;font-size:0.85em;">View</summary>
-                <div style="position:relative;margin-top:6px;">
-                    <button onclick="copyPrompt(this)" style="position:absolute;top:2px;right:2px;padding:2px 8px;font-size:0.75em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
-                    <pre style="background:#f8f9fa;padding:10px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:300px;overflow-y:auto;max-width:400px;">{{ comp_prompt_map[comp_key] }}</pre>
-                </div>
-            </details>
-            {% else %}—{% endif %}
-        </td>
-        {% endif %}
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
-{% elif ai_component_prompts and ai_component_prompts|length > 0 %}
-<!-- Prompts-only mode (--ai-prompts without --ai) -->
-<section class="report-section">
-  <h2>Component Applicability Prompts</h2>
-  <p style="color: #6c757d;">{{ ai_component_prompts|length }} component prompts. Start here — if the LLM says <code>not_affected</code>, all findings on that component are likely FP.</p>
+  <h2>Component Identity Prompts</h2>
+  <p style="color: #6c757d;">
+    {{ ai_component_prompts|length }} prompt(s) for offline LLM review. Paste each
+    into an external model; if the answer is <code>IDENTITY: mismatched</code>,
+    run the per-CVE applicability fan-out using the <code>LIKELY_PRODUCT</code>
+    and <code>NVD_PRODUCT</code> values. These prompts are also written to
+    <code>False Positive Analysis_prompts.md</code> alongside this report.
+  </p>
   {% for p in ai_component_prompts %}
   <details style="margin-bottom: 8px;">
     <summary style="cursor:pointer;color:#007bff;font-weight:600;font-size:0.9em;">{{ p.component }}</summary>

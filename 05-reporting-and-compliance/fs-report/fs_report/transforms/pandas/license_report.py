@@ -144,6 +144,21 @@ def license_report_transform(
             version_col="component_version",
         )
 
+    # Apply license filter (case-insensitive substring, comma-separated terms)
+    license_filter = getattr(cfg, "license_filter", None) if cfg else None
+    if license_filter:
+        terms = [t.strip().lower() for t in str(license_filter).split(",") if t.strip()]
+        if terms:
+            df = df[
+                df["license_name"]
+                .str.lower()
+                .apply(lambda name: any(t in name for t in terms))
+            ].reset_index(drop=True)
+            logger.info(
+                f"License report: filtered to {len(df)} components "
+                f"matching license terms {terms}"
+            )
+
     logger.info(f"License report: {len(df)} components")
 
     # --- License table: group by license ---
@@ -195,11 +210,31 @@ def license_report_transform(
         }
     )
 
+    # --- Detail DataFrame: one row per component (License × Project × Component) ---
+    detail_df = (
+        pd.DataFrame(
+            {
+                "License": df["license_name"],
+                "Risk Category": df["risk_category"],
+                "Project": df["project_name"],
+                "Component": df["component_name"],
+                "Version": df["component_version"],
+            }
+        )
+        .sort_values(
+            by=["License", "Project", "Component", "Version"],
+            kind="mergesort",
+        )
+        .reset_index(drop=True)
+    )
+
     # No-license components
     no_license_count = int((df["license_name"] == "").sum())
 
     return {
         "main": main_df,
+        "detail": detail_df,
+        "detail_table": detail_df.to_dict("records"),
         "license_table": license_table,
         "risk_pie": risk_pie,
         "category_summary": dict(category_counts),
@@ -214,6 +249,8 @@ def license_report_transform(
 def _empty_result() -> dict[str, Any]:
     return {
         "main": pd.DataFrame(),
+        "detail": pd.DataFrame(),
+        "detail_table": [],
         "license_table": [],
         "risk_pie": {"labels": [], "data": [], "backgroundColor": []},
         "category_summary": {},

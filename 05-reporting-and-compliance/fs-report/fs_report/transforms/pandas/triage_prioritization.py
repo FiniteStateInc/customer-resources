@@ -1030,8 +1030,15 @@ def triage_prioritization_transform(
             domain=getattr(config, "domain", None) if config else None,
         )
 
-    # Enrich VEX IN_TRIAGE recommendations with AI mitigation data
-    if ai_component_guidance or ai_finding_guidance:
+    # Enrich VEX IN_TRIAGE recommendations with AI mitigation data.
+    # We also enter this block when only narrative summaries are present so the
+    # text-fallback matcher can inspect them for per-component mismatch calls.
+    if (
+        ai_component_guidance
+        or ai_finding_guidance
+        or ai_portfolio_summary
+        or ai_project_summaries
+    ):
         for rec in vex_recommendations:
             if rec.get("recommended_vex_status") != "IN_TRIAGE":
                 continue
@@ -1072,28 +1079,67 @@ def triage_prioritization_transform(
                 )
                 rec["ai_override"] = True
             elif not ai_applicability and not ai_verdict:
-                # Fallback: check ai_guidance text for strong false-positive signal
+                # Fallback: scan ai_guidance AND portfolio/project narrative for
+                # per-component mismatch calls. Narrative text often names the
+                # component explicitly (e.g. "openwrt/libc is musl, not glibc").
+                comp_name = rec.get("component_name", "")
                 guidance_text = (
                     fg.get("guidance") or fg.get("action") or cg.get("guidance", "")
                 ).lower()
-                has_mismatch = any(
-                    w in guidance_text
-                    for w in (
-                        "mismatch",
-                        "different library",
-                        "different implementation",
-                        "false positive",
-                        "not applicable",
-                    )
+                narrative_text = (ai_portfolio_summary or "").lower()
+                for _proj, _summary in (ai_project_summaries or {}).items():
+                    narrative_text += " " + (_summary or "").lower()
+
+                # Require component name to appear in the narrative so we only
+                # flip recs when the narrative specifically calls out THIS
+                # component. This guards against cross-component bleed.
+                comp_in_narrative = (
+                    bool(comp_name) and comp_name.lower() in narrative_text
                 )
-                has_not_affected = (
-                    "not_affected" in guidance_text or "not affected" in guidance_text
+
+                # Tight mismatch signals: explicit library-identity contrast.
+                # Avoid generic phrases like "false positive" that appear in
+                # many unrelated contexts.
+                mismatch_phrases = (
+                    "mismatch",
+                    "different library",
+                    "different implementation",
+                    "not glibc",
+                    "not gnu",
                 )
-                if has_not_affected and has_mismatch:
+                # Drop "not applicable" — too easily paired with hedge words
+                # ("many CVEs are not applicable" ≠ "none apply").
+                not_affected_phrases = ("not_affected", "not affected")
+
+                # Hedge words signal partial applicability — narrative alone is
+                # NOT sufficient to flip every IN_TRIAGE rec for the component.
+                # Structured per-CVE verdicts (FPA fan-out / TP component
+                # guidance) handle the partial case; the narrative fallback
+                # only fires for unambiguous "component is not affected" claims.
+                hedge_phrases = (
+                    "many ",
+                    "most ",
+                    "some ",
+                    "several ",
+                    "a few ",
+                    "a portion",
+                    "majority",
+                    "partial",
+                )
+
+                combined = guidance_text + (
+                    " " + narrative_text if comp_in_narrative else ""
+                )
+                has_mismatch = any(w in combined for w in mismatch_phrases)
+                has_not_affected = any(w in combined for w in not_affected_phrases)
+                has_hedge = any(w in combined for w in hedge_phrases)
+
+                if has_not_affected and has_mismatch and not has_hedge:
                     rec["recommended_vex_status"] = "NOT_AFFECTED"
                     rec["justification"] = "CODE_NOT_PRESENT"
+                    source = "AI narrative" if comp_in_narrative else "AI guidance"
                     rec["reason"] = (
-                        f"AI guidance indicates component is not affected "
+                        f"{source} indicates {comp_name or 'component'} is not affected "
                         f"(library mismatch detected). {rec.get('reason', '')}"
                     )
                     rec["ai_override"] = True
@@ -1244,6 +1290,16 @@ def triage_prioritization_transform(
     ai_finding_prompts: dict[str, str] = {
         p["finding_id"]: p["prompt"] for p in ai_triage_prompts
     }
+
+    # Surface a banner to the template when AI ran at summary depth.
+    # Component structured verdicts now run at both depths, but finding-level
+    # deep analysis only runs at --ai-depth=full, so portfolio narrative may
+    # diverge from per-finding VEX recommendations. Banner reminds readers to
+    # treat narrative as non-authoritative for per-finding VEX.
+    portfolio_summary["ai_depth_banner"] = (
+        ai_config.get("enabled", False)
+        and ai_config.get("depth", "summary") == "summary"
+    )
 
     return {
         "findings_df": findings_df,
@@ -3316,10 +3372,10 @@ def _generate_ai_guidance(
                 if snippet:
                     nvd_snippets_map[comp_key] = snippet
 
-    # --- Component guidance (full depth only) — BOTTOM-UP: runs first ---
+    # --- Component guidance (always on when AI enabled) — BOTTOM-UP: runs first ---
     ai_components: dict[str, dict[str, Any]] = {}
-    if ai_depth == "full" and not critical_high.empty:
-        logger.info("Generating AI component guidance (full depth)...")
+    if not critical_high.empty:
+        logger.info("Generating AI component guidance (always on when AI enabled)...")
 
         # Build reachability map: finding_id -> reachability info
         reachability_map: dict[str, dict[str, Any]] = {}

@@ -84,6 +84,7 @@ class MarkdownRenderer:
             "Remediation Package": self._render_remediation_package,
             "CVE Impact": self._render_cve_impact,
             "Triage Prioritization": self._render_triage_prioritization,
+            "False Positive Analysis": self._render_false_positive_analysis,
             "Findings by Project": self._render_findings_by_project,
             "Component Vulnerability Analysis": self._render_component_vulnerability_analysis,
             "Version Comparison": self._render_version_comparison,
@@ -800,6 +801,85 @@ class MarkdownRenderer:
 
         parts.append(self._footer())
         return "\n".join(parts) + "\n"
+
+    # ── False Positive Analysis ────────────────────────────────────────
+
+    def _render_false_positive_analysis(
+        self, recipe: Recipe, report_data: ReportData
+    ) -> str:
+        """Render False Positive Analysis with identity assertions first."""
+        tr = self._get_transform_result(report_data)
+        lines: list[str] = [f"# {recipe.name}\n"]
+
+        # Metadata section — reuse the existing helper used by other renderers
+        meta_block = self._metadata_block(report_data, recipe)
+        if meta_block:
+            lines.append(meta_block)
+
+        # Identity assertions (lead section)
+        assertions = tr.get("identity_assertions", []) or []
+        if assertions:
+            lines.append("## Component Identity Assertions\n")
+            lines.append(
+                f"{len(assertions)} component(s) detected as misidentified "
+                "relative to NVD.\n"
+            )
+            for a in assertions:
+                lines.append(
+                    f"### {a.get('component_name', '?')} "
+                    f"{a.get('component_version', '?')} — "
+                    f"scanned as `{a.get('likely_product') or '?'}`, "
+                    f"NVD expected `{a.get('nvd_product') or '?'}` "
+                    f"(confidence: {a.get('confidence') or 'medium'})\n"
+                )
+                if a.get("evidence"):
+                    lines.append(f"**Evidence:** {a['evidence']}\n")
+                lines.append("| CVE | Verdict | Rationale |")
+                lines.append("| --- | --- | --- |")
+                for cv in a.get("cve_verdicts", []) or []:
+                    rationale = (cv.get("rationale") or "").replace("|", "\\|")
+                    lines.append(
+                        f"| {cv.get('cve_id', '?')} | "
+                        f"{cv.get('verdict', '?')} | {rationale} |"
+                    )
+                lines.append("")
+
+        # Residual candidates (finding-level fallback)
+        candidates = tr.get("candidates")
+        if (
+            candidates is not None
+            and hasattr(candidates, "empty")
+            and not candidates.empty
+        ):
+            lines.append("## Residual FP Candidates\n")
+            lines.append(
+                "Findings on components whose identity was confirmed or "
+                "ambiguous, flagged by finding-level applicability.\n"
+            )
+            lines.append(
+                "| CVE | Component | Severity | Confidence | Signals | Reason |"
+            )
+            lines.append("| --- | --- | --- | --- | --- | --- |")
+            for _, row in candidates.iterrows():
+                sigs = row.get("fp_signals", "")
+                if not isinstance(sigs, str):
+                    sigs = ", ".join(sigs) if sigs else ""
+                reason = str(row.get("primary_reason", "") or "").replace("|", "\\|")
+                lines.append(
+                    f"| {row.get('cve_id', '') or row.get('finding_id', '')} | "
+                    f"{row.get('component_name', '')} "
+                    f"{row.get('component_version', '')} | "
+                    f"{row.get('severity', '')} | "
+                    f"{row.get('fp_confidence', '')} | "
+                    f"{sigs} | {reason} |"
+                )
+            lines.append("")
+        else:
+            lines.append("## Residual FP Candidates\n")
+            lines.append("No residual finding-level FP candidates.\n")
+
+        lines.append(self._footer())
+        return "\n".join(lines) + "\n"
 
     # ── Tier 2: Findings by Project ─────────────────────────────────────
 

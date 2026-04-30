@@ -8,16 +8,21 @@ Consumes findings from ``/public/v0/findings`` and produces:
 - Signal-level detail for analyst review
 - Charts and summary statistics
 
-Tier 1 — five mechanical checks:
+Tier 1 — three mechanical checks:
 1. Cross-project FP propagation — same CVE+component already triaged FP elsewhere
-2. Historical component patterns — high FP ratio for same component+version
-3. NVD version-range mismatch — component version outside NVD affected range
-4. Rejected/Disputed CVE — NVD vuln_status indicates Rejected or Disputed
-5. Unreachable code — negative reachability score
+2. NVD version-range mismatch — component version outside NVD affected range
+3. Rejected/Disputed CVE — NVD vuln_status indicates Rejected or Disputed
 
 Tier 2 — AI applicability analysis (when ``--ai`` is active):
-6. Component-level LLM guidance — AI determines component not affected
-7. Finding-level LLM guidance — AI determines individual finding not affected
+4. Component-identity verdict — AI determines whether the scanned component
+   is the product NVD's CVEs target, or a different product with a colliding
+   name (e.g. musl mistaken for glibc).
+5. Per-CVE applicability fan-out — for components whose identity is
+   ``mismatched``, classify each attributed CVE as ``does_not_apply`` or
+   ``might_still_apply``.
+
+Per-finding triage guidance lives in the Triage Prioritization report, not
+here. FPA is intentionally focused on detecting false positives.
 """
 
 from __future__ import annotations
@@ -42,17 +47,23 @@ _TRIAGED_STATUSES = {"FALSE_POSITIVE", "NOT_AFFECTED", "AFFECTED", "RESOLVED"}
 
 _JUSTIFICATION_MAP = {
     "cross_project_propagation": "CODE_NOT_PRESENT",
-    "historical_component_pattern": "CODE_NOT_PRESENT",
     "nvd_version_mismatch": "CODE_NOT_PRESENT",
     "rejected_cve": "CODE_NOT_PRESENT",
     "disputed_cve": "CODE_NOT_PRESENT",
-    "unreachable_code": "CODE_NOT_REACHABLE",
     "ai_component_not_affected": "CODE_NOT_PRESENT",
-    "ai_finding_not_affected": "CODE_NOT_PRESENT",
 }
 
 # Ordered severity levels for consistent display / sorting
 _SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "UNKNOWN"]
+
+# Cap CVE counts in AI prompts. Components like the Linux kernel can carry
+# 3000+ CVEs; passing the full list (and full NVD enrichment) blows past
+# Anthropic's 1M-token context. The identity prompt only samples 15 CVEs in
+# the list — keep its NVD snippet aligned to that same sample. The per-CVE
+# applicability fan-out runs over all CVEs but is chunked so each call stays
+# well under the model's input limit.
+_IDENTITY_PROMPT_CVE_SAMPLE = 15
+_PER_CVE_FANOUT_CHUNK_SIZE = 50
 
 
 # ---------------------------------------------------------------------------
@@ -186,48 +197,8 @@ def _check_cross_project_propagation(
     return [
         {
             "signal_type": "cross_project_propagation",
-            "confidence": "HIGH",
-            "reason": f"Same CVE+component triaged FP in: {projects}",
-        }
-    ]
-
-
-def _check_historical_patterns(
-    finding: dict[str, Any],
-    triaged_df: pd.DataFrame,
-    min_triaged: int = 5,
-    fp_ratio_threshold: float = 0.6,
-) -> list[dict[str, Any]]:
-    """Check 2: High FP ratio for the same component+version in triage history."""
-    if triaged_df.empty:
-        return []
-
-    comp_name = finding.get("component_name", "")
-    comp_ver = finding.get("component_version", "")
-
-    mask = (triaged_df["component_name"] == comp_name) & (
-        triaged_df["component_version"] == comp_ver
-    )
-    component_triaged = triaged_df[mask]
-
-    total = len(component_triaged)
-    if total < min_triaged:
-        return []
-
-    fp_count = component_triaged["status"].isin(_TRIAGED_FP_STATUSES).sum()
-    ratio = fp_count / total
-
-    if ratio < fp_ratio_threshold:
-        return []
-
-    return [
-        {
-            "signal_type": "historical_component_pattern",
             "confidence": "MEDIUM",
-            "reason": (
-                f"{comp_name}=={comp_ver}: {fp_count}/{total} "
-                f"triaged findings are FP ({ratio:.0%})"
-            ),
+            "reason": f"Same CVE+component triaged FP in: {projects}",
         }
     ]
 
@@ -319,20 +290,6 @@ def _check_rejected_cve(
     return []
 
 
-def _check_unreachable_code(finding: dict[str, Any]) -> list[dict[str, Any]]:
-    """Check 5: Negative reachability score indicates unreachable code."""
-    score = finding.get("reachability_score", 0)
-    if score < 0:
-        return [
-            {
-                "signal_type": "unreachable_code",
-                "confidence": "HIGH",
-                "reason": f"UNREACHABLE (score={score})",
-            }
-        ]
-    return []
-
-
 # ---------------------------------------------------------------------------
 # Confidence rollup
 # ---------------------------------------------------------------------------
@@ -364,8 +321,16 @@ def _build_vex_recommendation(
     finding: dict[str, Any],
     signals: list[dict[str, Any]],
     confidence: str,
-) -> dict[str, Any]:
-    """Build a VEX recommendation dict for a candidate finding."""
+) -> dict[str, Any] | None:
+    """Build a VEX recommendation dict for a candidate finding.
+
+    Only HIGH-confidence candidates get a ``NOT_AFFECTED`` recommendation.
+    MEDIUM/LOW candidates return ``None`` — they surface in the report as a
+    review note, but produce no VEX artifact for autotriage to apply.
+    """
+    if confidence != "HIGH":
+        return None
+
     first_signal_type = signals[0]["signal_type"] if signals else ""
     justification = _JUSTIFICATION_MAP.get(first_signal_type, "CODE_NOT_PRESENT")
 
@@ -461,6 +426,7 @@ def _empty_result() -> dict[str, Any]:
         "candidates": pd.DataFrame(),
         "signals": pd.DataFrame(),
         "vex_recommendations": [],
+        "identity_assertions": [],
         "fp_charts": {},
     }
 
@@ -478,7 +444,7 @@ def false_positive_analysis_transform(
     """
     Transform ``/findings`` data into a False Positive Analysis report.
 
-    Runs five mechanical checks against each open finding, rolls up confidence,
+    Runs three mechanical checks against each open finding, rolls up confidence,
     and produces VEX recommendations for FP candidates.
 
     Returns dict with keys: main, summary, candidates, signals,
@@ -517,16 +483,11 @@ def false_positive_analysis_transform(
     triaged_df = df[triaged_mask].copy()
 
     # ------------------------------------------------------------------
-    # 4. Extract recipe parameters and optional NVD client
+    # 4. Extract optional NVD client
     # ------------------------------------------------------------------
-    recipe_params: dict[str, Any] = {}
     nvd_client = None
     if additional_data and isinstance(additional_data, dict):
-        recipe_params = additional_data.get("recipe_parameters", {}) or {}
         nvd_client = additional_data.get("nvd_client")
-
-    min_triaged = int(recipe_params.get("min_triaged", 5))
-    fp_ratio_threshold = float(recipe_params.get("fp_ratio_threshold", 0.6))
 
     # ------------------------------------------------------------------
     # 5. Run mechanical checks on each open finding
@@ -545,21 +506,11 @@ def false_positive_analysis_transform(
         # Check 1: Cross-project FP propagation
         signals.extend(_check_cross_project_propagation(finding, triaged_df))
 
-        # Check 2: Historical component patterns
-        signals.extend(
-            _check_historical_patterns(
-                finding, triaged_df, min_triaged, fp_ratio_threshold
-            )
-        )
-
-        # Check 3: NVD version-range mismatch
+        # Check 2: NVD version-range mismatch
         signals.extend(_check_nvd_version_range(finding, nvd_client))
 
-        # Check 4: Rejected/Disputed CVE
+        # Check 3: Rejected/Disputed CVE
         signals.extend(_check_rejected_cve(finding, nvd_client))
-
-        # Check 5: Unreachable code
-        signals.extend(_check_unreachable_code(finding))
 
         finding_lookup[fid] = finding
         if signals:
@@ -570,36 +521,21 @@ def false_positive_analysis_transform(
             finding_signals[fid] = []
 
     # ------------------------------------------------------------------
-    # 5b. AI tier — component + finding level applicability analysis
+    # 5b. AI tier — component identity + per-CVE applicability
     # ------------------------------------------------------------------
     ai_detections = 0
     ai_component_prompts: list[dict[str, str]] = []
     ai_triage_prompts: list[dict[str, str]] = []
     ai_component_results: list[dict[str, str]] = []
+    identity_assertions: list[dict[str, Any]] = []
 
     ai_enabled = config is not None and (
         getattr(config, "ai", False) or getattr(config, "ai_prompts", False)
     )
     if ai_enabled and not open_df.empty:
         try:
-            from fs_report.transforms.pandas.triage_prioritization import (
-                _build_component_prompt,
-                _build_triage_prompt,
-                _load_gates,
-                _normalize_columns,
-                apply_tiered_gates,
-            )
-
-            # _normalize_columns expects raw API columns; open_df already has
-            # canonical names from _normalize_finding, which is the same schema
-            # _normalize_columns produces, so it's safe to pass directly.
-            scored_df = _normalize_columns(open_df.copy())
-
-            gates = _load_gates(config, additional_data)
-            scored_df = apply_tiered_gates(scored_df, gates)
-
-            # Build component groups for batch guidance
-            comp_groups = scored_df.groupby(
+            # Build component groups from open findings
+            comp_groups = open_df.groupby(
                 ["component_name", "component_version"], sort=False
             )
             components_list: list[dict[str, Any]] = []
@@ -614,66 +550,79 @@ def false_positive_analysis_transform(
                         }
                     )
 
-            # --ai-prompts only: generate prompts for export but don't call LLM
             ai_prompts_only = getattr(config, "ai_prompts", False) and not getattr(
                 config, "ai", False
             )
 
-            # --- Fetch NVD data for prompt enrichment (shared by export + live) ---
+            # Build identity prompts for export (same prompt the live call uses).
+            # Kept for --ai-prompts air-gapped workflow. Build eagerly so the
+            # prompts file is written even when we won't call the LLM.
+            def _identity_prompt_text(comp: dict[str, Any], nvd_snippet: str) -> str:
+                cve_section = "\n".join(
+                    f"- {cve}" for cve in comp["cve_ids"][:_IDENTITY_PROMPT_CVE_SAMPLE]
+                )
+                nvd_block = f"\n{nvd_snippet}\n" if nvd_snippet else ""
+                return (
+                    f"You are a security analyst determining whether a scanned "
+                    f"software component is actually the product that NVD associates "
+                    f"with its CVEs, or a different product that happens to share a "
+                    f"name or path.\n\n"
+                    f"Scanned component: {comp['component_name']} version "
+                    f"{comp['component_version']}\n\n"
+                    f"CVEs attributed to it (sample):\n{cve_section}\n{nvd_block}\n"
+                    f"Answer in this exact format:\n"
+                    f"IDENTITY: <confirmed | mismatched | ambiguous>\n"
+                    f'LIKELY_PRODUCT: <e.g., "musl libc">\n'
+                    f'NVD_PRODUCT: <e.g., "GNU glibc">\n'
+                    f"EVIDENCE: <1-3 sentences>\n"
+                    f"CONFIDENCE: <high | medium | low>\n"
+                )
+
+            # NVD enrichment (optional). Only fetch / snippet the sampled CVEs
+            # used in the identity prompt — passing every CVE for components
+            # with thousands of attributed CVEs (e.g. Linux kernel) builds a
+            # multi-MB prompt and blows past the LLM context window.
             nvd_snippets_map: dict[str, str] = {}
             _nvd = additional_data.get("nvd_client") if additional_data else None
             if _nvd and components_list:
-                all_cve_ids: list[str] = []
-                for comp in components_list:
-                    all_cve_ids.extend(comp.get("cve_ids", []))
-                unique_cves = list(dict.fromkeys(all_cve_ids))
+                identity_cves_per_comp: list[list[str]] = [
+                    comp["cve_ids"][:_IDENTITY_PROMPT_CVE_SAMPLE]
+                    for comp in components_list
+                ]
+                all_cves: list[str] = []
+                for ids in identity_cves_per_comp:
+                    all_cves.extend(ids)
+                unique_cves = list(dict.fromkeys(all_cves))
                 if unique_cves:
                     logger.info(f"Fetching NVD data for {len(unique_cves)} CVEs...")
                     _nvd.get_batch(unique_cves, progress=True)
-                    for comp in components_list:
+                    for comp, ids in zip(
+                        components_list, identity_cves_per_comp, strict=True
+                    ):
                         comp_key = (
-                            f"{comp['component_name']}:" f"{comp['component_version']}"
+                            f"{comp['component_name']}:{comp['component_version']}"
                         )
-                        snippet = _nvd.format_batch_for_prompt(comp.get("cve_ids", []))
+                        snippet = _nvd.format_batch_for_prompt(ids)
                         if snippet:
                             nvd_snippets_map[comp_key] = snippet
 
-            # Generate component-level prompts (one per unique component+version)
-            ai_component_prompts = []
-            if components_list:
-                for comp in components_list:
-                    comp_key = f"{comp['component_name']} {comp['component_version']}"
-                    nvd_key = f"{comp['component_name']}:{comp['component_version']}"
-                    prompt_text = _build_component_prompt(
-                        component_name=comp["component_name"],
-                        component_version=comp["component_version"],
-                        cve_ids=comp["cve_ids"],
-                        nvd_fix_snippet=nvd_snippets_map.get(nvd_key, ""),
-                    )
-                    ai_component_prompts.append(
-                        {
-                            "component": comp_key,
-                            "prompt": prompt_text,
-                        }
-                    )
+            # Build component-identity prompts for export (both --ai and --ai-prompts)
+            for comp in components_list:
+                comp_key = f"{comp['component_name']}:{comp['component_version']}"
+                ai_component_prompts.append(
+                    {
+                        "component": (
+                            f"{comp['component_name']} {comp['component_version']}"
+                        ),
+                        "prompt": _identity_prompt_text(
+                            comp, nvd_snippets_map.get(comp_key, "")
+                        ),
+                    }
+                )
 
-            # Generate per-finding prompts
-            if components_list:
-                for _, row in scored_df.iterrows():
-                    fid = str(row.get("finding_id", ""))
-                    if fid:
-                        prompt_text = _build_triage_prompt(row)
-                        component = f"{row.get('component_name', '')} {row.get('component_version', '')}".strip()
-                        ai_triage_prompts.append(
-                            {
-                                "finding_id": fid,
-                                "component": component,
-                                "prompt": prompt_text,
-                            }
-                        )
-
-            # Write prompts file for --ai-prompts (and --ai as a side effect)
-            if ai_component_prompts or ai_triage_prompts:
+            # Write prompts file when --ai-prompts is set (or --ai as a side effect),
+            # preserves existing air-gapped workflow.
+            if ai_component_prompts:
                 _output_dir = getattr(config, "output_dir", None)
                 if _output_dir:
                     from datetime import datetime
@@ -683,30 +632,23 @@ def false_positive_analysis_transform(
                     _recipe_dir.mkdir(parents=True, exist_ok=True)
                     _prompts_path = _recipe_dir / "False Positive Analysis_prompts.md"
                     _lines = [
-                        "# False Positive Analysis — AI Prompts\n",
-                        f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n",
-                        f"\n{len(ai_component_prompts)} component prompts, "
-                        f"{len(ai_triage_prompts)} finding prompts.\n",
-                        "\nStart with component prompts — if the LLM says `not_affected`, "
-                        "all findings on that component are likely FP and you can skip "
-                        "the individual finding prompts for it.\n",
+                        "# False Positive Analysis - AI Prompts\n",
+                        f"Generated: "
+                        f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n",
+                        f"\n{len(ai_component_prompts)} component identity prompts. "
+                        "If a prompt answer is IDENTITY: mismatched, run the "
+                        "per-CVE applicability fan-out prompt (constructed from "
+                        "the LIKELY_PRODUCT / NVD_PRODUCT answers) to classify "
+                        "each CVE.\n",
+                        "\n---\n\n# Component Identity Prompts\n",
                     ]
-                    if ai_component_prompts:
-                        _lines.append("\n---\n\n# Component Applicability Prompts\n")
-                        for p in ai_component_prompts:
-                            _lines.append(f"\n## {p['component']}\n\n")
-                            _lines.append(f"```\n{p['prompt']}\n```\n")
-                    if ai_triage_prompts:
-                        _lines.append("\n---\n\n# Per-Finding Prompts\n")
-                        for p in ai_triage_prompts:
-                            _lines.append(
-                                f"\n## {p['finding_id']} ({p['component']})\n\n"
-                            )
-                            _lines.append(f"```\n{p['prompt']}\n```\n")
+                    for p in ai_component_prompts:
+                        _lines.append(f"\n## {p['component']}\n\n")
+                        _lines.append(f"```\n{p['prompt']}\n```\n")
                     _prompts_path.write_text("".join(_lines), encoding="utf-8")
                     logger.info(
-                        f"Wrote {len(ai_component_prompts)} component + "
-                        f"{len(ai_triage_prompts)} finding prompts to {_prompts_path}"
+                        f"Wrote {len(ai_component_prompts)} identity prompts to "
+                        f"{_prompts_path}"
                     )
 
             if not ai_prompts_only and components_list:
@@ -725,106 +667,158 @@ def false_positive_analysis_transform(
                     ),
                 )
 
-                # --- Component-level analysis ---
-                ai_components = llm.generate_batch_component_guidance(
-                    components_list,
-                    nvd_snippets_map=nvd_snippets_map or None,
-                )
-                not_affected_components: set[str] = set()
-                for comp_key, guidance in ai_components.items():
-                    if guidance.get("verdict") == "not_affected":
-                        not_affected_components.add(comp_key)
-                    parts = comp_key.split(":", 1)
+                # --- Identity verdict per component (always) ---
+                # Each component is wrapped in its own try/except so a single
+                # oversized prompt or API failure (e.g. Linux kernel with
+                # thousands of CVEs hitting the LLM context limit) doesn't
+                # abort the entire AI tier and silently drop all results.
+                for comp in components_list:
+                    comp_key = f"{comp['component_name']}:{comp['component_version']}"
+                    try:
+                        identity = llm.generate_component_identity_verdict(
+                            component_name=comp["component_name"],
+                            component_version=comp["component_version"],
+                            cve_ids=comp["cve_ids"][:_IDENTITY_PROMPT_CVE_SAMPLE],
+                            nvd_fix_snippet=nvd_snippets_map.get(comp_key, ""),
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Component identity AI call failed for %s %s; "
+                            "skipping component",
+                            comp["component_name"],
+                            comp["component_version"],
+                            exc_info=True,
+                        )
+                        continue
                     ai_component_results.append(
                         {
-                            "component": parts[0] if parts else comp_key,
-                            "version": parts[1] if len(parts) > 1 else "",
-                            "verdict": guidance.get("verdict", ""),
-                            "confidence": guidance.get("confidence", ""),
-                            "rationale": guidance.get("rationale", ""),
-                            "guidance": guidance.get("guidance", ""),
-                            "fix_version": guidance.get("fix_version", ""),
-                            "workaround": guidance.get("workaround", ""),
+                            "component": comp["component_name"],
+                            "version": comp["component_version"],
+                            "verdict": identity.get("identity", ""),
+                            "confidence": identity.get("confidence", ""),
+                            "rationale": identity.get("evidence", ""),
+                            "guidance": (
+                                f"Likely product: {identity.get('likely_product', '')}; "
+                                f"NVD product: {identity.get('nvd_product', '')}"
+                            ).strip("; "),
+                            "fix_version": "",
+                            "workaround": "",
                         }
                     )
 
-                # Apply component-level verdicts to individual findings
-                for _, row in scored_df.iterrows():
-                    comp_key = f"{row['component_name']}:{row['component_version']}"
-                    fid = str(row.get("finding_id", ""))
-                    if comp_key in not_affected_components and fid in finding_signals:
-                        guidance = ai_components[comp_key]
-                        # Build a finding-specific reason: the component-level
-                        # rationale may reference a different CVE from the same
-                        # component, so prefix with this finding's CVE ID.
-                        cve_id = row.get("cve_id", fid)
-                        comp_name = row.get("component_name", "")
-                        comp_ver = row.get("component_version", "")
-                        raw_rationale = guidance.get(
-                            "rationale", "AI: component not affected"
-                        )
-                        reason = (
-                            f"{cve_id}: {comp_name} {comp_ver} is not affected. "
-                            f"{raw_rationale}"
-                        )
-                        signal = {
-                            "signal_type": "ai_component_not_affected",
-                            "confidence": guidance.get("confidence", "medium").upper(),
-                            "reason": reason,
-                            "ai_guidance": guidance.get("guidance", ""),
-                            "ai_action": guidance.get("action", ""),
-                            "ai_fix_version": guidance.get("fix_version", ""),
-                            "ai_workaround": guidance.get("workaround", ""),
-                        }
-                        finding_signals[fid].append(signal)
-                        ai_detections += 1
+                    if identity.get("identity") == "mismatched":
+                        # --- Per-CVE fan-out ---
+                        # Chunk the CVE list and fetch a fresh NVD snippet
+                        # scoped to each chunk so we never build a prompt
+                        # that exceeds the model's input limit.
+                        cve_verdicts: dict[str, dict[str, str]] = {}
+                        all_cve_ids = comp["cve_ids"]
+                        for i in range(0, len(all_cve_ids), _PER_CVE_FANOUT_CHUNK_SIZE):
+                            chunk = all_cve_ids[i : i + _PER_CVE_FANOUT_CHUNK_SIZE]
+                            chunk_snippet = ""
+                            if _nvd:
+                                try:
+                                    _nvd.get_batch(chunk, progress=False)
+                                    chunk_snippet = _nvd.format_batch_for_prompt(chunk)
+                                except Exception:
+                                    logger.warning(
+                                        "NVD batch fetch failed for fan-out chunk; "
+                                        "continuing without snippet",
+                                        exc_info=True,
+                                    )
+                            try:
+                                chunk_verdicts = llm.generate_per_cve_applicability(
+                                    component_name=comp["component_name"],
+                                    component_version=comp["component_version"],
+                                    likely_product=identity.get("likely_product", ""),
+                                    nvd_product=identity.get("nvd_product", ""),
+                                    cve_ids=chunk,
+                                    nvd_fix_snippet=chunk_snippet,
+                                )
+                                cve_verdicts.update(chunk_verdicts)
+                            except Exception:
+                                logger.warning(
+                                    "Per-CVE fan-out failed for %s %s chunk %d-%d; "
+                                    "marking chunk as might_still_apply",
+                                    comp["component_name"],
+                                    comp["component_version"],
+                                    i,
+                                    i + len(chunk),
+                                    exc_info=True,
+                                )
+                                for cve_id in chunk:
+                                    cve_verdicts[cve_id] = {
+                                        "verdict": "might_still_apply",
+                                        "rationale": "Fan-out call failed.",
+                                    }
 
-                # --- Finding-level analysis ---
-                remaining = scored_df[
-                    ~scored_df.apply(
-                        lambda r: (
-                            f"{r['component_name']}:{r['component_version']}"
-                            in not_affected_components
-                        ),
-                        axis=1,
-                    )
-                ]
-                if "triage_score" in remaining.columns:
-                    remaining = remaining.nlargest(200, "triage_score", keep="all")
-                else:
-                    remaining = remaining.head(200)
+                        assertion_cve_list: list[dict[str, Any]] = []
+                        for cve_id in comp["cve_ids"]:
+                            verdict_info = cve_verdicts.get(
+                                cve_id,
+                                {
+                                    "verdict": "might_still_apply",
+                                    "rationale": "No classification returned.",
+                                },
+                            )
+                            assertion_cve_list.append(
+                                {
+                                    "cve_id": cve_id,
+                                    "verdict": verdict_info["verdict"],
+                                    "rationale": verdict_info["rationale"],
+                                }
+                            )
+                            # Attach signal to finding for does_not_apply
+                            if verdict_info["verdict"] == "does_not_apply":
+                                # Find the finding_id(s) for this CVE+component
+                                for fid, f in finding_lookup.items():
+                                    if (
+                                        f.get("cve_id") == cve_id
+                                        and f.get("component_name")
+                                        == comp["component_name"]
+                                        and f.get("component_version")
+                                        == comp["component_version"]
+                                    ):
+                                        signal = {
+                                            "signal_type": "ai_component_not_affected",
+                                            "confidence": identity.get(
+                                                "confidence", "medium"
+                                            ).upper(),
+                                            "reason": (
+                                                f"{cve_id}: scanned {comp['component_name']} "
+                                                f"is {identity.get('likely_product', 'different product')}, "
+                                                f"not {identity.get('nvd_product', 'NVD product')}. "
+                                                f"{verdict_info['rationale']}"
+                                            ),
+                                            "ai_guidance": verdict_info["rationale"],
+                                            "ai_action": (
+                                                "Mark NOT_AFFECTED with justification "
+                                                "CODE_NOT_PRESENT."
+                                            ),
+                                            "ai_fix_version": "",
+                                            "ai_workaround": "",
+                                        }
+                                        finding_signals.setdefault(fid, []).append(
+                                            signal
+                                        )
+                                        ai_detections += 1
 
-                finding_prompts: list[tuple[str, str]] = []
-                for _, row in remaining.iterrows():
-                    fid = str(row.get("finding_id", ""))
-                    if fid:
-                        prompt = _build_triage_prompt(row)
-                        finding_prompts.append((fid, prompt))
-
-                if finding_prompts:
-                    ai_findings = llm.generate_batch_finding_guidance(finding_prompts)
-                    for fid, guidance in ai_findings.items():
-                        if (
-                            guidance.get("applicability") == "not_affected"
-                            or guidance.get("verdict") == "not_affected"
-                        ):
-                            signal = {
-                                "signal_type": "ai_finding_not_affected",
-                                "confidence": guidance.get(
-                                    "confidence", "medium"
-                                ).upper(),
-                                "reason": guidance.get(
-                                    "rationale", "AI: finding not affected"
-                                ),
-                                "ai_guidance": guidance.get("guidance", "")
-                                or guidance.get("action", ""),
-                                "ai_action": guidance.get("action", ""),
-                                "ai_fix_version": guidance.get("fix_version", ""),
-                                "ai_workaround": guidance.get("workaround", ""),
+                        identity_assertions.append(
+                            {
+                                "component_name": comp["component_name"],
+                                "component_version": comp["component_version"],
+                                "identity": "mismatched",
+                                "likely_product": identity.get("likely_product", ""),
+                                "nvd_product": identity.get("nvd_product", ""),
+                                "evidence": identity.get("evidence", ""),
+                                "confidence": identity.get("confidence", ""),
+                                "cve_verdicts": assertion_cve_list,
                             }
-                            if fid in finding_signals:
-                                finding_signals[fid].append(signal)
-                                ai_detections += 1
+                        )
+                    # Components with confirmed/ambiguous identity are left
+                    # alone here. FPA is the focused FP-detection action; any
+                    # per-finding triage belongs in Triage Prioritization, not
+                    # duplicated inside this report.
 
         except ImportError:
             logger.warning("AI tier skipped: required modules not available")
@@ -905,9 +899,11 @@ def false_positive_analysis_transform(
         candidate["recommended_action"] = recommended_action
         candidate_rows.append(candidate)
 
-        # Build VEX recommendation
+        # Build VEX recommendation (HIGH confidence only; MEDIUM/LOW are
+        # surfaced in the report but produce no VEX artifact)
         vex_rec = _build_vex_recommendation(finding, signals, confidence)  # type: ignore[arg-type]
-        vex_recommendations.append(vex_rec)
+        if vex_rec is not None:
+            vex_recommendations.append(vex_rec)
 
     # ------------------------------------------------------------------
     # 7. Build output DataFrames
@@ -968,6 +964,7 @@ def false_positive_analysis_transform(
         "candidates": candidates_df,
         "signals": signals_df,
         "vex_recommendations": vex_recommendations,
+        "identity_assertions": identity_assertions,
         "ai_component_prompts": ai_component_prompts,
         "ai_component_results": ai_component_results,
         "ai_triage_prompts": ai_triage_prompts,

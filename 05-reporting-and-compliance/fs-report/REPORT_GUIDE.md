@@ -426,6 +426,7 @@ fs-report run --recipe "License Report"
 - Risk categories: Strong Copyleft, Weak Copyleft, Proprietary/Restricted, Unknown, Permissive
 - Component count per license with associated projects
 - License risk distribution pie chart
+- Per-component detail table (one row per component) for finding every project/component carrying a given license
 
 **Risk categories:**
 
@@ -437,11 +438,19 @@ fs-report run --recipe "License Report"
 | **Unknown** | Unlicensed, non-SPDX names | Cannot assess risk |
 | **Permissive** | MIT, Apache-2.0, BSD-2-Clause | No disclosure obligations |
 
-**Key output columns:**
-- **License** — SPDX identifier or raw license name
-- **Risk Category** — classification as above
-- **Component Count** — number of components with this license
-- **Projects** — projects where this license appears
+**Output files (v1.9.7+):**
+
+| File | Shape | Purpose |
+|------|-------|---------|
+| `License Report.csv` | one row per license | Summary: License, Risk Category, Component Count, Projects |
+| `License Report_Detail.csv` | one row per component | Detail: License, Risk Category, Project, Component, Version |
+| `License Report.xlsx` | two sheets (`Summary`, `Detail`) | Same data as the two CSVs in one workbook |
+| `License Report.html` | both tables on one page | License Breakdown summary + scrollable Component Detail section |
+
+The flat detail rows are bounded by component count, not per-license cardinality, so they pivot/auto-filter cleanly in Excel.
+
+**Optional flags (v1.9.7+):**
+- `--license "GPL,AGPL"` — restrict to license name(s) matching any of the comma-separated terms (case-insensitive substring). Filters both tables, the pie chart, and the KPIs. Use this to narrow the report to violation licenses (e.g. strong copyleft) and list every project + component that carries them. Note: filtering is client-side; the full component list is still fetched from the API.
 
 **Formats:** HTML, CSV, XLSX
 
@@ -455,6 +464,9 @@ fs-report run --recipe "License Report" --project "MyProject"
 
 # Scoped to a folder
 fs-report run --recipe "License Report" --folder "Product Line A"
+
+# Find every project + component carrying a violation license
+fs-report run --recipe "License Report" --folder "Product Line A" --license "GPL,AGPL"
 ```
 
 ---

@@ -557,6 +557,12 @@ class Config(BaseModel):
         description="Version range filter for Component Impact report (e.g. '<2.0', '>=1.0,<2.0', '1.36.1'). "
         "Used with --component to scope impact to specific version ranges.",
     )
+    license_filter: str | None = Field(
+        None,
+        description="Comma-separated license name(s) to filter the License Report "
+        "(case-insensitive substring match, e.g. 'GPL,AGPL'). "
+        "Restricts the report to components/projects whose declared license matches.",
+    )
     skip_nvd: bool = Field(
         False,
         description="Skip NVD enrichment entirely. Useful for faster runs when NVD "
