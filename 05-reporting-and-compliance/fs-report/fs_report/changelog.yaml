@@ -1,13 +1,28 @@
 releases:
+  - version: "1.9.8"
+    date: "2026-05-05"
+    changes:
+      - report: "License Report"
+        type: fixed
+        description: "License extraction now reads `concludedLicenses` (the user-curated license that takes precedence over auto-detected `declaredLicenses`, per the field comments in `sqlite_cache.py`) and falls back to the structured `concludedLicenseDetails` / `declaredLicenseDetails` / `licenseDetails` arrays — mirroring the precedence already used by Component List and Customer Brief. Previously, components whose license was set only as a concluded license were classified as `Unknown` and dropped by `--license=\"...\"`, so a portfolio-wide `--license=\"Sleepycat\"` could surface a single project even when dozens carried the license. List-of-strings and list-of-dicts shapes (e.g. `[{\"spdx\": \"Sleepycat\"}]`, `[{\"name\": \"Sleepycat\"}]`) are now coerced to a proper SPDX string instead of leaking a Python repr into the License column."
+      - report: "License Report"
+        type: fixed
+        description: "Risk category now reads `copyleftFamily` directly from the API's `*LicenseDetails` arrays (concluded > declared > generic), so classification matches the platform UI exactly. Previously the report relied solely on the in-repo `COPYLEFT_LOOKUP` SPDX table — Sleepycat (and any other licenses absent from that table) was silently classified as `Unknown` even though the platform marked it `Strong Copyleft`. The lookup table is still consulted as a fallback when a component's record has no `licenseDetails`, and `Sleepycat` has been added to it as belt-and-suspenders. The `copyleftFamily` enum mapping covers `COPYLEFT_STRONG`, `COPYLEFT_WEAK`, and `PERMISSIVE` (the API uses a bare `PERMISSIVE` with no prefix)."
+      - report: "Web UI"
+        type: fixed
+        description: "`WebAppState.save()` no longer drops resets back to default on the floor (#48). Previously, keys whose value matched `DEFAULTS` were skipped during serialization and then merged on top of the existing on-disk config, so resetting a previously-customised setting (e.g. selecting `(default Finite State logo)`, or toggling a boolean back off) silently left the stale non-default value behind. Default-valued keys are now explicitly dropped from the merged dict before write so resets stick. Regression covered by new tests in `tests/test_web_state.py` for both string and boolean defaults."
+      - report: "Docs"
+        type: added
+        description: "README install instructions now include a Windows PowerShell `irm | iex` one-liner alongside the existing bash one-liner, plus local-clone usage of `setup.ps1 -FromSource`, current-session and persistent (`[Environment]::SetEnvironmentVariable`) env-var setup, and the `Set-ExecutionPolicy -Scope Process` workaround for execution-policy errors (#50)."
   - version: "1.9.7"
     date: "2026-04-29"
     changes:
       - report: "License Report"
         type: added
-        description: "Per-component detail table. The recipe now emits `License Report_Detail.csv` (one row per component: License, Risk Category, Project, Component, Version) alongside the existing per-license summary. XLSX is now a two-sheet workbook (`Summary` + `Detail`) and HTML renders both tables on one page. Replaces the prior approach of cramming a comma-separated component list into a single summary cell, which hit Excel's 32,767-char-per-cell limit on long-tail licenses (e.g. Apache-2.0 across thousands of components). Customer ask from TP-Link."
+        description: "Per-component detail table. The recipe now emits `License Report_Detail.csv` (one row per component: License, Risk Category, Project, Component, Version) alongside the existing per-license summary. XLSX is now a two-sheet workbook (`Summary` + `Detail`) and HTML renders both tables on one page. Replaces the prior approach of cramming a comma-separated component list into a single summary cell, which hit Excel's 32,767-char-per-cell limit on long-tail licenses (e.g. Apache-2.0 across thousands of components)."
       - report: "License Report"
         type: added
-        description: "`--license \"GPL,AGPL\"` flag. Comma-separated, case-insensitive substring match against the declared license name. Filters the summary, detail, pie chart, and KPIs. Use to narrow the report to violation licenses (e.g. strong copyleft) and list every project + component carrying them. Filtering is client-side; the full component list is still fetched from `/public/v0/components`. Customer ask from TP-Link."
+        description: "`--license \"GPL,AGPL\"` flag. Comma-separated, case-insensitive substring match against the declared license name. Filters the summary, detail, pie chart, and KPIs. Use to narrow the report to violation licenses (e.g. strong copyleft) and list every project + component carrying them. Filtering is client-side; the full component list is still fetched from `/public/v0/components`."
       - report: "False Positive Analysis"
         type: added
         description: "Component-identity pipeline + narrative→VEX propagation (#46). FPA now fronts an identity-first verdict (`not_affected` / `affected` / `ambiguous`) ahead of the residual-candidate list, with a per-CVE applicability fan-out for ambiguous components. Triage Prioritization picks up the structured component verdicts at both `--ai-depth=summary` and `--ai-depth=full` so the VEX override loop can flip `IN_TRIAGE` → `NOT_AFFECTED` consistently. A summary-depth banner makes it explicit that per-finding narrative is non-authoritative when AI runs in summary mode. Adds a hedge-word guard to the TP narrative fallback matcher so phrases like 'most versions' don't trigger blanket `NOT_AFFECTED`."
@@ -77,7 +92,7 @@ releases:
         description: "`cve_remediations` + summary caches now include the provider+model in their keys, so swapping `--ai-model-high` or `--ai-model-low` forces a fresh LLM call instead of returning another model's cached answer. Four recipes (Remediation Package, Component Remediation Package, False Positive Analysis, Triage Prioritization) also now correctly pass `--ai-provider` / `--ai-model-high` / `--ai-model-low` through to `LLMClient` (#34)."
       - report: "Version Comparison"
         type: fixed
-        description: "`--folder` + `--project` now narrows to the named project within the folder instead of scanning every project in the folder. Reported by TP-Link (#26)."
+        description: "`--folder` + `--project` now narrows to the named project within the folder instead of scanning every project in the folder (#26)."
       - report: "Version Comparison"
         type: fixed
         description: "`--baseline-version` / `--current-version` now accept version names (resolved against the scoped project) in addition to IDs. Names previously produced blank reports because the RSQL filter matched nothing (#26)."
@@ -107,7 +122,7 @@ releases:
         description: "Exploit Intelligence expanded from 2 bars (KEV, Known Exploits) to 9 categories (kev, vckev, poc, weaponized, ransomware, botnets, threatactors, commercial, reported)."
       - report: "Executive Dashboard"
         type: added
-        description: "Policy Health panel: horizontal stacked bar chart showing Security Policy (component-level violations/warnings covering finding severity/exploit + Age/EOL/NTIA) and License Policy (from licenseDetails classifications) side by side. Addresses TP-Link's question about the violation/warning ratio on the SCA Summary KPIs."
+        description: "Policy Health panel: horizontal stacked bar chart showing Security Policy (component-level violations/warnings covering finding severity/exploit + Age/EOL/NTIA) and License Policy (from licenseDetails classifications) side by side. Surfaces the violation/warning ratio that the SCA Summary KPIs alone don't explain."
       - report: "Executive Dashboard"
         type: changed
         description: "`findings_by_group` dataset split into separate `findings_by_folder` and `findings_by_project` streams so both breakdowns can be rendered independently."

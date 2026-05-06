@@ -1,10 +1,27 @@
 # Release Notes
 
+## Version 1.9.8 (May 2026)
+
+### License Report — concluded-license precedence + accurate copyleft classification
+
+- **`concludedLicenses` now drives License extraction** — the recipe reads `concludedLicenses` (the user-curated license that takes precedence over auto-detected `declaredLicenses`, per the field comments in `sqlite_cache.py`) and falls back to the structured `concludedLicenseDetails` / `declaredLicenseDetails` / `licenseDetails` arrays — mirroring the precedence already used by Component List and Customer Brief. Previously, components whose license was set only as a concluded license were classified as `Unknown` and dropped by `--license="…"`, so a portfolio-wide `--license="Sleepycat"` could surface a single project even when dozens carried the license. List-of-strings and list-of-dicts shapes (e.g. `[{"spdx": "Sleepycat"}]`, `[{"name": "Sleepycat"}]`) are now coerced to a proper SPDX string instead of leaking a Python repr into the License column.
+- **Risk Category reads `copyleftFamily` from the API** — classification now reads `copyleftFamily` directly from the `*LicenseDetails` arrays (concluded > declared > generic), so it matches the platform UI exactly. The report previously relied solely on the in-repo `COPYLEFT_LOOKUP` SPDX table — Sleepycat (and any other licenses absent from that table) was silently classified as `Unknown` even though the platform marked it `Strong Copyleft`. The lookup table is still consulted as a fallback when a component's record has no `licenseDetails`, and `Sleepycat` has been added to it as belt-and-suspenders.
+
+### Web UI
+
+- **`WebAppState.save()` no longer drops resets-back-to-default on the floor** (#48) — keys whose value matched `DEFAULTS` were skipped during serialization and then merged on top of the existing on-disk config, so resetting a previously-customised setting (e.g. selecting `(default Finite State logo)`, or toggling a boolean back off) silently left the stale non-default value behind. Default-valued keys are now explicitly dropped from the merged dict before write so resets stick. New regression tests in `tests/test_web_state.py` cover both string and boolean defaults.
+
+### Docs
+
+- **README — Windows PowerShell install instructions** (#50) — README now includes a Windows PowerShell `irm | iex` one-liner alongside the existing bash one-liner, plus local-clone usage of `setup.ps1 -FromSource`, current-session and persistent (`[Environment]::SetEnvironmentVariable`) env-var setup, and the `Set-ExecutionPolicy -Scope Process` workaround for execution-policy errors.
+
+---
+
 ## Version 1.9.7 (April 2026)
 
 ### License Report — per-component detail + license filter
 
-Two customer-facing changes (asks from TP-Link):
+Two customer-facing changes:
 
 - **Per-component Detail table** — the recipe now emits `License Report_Detail.csv` (one row per component: License, Risk Category, Project, Component, Version) alongside the existing per-license summary. XLSX is a two-sheet workbook (`Summary` + `Detail`) and HTML renders both tables on one page. Replaces the prior approach of cramming a comma-separated component list into a single summary cell, which hit Excel's 32,767-char-per-cell limit on long-tail licenses (e.g. Apache-2.0 across thousands of components).
 - **`--license "GPL,AGPL"` flag** — comma-separated, case-insensitive substring match. Filters the summary, detail table, pie chart, and KPIs. Lets you narrow to violation licenses (e.g. strong copyleft) and list every project + component carrying them. Filtering is client-side; the full component list is still fetched from `/public/v0/components`.

@@ -56,19 +56,34 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 
 The quickest way to install is with a single command:
 
+**macOS / Linux (bash):**
+
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/05-reporting-and-compliance/fs-report/setup.sh)"
 ```
 
-This handles Python verification, pipx installation, credential setup, and PATH configuration automatically. You can also run it from a local clone:
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/05-reporting-and-compliance/fs-report/setup.ps1 | iex
+```
+
+> If PowerShell blocks the script with an execution policy error, run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned` first, then re-run the install.
+
+These handle Python verification, pipx installation, credential setup, and PATH configuration automatically. You can also run them from a local clone:
 
 ```bash
+# macOS / Linux
 ./setup.sh                    # Interactive setup
 ./setup.sh --from-source      # Install from current directory
 ./setup.sh --from-source --yes # Non-interactive (uses env vars)
 ```
 
-On Windows, use `setup.ps1` instead.
+```powershell
+# Windows (PowerShell)
+.\setup.ps1                   # Interactive setup
+.\setup.ps1 -FromSource       # Install from current directory
+```
 
 You can also install manually with pipx:
 
@@ -76,11 +91,22 @@ You can also install manually with pipx:
 pipx install fs-report
 ```
 
-Once installed, set up API credentials (the setup script will prompt for these, or you can export them):
+Once installed, set up API credentials (the setup script will prompt for these, or you can set them yourself):
 
 ```bash
+# macOS / Linux
 export FINITE_STATE_AUTH_TOKEN="your-api-token"
 export FINITE_STATE_DOMAIN="customer.finitestate.io"
+```
+
+```powershell
+# Windows (PowerShell) — current session
+$env:FINITE_STATE_AUTH_TOKEN = "your-api-token"
+$env:FINITE_STATE_DOMAIN     = "customer.finitestate.io"
+
+# Windows (PowerShell) — persist for future sessions
+[Environment]::SetEnvironmentVariable("FINITE_STATE_AUTH_TOKEN", "your-api-token", "User")
+[Environment]::SetEnvironmentVariable("FINITE_STATE_DOMAIN", "customer.finitestate.io", "User")
 ```
 
 Verify installation:

@@ -72,6 +72,11 @@ COPYLEFT_LOOKUP: dict[str, str] = {
     "EUPL-1.2": "STRONG_COPYLEFT",
     "SSPL-1.0": "STRONG_COPYLEFT",
     "OSL-3.0": "STRONG_COPYLEFT",
+    # Sleepycat is BSD-derived in name only — distributing the binary
+    # requires source disclosure, so the platform's licenseDetails marks
+    # it COPYLEFT_STRONG. Belt-and-suspenders for components whose API
+    # record doesn't include licenseDetails.
+    "Sleepycat": "STRONG_COPYLEFT",
     # Weak copyleft
     "LGPL-2.0-only": "WEAK_COPYLEFT",
     "LGPL-2.0-or-later": "WEAK_COPYLEFT",

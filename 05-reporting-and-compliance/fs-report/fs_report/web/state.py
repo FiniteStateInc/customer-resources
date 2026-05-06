@@ -69,11 +69,16 @@ class WebAppState:
         """
         skip_keys: set[str] = set() if include_token else {"token"}
         to_save: dict[str, Any] = {}
+        # Keys that match their default value — we drop these from the persisted
+        # file so the user can reset a previously-customised setting (e.g.
+        # selecting "(default Finite State logo)") and have the change stick.
+        reset_keys: set[str] = set()
 
         for key, value in self._data.items():
             if key in skip_keys:
                 continue
             if key in DEFAULTS and value == DEFAULTS[key]:
+                reset_keys.add(key)
                 continue
             to_save[key] = value
 
@@ -89,6 +94,9 @@ class WebAppState:
                     existing = yaml.safe_load(f) or {}
             except Exception:
                 pass
+
+        for key in reset_keys:
+            existing.pop(key, None)
 
         merged = {**existing, **to_save}
 

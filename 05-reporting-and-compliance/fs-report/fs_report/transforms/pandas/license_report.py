@@ -42,9 +42,28 @@ _CLASSIFICATION_MAP = {
     "PERMISSIVE": "Permissive",
 }
 
+# Map the API's copyleftFamily enum (returned in `*LicenseDetails[].copyleftFamily`)
+# to display categories. This is the same source of truth the platform UI uses.
+# Verified enum on adamd: 'PERMISSIVE', 'COPYLEFT_WEAK', 'COPYLEFT_STRONG' (note the
+# permissive value has no COPYLEFT_ prefix).
+_API_COPYLEFT_FAMILY_MAP = {
+    "COPYLEFT_STRONG": "Strong Copyleft",
+    "COPYLEFT_WEAK": "Weak Copyleft",
+    "PERMISSIVE": "Permissive",
+    # Forward-compat aliases in case the API ever flips the prefix order.
+    "STRONG_COPYLEFT": "Strong Copyleft",
+    "WEAK_COPYLEFT": "Weak Copyleft",
+}
+
 
 def _classify_license(name: str) -> str:
-    """Classify a license SPDX identifier into a risk category."""
+    """Classify a license SPDX identifier into a risk category.
+
+    Used as a fallback when the API doesn't surface a copyleftFamily for the
+    component (e.g. components without licenseDetails arrays). When
+    licenseDetails IS present, prefer `_classify_from_copyleft_family` which
+    matches the platform UI exactly.
+    """
     if not name or name.strip() == "":
         return "Unknown"
     classification = COPYLEFT_LOOKUP.get(name.strip())
@@ -57,16 +76,109 @@ def _classify_license(name: str) -> str:
     return "Unknown"
 
 
+def _classify_from_copyleft_family(copyleft_family: str) -> str:
+    """Map the API's copyleftFamily enum to a display risk category, or '' if
+    the value is unrecognised / empty."""
+    if not copyleft_family:
+        return ""
+    return _API_COPYLEFT_FAMILY_MAP.get(copyleft_family.strip(), "")
+
+
+def _extract_copyleft_family(comp: dict[str, Any]) -> str:
+    """Pull the API's copyleftFamily classification from a component record.
+
+    Precedence mirrors `_extract_license_string` and component_list.py's
+    `_best_license_details`: concluded > declared > generic. Returns the raw
+    enum value (e.g. 'COPYLEFT_STRONG') or '' if no license-detail array on
+    the record carries a copyleftFamily.
+    """
+    for field in (
+        "concludedLicenseDetails",
+        "declaredLicenseDetails",
+        "licenseDetails",
+    ):
+        details = comp.get(field)
+        if not isinstance(details, list):
+            continue
+        for ld in details:
+            if isinstance(ld, dict):
+                cf = ld.get("copyleftFamily")
+                if isinstance(cf, str) and cf.strip():
+                    return cf.strip()
+    return ""
+
+
+def _coerce_license_value(val: Any) -> str:
+    """Normalise a license field value into a comma-joined SPDX string.
+
+    Handles four real-world shapes returned by /public/v0/components:
+      - plain string ("Sleepycat", "MIT OR Apache-2.0")
+      - list of strings (["MIT", "Apache-2.0"])
+      - list of dicts with `spdx` / `license` / `name` keys
+        (e.g. [{"spdx": "Sleepycat", "name": "Sleepycat License"}])
+      - None / NaN / non-iterable scalars → ""
+    """
+    import math
+
+    if val is None:
+        return ""
+    if isinstance(val, float):
+        if math.isnan(val):
+            return ""
+        return str(val).strip()
+    if isinstance(val, str):
+        return val.strip()
+    if isinstance(val, list):
+        parts: list[str] = []
+        for item in val:
+            if isinstance(item, str):
+                if item.strip():
+                    parts.append(item.strip())
+            elif isinstance(item, dict):
+                # Match the precedence used by component_list.extract_licenses_summary
+                # plus a `name` fallback for the {"name": "Sleepycat"} shape.
+                spdx = item.get("spdx") or item.get("license") or item.get("name") or ""
+                if isinstance(spdx, str) and spdx.strip():
+                    parts.append(spdx.strip())
+        return ", ".join(parts)
+    return str(val).strip()
+
+
+def _extract_license_string(comp: dict[str, Any]) -> str:
+    """Pull the best available license string from a component record.
+
+    Precedence mirrors fs_report.transforms.pandas.component_list (and
+    customer_brief): user-curated `concludedLicenses` wins over auto-detected
+    `declaredLicenses`, with `licenses` (legacy) and the structured
+    `*LicenseDetails` arrays as fallbacks. The field-precedence rationale
+    is documented in `sqlite_cache.py` ("User-specified licenses (takes
+    precedence)") and `component_list.py::_best_license_details`.
+    """
+    for field in ("concludedLicenses", "declaredLicenses", "licenses"):
+        s = _coerce_license_value(comp.get(field))
+        if s:
+            return s
+    # Singular variants kept for backward compat with older fixtures.
+    for field in ("declaredLicense", "license"):
+        s = _coerce_license_value(comp.get(field))
+        if s:
+            return s
+    # Structured-array fallback — concluded > declared > generic.
+    for field in (
+        "concludedLicenseDetails",
+        "declaredLicenseDetails",
+        "licenseDetails",
+    ):
+        s = _coerce_license_value(comp.get(field))
+        if s:
+            return s
+    return ""
+
+
 def _flatten_component(comp: dict[str, Any]) -> dict[str, str]:
     """Extract license name and project info from raw component record."""
-    license_name = (
-        comp.get("declaredLicenses")
-        or comp.get("declaredLicense")
-        or comp.get("license")
-        or ""
-    )
-    if not license_name or (isinstance(license_name, float) and pd.isna(license_name)):
-        license_name = ""
+    license_name = _extract_license_string(comp)
+    copyleft_family = _extract_copyleft_family(comp)
 
     # Extract project name from nested dict or flat field
     project = comp.get("project", {})
@@ -78,7 +190,8 @@ def _flatten_component(comp: dict[str, Any]) -> dict[str, str]:
     return {
         "component_name": comp.get("name", ""),
         "component_version": comp.get("version", ""),
-        "license_name": str(license_name).strip(),
+        "license_name": license_name,
+        "copyleft_family": copyleft_family,
         "project_name": str(project_name),
     }
 
@@ -122,7 +235,13 @@ def license_report_transform(
     rows: list[dict[str, Any]] = []
     for comp in records:
         flat = _flatten_component(comp)
-        flat["risk_category"] = _classify_license(flat["license_name"])
+        # Prefer the API's copyleftFamily classification (matches platform UI
+        # exactly, includes licenses missing from COPYLEFT_LOOKUP — e.g.
+        # Sleepycat → Strong Copyleft). Fall back to SPDX lookup, then to the
+        # proprietary-keyword heuristic, and finally Unknown.
+        flat["risk_category"] = _classify_from_copyleft_family(
+            flat["copyleft_family"]
+        ) or _classify_license(flat["license_name"])
         rows.append(flat)
 
     df = pd.DataFrame(rows)
@@ -160,6 +279,20 @@ def license_report_transform(
             )
 
     logger.info(f"License report: {len(df)} components")
+
+    # Sanity check: warn if a large fraction of components have no license
+    # after extraction. This is the canary for the next regression where the
+    # API adds a new license field we don't read (cf. concludedLicenses miss
+    # before this code path).
+    if len(df) > 0:
+        empty_frac = float((df["license_name"] == "").sum()) / len(df)
+        if empty_frac > 0.10:
+            logger.debug(
+                f"License report: {empty_frac:.0%} of components have no "
+                f"license after extraction. If this looks wrong, verify the "
+                f"API still surfaces licenses under concludedLicenses / "
+                f"declaredLicenses / licenseDetails."
+            )
 
     # --- License table: group by license ---
     license_groups = (
