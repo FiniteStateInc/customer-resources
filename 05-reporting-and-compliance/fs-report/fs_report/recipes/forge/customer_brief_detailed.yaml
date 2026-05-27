@@ -1,5 +1,6 @@
 name: "Customer Brief Detailed"
 category: assessment
+nav_category: Executive
 description: "Detailed project security brief with per-finding analysis for customers and regulators."
 execution_order: 21
 auto_run: false

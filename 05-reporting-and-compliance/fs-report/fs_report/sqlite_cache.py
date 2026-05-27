@@ -71,6 +71,7 @@ FINDING_FIELDS = {
     "projectVersion.version": "project_version",
     "cwes": "cwes",  # Stored as JSON array
     "exploitInfo": "exploit_info",  # Stored as JSON array
+    "exploitMaturity": "exploit_maturity",  # Single tier string: "poc" | "weaponized"
     "inKev": "in_kev",
     "inVcKev": "in_vc_kev",
     "epssPercentile": "epss_percentile",
@@ -214,6 +215,7 @@ CREATE TABLE IF NOT EXISTS findings (
     project_version TEXT,
     cwes TEXT,
     exploit_info TEXT,
+    exploit_maturity TEXT,
     in_kev INTEGER,
     in_vc_kev INTEGER,
     epss_percentile REAL,
@@ -682,12 +684,21 @@ class SQLiteCache:
             ("findings", "has_known_exploit", "INTEGER"),
             ("findings", "component_vc_id", "TEXT"),
             ("findings", "title", "TEXT"),
+            ("findings", "exploit_maturity", "TEXT"),
             ("projects", "default_branch_latest_version_id", "TEXT"),
             ("projects", "default_branch_latest_version_created", "TEXT"),
             ("components", "license_details", "TEXT"),
             ("components", "declared_license_details", "TEXT"),
             ("components", "concluded_license_details", "TEXT"),
         ]
+        # Columns whose absence on already-cached rows is user-visible (the
+        # rendered report will show empty values until the cache refreshes).
+        # When the migration adds one of these, we surface a one-shot warning
+        # so operators running with `--cache-ttl` know to flush for the first
+        # refresh after upgrade.
+        _USER_VISIBLE_NEW_COLUMNS = {
+            ("findings", "exploit_maturity"),
+        }
         for table, col, col_type in migrations:
             try:
                 conn.execute(f"SELECT {col} FROM {table} LIMIT 1")
@@ -695,6 +706,15 @@ class SQLiteCache:
                 # Column doesn't exist — add it
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
                 logger.debug(f"Migrated: added {col} ({col_type}) to {table}")
+                if (table, col) in _USER_VISIBLE_NEW_COLUMNS:
+                    logger.warning(
+                        "Cache migration added user-visible column "
+                        f"`{table}.{col}`. Existing cached rows have NULL "
+                        "for this column until the cache expires or is "
+                        "refreshed. Run with `--no-cache` once if you want "
+                        "fresh values for the new column on the very next "
+                        "report."
+                    )
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get a database connection with concurrency settings."""
@@ -1070,6 +1090,12 @@ class SQLiteCache:
                 record["reachabilityScore"] = reach["score"]
             if "factors" not in record and "factors" in reach:
                 record["factors"] = reach["factors"]
+
+        # /scans on helix v2 returns bssMessage instead of errorMessage.
+        # Normalize at the cache boundary so a single canonical field
+        # flows through downstream code, regardless of backend.
+        if record.get("bssMessage") and not record.get("errorMessage"):
+            record["errorMessage"] = record["bssMessage"]
 
         trimmed = {}
         for api_field, db_column in fields.items():

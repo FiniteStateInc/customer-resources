@@ -1,6 +1,7 @@
 name: "Component Remediation Package"
 template: "component_remediation_package.html"
 category: assessment
+nav_category: Remediation
 description: "Zero-day remediation guidance for a vulnerable component across your portfolio — upgrade paths, breaking-change analysis, ecosystem health, and interim mitigations (no CVE required)"
 execution_order: 25
 auto_run: false

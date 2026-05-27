@@ -1,11 +1,18 @@
 {% extends "base.html" %}
 
+{% block chart_libs %}{% include "_chartjs.html" %}{% endblock %}
+
 {% block content %}
 <div class="chart-container">
     <h2>Correlation Analysis</h2>
-    <div class="chart-wrapper">
-        <canvas id="scatterChart"></canvas>
-    </div>
+    {# scatter is the generic fallback template — no recipe uses it today. #}
+    {# In pdf_target/fragment_mode we don't have a server-side scatter
+       implementation, so show the placeholder rather than a blank canvas. #}
+    {% if pdf_target or fragment_mode %}
+        <div class="chart-server-svg">{{ server_svgs.get('main', '<div class="chart-unavailable">Scatter chart unavailable in PDF</div>') | safe }}</div>
+    {% else %}
+        <div class="chart-wrapper"><canvas id="scatterChart"></canvas></div>
+    {% endif %}
 </div>
 
 <div class="table-container">
@@ -30,6 +37,7 @@
     </table>
 </div>
 
+{% if not pdf_target and not fragment_mode %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const ctx = document.getElementById('scatterChart').getContext('2d');
@@ -73,4 +81,5 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 </script>
-{% endblock %} 
+{% endif %}
+{% endblock %}

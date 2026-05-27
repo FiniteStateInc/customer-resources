@@ -117,6 +117,21 @@ class RecipeLoader:
     # Bundled recipes (importlib.resources)
     # ------------------------------------------------------------------
 
+    def _warn_if_missing_nav_category(self, recipe: Recipe) -> None:
+        """Log a warning if a recipe has no nav_category set.
+
+        nav_category controls --serve sidebar grouping. Recipes without it
+        still load and run, but they won't surface in the grouped UI.
+        Warning-only; never blocks loading.
+        """
+        if recipe.nav_category is None:
+            self.logger.warning(
+                "Recipe %r has no nav_category; will not appear under any "
+                "--serve sidebar group (valid values: Executive, Investigation, "
+                "Remediation, Compliance)",
+                recipe.name,
+            )
+
     def _load_bundled_recipes(self) -> list[Recipe]:
         """Discover and load recipes bundled inside ``fs_report.recipes``."""
         recipes: list[Recipe] = []
@@ -148,6 +163,7 @@ class RecipeLoader:
                             continue
                         recipe = Recipe.model_validate(yaml_data)
                         recipe.audience = audience
+                        self._warn_if_missing_nav_category(recipe)
                         self.logger.debug(
                             f"Loaded bundled recipe: {recipe.name} (audience={audience})"
                         )
@@ -165,6 +181,7 @@ class RecipeLoader:
                         self.logger.warning(f"Empty bundled recipe file: {name}")
                         continue
                     recipe = Recipe.model_validate(yaml_data)
+                    self._warn_if_missing_nav_category(recipe)
                     self.logger.debug(f"Loaded bundled recipe: {recipe.name}")
                     recipes.append(recipe)
                 except Exception as e:
@@ -225,6 +242,7 @@ class RecipeLoader:
             # Parse the YAML data into a Recipe object
             recipe = Recipe.model_validate(yaml_data)
 
+            self._warn_if_missing_nav_category(recipe)
             self.logger.debug(f"Successfully loaded recipe: {recipe.name}")
             return recipe
 

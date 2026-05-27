@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from fs_report.transforms.pandas.security_progress import (
+from fs_report.transforms.pandas._cve_updates import (
     _process_cve_updates,
     _to_iso8601z,
 )

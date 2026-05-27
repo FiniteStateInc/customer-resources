@@ -23,6 +23,8 @@
     <h2>Findings by Project</h2>
     <p>Comprehensive inventory of security findings across projects</p>
 
+    {% include "_columns_schema.html" %}
+
     {% if data %}
     <table>
         <thead>
@@ -39,8 +41,13 @@
                 {% if folder_path %}<th>Folder</th>{% endif %}
                 <th>Project</th>
                 <th>Project Version</th>
-                <th>Exploits</th>
-                <th>Weaponization</th>
+                <th title="Single maturity tier: poc | weaponized | empty.">Exploit Maturity</th>
+                <th title="Count of distinct exploit-related signal categories. Not a per-source exploit count.">
+                    # exploit signal categories
+                </th>
+                <th title="Count of in-the-wild exploitation signals (botnet / ransomware / threat actor).">
+                    # in-the-wild exploitation signals
+                </th>
                 <th>CWE</th>
                 <th>CVSS v2 Vector</th>
                 <th>CVSS v3 Vector</th>
@@ -53,7 +60,7 @@
                 {% if row['Project Name'] != current_project.value %}
                     {% set current_project.value = row['Project Name'] %}
                     <tr style="background-color: #f8f9fa; font-weight: bold;">
-                        <td colspan="{% if folder_path %}18{% else %}17{% endif %}">{{ row['Project Name'] }}</td>
+                        <td colspan="{% if folder_path %}19{% else %}18{% endif %}">{{ row['Project Name'] }}</td>
                     </tr>
                 {% endif %}
                 <tr>
@@ -141,8 +148,9 @@
                     {% if folder_path %}<td>{{ row.get('Folder', '') }}</td>{% endif %}
                     <td>{{ row['Project Name'] }}</td>
                     <td>{{ row['Project Version'] }}</td>
-                    <td>{{ row['# of known exploits'] }}</td>
-                    <td>{{ row['# of known weaponization'] }}</td>
+                    <td>{{ row.get('Exploit Maturity', '') }}</td>
+                    <td>{{ row['# exploit signal categories'] }}</td>
+                    <td>{{ row['# in-the-wild exploitation signals'] }}</td>
                     <td>{{ row['CWE'] }}</td>
                     <td style="font-family: monospace; font-size: 0.85em;">{{ row.get('CVSS v2 Vector', '') }}</td>
                     <td style="font-family: monospace; font-size: 0.85em;">{{ row.get('CVSS v3 Vector', '') }}</td>

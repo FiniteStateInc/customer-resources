@@ -1,0 +1,58 @@
+{# Standalone-report HTML shell.
+
+   Used by templates that produce a full HTML document (vs. fragments).
+   Owns the <head>, design tokens, the existing class-based design system,
+   the Chart.js CDN, and the Chart.js palette/typography bootstrap.
+
+   Standalone templates should:
+     {% if not fragment_mode %}
+     <!DOCTYPE html>
+     <html lang="en">
+     <head>{% include "_standalone_shell.html" %}</head>
+     <body data-nav-category="{{ nav_category_slug }}">
+     {% endif %}
+     ...content...
+     {% if not fragment_mode %}
+     </body>
+     </html>
+     {% endif %}
+
+   Fragment mode (compound bundles, embedded use) skips this shell
+   entirely and relies on the parent shell template to provide
+   <head>, tokens, and Chart.js bootstrap. #}
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}{{ slide_title }} - Finite State Report{% endblock %}</title>
+
+{# Canonical design tokens (CSS custom properties) — light theme. #}
+{% include "_tokens_inline.html" %}
+
+{# Existing class-based design system (severity badges, KPI cards, etc.). #}
+{% include "_design_system.html" %}
+
+{# Chart.js palette + defaults bootstrap (browser only). PDF / fragment
+   renders skip the runtime since charts are pre-rendered to SVG
+   server-side.
+
+   The Chart.js library script itself is supplied by the parent template
+   with a pinned version (e.g. chart.js@4.4.1) — we don't inject it here
+   to avoid double-loading and to keep version pinning in the templates
+   that need specific Chart.js plugins.
+
+   The `| default(...)` filters guard tests that render templates directly
+   (bypassing HTMLRenderer._prepare_template_data, which is the source of
+   chart_palette_json / sev_palette_json / etc.). In production these
+   defaults never fire — the renderer always supplies the real values. #}
+{% if not pdf_target and not fragment_mode %}
+<script>
+    window.FS_CHART_PALETTE = {{ chart_palette_json | default('[]') | safe }};
+    window.FS_SEV_PALETTE = {{ sev_palette_json | default('{}') | safe }};
+    window.FS_NAV_PALETTE = {{ nav_palette_json | default('{}') | safe }};
+    if (typeof Chart !== 'undefined') {
+        Chart.defaults.color = '{{ fs_ink_dim | default("#475569") }}';
+        Chart.defaults.borderColor = '{{ fs_hairline | default("#e2e8f0") }}';
+        Chart.defaults.font.family = {{ (fs_font_body | default('Inter, sans-serif')) | tojson }};
+    }
+</script>
+{% endif %}

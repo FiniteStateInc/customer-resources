@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CVE Component Evidence - Finite State Report</title>
+
+    {% include '_design_system.html' %}
+
+    <style>
+        td.paths, td.cves {
+            white-space: pre-wrap;
+            word-break: break-all;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 0.78em;
+            max-width: 520px;
+        }
+        td.cves { max-width: 220px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            {% include "_default_logo.html" %}
+            <h1>CVE Component Evidence</h1>
+            <p class="subtitle">Per-component CVEs and firmware file paths</p>
+        </div>
+
+        <div class="metadata">
+            <strong>Report:</strong> CVE Component Evidence |
+            <strong>Generated:</strong> {{ generated_at | default('N/A') }}
+            {% if project_filter %} | <strong>Project:</strong> {{ project_filter }}{% endif %}
+            {% if metadata %} | <strong>Components:</strong> {{ metadata.transformed_count | default('N/A') }}{% endif %}
+        </div>
+
+        {% if transform_result and transform_result.evidence_summary %}
+        {% set s = transform_result.evidence_summary %}
+        <div class="kpi-row">
+            <div class="kpi-card">
+                <div class="kpi-title">Total Components</div>
+                <div class="kpi-value">{{ s.total_components }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">With Evidence Paths</div>
+                <div class="kpi-value">{{ s.components_with_evidence }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Without Evidence Paths</div>
+                <div class="kpi-value" {% if (s.components_without_evidence|default(0)) > 0 %}style="color: #ef6c00;"{% endif %}>{{ s.components_without_evidence }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Findings Fetch Errors</div>
+                <div class="kpi-value" {% if (s.findings_fetch_errors|default(0)) > 0 %}style="color: #c62828;"{% endif %}>{{ s.findings_fetch_errors|default(0) }}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">Evidence Fetch Errors</div>
+                <div class="kpi-value" {% if (s.evidence_fetch_errors|default(0)) > 0 %}style="color: #c62828;"{% endif %}>{{ s.evidence_fetch_errors|default(0) }}</div>
+            </div>
+        </div>
+        {% if (s.findings_fetch_errors|default(0)) > 0 %}
+        <div class="metadata" style="background:#fff3cd;color:#856404;padding:8px 12px;margin:8px 0;border-radius:4px;">
+            <strong>Warning:</strong> {{ s.findings_fetch_errors }} component(s) had their findings call fail. Those components are missing from the table below as if they had no CVEs. Re-run with the same <code>--cache-ttl</code> to retry only the failed components.
+        </div>
+        {% endif %}
+        {% endif %}
+
+        <div class="table-container">
+            <h2>Components with Match Evidence</h2>
+            <p>Each row is a component in the selected project version, with associated CVE IDs and the firmware file paths where the component was detected.</p>
+
+            {% if data %}
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Version</th>
+                        <th>CDX Type</th>
+                        <th>Supplier</th>
+                        <th>Findings (C/H/M/L)</th>
+                        <th>policy violations</th>
+                        <th>policy warnings</th>
+                        <th>Licenses</th>
+                        <th>Source</th>
+                        <th>CVEs</th>
+                        <th>Evidence File Paths</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in data[:2000] %}
+                    <tr>
+                        <td><strong>{{ row['Name'] }}</strong></td>
+                        <td>{{ row['Version'] }}</td>
+                        <td>{{ row.get('CDX Type', '') }}</td>
+                        <td>{{ row.get('Supplier', '') }}</td>
+                        <td class="num">
+                            {{ row.get('Findings - critical', 0) }} /
+                            {{ row.get('Findings - high', 0) }} /
+                            {{ row.get('Findings - medium', 0) }} /
+                            {{ row.get('Findings - low', 0) }}
+                        </td>
+                        <td class="num">{{ row.get('policy - violations', 0) }}</td>
+                        <td class="num">{{ row.get('policy - warnings', 0) }}</td>
+                        <td class="truncate" title="{{ row.get('Licenses - names', '') }}">
+                            {{ row.get('Licenses - names', '') }}
+                        </td>
+                        <td>{{ row.get('Source', '') }}</td>
+                        <td class="cves">{{ row.get('CVEs', '') }}</td>
+                        <td class="paths">{{ row.get('Evidence File Paths', '') }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if data|length > 2000 %}
+                    <tr>
+                        <td colspan="11" style="text-align: center; padding: 16px; color: #6c757d; font-style: italic;">
+                            Showing 2,000 of {{ data|length }} rows. See CSV/XLSX export for full data.
+                        </td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state">
+                <p><strong>No components found</strong></p>
+                <p>No components matched the selected project version. Confirm --version refers to a version of --project.</p>
+            </div>
+            {% endif %}
+        </div>
+
+        {% include "_default_footer.html" %}
+    </div>
+</body>
+</html>

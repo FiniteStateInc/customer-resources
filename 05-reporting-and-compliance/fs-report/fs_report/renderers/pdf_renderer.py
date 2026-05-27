@@ -47,7 +47,10 @@ class PDFRenderer:
             tmp_path = Path(tmp.name)
 
         try:
-            self._html_renderer.render(recipe, report_data, tmp_path)
+            # pdf_target=True so HTMLRenderer pre-renders charts as server-side
+            # SVG (WeasyPrint can't execute Chart.js) and templates flip their
+            # <canvas> / <script> blocks to the SVG branch.
+            self._html_renderer.render(recipe, report_data, tmp_path, pdf_target=True)
             weasyprint.HTML(filename=str(tmp_path)).write_pdf(str(output_path))
         finally:
             tmp_path.unlink(missing_ok=True)

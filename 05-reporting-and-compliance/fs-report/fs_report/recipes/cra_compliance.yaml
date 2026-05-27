@@ -1,17 +1,38 @@
 name: "CRA Compliance"
 template: "cra_compliance.html"
 category: assessment
-description: "Exploited vulnerabilities requiring EU Cyber Resilience Act notification — KEV hits and known-exploit findings across your supply chain"
+nav_category: Compliance
+description: "EU Cyber Resilience Act morning queue — exploit-maturity promotions and SLA-breach findings requiring action."
 execution_order: 20
-auto_run: false  # Only runs when explicitly requested with --recipe
-
+auto_run: false
+# The engine still fetches this query for legacy compatibility; the
+# transform discards the result and runs its own Fetch A + Fetch B via
+# additional_data['api_client']. The minimal limit avoids a 414 on the
+# legacy path. See spec §0 "Recipe YAML and the transform-owned fetch
+# model".
 query:
   endpoint: "/public/v0/findings"
   params:
-    limit: 10000
-    filter: "inKev==true,exploit==true"
+    limit: 1
+    filter: "inKev==true"
 
 transform_function: cra_compliance_transform
+parameters:
+  exploit_maturity_threshold:
+    - kev
+    - ransomware
+    - threat_actor
+    - weaponized
+  include_status:
+    - OPEN
+    - NO_STATUS
+    - UNKNOWN
+    - IN_TRIAGE
+  exclude_status:
+    - FALSE_POSITIVE
+    - NOT_AFFECTED
+    - RESOLVED
+    - RESOLVED_WITH_PEDIGREE
 output:
   table: true
   formats:

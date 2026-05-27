@@ -1,5 +1,6 @@
 name: "Executive Dashboard"
 category: assessment  # Current state: shows today's security posture regardless of time period
+nav_category: Executive
 template: "executive_dashboard.html"
 description: >
   Executive-level security dashboard for senior leadership.

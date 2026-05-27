@@ -1,5 +1,6 @@
 name: "Component List"
 category: assessment  # Current state: shows today's component inventory regardless of time period
+nav_category: Compliance
 description: "Comprehensive inventory of software components across projects with optional filtering"
 execution_order: 30  # Independent - fetches components
 auto_run: false  # Run explicitly with --recipe when needed

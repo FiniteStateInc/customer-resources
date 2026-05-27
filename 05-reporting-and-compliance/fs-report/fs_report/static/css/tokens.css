@@ -1,0 +1,127 @@
+/* fs-report design tokens — canonical source.
+ *
+ * The values here mirror fs_report/renderers/chart_palette.py.
+ * tests/test_chart_palette.py asserts the two stay in sync.
+ * tokens.sha256 pins the file content for CI drift check.
+ */
+
+:root {
+    /* Surface */
+    --surface-page: #f5f7fa;
+    --surface-card: #ffffff;
+    --hairline: #e2e8f0;
+
+    /* Ink */
+    --ink: #0f172a;
+    --ink-dim: #475569;
+    --ink-faint: #94a3b8;
+
+    /* Accent */
+    --accent-teal: #0d9488;
+    --accent-cyan: #0891b2;
+    --accent-purple: #7c3aed;
+    --accent-amber: #b45309;
+    --accent-rose: #be123c;
+    --accent-green: #15803d;
+    --accent-blue: #1d4ed8;
+
+    /* Nav stripes */
+    --nav-executive: #0d9488;
+    --nav-investigation: #0891b2;
+    --nav-remediation: #7c3aed;
+    --nav-compliance: #b45309;
+
+    /* Severity */
+    --sev-critical: #9f1239;
+    --sev-high: #c2410c;
+    --sev-medium: #b45309;
+    --sev-low: #15803d;
+    --sev-info: #0369a1;
+
+    /* Chart palette */
+    --chart-1: #0d9488;
+    --chart-2: #0891b2;
+    --chart-3: #7c3aed;
+    --chart-4: #b45309;
+    --chart-5: #be123c;
+    --chart-6: #15803d;
+    --chart-7: #1d4ed8;
+    --chart-8: #475569;
+
+    /* Typography */
+    --font-display: Manrope, Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-body: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+    /* Type scale */
+    --fs-xs: 0.75rem;
+    --fs-sm: 0.875rem;
+    --fs-base: 1rem;
+    --fs-lg: 1.125rem;
+    --fs-xl: 1.25rem;
+    --fs-2xl: 1.5rem;
+    --fs-3xl: 1.875rem;
+    --fs-4xl: 2.25rem;
+
+    /* Spacing (4px base) */
+    --sp-1: 4px;
+    --sp-2: 8px;
+    --sp-3: 12px;
+    --sp-4: 16px;
+    --sp-5: 24px;
+    --sp-6: 32px;
+    --sp-7: 48px;
+    --sp-8: 64px;
+
+    /* Radii */
+    --r-sm: 4px;
+    --r-md: 8px;
+    --r-lg: 12px;
+    --r-xl: 20px;
+
+    /* Motion */
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+    --dur-fast: 120ms;
+    --dur-med: 240ms;
+    --dur-slow: 480ms;
+    --dur-drift: 32s;
+
+    /* Shadows */
+    --shadow-soft: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+    --shadow-card: 0 2px 6px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.05);
+    --shadow-elev: 0 8px 24px rgba(15, 23, 42, 0.10), 0 4px 8px rgba(15, 23, 42, 0.04);
+    --shadow-hairline: 0 0 0 1px var(--hairline);
+}
+
+/* Dark theme (Phase 2 --serve consumes; standalone reports always stay light) */
+:root[data-theme="dark"] {
+    --surface-page: #050816;
+    --surface-card: rgba(15, 22, 48, 0.62);
+    --hairline: rgba(85, 231, 214, 0.18);
+
+    --ink: #e6edf6;
+    --ink-dim: #94a3b8;
+    --ink-faint: #64748b;
+
+    --shadow-soft: 0 0 0 1px rgba(85, 231, 214, 0.06), 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow-card: 0 0 24px rgba(85, 231, 214, 0.08), 0 2px 8px rgba(0, 0, 0, 0.6);
+    --shadow-elev: 0 8px 40px rgba(85, 231, 214, 0.12), 0 4px 16px rgba(0, 0, 0, 0.7);
+}
+
+/* Print: force light theme, drop shadows */
+@media print {
+    :root,
+    :root[data-theme="dark"] {
+        --surface-page: #ffffff;
+        --surface-card: #ffffff;
+        --hairline: #cbd5e1;
+        --ink: #0f172a;
+        --ink-dim: #334155;
+        --ink-faint: #64748b;
+        --shadow-soft: none;
+        --shadow-card: none;
+        --shadow-elev: none;
+        --shadow-hairline: 0 0 0 1px var(--hairline);
+    }
+}

@@ -1,5 +1,120 @@
 # Release Notes
 
+## Version 1.9.9 (May 2026)
+
+### CRA Compliance — morning-queue redesign
+
+The CRA Compliance recipe has been rewritten as a structured 5-section morning-queue optimized for daily automation runs and the EU Cyber Resilience Act Article 14 24-hour ENISA notification obligation.
+
+**5-section model:**
+
+| Section | Symbol | Description |
+|---------|--------|-------------|
+| SLA-Breach Risk | 🔥 | KEV findings whose CISA notification clock has elapsed or is imminent |
+| Newly Above Threshold | 🆕 | Findings that crossed an exploit-maturity tier within the `--since` window |
+| Re-emerged | 🔁 | Findings that crossed a tier, were previously suppressed, and are now active again |
+| Still in Triage | ⏰ | `IN_TRIAGE` findings sorted oldest-first. Section always populates; `--with-triage-age` opts into a per-finding `/activity` fan-out that computes `triage_age_days` from real first-triage timestamps |
+| Full Snapshot | 📋 | Full A∪B inventory — audit appendix |
+
+The four queue sections (🔥/🆕/🔁/⏰) are *mutually exclusive* per-row: a finding that qualifies for several appears only in the highest-priority one. 📋 Full Snapshot is *separate from the queue dedup chain* and contains every above-threshold finding — queue rows ALSO appear there, providing the "queue highlight + complete audit-appendix inventory" model the daily briefing delivers (spec §6 line 674).
+
+**New capabilities:**
+
+- **`--since` delta detection** — the `--since` flag (default `24h`) drives the 🆕 and 🔁 sections. Set `--since last-run` to use the previous run's timestamp from snapshot state, ensuring no gap between consecutive automation runs.
+- **CISA KEV catalog integration** — KEV findings are joined against the public CISA KEV catalog to derive a `cra_notification_deadline` column (dateAdded + 24 h). Controlled by `--kev-due-date-source` (`cisa` default).
+- **EPSS / CVSS prioritization** — each section is sorted by severity then CVSS then EPSS so the highest-urgency rows surface to the top. Implemented as intra-section ordering, not a separate bucket column (per spec capability #6).
+- **Per-finding /exploits and /activity fan-outs (opt-in)** — `--with-triage-age` enables a per-finding call to `/activity` to compute `triage_age_days` for the ⏰ section. Off by default to avoid per-finding API cost.
+- **Snapshot-diff state persistence** — `--snapshot-diff on` (default) reads and writes a run-state file so `--since last-run` can reference the previous run's exact timestamp. `read-only` or `off` for environments that don't persist local state.
+- **Exploit-maturity tier control** — `--exploit-maturity` overrides the active tiers (`kev,weaponized,poc,ransomware,threat_actor`); `--unfilterable-tier-strategy` controls how tiers the /findings API cannot filter directly are handled (`wide-fetch` default, `drop-tier`, `require-rsql`).
+- **VEX status filtering** — `--include-status` / `--exclude-status` control which VEX statuses enter Fetch A; `--reachable-only` restricts output to `reachability_label==REACHABLE`.
+
+**Output formats:** CSV, XLSX, HTML, MD. The Markdown output is the canonical artifact for forge Workflow 13 (EU CRA Exploit Monitor), which emails it to compliance teams.
+
+**New CLI flags (CRA Compliance only):** `--since`, `--exploit-maturity`, `--include-status`, `--exclude-status`, `--reachable-only`, `--with-triage-age`, `--kev-due-date-source` (`cisa` default; `none` disables the 🔥 section), `--unfilterable-tier-strategy`, `--snapshot-diff`.
+
+### Report-layout changes
+
+If you're upgrading from 1.9.8, expect these visible differences in the CRA Compliance report:
+
+- **New KPI card set.** Replaces P1/P2/P3 and the KEV count with: **Period** (humanized `--since` window), **Total Findings**, **🔥 OVERDUE**, **DUE_SOON**, **Unknown Clock**, **Reachable**, **In Triage**. Counts cover all sections (not just 🔥), so the OVERDUE/DUE_SOON/Unknown headline numbers match what's visible in the queue tables. Note: 📋 Full Snapshot re-shows queue rows (A∪B audit appendix), so `Total Findings` ≠ naive sum of all five section row counts.
+- **Breach-clock columns on every section.** 🔥 / 🆕 / 🔁 / ⏰ all show `breach_status`, `hours_until_cra_due`, and `cra_notification_deadline` columns; 📋 Full Snapshot carries the slimmer `breach_status` + `cra_notification_deadline` pair (audit-appendix view). For 🆕 and 🔁 the 24-hour clock starts from this report's run time (the customer is being made aware via this report); for the other sections it starts from when the platform first detected the finding.
+- **`KEV Source` column on 🔥** — `CISA`, `VcKEV`, or `CISA+VcKEV`. Makes it obvious why some rows have blank notification deadlines (VcKEV-only rows aren't in the public CISA catalog).
+- **`Threat Actors` column on 🔥 / 🆕 / 🔁** — populated from VulnCheck data per finding (rate-limited and retried, so high-volume reports surface evidence reliably). Trails the breach-clock columns because actor lists can be long. Ransomware-family and botnet-name data is fetched into the underlying row but not surfaced as separate columns in the current renderer; available in the raw row data for downstream consumers.
+- **Reachability hidden on source-code projects.** The Reachable KPI card and the Reachability column only appear when the platform has reachability data for the project (binary scans). Source-code-scanned projects no longer show empty cells.
+- **`🔥 OVERDUE` counts will be higher.** Previously, findings flagged as exploited via FS's Verified-Compromise KEV signal (rather than CISA's catalog) often showed `Unknown Clock`. They now get a computable CRA Article 14 deadline anchored on the platform's detection time. On real customer data this commonly shifts most KEV findings from `Unknown` to `OVERDUE`.
+
+### Removed
+
+- **`priority` column** (P1/P2/P3) on the CRA Compliance report.
+- **`--cra-priority-thresholds`** CLI flag and the corresponding `priority_thresholds` block in `recipes/cra_compliance.yaml`.
+
+Prioritization within each section is still preserved via the existing severity → CVSS → EPSS sort. If you were keying on the `priority` column from CSV/XLSX output, sort by those three fields instead.
+
+### API wishlist additions
+
+The CRA work surfaced concrete platform asks. The following numbered entries are present in `docs/api/API_wishlist.md` on this tag (added across PRs #60-#62):
+
+- **#14** CISA KEV catalog fields (`kevDateAdded`, `kevDueDate`) + `vcKevVerifiedAt` on `/findings` — so fs-report doesn't have to fetch the cisa.gov catalog directly.
+- **#15** `inKev`/`inVcKev` delta tracking on `/cves/updates`.
+- **#16** `exploitInfo` token delta tracking on `/cves/updates`.
+- **#17** Event timestamp on `/cves/updates` records (for `--since=last-run` precision).
+- **#18** `triageStartedAt` on `/findings` so the ⏰ section doesn't need a per-finding `/activity` fan-out.
+- **#19** `fields=` response projection on `/findings` (Fetch C bandwidth).
+- **#20** RSQL filtering on `exploitInfo` tokens (`ransomware`, `threatActors`) — completes CRA threshold-scoping so the recipe doesn't default to `wide-fetch`.
+
+### Compound Reports Phase 1 — foundations for multi-recipe bundles
+
+Foundations for the multi-recipe compound-bundle workflow (e.g. the Marelli monthly bundle: Executive Summary + CRA Compliance + …). Chart-in-PDF wiring is explicitly deferred to a follow-on project after two failed planning iterations surfaced too much per-recipe variance to enumerate upfront.
+
+- **Design tokens (Python ↔ CSS single source of truth)** — `chart_palette.py` + `tokens.css` + `tokens.sha256` for chart/severity/nav colors, typography, plus non-color tokens (spacing, radii, motion, shadows) with explicit Python mirrors and parity tests. `scripts/check-token-drift.sh` guards the two sources from diverging.
+- **Server-side chart SVG primitives** — `ChartRenderer.render_chart_svg()` dispatcher + 8 per-type SVG methods (doughnut + radar new; bar/line/pie/pareto/bubble/heatmap reuse existing PNG code paths). `HTMLRenderer._prepare_template_data()` builds `server_svgs: dict[str, str]` keyed by `recipe.output.charts[].name` when `pdf_target` or `fragment_mode` is true. Empty-data charts emit a `chart-unavailable` placeholder (no silent skipping).
+- **Fragment-mode rendering** — `HTMLRenderer.render_fragment(recipe, report_data, heading_depth=2)` strips document chrome (no `<html>`, no `<script>`) and scopes every CSS selector under `.fs-section-<slug>` via the new `css_scoper.py` (tinycss2-based). `:root` stays global; `html`/`body` selectors get rewritten. The CRA Compliance template ships fragment-mode-aware out of the gate.
+
+### Executive Dashboard — empty-CSV bug + secondary `Top Risk Products` CSV
+
+- **Empty CSV fix** — Executive Dashboard's CSV output was being written as a single newline (24 bytes) on portfolio-wide, warm-cache, and `--folder` runs because the CSV branch in `report_renderer.py` rendered `report_data.data` (empty for this recipe) while the XLSX branch correctly read per-project rows from `additional_data["transform_result"]["project_table"]`. HTML and XLSX rendered full data; CSV was a near-empty file. Both renderers now share a single helper `_executive_dashboard_tables()` so they can't drift apart again.
+- **New secondary CSV** — `<output>/Executive Dashboard/Executive Dashboard_Top_Risk_Products.csv` is now emitted alongside the main CSV, carrying the ranked top-risk list with risk scores. Pairs with the existing `Top Risk Products` XLSX sheet so CSV consumers have the same surface area as XLSX consumers.
+- **Forward-compat WARNING** — `_build_charts` and the new helper log a clear WARNING when `transform_result["project_table"]` is missing or empty, so the empty-CSV symptom can no longer reappear silently.
+- Caught by an fs-qabot full-run pass (failed steps 05b, 78, 80 — all three were the same bug surfaced through different scopes).
+
+### CVE Component Evidence — new recipe + README
+
+- **New recipe** — `CVE Component Evidence` (on-demand). Per-version triage: lists every CVE-bearing component in a project version with the CVE IDs attributed to it and the file paths inside the firmware where the component was detected. Requires `--project` + `--version` (no `--cve` narrowing — the recipe always covers the full set of CVE-bearing components for the version). Uses an internal evidence endpoint for the file paths; `--cache-ttl` recommended for re-runs and `FS_REPORT_EVIDENCE_WORKERS` is an escape hatch if the endpoint is unhappy. Output formats: HTML + CSV.
+- **README docs** — added a row to the Available Reports table and a CLI usage example block alongside the other per-recipe examples.
+
+### Scan Analysis — helix `bssMessage` field rename handled
+
+The platform's helix v2 backend renames the `/scans` endpoint's `errorMessage` field to `bssMessage`. Without handling this, failed-scan error columns were empty in Scan Analysis reports run against helix. fs-report now normalizes both names to `errorMessage` at the cache boundary and again at the transform layer, so the column populates regardless of backend. Alloy `errorMessage` wins when both happen to be present.
+
+### HTML Reports — unified brand chrome
+
+A fresh fs-qabot pass surfaced three independent rendering bugs across every recipe that extends `base.html` (Executive Summary, Assessment Overview, User Activity, Findings by Project, False Positive Analysis, Workflow Summary):
+
+- **Broken logo.** The embedded Finite State fallback in `base.html` had invalid base64 padding (3693 data chars + 1 `=` — not divisible by 4) so no browser could decode it and the header showed a broken-image icon. Replaced with the canonical valid blob and centralized in a new `_default_logo.html` partial used by every human-audience template.
+- **Blank chart canvases.** `base.html` never loaded Chart.js, so `new Chart(...)` calls were swallowed by defensive `typeof Chart !== 'undefined'` guards. Chart.js is now loaded via a new `chart_libs` block (in a new `_chartjs.html` partial) that fires *before* the design-token defaults block, so the token-driven font/color/border settings actually apply. Chart-less recipes (Findings by Project, FPA, Workflow Summary) skip the ~80 kB CDN fetch.
+- **Narrow container.** `base.html`'s `.container { max-width: 1024px }` made wide data tables feel cramped on modern displays. Removed on screen to match the standalone-template recipes; `@page` rules still own the printable area for PDF output.
+
+Footer copy is now sourced from a single `_default_footer.html` partial across all 17 standalone templates plus the base-extending ones. Two outlier attribution strings ("Reporting Kit", "Reporting System") are gone. The copyright year is derived from `generated_at` so reports generated next year won't show a stale year.
+
+A new `tests/test_default_logo.py` guards against the base64-padding regression coming back.
+
+### Findings by Project — Exploit Maturity column, clearer exploit-column names, self-documenting output
+
+Prompted by a customer (Netgear) field question about reconciling the platform GUI's CSV export against the script-generated `Findings by Project` report. Three related changes:
+
+- **New `Exploit Maturity` column.** A single tier string — `poc`, `weaponized`, or empty — read straight from the API, mirroring the platform GUI's `columns.exploitMaturity`. You can now filter by exploit maturity tier directly from the script-generated CSV/XLSX instead of falling back to the GUI export.
+- **Two exploit columns renamed to match what they actually contain:**
+  - `# of known exploits` → **`# exploit signal categories`** — it counts the distinct exploit-signal *categories* present in `exploitInfo` (maturity tiers, availability, KEV, in-the-wild flags), not a per-source exploit count. It caps around 7–9 and does **not** equal the platform UI's "Exploits" tally.
+  - `# of known weaponization` → **`# in-the-wild exploitation signals`** — it counts botnet / ransomware / threat-actor reports, **not** the weaponized maturity tier. A CVE can be `weaponized` with zero in-the-wild signals.
+  - If you key automation off the old CSV/XLSX headers, switch to the new names.
+- **Self-documenting output.** Every column is now described in-place so nobody has to read source to interpret the report. XLSX gains a `Schema` sheet, HTML and Markdown gain a collapsible **Column reference** section, and CSV/JSON consumers get a machine-readable `Findings by Project_schema.json` sidecar next to the data file — all sourced from a single `output.columns` block in the recipe.
+
+### Scan Quality — `unpacking_score = -1` renders as "Not Applicable"
+
+When the platform reports an unpacking score of `-1` (unpacking doesn't apply to the artifact type), the report now shows **`Not Applicable`** across tables, the rating-distribution chart, and exports, instead of a bare em-dash. This makes "not applicable" clearly distinguishable from missing or failed scan data.
+
+---
+
 ## Version 1.9.8 (May 2026)
 
 ### License Report — concluded-license precedence + accurate copyleft classification

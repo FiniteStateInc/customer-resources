@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "fs-report"
-version = "1.9.8"
+version = "1.9.9"
 description = "Finite State Stand-Alone Reporting Kit"
 authors = ["Finite State <support@finitestate.io>"]
 license = "MIT"
@@ -13,6 +13,8 @@ include = [
     "fs_report/templates/*.html",
     "fs_report/web/templates/**/*.html",
     "fs_report/web/static/**/*",
+    "fs_report/static/**/*",
+    "fs_report/data/**/*",
     "LICENSE",
     "README.md",
     "Dockerfile",
@@ -38,6 +40,7 @@ jinja2 = "^3.1.0"
 packaging = ">=22.0"
 pyyaml = "^6.0.1"
 matplotlib = "^3.10.3"
+seaborn = "^0.13.0"
 Pillow = ">=11.1.0"
 requests = "^2.32.4"
 tqdm = "^4.67.1"
@@ -48,6 +51,7 @@ uvicorn = {version = ">=0.34.0", extras = ["standard"]}
 sse-starlette = ">=3.0.0,<4"
 python-multipart = ">=0.0.20"
 weasyprint = ">=62.0"
+tinycss2 = ">=1.5.0"
 
 [tool.poetry.group.tui.dependencies]
 textual = ">=8.0.0,<9"
@@ -64,6 +68,7 @@ types-pyyaml = "^6.0.12"
 pandas-stubs = "^3.0"
 types-tqdm = "^4.67.3.20260205"
 types-seaborn = "^0.13.2.20251221"
+wcag-contrast-ratio = "^0.9"
 
 [tool.poetry.scripts]
 fs-report = "fs_report.cli:_main"
@@ -156,6 +161,10 @@ addopts = [
     "--cov-report=term-missing",
     "--cov-report=html",
     "--cov-fail-under=78",
+    "-m", "not nightly",
+]
+markers = [
+    "nightly: Slow end-to-end smoke tests (excluded from default CI; nightly job opts in)",
 ]
 
 [tool.coverage.run]

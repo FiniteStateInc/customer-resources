@@ -1,0 +1,31 @@
+{# Column-reference banner shared across recipe templates.
+
+   Renders a collapsible <details> block listing every output column with its
+   source and description, sourced from the `columns_schema` template variable
+   that html_renderer populates from `recipe.output.columns`. Include this in
+   the recipe template after the H2 / above the data table.
+
+   No-op when the recipe doesn't define output.columns. #}
+{% if columns_schema %}
+<details style="margin: 12px 0; padding: 8px 12px; background:#f8f9fa; border:1px solid #dee2e6; border-radius:4px; font-size:0.92em;">
+    <summary style="cursor:pointer; font-weight:600; color:#495057;">Column reference — {{ columns_schema | length }} columns</summary>
+    <table style="width:100%; margin-top:8px; border-collapse:collapse; font-size:0.92em;">
+        <thead>
+            <tr style="background:#e9ecef;">
+                <th style="text-align:left; padding:6px 8px;">Column</th>
+                <th style="text-align:left; padding:6px 8px;">Source</th>
+                <th style="text-align:left; padding:6px 8px;">Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for col in columns_schema %}
+            <tr>
+                <td style="padding:5px 8px; border-bottom:1px solid #dee2e6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:0.95em;">{{ col.name }}</td>
+                <td style="padding:5px 8px; border-bottom:1px solid #dee2e6; color:#6c757d; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:0.9em;">{{ col.source }}</td>
+                <td style="padding:5px 8px; border-bottom:1px solid #dee2e6;">{{ col.description }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</details>
+{% endif %}

@@ -997,6 +997,74 @@ class APIClient:
             self.logger.error(f"Connection test failed: {e}")
             return False
 
+    def resolve_project(self, name_or_id: str | int) -> int | str | None:
+        """Resolve a project name or ID to its API ID, preserving engine
+        semantics from ReportEngine._resolve_project_name.
+
+        Behavior (matches report_engine.py:860):
+          - Empty input → None.
+          - ID-shaped input (signed int, signed-int string, or UUID-like
+            string) → returned as-is. The engine does not HEAD-validate;
+            this helper doesn't either.
+          - Name input → case-insensitive .lower() exact match against
+            /public/v0/projects (limit=10000, archived=False, excluded=False).
+            First match wins on duplicate names. Miss returns None and logs
+            a "Did you mean?" close-match hint at INFO.
+
+        Return type: int | str | None. Some FS tenants issue negative int64
+        project IDs and others use UUID-like strings; both must pass through
+        unchanged.
+
+        Caches successful name lookups in self._project_resolve_cache so
+        repeated lookups in a single run don't re-fetch /projects.
+        """
+        import re
+
+        from fs_report.models import QueryConfig, QueryParams
+
+        if name_or_id in (None, ""):
+            return None
+
+        if isinstance(name_or_id, int):
+            return name_or_id
+
+        value_str = str(name_or_id)
+        if re.fullmatch(r"-?\d+", value_str):
+            return value_str
+        if re.match(r"^[0-9a-fA-F-]{32,36}$", value_str):
+            return value_str
+
+        cache: dict[str, int | str | None] = (
+            getattr(self, "_project_resolve_cache", None) or {}
+        )
+        self._project_resolve_cache: dict[str, int | str | None] = cache
+        key = value_str.strip().lower()
+        if key in cache:
+            return cache[key]
+
+        projects_query = QueryConfig(
+            endpoint="/public/v0/projects",
+            params=QueryParams(limit=10000, archived=False, excluded=False),
+        )
+        projects = self.fetch_data(projects_query)
+
+        for p in projects:
+            name = p.get("name", "") if isinstance(p, dict) else ""
+            if name.lower() == key:
+                project_id: int | str | None = (
+                    p.get("id") if isinstance(p, dict) else None
+                )
+                cache[key] = project_id
+                return project_id
+
+        available = [
+            p.get("name", "") for p in projects if isinstance(p, dict) and p.get("name")
+        ]
+        close = [n for n in available if key in n.lower()]
+        if close:
+            self.logger.info(f"Did you mean one of these? {close[:5]}")
+        return None
+
     def get_cache_stats(self) -> dict[str, Any]:
         """Get cache statistics."""
         stats = self.cache.get_stats()

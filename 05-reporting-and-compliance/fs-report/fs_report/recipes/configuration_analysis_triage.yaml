@@ -1,5 +1,6 @@
 name: "Configuration Analysis Triage"
 category: assessment
+nav_category: Investigation
 template: "configuration_analysis_triage.html"
 description: >
   Triages CREDENTIALS, CONFIG_ISSUES, and CRYPTO_MATERIAL findings using a tiered-gates

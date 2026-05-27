@@ -1,5 +1,6 @@
 name: "Remediation Package"
 category: assessment
+nav_category: Remediation
 template: "remediation_package.html"
 description: >
   Developer-friendly remediation package per project version. Groups vulnerabilities

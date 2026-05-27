@@ -1,5 +1,6 @@
 name: "False Positive Analysis"
 category: assessment
+nav_category: Investigation
 description: "Identify likely false positives using mechanical checks and AI applicability analysis. Non-AI: version mismatch, reachability, cross-project propagation. AI mode: LLM-based library identity and applicability verdicts."
 execution_order: 40
 auto_run: false

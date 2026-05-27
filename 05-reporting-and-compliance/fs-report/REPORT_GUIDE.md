@@ -21,9 +21,10 @@ This guide explains each report available in the Finite State Reporting Kit, wha
    - [Configuration Analysis Triage](#configuration-analysis-triage) *(Assessment, on-demand: config/secrets/crypto triage)*
    - [False Positive Analysis](#false-positive-analysis) *(Assessment, on-demand: FP candidate identification)*
    - [Scan Quality](#scan-quality) *(Assessment, on-demand: per-asset coverage and quality signals)*
-   - [CRA Compliance](#cra-compliance) *(Assessment, on-demand: EU Cyber Resilience Act notification scope)*
+   - [CRA Compliance](#cra-compliance) *(Assessment, on-demand: EU CRA Article 14 morning-queue with breach clocks)*
    - [Component Impact](#component-impact) *(Assessment, on-demand: portfolio blast radius for a named component)*
    - [CVE Impact](#cve-impact) *(Assessment, on-demand: CVE dossier with affected projects)*
+   - [CVE Component Evidence](#cve-component-evidence) *(Assessment, on-demand: per-version triage of CVE-bearing components with file-level evidence)*
    - [Version Comparison](#version-comparison) *(Assessment, on-demand: full version & component changelog)*
    - [Executive Dashboard](#executive-dashboard) *(Assessment, on-demand: executive-level security overview)*
    - [Component Remediation Package](#component-remediation-package) *(Assessment, on-demand: zero-day component remediation)*
@@ -91,8 +92,9 @@ Assessment reports show the current security state of the target — the latest 
 | **Configuration Analysis Triage** | Config/secrets/crypto triage with tiered gates (on-demand) |
 | **False Positive Analysis** | FP candidates identified by mechanical signals and AI (on-demand) |
 | **Scan Quality** | Per-asset scan type coverage and unpack quality scores (on-demand) |
-| **CRA Compliance** | KEV and known-exploit findings requiring EU CRA notification (on-demand) |
+| **CRA Compliance** | EU CRA Article 14 morning-queue (🔥/🆕/🔁/⏰/📋) with breach-clock columns + VulnCheck threat-actor evidence; designed for daily automation (on-demand) |
 | **Component Impact** | Portfolio blast radius for a named component (on-demand) |
+| **CVE Component Evidence** | Per-version triage: every CVE-bearing component with its CVE IDs and file paths inside the firmware (on-demand) |
 | **Version Comparison** | Full version and component changelog across all version pairs (on-demand) |
 
 > **Tip:** If you need to date-filter an Assessment report (e.g., "only show findings detected after January 1"), use the `--detected-after YYYY-MM-DD` flag. This injects a date floor without changing the report's current-state nature.
@@ -1061,50 +1063,130 @@ fs-report run --recipe "Scan Quality" --folder "Product Line A" --period 30d
 
 ### CRA Compliance
 
-**Category:** Assessment (on-demand) — shows current findings regardless of time period.
+**Category:** Assessment (on-demand) — structured morning-queue briefing optimized for daily automation runs.
 
-**Purpose:** Identify exploited vulnerabilities that may trigger an EU Cyber Resilience Act notification obligation. Under the CRA, manufacturers must notify ENISA within 24 hours of becoming aware of an actively exploited vulnerability in a product with digital elements. This report surfaces all findings where the CVE appears in the CISA KEV catalogue or has a known exploit — the primary signals for CRA notification scope.
+**Purpose:** Surface vulnerabilities that may trigger an EU Cyber Resilience Act Article 14 notification obligation. Under the CRA, manufacturers must notify ENISA within 24 hours of becoming aware of an actively exploited vulnerability in a product with digital elements. The report organizes findings into five priority sections so a compliance operator can scan the highest-urgency rows first and dig into the audit appendix when needed.
 
 **Who should use it:** Compliance teams, legal counsel, CISOs, product security officers
 
 **Important:** This report does **not** run by default. You must explicitly request it:
 
 ```bash
-fs-report run --recipe "CRA Compliance" --period 30d
+fs-report run --recipe "CRA Compliance" --since 24h
 ```
 
-**What it shows:**
-- All findings with a KEV hit or known exploit (excluding findings marked FALSE_POSITIVE or NOT_AFFECTED)
-- CRA trigger label for each finding: "KEV" or "Known Exploit"
-- CVSS score, EPSS score, severity, component, project, and triage status
-- Per-project dossiers with top CVEs by CVSS score
-- Summary counts: total in-scope findings, KEV hits, known exploit hits, Critical/High counts
+**Five sections (in priority order):**
 
-**Key data columns:**
+| Section | Symbol | Description |
+|---------|--------|-------------|
+| SLA-Breach Risk | 🔥 | KEV findings whose CISA 24-hour notification clock has elapsed or is imminent |
+| Newly Above Threshold | 🆕 | Findings whose CVE crossed an active-exploit tier within the `--since` window |
+| Re-emerged | 🔁 | Previously resolved findings that gained a new exploit signal — re-verify mitigation |
+| Still in Triage | ⏰ | `IN_TRIAGE` findings sorted oldest-first |
+| Full Snapshot | 📋 | Complete A∪B inventory of all above-threshold findings (audit appendix) |
+
+The four queue sections (🔥/🆕/🔁/⏰) are mutually exclusive per row — a finding that qualifies for several appears only in the highest-priority one. 📋 contains every above-threshold finding (queue rows also appear there).
+
+**KPI cards** (action-driven, replaces the previous P1/P2/P3 buckets):
+
+- **Period** — humanized `--since` window (`24h`, `7d`, `30d`)
+- **Total Findings**
+- **🔥 OVERDUE** — past the CRA notification deadline
+- **DUE_SOON** — within 24h of the deadline
+- **Unknown Clock** — no awareness timestamp available
+- **Reachable** — binary scans only (auto-hidden for source-code projects)
+- **In Triage**
+
+**Key data columns** (vary by section):
 
 | Column | Description |
 |--------|-------------|
-| **CRA Trigger** | KEV or Known Exploit |
-| **CVE ID** | CVE identifier |
-| **Severity** | CRITICAL / HIGH / MEDIUM / LOW |
-| **CVSS Score** | 0–10 scale |
-| **Component** | Affected component and version |
-| **Project** | Project containing the finding |
-| **EPSS Score / Percentile** | Exploit Prediction Scoring System |
-| **Status** | Current triage status |
+| **CVE / Component / Severity / CVSS** | Standard identification |
+| **Maturity** | Exploit-maturity tier (kev / weaponized / poc / ransomware / threat_actor) |
+| **KEV Source** | `CISA` (in public CISA KEV catalog), `VcKEV` (FS verified-compromise signal), or `CISA+VcKEV` (both). Only on 🔥. |
+| **Breach Status** | `OVERDUE` / `DUE_SOON` / `UPCOMING` / `UNKNOWN` |
+| **Hours Until Due / Notification Deadline** | CRA Article 14 24-hour clock |
+| **CISA Remediation Due** | US federal BOD 22-01 deadline (separate from CRA clock). Only on 🔥. |
+| **Threat Actors** | Comma-joined VulnCheck threat-actor names (per-finding `/exploits` fan-out). On 🔥 / 🆕 / 🔁. |
+| **Crossed To / Source** | Tier crossed into + provenance (`updates` from `/cves/updates` or `snapshot-diff`). On 🆕 / 🔁. |
+| **Triage Age (days)** | Time since detection or first-triage (opt-in via `--with-triage-age`). On ⏰. |
+| **Status / Reachability** | VEX status / reachability label (binary scans only) |
+
+**Forge Workflow 13 (EU CRA Exploit Monitor):** forge's built-in CRA workflow runs `run_cra_assessment` and emails the Markdown output to the compliance team. The MD output is the canonical artifact for that path.
 
 **Formats:** HTML, CSV, XLSX, Markdown
 
+**Key CLI flags** (CRA-specific; full list in [fs-report CLI skill doc](.claude/skills/fs-report-cli/SKILL.md#cra-compliance)):
+
+- `--since` — delta window for 🆕/🔁 sections (`24h` default; also `7d`, ISO 8601 datetime, or `last-run`)
+- `--exploit-maturity` — override active tiers (default: `kev,ransomware,threat_actor,weaponized`)
+- `--include-status` / `--exclude-status` — VEX status filters
+- `--reachable-only` — restrict to reachable findings
+- `--with-triage-age` — opt-in per-finding `/activity` fan-out for `triage_age_days`
+- `--kev-due-date-source` — `cisa` (default), `none` (disables 🔥 SLA-Breach section), or `api` (reserved)
+- `--unfilterable-tier-strategy` — `wide-fetch` (default), `drop-tier`, or `require-rsql`
+- `--snapshot-diff` — `on` (default), `read-only`, or `off`
+
 **Example commands:**
 ```bash
-# Portfolio-wide CRA scope assessment
-fs-report run --recipe "CRA Compliance" --period 30d
+# Default daily-automation run (24h window)
+fs-report run --recipe "CRA Compliance" --since 24h
+
+# 7-day look-back scoped to a folder, KEV+weaponized tiers only
+fs-report run --recipe "CRA Compliance" --folder "EU Products" \
+  --since 7d --exploit-maturity kev,weaponized
+
+# Continuous automation — use the previous run's timestamp
+fs-report run --recipe "CRA Compliance" --since last-run
+
+# Reachable findings only, with triage age for ⏰ section
+fs-report run --recipe "CRA Compliance" --reachable-only --with-triage-age
 
 # Scoped to a specific project
 fs-report run --recipe "CRA Compliance" --project "MyProduct"
+```
 
-# Scoped to a folder
-fs-report run --recipe "CRA Compliance" --folder "Product Line A"
+---
+
+### CVE Component Evidence
+
+**Category:** Assessment (on-demand) — per-version triage of CVE-bearing components with file-level evidence.
+
+**Purpose:** For a single project version, list every CVE-bearing component along with the CVE IDs attributed to it AND the firmware file paths where the component was detected. Useful when scoping a patch, verifying applicability, or answering *"where exactly in our shipped binary does this vulnerable component live?"* Components with no CVEs are excluded (no triage needed). Uses the same `affected==<componentId>` findings join the platform UI uses.
+
+**Who should use it:** Triage engineers, security researchers, vulnerability response teams.
+
+**Important:** Requires both `--project` and `--version` (the recipe is per-project-version by design — there's no `--cve` narrowing).
+
+```bash
+fs-report run --recipe "CVE Component Evidence" \
+    --project "MyProduct" --version "2.3.1" --cache-ttl 4h
+```
+
+**What it shows:**
+- Each CVE-bearing component in the project version
+- The CVE IDs attributed to that component
+- File paths inside the firmware where the component was detected (`Evidence File Paths` column, sourced from an internal `/api/fs/v1/.../evidence` endpoint)
+
+**Key flags:**
+- `--cache-ttl` — recommended for re-runs; per-component evidence calls are parallelized and cached.
+- `FS_REPORT_EVIDENCE_WORKERS` (env var, default `5`) — escape hatch to reduce worker count if the internal endpoint starts returning 500s.
+
+**Formats:** HTML, CSV (no XLSX or MD output for this recipe).
+
+**Example:**
+```bash
+# Per-version triage — accepts version ID or version name
+fs-report run --recipe "CVE Component Evidence" \
+    --project "MyProduct" --version 1234567890 --cache-ttl 4h
+
+fs-report run --recipe "CVE Component Evidence" \
+    --project "MyProduct" --version "v1.2.3" --cache-ttl 4h
+
+# Quiet the internal evidence endpoint if it's complaining
+FS_REPORT_EVIDENCE_WORKERS=1 fs-report run \
+    --recipe "CVE Component Evidence" \
+    --project "MyProduct" --version "v1.2.3"
 ```
 
 ---
@@ -1604,7 +1686,7 @@ fs-report run --period 30d --finding-types all
 
 1. **Component List** → Full software inventory with declared/concluded licenses and policy status
 2. **License Report** → Risk-first summary grouping licenses by Permissive / Copyleft / Unknown
-3. **CRA Compliance** → Scope KEV and known-exploit findings for EU CRA notification
+3. **CRA Compliance** → Morning-queue of actively-exploited findings (🔥 SLA-Breach + 🆕/🔁/⏰/📋) with CRA Article 14 24-hour notification clocks — designed for daily automation
 
 ### By Audience
 
@@ -1643,7 +1725,7 @@ fs-report run --period 30d --finding-types all
 | **Findings by Project** | Weekly (dev teams), Daily (during sprints) | Plan project-level remediation |
 | **Component List** | Monthly (audits), On-demand (SBOM requests) | Compliance, license review, and inventory tracking |
 | **License Report** | Quarterly (legal reviews), On-demand | License risk summary for legal and compliance |
-| **CRA Compliance** | Monthly (regulatory), On-demand (incident) | EU CRA notification scope assessment |
+| **CRA Compliance** | **Daily** (automated morning queue), On-demand (incident) | EU CRA Article 14 morning-queue: actively-exploited findings with 24-hour notification clocks |
 | **Scan Quality** | Quarterly (platform health), On-demand | Identify coverage gaps and unpack quality issues |
 | **Component Impact** | On-demand (zero-day / supply-chain incident) | Blast radius for a specific component |
 | **Component Remediation Package** | On-demand (zero-day / supply-chain incident) | Rapid remediation guidance for a compromised component |

@@ -1,4 +1,58 @@
 releases:
+  - version: "1.9.9"
+    date: "2026-05-26"
+    changes:
+      - report: "CRA Compliance"
+        type: added
+        description: "5-section morning-queue redesign for EU CRA Article 14 daily automation. New sections: 🔥 SLA-Breach Risk, 🆕 Newly Above Threshold, 🔁 Re-emerged, ⏰ Still in Triage, 📋 Full Snapshot. Hybrid delta detection combines `/cves/updates` maturity transitions with client-side snapshot-diff for KEV/ransomware/threat-actor signals. 9 new CRA-specific CLI flags including `--since` (delta window), `--exploit-maturity` (active tier set), `--snapshot-diff` (state persistence), `--with-triage-age` (opt-in per-finding `/activity` fan-out)."
+      - report: "CRA Compliance"
+        type: added
+        description: "Action-driven KPI cards replace the original P1/P2/P3/KEV bucket counts: Period (humanized `--since` window), Total Findings, 🔥 OVERDUE, DUE_SOON, Unknown Clock, Reachable (binary scans only — auto-hidden for source projects), In Triage. OVERDUE/DUE_SOON/Unknown counts cover all queue sections (not just 🔥) so headline numbers match what's visible in the tables. Note: Total Findings is a dedup'd count, so it doesn't equal a naive sum of all 5 section rows (📋 re-shows queue rows per the A∪B audit-appendix model)."
+      - report: "CRA Compliance"
+        type: added
+        description: "Breach-clock columns on every queue section, not just 🔥. 🔥 / 🆕 / 🔁 / ⏰ carry the full `breach_status` + `hours_until_cra_due` + `cra_notification_deadline` set; 📋 Full Snapshot carries the slimmer `breach_status` + `cra_notification_deadline` pair (audit-appendix view). For 🆕 and 🔁 the 24-hour clock anchors on the report's run time (customer is being made aware via this report); for 🔥 / ⏰ / 📋 it anchors on the platform's detected timestamp."
+      - report: "CRA Compliance"
+        type: added
+        description: "KEV Source column on 🔥 distinguishes CISA-catalog hits (`CISA`), FS's broader Verified-Compromise signal (`VcKEV`), and both (`CISA+VcKEV`). Threat Actors column on 🔥 / 🆕 / 🔁 populated from VulnCheck data via per-finding `/exploits` fan-out with rate-limit retry/backoff."
+      - report: "CRA Compliance"
+        type: fixed
+        description: "🔥 OVERDUE counts are no longer falsely UNKNOWN for the majority of platform-KEV findings. fs-report now reads the platform's `detected` timestamp as the CRA awareness anchor when CISA's `dateAdded` isn't available — VcKEV-only rows (most of the inKev set on real data) now get computable CRA Article 14 deadlines."
+      - report: "CRA Compliance"
+        type: removed
+        description: "P1/P2/P3 priority bucket column and `--cra-priority-thresholds` CLI flag. Prioritization within each section is preserved via the existing severity → CVSS → EPSS sort. Migration: if you were keying on the `priority` column from CSV/XLSX, sort by those three fields instead."
+      - report: "Compound Reports"
+        type: added
+        description: "Phase 1 foundations for multi-recipe compound bundles (e.g. Marelli monthly bundle): design tokens (Python ↔ CSS single source of truth with parity tests + drift check script), server-side chart SVG primitives (8 chart types incl. doughnut + radar), and fragment-mode HTML rendering with CSS scoping under `.fs-section-<slug>`. Chart-in-PDF wiring deferred to a follow-on project."
+      - report: "Executive Dashboard"
+        type: fixed
+        description: "CSV output was being written as a single newline (24 bytes) on portfolio-wide, warm-cache, and `--folder` runs because the CSV branch rendered `report_data.data` (empty for this recipe) while XLSX correctly read per-project rows from `additional_data[\"transform_result\"][\"project_table\"]`. Both renderers now share a single helper so they can't drift apart again. Caught by an fs-qabot full-run pass."
+      - report: "Executive Dashboard"
+        type: added
+        description: "Secondary `Executive Dashboard_Top_Risk_Products.csv` is now emitted alongside the main CSV, carrying the ranked top-risk list with risk scores. Pairs with the existing Top Risk Products XLSX sheet so CSV consumers have the same surface area as XLSX consumers."
+      - report: "CVE Component Evidence"
+        type: added
+        description: "New recipe (on-demand). Per-version triage: lists every CVE-bearing component in a project version with its CVE IDs and the file paths inside the firmware where the component was detected. Requires `--project` + `--version` (no `--cve` narrowing — recipe always covers the full set of CVE-bearing components for the version). Uses an internal evidence endpoint; `--cache-ttl` recommended for re-runs and `FS_REPORT_EVIDENCE_WORKERS` is an escape hatch if the endpoint returns errors. Output formats: HTML + CSV. README updated with a row in the Available Reports table and a CLI usage example block."
+      - report: "Docs"
+        type: added
+        description: "7 new platform asks added to `docs/api/API_wishlist.md` (#14–#20): CISA KEV catalog fields server-side, `inKev`/`inVcKev` and `exploitInfo` token deltas on `/cves/updates`, event timestamps on update records, `triageStartedAt` on findings, `fields=` response projection, and RSQL filtering on `exploitInfo` tokens. These would let fs-report stop fetching cisa.gov directly, narrow snapshot-diff to platform-side detection, and remove the wide-fetch default in CRA Compliance."
+      - report: "Scan Analysis"
+        type: fixed
+        description: "Failed-scan error column was empty on the helix v2 backend because the `/scans` endpoint renames the alloy `errorMessage` field to `bssMessage`. fs-report now normalizes both names to `errorMessage` at the cache boundary and the transform layer, so the column populates regardless of backend. Alloy `errorMessage` wins when both happen to be present."
+      - report: "HTML Reports"
+        type: fixed
+        description: "Unified brand chrome across every human-audience HTML report. Three fixes wrapped into one round of cleanup: (1) the embedded Finite State logo fallback in `base.html` had invalid base64 padding so it rendered as a broken-image icon — replaced with the canonical valid blob, now shared via a new `_default_logo.html` partial; (2) the 6 recipes that extend `base.html` (Executive Summary, Assessment Overview, User Activity, Findings by Project, False Positive Analysis, Workflow Summary) were silently dropping Chart.js, so any chart canvases stayed blank — Chart.js is now loaded via a `chart_libs` block that fires before the design-token defaults setup, and chart-less recipes skip the ~80 kB fetch; (3) `base.html`'s `.container` `max-width: 1024px` was making wide data tables (Findings by Project, etc.) feel cramped — removed to match the standalone-template recipes that fill the viewport. Also: footer copy and copyright are now sourced from a single `_default_footer.html` partial across all 17 standalone templates plus the base-extending ones, with the copyright year derived from `generated_at` so reports generated in future years won't show a stale year."
+      - report: "Findings by Project"
+        type: added
+        description: "New `Exploit Maturity` column — a single tier string (`poc` / `weaponized` / empty) read straight from the API, mirroring the platform GUI's `columns.exploitMaturity`. Lets you filter findings by exploit maturity tier directly from the script-generated CSV/XLSX instead of having to use the GUI export."
+      - report: "Findings by Project"
+        type: changed
+        description: "Two exploit columns renamed to reflect what they actually contain. `# of known exploits` → `# exploit signal categories`: it counts the distinct exploit-signal categories present in `exploitInfo` (maturity tiers, availability, KEV, in-the-wild flags), not a per-source exploit count — so it caps around 7–9 and does NOT equal the platform UI's \"Exploits\" tally. `# of known weaponization` → `# in-the-wild exploitation signals`: it counts botnet / ransomware / threat-actor reports, NOT the weaponized maturity tier (a CVE can be `weaponized` with zero in-the-wild signals). If you key automation off the old CSV/XLSX headers, switch to the new names."
+      - report: "Findings by Project"
+        type: added
+        description: "Self-documenting output — every column is now described in-place so you don't have to read source to understand the report. XLSX gains a `Schema` sheet, HTML and Markdown gain a collapsible `Column reference` section, and CSV/JSON consumers get a machine-readable `Findings by Project_schema.json` sidecar next to the data file. All four surfaces are sourced from a single `output.columns` block in the recipe. Prompted by a customer field question about reconciling the GUI CSV export against the script-generated report."
+      - report: "Scan Quality"
+        type: fixed
+        description: "`unpacking_score = -1` now renders as `Not Applicable` across tables, the rating-distribution chart, and exports, instead of a bare em-dash. This clearly distinguishes \"unpacking does not apply to this artifact type\" from missing or failed scan data."
   - version: "1.9.8"
     date: "2026-05-05"
     changes:

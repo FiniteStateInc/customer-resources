@@ -1,5 +1,6 @@
 name: "Customer Brief"
 category: assessment
+nav_category: Executive
 description: "External-facing project security brief for customers and regulators."
 execution_order: 20
 auto_run: false

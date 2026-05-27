@@ -6,28 +6,52 @@ This document lists all CSV/XLSX column names produced by each report, in the or
 
 ### Main DataFrame
 
+Column list below matches `_CSV_COLUMNS` in
+`fs_report/transforms/pandas/findings_by_project.py`. For a fuller per-column
+narrative, the rendered report itself now carries a `Column reference` section
+(HTML + Markdown), a `Schema` sheet (XLSX), and a `<recipe>_schema.json`
+sidecar file (next to the CSV / JSON output, machine-readable) — all sourced
+from the `output.columns:` block in `recipes/findings_by_project.yaml`.
+Customers can read what each column means without leaving the report directory.
+
+The sidecar JSON shape is:
+
+```json
+{
+  "recipe": "Findings by Project",
+  "columns": [
+    {"name": "CVE ID", "source": "API /findings: cve_id", "description": "..."},
+    ...
+  ]
+}
+```
+
 | # | Column | Type | Description |
 |---|--------|------|-------------|
-| 1 | `CVE ID` | string | CVE identifier |
-| 2 | `Severity` | string | Finding severity (CRITICAL, HIGH, MEDIUM, LOW) |
-| 3 | `CVSS` | float | CVSS score (0-10) |
-| 4 | `Project Name` | string | Project name |
-| 5 | `Project Version` | string | Project version |
-| 6 | `Folder` | string | Folder path (when folder filtering active) |
-| 7 | `Component` | string | Affected component name |
-| 8 | `Component Version` | string | Component version |
-| 9 | `Status` | string | Finding status |
-| 10 | `Detected` | string | Detection date |
-| 11 | `# of known exploits` | int | Exploit count |
-| 12 | `# of known weaponization` | int | Weaponization count |
-| 13 | `CWE` | string | CWE identifier |
-| 14 | `Description` | string | CVE description from NVD (English) |
-| 15 | `CVSS v2 Vector` | string | CVSS v2 vector string |
-| 16 | `CVSS v3 Vector` | string | CVSS v3.1 vector string (fallback v3.0) |
-| 17 | `NVD URL` | string | Link to NVD detail page |
-| 18 | `FS Link` | string | Direct link to finding in Finite State platform |
-| 19 | `dependency_path` | string | Project dependency chain (e.g., `ProjectA -> ProjectB`). Only present when the target project has dependencies. |
-| 20 | `component_dependency_path` | string | Full path including component (e.g., `ProjectA -> ProjectB -> openssl 1.1.1`). Only present when the target project has dependencies. |
+| 1 | `CVE ID` | string | CVE identifier. |
+| 2 | `Severity` | string | Finding severity (CRITICAL, HIGH, MEDIUM, LOW, INFO). |
+| 3 | `CVSS` | float | CVSS base score on the standard 0.0–10.0 scale. |
+| 4 | `KEV` | string | `"Yes"` if the CVE is on CISA's Known Exploited Vulnerabilities catalog, empty otherwise. |
+| 5 | `Project Name` | string | Project the finding belongs to. |
+| 6 | `Project Version` | string | Version of that project. |
+| 7 | `Folder` | string | Folder the project lives in; empty for projects at the root. |
+| 8 | `Component Group` | string | Group / namespace portion of the component PURL. |
+| 9 | `Component` | string | Component the CVE was identified against. |
+| 10 | `Component Version` | string | Version of that component. |
+| 11 | `Status` | string | Triage status (AFFECTED / NOT_AFFECTED / IN_TRIAGE / FALSE_POSITIVE / RESOLVED / RESOLVED_WITH_PEDIGREE). |
+| 12 | `Reachability` | string | REACHABLE / UNREACHABLE / INCONCLUSIVE / UNKNOWN (binary scans only). |
+| 13 | `Detected` | string | ISO-8601 timestamp the platform first detected this finding. |
+| 14 | `Exploit Maturity` | string | Single tier string: `poc` / `weaponized` / empty. Matches the platform GUI's `columns.exploitMaturity`. |
+| 15 | `# exploit signal categories` | int | Count of distinct exploit-related signal *categories* from `exploitInfo` (maturity tiers + availability + KEV + in-the-wild reports). NOT a per-source exploit-reference count; tops out around 7–9. Renamed from `# of known exploits` 2026-05-26. |
+| 16 | `# in-the-wild exploitation signals` | int | Count of in-the-wild exploitation signals (botnet / ransomware / threat-actor reports). Renamed from `# of known weaponization` 2026-05-26 — the old name implied this counted the weaponized maturity tier, which it does not. |
+| 17 | `CWE` | string | Primary CWE identifier. |
+| 18 | `Description` | string | CVE description from NVD (English). |
+| 19 | `CVSS v2 Vector` | string | CVSS v2 vector string when available. |
+| 20 | `CVSS v3 Vector` | string | CVSS v3.1 vector string (fallback v3.0) when available. |
+| 21 | `NVD URL` | string | Link to NVD detail page. |
+| 22 | `FS Link` | string | Direct link to finding in Finite State platform. |
+| 23 | `dependency_path` | string | *Conditional* — project dependency chain (e.g., `ProjectA -> ProjectB`). Only present when the target project has dependencies. |
+| 24 | `component_dependency_path` | string | *Conditional* — full path including component. Only present when the target project has dependencies. |
 
 ---
 
@@ -283,7 +307,7 @@ This document lists all CSV/XLSX column names produced by each report, in the or
 | 8 | `completion_date` | string | End timestamp or '-' |
 | 9 | `duration_minutes` | float | Time to complete |
 | 10 | `current_status_time_minutes` | float | Time in current status |
-| 11 | `errorMessage` | string | Error details or '-' |
+| 11 | `errorMessage` | string | Error details or '-' (helix v2 sends as `bssMessage`; fs-report normalizes both) |
 
 ### failure_types List
 

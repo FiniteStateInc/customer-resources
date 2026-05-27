@@ -1,6 +1,7 @@
 name: "Component Impact"
 template: "component_impact.html"
 category: assessment
+nav_category: Investigation
 description: "Portfolio-wide blast radius for a named component — shows all projects/assets where the component is present, with severity breakdown and version distribution"
 execution_order: 20
 auto_run: false

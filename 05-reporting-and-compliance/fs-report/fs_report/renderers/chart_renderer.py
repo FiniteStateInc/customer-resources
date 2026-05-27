@@ -18,17 +18,39 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Chart renderer for generating static PNG images from pandas DataFrames."""
+"""Chart renderer for generating static PNG images from pandas DataFrames.
+
+In addition to the original PNG (file-output) methods used by the legacy
+report pipeline, this module now exposes ``render_<type>_svg`` variants and a
+``render_chart_svg`` dispatcher. The SVG variants return inline SVG markup
+instead of writing to disk and are consumed by ``HTMLRenderer`` when rendering
+fragments or PDF targets (WeasyPrint can't execute Chart.js).
+
+All color and typography values come from
+``fs_report.renderers.chart_palette`` to keep matplotlib output visually
+consistent with Chart.js output.
+"""
 
 from __future__ import annotations
 
+import io
 import logging
 import warnings
 from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+
+from fs_report.renderers.chart_palette import (
+    FS_CHART_PALETTE,
+    FS_HAIRLINE,
+    FS_INK,
+    FS_INK_DIM,
+    FS_SEV_PALETTE,
+    FS_SURFACE_CARD,
+)
 
 # Set matplotlib style for better-looking charts
 plt.style.use("default")
@@ -60,29 +82,37 @@ class ChartRenderer:
         """Initialize the chart renderer with modern styling."""
         self.logger = logging.getLogger(__name__)
 
-        # Modern color palette - colorblind-friendly and visually appealing
-        self.colors = ["#2E86AB", "#A23B72", "#F18F01", "#C73E1D", "#6B5B95", "#88B04B"]
+        # Canonical palette sourced from chart_palette.py (single source of truth).
+        # Kept on the instance under the legacy `self.colors` attribute name so
+        # existing PNG plotting code continues to work unchanged.
+        self.colors = list(FS_CHART_PALETTE)
 
         # Set modern matplotlib style
         plt.style.use("default")
         plt.rcParams.update(
             {
                 "font.family": "sans-serif",
-                "font.sans-serif": ["Arial", "DejaVu Sans", "Liberation Sans"],
+                "font.sans-serif": ["Inter", "Arial", "DejaVu Sans", "Liberation Sans"],
                 "font.size": 10,
                 "axes.titlesize": 14,
                 "axes.labelsize": 12,
+                "axes.labelcolor": FS_INK,
+                "text.color": FS_INK_DIM,
                 "xtick.labelsize": 10,
+                "xtick.color": FS_INK_DIM,
                 "ytick.labelsize": 10,
+                "ytick.color": FS_INK_DIM,
                 "legend.fontsize": 10,
                 "figure.titlesize": 16,
                 "axes.spines.top": False,
                 "axes.spines.right": False,
+                "axes.edgecolor": FS_HAIRLINE,
                 "axes.grid": True,
                 "grid.alpha": 0.3,
                 "grid.linestyle": "--",
-                "figure.facecolor": "white",
-                "axes.facecolor": "#f8f9fa",
+                "grid.color": FS_HAIRLINE,
+                "figure.facecolor": FS_SURFACE_CARD,
+                "axes.facecolor": FS_SURFACE_CARD,
             }
         )
 
@@ -833,13 +863,372 @@ class ChartRenderer:
             return None
 
 
-def get_severity_color(severity: str) -> str:
-    # Return a color for each severity (customize as needed)
-    colors = {
-        "critical": "#d62728",
-        "high": "#ff7f0e",
-        "medium": "#ffbb78",
-        "low": "#1f77b4",
-        "none": "#2ca02c",
+def _capture_svg(fig: Any) -> str:
+    """Serialize a matplotlib Figure to inline SVG markup and close it.
+
+    Returns the SVG document as a string. Always closes the figure to keep
+    pyplot's global state clean between successive renders.
+    """
+    buf = io.StringIO()
+    try:
+        fig.savefig(buf, format="svg", bbox_inches="tight")
+        return buf.getvalue()
+    finally:
+        plt.close(fig)
+
+
+def _extract_chart_config(chart_config: dict) -> dict:
+    """Pull the standard chart-config keys used by every SVG renderer.
+
+    The shape mirrors ``render_chart_to_file``'s extraction at the top of
+    that method — keep changes in sync.
+    """
+    return {
+        "title": chart_config.get("title", ""),
+        "x_column": chart_config.get("x_column"),
+        "y_columns": chart_config.get("y_columns"),
+        "value_column": chart_config.get("value_column"),
+        "label_column": chart_config.get("label_column"),
+        "stacked": chart_config.get("stacked", False),
+        "size_column": chart_config.get("size_column"),
+        "color_column": chart_config.get("color_column"),
+        "labels": chart_config.get("labels"),
+        "values": chart_config.get("values"),
     }
-    return colors.get(severity, "#888888")
+
+
+# ----------------------------------------------------------------------
+# SVG-returning chart renderers
+#
+# These are consumed by HTMLRenderer when rendering fragments or PDF
+# targets (WeasyPrint doesn't execute JavaScript, so Chart.js canvases
+# render blank in PDF). The methods below produce inline SVG that
+# WeasyPrint embeds directly.
+# ----------------------------------------------------------------------
+
+
+class _ChartRendererSVGMixin:
+    """SVG-returning chart methods — mixed into ChartRenderer."""
+
+    colors: list[str]
+    logger: logging.Logger
+
+    def render_bar_chart_svg(self, df: pd.DataFrame, chart_config: dict) -> str:
+        cfg = _extract_chart_config(chart_config)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        try:
+            x_col = cfg["x_column"] or df.columns[0]
+            y_cols = cfg["y_columns"]
+            x_data = df[x_col].astype(str)
+            if y_cols:
+                width = 0.8 / max(1, len(y_cols))
+                x = np.arange(len(x_data))
+                for i, y in enumerate(y_cols):
+                    if y in df.columns:
+                        ax.bar(
+                            x + i * width,
+                            df[y],
+                            width=width,
+                            label=y,
+                            color=self.colors[i % len(self.colors)],
+                        )
+                ax.set_xticks(x + width * (len(y_cols) - 1) / 2)
+                ax.set_xticklabels(x_data, rotation=45, ha="right")
+                ax.legend()
+            else:
+                numeric_cols = df.select_dtypes(include=["number"]).columns
+                if len(numeric_cols) > 0:
+                    ax.bar(x_data, df[numeric_cols[0]], color=self.colors[0])
+                else:
+                    vc = df[x_col].value_counts()
+                    ax.bar(vc.index.astype(str), vc.values, color=self.colors[0])  # type: ignore[arg-type]
+                for tick in ax.get_xticklabels():
+                    tick.set_rotation(45)
+                    tick.set_horizontalalignment("right")
+            if cfg["title"]:
+                ax.set_title(cfg["title"], fontweight="bold")
+            ax.set_xlabel(x_col)
+            ax.set_ylabel("Value" if y_cols else "Count")
+            fig.tight_layout()
+            return _capture_svg(fig)
+        except Exception:
+            plt.close(fig)
+            raise
+
+    def render_line_chart_svg(self, df: pd.DataFrame, chart_config: dict) -> str:
+        cfg = _extract_chart_config(chart_config)
+        fig, ax = plt.subplots(figsize=(9, 5))
+        try:
+            x_col = cfg["x_column"] or df.columns[0]
+            y_cols = cfg["y_columns"] or list(
+                df.select_dtypes(include=["number"]).columns
+            )
+            x_data = df[x_col]
+            for i, y in enumerate(y_cols):
+                if y in df.columns:
+                    ax.plot(
+                        x_data,
+                        df[y],
+                        marker="o",
+                        label=y,
+                        color=self.colors[i % len(self.colors)],
+                        linewidth=2,
+                    )
+            if cfg["title"]:
+                ax.set_title(cfg["title"], fontweight="bold")
+            ax.set_xlabel(x_col)
+            ax.set_ylabel("Value")
+            if len(y_cols) > 1:
+                ax.legend()
+            for tick in ax.get_xticklabels():
+                tick.set_rotation(45)
+                tick.set_horizontalalignment("right")
+            fig.tight_layout()
+            return _capture_svg(fig)
+        except Exception:
+            plt.close(fig)
+            raise
+
+    def render_pie_chart_svg(self, df: pd.DataFrame, chart_config: dict) -> str:
+        return self._render_pie_or_doughnut_svg(df, chart_config, hole=False)
+
+    def render_doughnut_svg(self, df: pd.DataFrame, chart_config: dict) -> str:
+        return self._render_pie_or_doughnut_svg(df, chart_config, hole=True)
+
+    def _render_pie_or_doughnut_svg(
+        self, df: pd.DataFrame, chart_config: dict, *, hole: bool
+    ) -> str:
+        cfg = _extract_chart_config(chart_config)
+        fig, ax = plt.subplots(figsize=(7, 6))
+        try:
+            value_col = cfg["value_column"] or (
+                df.select_dtypes(include=["number"]).columns[0]
+                if len(df.select_dtypes(include=["number"]).columns)
+                else df.columns[1]
+            )
+            label_col = cfg["label_column"] or df.columns[0]
+            values = df[value_col]
+            labels = df[label_col].astype(str)
+            wedgeprops = {"width": 0.4, "edgecolor": "white"} if hole else None
+            ax.pie(
+                values,
+                labels=labels,  # type: ignore[arg-type]
+                autopct="%1.1f%%",
+                startangle=90,
+                colors=self.colors[: len(values)],
+                wedgeprops=wedgeprops,
+                textprops={"color": FS_INK_DIM},
+            )
+            ax.axis("equal")
+            if cfg["title"]:
+                ax.set_title(cfg["title"], fontweight="bold")
+            fig.tight_layout()
+            return _capture_svg(fig)
+        except Exception:
+            plt.close(fig)
+            raise
+
+    def render_pareto_chart_svg(self, df: pd.DataFrame, chart_config: dict) -> str:
+        cfg = _extract_chart_config(chart_config)
+        fig, ax = plt.subplots(figsize=(9, 5))
+        try:
+            x_col = cfg["x_column"] or df.columns[0]
+            y_cols = cfg["y_columns"] or list(
+                df.select_dtypes(include=["number"]).columns
+            )
+            y_col = y_cols[0] if y_cols else df.columns[1]
+            sorted_df = df.sort_values(y_col, ascending=False)
+            x_data = sorted_df[x_col].astype(str)
+            values = sorted_df[y_col].astype(float)
+            total = values.sum() or 1.0
+            cumulative = (values.cumsum() / total) * 100.0
+            ax.bar(x_data, values, color=self.colors[0], label=y_col)
+            ax.set_xlabel(x_col)
+            ax.set_ylabel(y_col)
+            for tick in ax.get_xticklabels():
+                tick.set_rotation(45)
+                tick.set_horizontalalignment("right")
+            ax2 = ax.twinx()
+            ax2.plot(
+                x_data,
+                cumulative,
+                color=self.colors[4],
+                marker="D",
+                linewidth=2,
+                label="Cumulative %",
+            )
+            ax2.set_ylim(0, 110)
+            ax2.set_ylabel("Cumulative %")
+            ax2.grid(False)
+            if cfg["title"]:
+                ax.set_title(cfg["title"], fontweight="bold")
+            fig.tight_layout()
+            return _capture_svg(fig)
+        except Exception:
+            plt.close(fig)
+            raise
+
+    def render_bubble_chart_svg(self, df: pd.DataFrame, chart_config: dict) -> str:
+        cfg = _extract_chart_config(chart_config)
+        fig, ax = plt.subplots(figsize=(8, 6))
+        try:
+            x_col = cfg["x_column"] or df.columns[0]
+            y_col = (cfg["y_columns"] or [df.columns[1]])[0]
+            size_col = cfg["size_column"]
+            color_col = cfg["color_column"]
+            sizes = df[size_col] if size_col and size_col in df.columns else 100
+            if color_col and color_col in df.columns:
+                # categorical color mapping
+                cats = df[color_col].astype(str).unique()
+                cmap = {
+                    c: self.colors[i % len(self.colors)] for i, c in enumerate(cats)
+                }
+                colors = [cmap[c] for c in df[color_col].astype(str)]
+                ax.scatter(df[x_col], df[y_col], s=sizes, c=colors, alpha=0.7)
+                for c in cats:
+                    ax.scatter([], [], c=cmap[c], label=c, s=80)
+                ax.legend()
+            else:
+                ax.scatter(df[x_col], df[y_col], s=sizes, c=self.colors[0], alpha=0.7)
+            ax.set_xlabel(x_col)
+            ax.set_ylabel(y_col)
+            if cfg["title"]:
+                ax.set_title(cfg["title"], fontweight="bold")
+            fig.tight_layout()
+            return _capture_svg(fig)
+        except Exception:
+            plt.close(fig)
+            raise
+
+    def render_heatmap_svg(self, df: pd.DataFrame, chart_config: dict) -> str:
+        cfg = _extract_chart_config(chart_config)
+        fig, ax = plt.subplots(figsize=(8, 6))
+        try:
+            x_col = cfg["x_column"]
+            y_col = (cfg["y_columns"] or [None])[0]
+            value_col = cfg["value_column"]
+            if x_col and y_col and value_col:
+                pivot = df.pivot_table(
+                    index=y_col, columns=x_col, values=value_col, aggfunc="sum"
+                )
+            else:
+                pivot = df.select_dtypes(include=["number"])
+            im = ax.imshow(pivot.values, cmap="viridis", aspect="auto")
+            ax.set_xticks(np.arange(pivot.shape[1]))
+            ax.set_yticks(np.arange(pivot.shape[0]))
+            ax.set_xticklabels(pivot.columns, rotation=45, ha="right")
+            ax.set_yticklabels(pivot.index)
+            fig.colorbar(im, ax=ax)
+            if cfg["title"]:
+                ax.set_title(cfg["title"], fontweight="bold")
+            fig.tight_layout()
+            return _capture_svg(fig)
+        except Exception:
+            plt.close(fig)
+            raise
+
+    def render_radar_svg(self, df: pd.DataFrame, chart_config: dict) -> str:
+        cfg = _extract_chart_config(chart_config)
+        # Prefer explicit labels/values if provided; otherwise derive
+        labels: list[str]
+        values: list[float]
+        if cfg["labels"] is not None and cfg["values"] is not None:
+            labels = [str(x) for x in cfg["labels"]]
+            values = [float(v) for v in cfg["values"]]
+        else:
+            label_col = cfg["label_column"] or df.columns[0]
+            value_col = cfg["value_column"] or (
+                df.select_dtypes(include=["number"]).columns[0]
+                if len(df.select_dtypes(include=["number"]).columns)
+                else df.columns[1]
+            )
+            labels = [str(x) for x in df[label_col].tolist()]
+            values = [float(v) for v in df[value_col].tolist()]
+        if not labels:
+            return '<div class="chart-unavailable">No data for radar chart</div>'
+        # Close the polygon
+        n = len(labels)
+        angles = np.linspace(0, 2 * np.pi, n, endpoint=False).tolist()
+        values_closed = values + values[:1]
+        angles_closed = angles + angles[:1]
+        fig = plt.figure(figsize=(6, 6))
+        ax = fig.add_subplot(111, projection="polar")
+        try:
+            ax.plot(angles_closed, values_closed, color=self.colors[0], linewidth=2)
+            ax.fill(angles_closed, values_closed, color=self.colors[0], alpha=0.25)
+            ax.set_xticks(angles)
+            ax.set_xticklabels(labels)
+            ax.set_yticklabels([])
+            if cfg["title"]:
+                ax.set_title(cfg["title"], fontweight="bold", pad=20)
+            fig.tight_layout()
+            return _capture_svg(fig)
+        except Exception:
+            plt.close(fig)
+            raise
+
+    def render_chart_svg(
+        self, df: pd.DataFrame, chart_type: str, chart_config: dict
+    ) -> str:
+        """Dispatch chart_type to the matching ``render_<type>_svg`` method.
+
+        Returns inline SVG markup. Unknown chart types fall back to a
+        readable placeholder rather than raising, so a single bad recipe
+        spec doesn't kill the whole bundle render.
+        """
+        dispatch = {
+            "bar": self.render_bar_chart_svg,
+            "line": self.render_line_chart_svg,
+            "pie": self.render_pie_chart_svg,
+            "doughnut": self.render_doughnut_svg,
+            "pareto": self.render_pareto_chart_svg,
+            "bubble": self.render_bubble_chart_svg,
+            "heatmap": self.render_heatmap_svg,
+            "radar": self.render_radar_svg,
+        }
+        fn = dispatch.get((chart_type or "").lower())
+        if fn is None:
+            self.logger.warning(
+                "Chart type %r is not supported by the server-side SVG renderer",
+                chart_type,
+            )
+            return (
+                '<div class="chart-unavailable">'
+                f"Chart type '{chart_type}' unavailable in PDF/fragment"
+                "</div>"
+            )
+        try:
+            return fn(df, chart_config)
+        except Exception as exc:
+            self.logger.warning(
+                "Server-side render failed for chart type %r: %s", chart_type, exc
+            )
+            return (
+                '<div class="chart-unavailable">Chart unavailable: '
+                f"{type(exc).__name__}</div>"
+            )
+
+
+# Attach the SVG mixin to the existing ChartRenderer class without
+# disturbing its original class body or MRO.
+ChartRenderer.render_bar_chart_svg = _ChartRendererSVGMixin.render_bar_chart_svg  # type: ignore[attr-defined]
+ChartRenderer.render_line_chart_svg = _ChartRendererSVGMixin.render_line_chart_svg  # type: ignore[attr-defined]
+ChartRenderer.render_pie_chart_svg = _ChartRendererSVGMixin.render_pie_chart_svg  # type: ignore[attr-defined]
+ChartRenderer.render_doughnut_svg = _ChartRendererSVGMixin.render_doughnut_svg  # type: ignore[attr-defined]
+ChartRenderer._render_pie_or_doughnut_svg = (  # type: ignore[attr-defined]
+    _ChartRendererSVGMixin._render_pie_or_doughnut_svg
+)
+ChartRenderer.render_pareto_chart_svg = _ChartRendererSVGMixin.render_pareto_chart_svg  # type: ignore[attr-defined]
+ChartRenderer.render_bubble_chart_svg = _ChartRendererSVGMixin.render_bubble_chart_svg  # type: ignore[attr-defined]
+ChartRenderer.render_heatmap_svg = _ChartRendererSVGMixin.render_heatmap_svg  # type: ignore[attr-defined]
+ChartRenderer.render_radar_svg = _ChartRendererSVGMixin.render_radar_svg  # type: ignore[attr-defined]
+ChartRenderer.render_chart_svg = _ChartRendererSVGMixin.render_chart_svg  # type: ignore[attr-defined]
+
+
+def get_severity_color(severity: str) -> str:
+    """Return the canonical color for a severity label.
+
+    Reads from chart_palette.FS_SEV_PALETTE (single source of truth shared
+    with tokens.css). Falls back to a neutral gray for unknown severities.
+    """
+    return FS_SEV_PALETTE.get(severity.lower(), "#888888")

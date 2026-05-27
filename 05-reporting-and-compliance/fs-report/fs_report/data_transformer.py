@@ -82,22 +82,34 @@ class DataTransformer:
     ) -> pd.DataFrame | dict[str, Any]:
         """Apply a series of transforms to the data. Optionally use additional_data for joins."""
         if isinstance(data, pd.DataFrame):
-            if data.empty:
-                self.logger.warning("No data to transform")
-                return pd.DataFrame()
             df = data
         elif not data:
-            self.logger.warning("No data to transform")
-            return pd.DataFrame()
+            df = pd.DataFrame()
         else:
-            # Convert to DataFrame
             df = pd.DataFrame(data)
+
+        # On empty input, restrict the pipeline to custom transform_functions
+        # — they're the only kind designed to handle empty input (returning
+        # a populated empty-state dict with template-required keys like
+        # `category_summary`). Declarative transforms (aggregations, joins)
+        # assume non-empty input. Recipes without any custom function get
+        # the same early-bail behavior as before. See CST-747.
+        if df.empty:
+            transforms_to_apply = [
+                t for t in (transforms or []) if getattr(t, "transform_function", None)
+            ]
+            if not transforms_to_apply:
+                self.logger.warning("No data to transform")
+                return pd.DataFrame()
+        else:
+            transforms_to_apply = list(transforms or [])
+
         self.logger.debug(f"Starting transformation with {len(df)} rows")
         self.logger.debug(f"DataFrame shape: {df.shape}")
         self.logger.debug(f"DataFrame columns: {list(df.columns)}")
 
         # Apply each transform in sequence
-        for i, transform in enumerate(transforms):
+        for i, transform in enumerate(transforms_to_apply):
             self.logger.debug(f"Applying transform {i+1}: {transform}")
             try:
                 # Check if this is a pandas transform function

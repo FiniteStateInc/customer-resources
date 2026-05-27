@@ -94,6 +94,7 @@ class MarkdownRenderer:
             "Component Remediation Package": self._render_component_remediation_package,
             "Component Impact": self._render_component_impact,
             "Scan Quality": self._render_scan_quality,
+            "CRA Compliance": self._render_cra_compliance,
         }
 
         # Try exact match first, then prefix match (handles scoped names
@@ -894,6 +895,22 @@ class MarkdownRenderer:
         parts.append(self._metadata_block(report_data, recipe))
         parts.append("")
 
+        # Column reference banner — sourced from recipe.output.columns.
+        # Lets the reader answer "what does this column mean?" without
+        # leaving the report. See _default_footer.html / xlsx Schema sheet
+        # for the equivalent surface in other formats.
+        if recipe.output.columns:
+            parts.append("## Column reference")
+            parts.append("")
+            parts.append("| Column | Source | Description |")
+            parts.append("|---|---|---|")
+            for col in recipe.output.columns:
+                # Escape pipes that would otherwise break the markdown table.
+                desc = col.description.replace("|", "\\|")
+                src = col.source.replace("|", "\\|")
+                parts.append(f"| `{col.name}` | {src} | {desc} |")
+            parts.append("")
+
         # Summary
         if not df.empty:
             sev_col = "Severity" if "Severity" in df.columns else "severity"
@@ -934,7 +951,9 @@ class MarkdownRenderer:
                 "Component Version",
                 "Status",
                 "Detected",
-                "# of known exploits",
+                "Exploit Maturity",
+                "# exploit signal categories",
+                "# in-the-wild exploitation signals",
                 "CWE",
             ]
             parts.append(self._df_to_table(df, columns=find_cols, max_rows=500))
@@ -2222,6 +2241,568 @@ class MarkdownRenderer:
                 for proj, issue in attention_rows:
                     parts.append(f"| {proj} | {issue} |")
                 parts.append("")
+
+        parts.append(self._footer())
+        return "\n".join(parts) + "\n"
+
+    # ── Tier 1: CRA Compliance ──────────────────────────────────────────
+
+    # Section header labels (emoji + text, stable across renders)
+    _CRA_SECTION_HEADERS: dict[str, str] = {
+        "sla_breach": "🔥 SLA-Breach Risk",
+        "newly_above": "🆕 Newly Above Threshold",
+        "re_emerged": "🔁 Re-emerged",
+        "still_in_triage": "⏰ Still in Triage",
+        "full_snapshot": "📋 Full Snapshot",
+    }
+
+    # Per-section column specs: (column_name, display_label) pairs.
+    _CRA_SLA_COLS: list[tuple[str, str]] = [
+        ("cve_id", "CVE"),
+        ("component", "Component"),
+        ("severity", "Severity"),
+        ("exploit_maturity", "Maturity"),
+        ("reachability_label", "Reachability"),
+        ("kev_source", "KEV Source"),
+        ("breach_status", "Breach Status"),
+        ("hours_until_cra_due", "Hours Until Due"),
+        ("cra_notification_deadline", "Notification Deadline"),
+        ("cisa_remediation_due", "CISA Remediation Due"),
+        # Threat Actors trails everything else — VulnCheck rows can list 30+
+        # actors so the cell is wide; keeping the breach-clock columns near
+        # the start preserves at-a-glance triage data.
+        ("threat_actor_names", "Threat Actors"),
+    ]
+    _CRA_NEWLY_ABOVE_COLS: list[tuple[str, str]] = [
+        ("cve_id", "CVE"),
+        ("component", "Component"),
+        ("severity", "Severity"),
+        ("cvss_score", "CVSS"),
+        ("crossed_to", "Crossed To"),
+        ("crossing_source", "Source"),
+        ("breach_status", "Breach Status"),
+        ("hours_until_cra_due", "Hours Until Due"),
+        ("cra_notification_deadline", "Notification Deadline"),
+        ("threat_actor_names", "Threat Actors"),
+    ]
+    _CRA_RE_EMERGED_COLS: list[tuple[str, str]] = [
+        ("cve_id", "CVE"),
+        ("component", "Component"),
+        ("previous_resolution", "Previous Resolution"),
+        ("resolution_date", "Resolution Date"),
+        ("crossed_to", "Crossed To"),
+        ("breach_status", "Breach Status"),
+        ("hours_until_cra_due", "Hours Until Due"),
+        ("cra_notification_deadline", "Notification Deadline"),
+        ("threat_actor_names", "Threat Actors"),
+    ]
+    _CRA_STILL_IN_TRIAGE_COLS: list[tuple[str, str]] = [
+        ("cve_id", "CVE"),
+        ("component", "Component"),
+        ("severity", "Severity"),
+        ("triage_age_days", "Triage Age (days)"),
+        ("epss_percentile", "EPSS"),
+        ("breach_status", "Breach Status"),
+        ("hours_until_cra_due", "Hours Until Due"),
+        ("cra_notification_deadline", "Notification Deadline"),
+    ]
+    _CRA_FULL_SNAPSHOT_COLS: list[tuple[str, str]] = [
+        ("cve_id", "CVE"),
+        ("component", "Component"),
+        ("severity", "Severity"),
+        ("cvss_score", "CVSS"),
+        ("exploit_maturity", "Maturity"),
+        ("reachability_label", "Reachability"),
+        ("status", "Status"),
+        ("breach_status", "Breach Status"),
+        ("cra_notification_deadline", "Notification Deadline"),
+    ]
+
+    # Per-section callout texts (customer-facing action guidance).
+    _CRA_SECTION_CALLOUTS: dict[str, str] = {
+        "sla_breach": (
+            "These vulnerabilities are flagged as actively exploited by the FS "
+            "platform. The `KEV Source` column shows which platform signal "
+            "triggered: `CISA` means the platform marked the CVE as CISA-listed, "
+            "`VcKEV` means FS's verified-compromise signal (exploitation observed "
+            "in the wild beyond what CISA tracks), `CISA+VcKEV` means both. "
+            "The 24-hour CRA notification clock anchors on the later of CISA's "
+            "`dateAdded` (when the CISA catalog join succeeds for this row) and "
+            "the platform's `detected_date` (when FS first observed this finding). "
+            "If `Notification Deadline` is empty, neither timestamp was "
+            "available — the row is flagged `Unknown Clock` and the 24-hour clock "
+            "cannot be computed. Identify which of your products contain the "
+            "listed components and either confirm a mitigation or file the "
+            "ENISA notification."
+        ),
+        "newly_above": (
+            "Exploit signals for these CVEs advanced in maturity during the report "
+            "window. They weren't CRA-relevant before, but a new KEV listing / "
+            "weaponization / ransomware or threat-actor attribution puts them in scope "
+            "now. Treat as the 'what changed today' list — identify affected products "
+            "and start the triage."
+        ),
+        "re_emerged": (
+            "CVEs you previously marked resolved or not-affected that have gained a new "
+            "exploit signal. Reverify the mitigation still holds. The "
+            "`previous_resolution` column shows how the finding was originally closed."
+        ),
+        "still_in_triage": (
+            "Open triage items not yet decided. `triage_age_days` shows how long each "
+            "has been pending. The risk: if exploit maturity advances on any of these, "
+            "they jump to 🆕 or 🔥 and the 24-hour clock starts."
+        ),
+        "full_snapshot": (
+            "Complete inventory of CRA-relevant findings in scope. Reference list, not "
+            "action items — the 🔥/🆕/🔁/⏰ sections above contain the rows that need "
+            "attention this run."
+        ),
+    }
+
+    @staticmethod
+    def _format_cra_cell(col: str, val: Any) -> str:
+        """Apply cosmetic formatting to a single CRA table cell value.
+
+        Fixes applied:
+        - None / NaN / "None" / "nan" → empty string
+        - hours_until_cra_due: float → rounded int + "h" suffix (e.g. "-570h")
+        - cra_notification_deadline / cisa_remediation_due: strip "T00:00:00Z"
+          so datetimes display as date-only strings
+        """
+        _DATE_COLS = ("cra_notification_deadline", "cisa_remediation_due")
+
+        # None / NaN / literal "None" / "nan" → empty
+        if val is None:
+            return ""
+        if isinstance(val, float) and math.isnan(val):
+            return ""
+        if isinstance(val, str) and val.lower() in ("none", "nan"):
+            return ""
+
+        # hours_until_cra_due: format as rounded integer hours
+        if col == "hours_until_cra_due":
+            try:
+                return f"{int(round(float(val)))}h"
+            except (ValueError, TypeError):
+                return str(val)
+
+        # Date columns: strip T00:00:00Z suffix
+        if col in _DATE_COLS and isinstance(val, str) and "T" in val:
+            return val.split("T")[0]
+
+        return _safe_str(val)
+
+    def _section_to_md_table(
+        self,
+        section_key: str,
+        df: pd.DataFrame,
+        columns: list[tuple[str, str]],
+        max_rows: int | None = None,
+    ) -> str:
+        """Render one CRA section as a markdown H3 block + table.
+
+        Args:
+            section_key: Key into _CRA_SECTION_HEADERS (e.g. "sla_breach").
+            df: DataFrame for this section.
+            columns: List of (column_name, display_label) pairs.
+            max_rows: If set and df has more rows, truncate and add a note.
+
+        Returns a complete markdown block starting with the H3 header.
+        """
+        label = self._CRA_SECTION_HEADERS.get(section_key, section_key)
+        n = len(df) if df is not None and not df.empty else 0
+        header = f"### {label} ({n})"
+
+        # Per-section callout as a blockquote
+        callout = self._CRA_SECTION_CALLOUTS.get(section_key, "")
+        callout_block = f"\n> *{callout}*\n" if callout else ""
+
+        if n == 0:
+            return f"{header}{callout_block}\n_No findings in this section._"
+
+        # Subset to available columns only (forward-compatible)
+        available = [(col, lbl) for col, lbl in columns if col in df.columns]
+        if not available:
+            # Fallback: render raw first 6 cols
+            available = [(c, c) for c in list(df.columns)[:6]]
+
+        col_names = [col for col, _ in available]
+        col_labels = [lbl for _, lbl in available]
+
+        lines = [
+            "| " + " | ".join(_escape_pipe(lbl) for lbl in col_labels) + " |",
+            "| " + " | ".join(["---"] * len(col_labels)) + " |",
+        ]
+
+        data = df.head(max_rows) if max_rows is not None else df
+        for _, row in data.iterrows():
+            cells = [
+                _escape_pipe(self._format_cra_cell(col, row.get(col, "")))
+                for col in col_names
+            ]
+            lines.append("| " + " | ".join(cells) + " |")
+
+        table = "\n".join(lines)
+
+        truncation_note = ""
+        if max_rows is not None and n > max_rows:
+            truncation_note = (
+                f"\n\n_Showing top {max_rows} of {n} — see CSV/XLSX for full set._"
+            )
+
+        return f"{header}{callout_block}\n{table}{truncation_note}"
+
+    def _get_cra_section_dfs(self, report_data: ReportData) -> dict[str, pd.DataFrame]:
+        """Return the CRA section DataFrames keyed by section name.
+
+        The pandas transform dispatcher (data_transformer.py:
+        _apply_pandas_transform_function) unwraps a dict return value:
+        it stuffs the full dict into
+        ``additional_data["transform_result"]`` and returns only the
+        "main" DataFrame as the function return.  By the time
+        ``ReportData`` is constructed, ``report_data.data`` may therefore
+        be ``main_df`` (a DataFrame) rather than the ``{main, sla_breach,
+        ...}`` dict that the renderer expects.
+
+        This helper checks both locations and always returns a dict with
+        all 6 expected keys, each guaranteed to be a DataFrame.
+        """
+        _KEYS = (
+            "main",
+            "sla_breach",
+            "newly_above",
+            "re_emerged",
+            "still_in_triage",
+            "full_snapshot",
+        )
+        data = report_data.data
+        if isinstance(data, dict):
+            # Engine preserved the dict (or tests pass it directly).
+            section_dict: dict[str, Any] = data
+        else:
+            # Engine unwrapped to main_df — sections are in additional_data.
+            ad = report_data.metadata.get("additional_data", {}) or {}
+            section_dict = ad.get("transform_result", {}) or {}
+            if not isinstance(section_dict, dict):
+                section_dict = {}
+
+        result: dict[str, pd.DataFrame] = {}
+        for key in _KEYS:
+            v = section_dict.get(key, pd.DataFrame())
+            result[key] = v if isinstance(v, pd.DataFrame) else pd.DataFrame()
+
+        # Fallback: if "main" is empty in section_dict but report_data.data
+        # is a non-empty DataFrame, that DataFrame IS main.
+        if (
+            result["main"].empty
+            and isinstance(report_data.data, pd.DataFrame)
+            and not report_data.data.empty
+        ):
+            result["main"] = report_data.data
+
+        return result
+
+    def _render_cra_compliance(self, recipe: Recipe, report_data: ReportData) -> str:
+        """Render the CRA Compliance morning-queue report as structured Markdown.
+
+        Implements spec §7:
+          1. Metadata block
+          2. ⚠️ CRA Notification Obligation banner (or ✅ all-clear)
+          3. KPI table
+          4–8. Five section tables (SLA-Breach, Newly Above, Re-emerged,
+               Still in Triage, Full Snapshot)
+          9. CISA-vs-CRA footnote
+        """
+        sections = self._get_cra_section_dfs(report_data)
+        main_df = sections["main"]
+        sla_df = sections["sla_breach"]
+        newly_df = sections["newly_above"]
+        re_df = sections["re_emerged"]
+        triage_df = sections["still_in_triage"]
+        snapshot_df = sections["full_snapshot"]
+
+        # ── 1. Metadata block ────────────────────────────────────────────
+        ad = self._get_additional_data(report_data)
+        recipe_params: dict[str, Any] = ad.get("recipe_parameters") or {}
+        meta = report_data.metadata
+
+        meta_rows: list[tuple[str, str]] = []
+        domain = meta.get("domain", "")
+        if domain:
+            meta_rows.append(("Domain", domain))
+
+        # Scope: prefer folder > project
+        # For project scope, prefer metadata["project_name"] (human-readable)
+        # over project_filter which may be a raw numeric ID.
+        folder = meta.get("folder_name", "") or meta.get("folder_filter", "")
+        project_name = meta.get("project_name", "") or ""
+        project = meta.get("project_filter", "")
+        scope_project = project_name or project
+        if folder:
+            meta_rows.append(("Scope", f"folder: {folder}"))
+        elif scope_project:
+            meta_rows.append(("Scope", f"project: {scope_project}"))
+
+        meta_rows.append(
+            ("Generated", datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        )
+
+        # Threshold tiers — prefer the effective threshold the transform
+        # actually used (reflects CLI override + unfilterable-tier strategy
+        # resolution); fall back to recipe_params for the YAML default.
+        threshold = ad.get("effective_threshold") or recipe_params.get(
+            "exploit_maturity_threshold", []
+        )
+        if threshold:
+            meta_rows.append(("Threshold Tiers", ", ".join(str(t) for t in threshold)))
+
+        # --since window (stored by window.py if available)
+        since_start = meta.get("since_start", "") or ad.get("since_start", "")
+        since_end = meta.get("since_end", "") or ad.get("since_end", "")
+        if since_start and since_end:
+            meta_rows.append(("Since Window", f"{since_start} → {since_end}"))
+        elif since_start:
+            meta_rows.append(("Since Window", f"From {since_start}"))
+
+        # Snapshot-diff mode
+        config = ad.get("config")
+        snap_mode = getattr(config, "snapshot_diff", None) or recipe_params.get(
+            "snapshot_diff", ""
+        )
+        if snap_mode:
+            meta_rows.append(("Snapshot-diff Mode", str(snap_mode)))
+
+        if meta_rows:
+            metadata_block = "\n".join(
+                ["## Metadata", "| Field | Value |", "|-------|-------|"]
+                + [
+                    f"| {_escape_pipe(str(f))} | {_escape_pipe(str(v))} |"
+                    for f, v in meta_rows
+                ]
+            )
+        else:
+            metadata_block = ""
+
+        # ── 2. KPI counts (action-driven) ────────────────────────────────
+        # Replaces P1/P2/P3 + KEV which were low-signal at a glance. New
+        # set surfaces what needs immediate action: OVERDUE deadlines,
+        # findings without a computable clock, reachable count, and the
+        # in-triage pipeline.
+        total_findings = len(main_df)
+        in_triage_count = (
+            int((main_df["status"] == "IN_TRIAGE").sum())
+            if not main_df.empty and "status" in main_df.columns
+            else 0
+        )
+
+        # Count breach_status across ALL queue + 📋 rows (R4-2). UX-10
+        # spread the breach columns into 🆕/🔁/⏰/📋; `main_df` is the
+        # already-deduplicated queue-wins union, so reading from it
+        # gives KPIs that match what the operator sees in the tables.
+        def _breach_count(value: str) -> int:
+            if main_df.empty or "breach_status" not in main_df.columns:
+                return 0
+            return int((main_df["breach_status"] == value).sum())
+
+        overdue_count = _breach_count("OVERDUE")
+        due_soon_count = _breach_count("DUE_SOON")
+        unknown_clock_count = _breach_count("UNKNOWN")
+        reachable_count = (
+            int((main_df["reachability_label"] == "REACHABLE").sum())
+            if not main_df.empty and "reachability_label" in main_df.columns
+            else 0
+        )
+
+        # Reachability is only populated for binary-scanned projects. When
+        # every row has UNKNOWN/empty reachability_label, suppress the KPI
+        # row + the 📋 column. Single source of truth in
+        # cra.sections.has_reachability_data so HTML and MD can't diverge.
+        from fs_report.cra.sections import has_reachability_data
+
+        has_reachability = has_reachability_data(
+            (main_df, sla_df, newly_df, re_df, triage_df, snapshot_df)
+        )
+
+        # ── 3. Notification Obligation banner ────────────────────────────
+        sla_count = len(sla_df) if not sla_df.empty else 0
+        if total_findings == 0 and sla_count == 0:
+            banner = "✅ No CRA-relevant findings in scope this run."
+        elif sla_count > 0:
+            _vuln_word = "vulnerability" if sla_count == 1 else "vulnerabilities"
+            banner = (
+                f"⚠️ **{sla_count} actively-exploited {_vuln_word} detected** in your portfolio. "
+                "EU CRA Article 14 requires notification to ENISA within 24 hours "
+                "of becoming aware. The 🔥 SLA-Breach section lists deadlines."
+            )
+        else:
+            banner = (
+                f"ℹ️ **{total_findings} CRA-relevant finding"
+                f"{'s' if total_findings != 1 else ''}** in scope. "
+                "No findings currently require immediate CRA Article 14 notification."
+            )
+
+        # Period KPI — humanized --since window so the customer sees the
+        # report's time span at a glance ("24h", "7d", "30d"). Falls back
+        # from additional_data to top-level metadata (matches the
+        # since_label code path above).
+        from fs_report.cra.sections import format_since_period_label
+
+        period_label = format_since_period_label(
+            ad.get("since_start", "") or meta.get("since_start", "") or "",
+            ad.get("since_end", "") or meta.get("since_end", "") or "",
+        )
+
+        kpi_lines = [
+            "## KPI Summary",
+            "| Metric | Value |",
+            "|--------|-------|",
+            f"| Period | {period_label} |",
+            f"| Total Findings | {total_findings} |",
+            f"| 🔥 OVERDUE | {overdue_count} |",
+            f"| DUE_SOON | {due_soon_count} |",
+            f"| Unknown Clock | {unknown_clock_count} |",
+        ]
+        if has_reachability:
+            kpi_lines.append(f"| Reachable | {reachable_count} |")
+        kpi_lines.append(f"| In Triage | {in_triage_count} |")
+        kpi_table = "\n".join(kpi_lines)
+
+        # ── Preamble — customer-facing usage guidance ────────────────────
+        preamble = (
+            "## How to use this report\n\n"
+            "This report alerts you when exploits for vulnerabilities in your\n"
+            "portfolio advance in maturity — newly added to CISA KEV, becoming\n"
+            "weaponized, or gaining ransomware/threat-actor attribution. Use it to:\n\n"
+            "  1. Identify which of your products contain the affected components.\n"
+            "  2. Test those products to verify exposure.\n\n"
+            "Under EU CRA Article 14, manufacturers must notify ENISA within 24 hours\n"
+            "of becoming aware of an actively exploited vulnerability in a product\n"
+            "with digital elements. The 🔥 SLA-Breach Risk section flags findings\n"
+            "where that clock applies."
+        )
+
+        # ── Assemble parts ───────────────────────────────────────────────
+        parts = ["# CRA Compliance", ""]
+        if metadata_block:
+            parts.append(metadata_block)
+            parts.append("")
+
+        parts.append(preamble)
+        parts.append("")
+
+        parts.append(banner)
+        parts.append("")
+
+        parts.append(kpi_table)
+        parts.append("")
+
+        # ── 4. SLA-Breach Risk ───────────────────────────────────────────
+        # Reachability column is conditional (same UX-5 gate as 📋).
+        from fs_report.cra.sections import filter_reachability_cols
+
+        sla_cols = filter_reachability_cols(
+            self._CRA_SLA_COLS, has_reachability=has_reachability
+        )
+        parts.append(
+            self._section_to_md_table(
+                "sla_breach",
+                sla_df,
+                sla_cols,
+            )
+        )
+        parts.append("")
+
+        # ── 5. Newly Above Threshold ─────────────────────────────────────
+        parts.append(
+            self._section_to_md_table(
+                "newly_above",
+                newly_df,
+                list(self._CRA_NEWLY_ABOVE_COLS),
+            )
+        )
+        parts.append("")
+
+        # ── 6. Re-emerged ────────────────────────────────────────────────
+        parts.append(
+            self._section_to_md_table(
+                "re_emerged",
+                re_df,
+                list(self._CRA_RE_EMERGED_COLS),
+            )
+        )
+        parts.append("")
+
+        # ── 7. Still in Triage ───────────────────────────────────────────
+        parts.append(
+            self._section_to_md_table(
+                "still_in_triage",
+                triage_df,
+                list(self._CRA_STILL_IN_TRIAGE_COLS),
+            )
+        )
+        parts.append("")
+
+        # ── 8. Full Snapshot (top 500 by severity+cvss+epss) ─────────────
+        _FULL_SNAPSHOT_MAX = 500
+        if not snapshot_df.empty:
+            # Sort: severity rank desc, cvss desc, epss desc — then truncate
+            sort_df = snapshot_df.copy()
+            _sev_rank_map = {
+                "CRITICAL": 4,
+                "HIGH": 3,
+                "MEDIUM": 2,
+                "LOW": 1,
+                "INFO": 0,
+                "UNKNOWN": 0,
+            }
+            if "severity" in sort_df.columns:
+                sort_df["_sev_rank"] = sort_df["severity"].apply(
+                    lambda s: _sev_rank_map.get(str(s).upper(), 0)
+                )
+                sort_cols = ["_sev_rank"]
+                sort_asc = [False]
+                if "cvss_score" in sort_df.columns:
+                    sort_cols.append("cvss_score")
+                    sort_asc.append(False)
+                if "epss_score" in sort_df.columns:
+                    sort_cols.append("epss_score")
+                    sort_asc.append(False)
+                sort_df = sort_df.sort_values(sort_cols, ascending=sort_asc)
+                sort_df = sort_df.drop(columns=["_sev_rank"])
+                sort_df = sort_df.reset_index(drop=True)
+        else:
+            sort_df = snapshot_df
+
+        # Strip reachability columns when the project doesn't populate them
+        # (single source of truth: filter_reachability_cols).
+        snapshot_cols = filter_reachability_cols(
+            self._CRA_FULL_SNAPSHOT_COLS, has_reachability=has_reachability
+        )
+        parts.append(
+            self._section_to_md_table(
+                "full_snapshot",
+                sort_df,
+                snapshot_cols,
+                max_rows=_FULL_SNAPSHOT_MAX,
+            )
+        )
+        parts.append("")
+
+        # ── 9. CISA-vs-CRA Footnote ──────────────────────────────────────
+        cisa_footnote = (
+            "---\n"
+            "**CISA vs. CRA SLA Clarification**\n\n"
+            "The `cisa_remediation_due` date shown in the SLA-Breach table is the "
+            "US federal BOD 22-01 (Binding Operational Directive) deadline from the "
+            "CISA Known Exploited Vulnerabilities (KEV) catalog. It is **not** the "
+            "CRA Article 14 notification clock.\n\n"
+            "The CRA 24-hour notification obligation runs from `cra_notification_at` "
+            "(the later of CISA's `dateAdded` and your platform's `detected_date`). "
+            "Both clocks are shown together in the SLA-Breach table for operational "
+            "convenience, but they are legally distinct obligations."
+        )
+        parts.append(cisa_footnote)
+        parts.append("")
 
         parts.append(self._footer())
         return "\n".join(parts) + "\n"

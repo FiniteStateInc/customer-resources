@@ -22,10 +22,10 @@ Starting in v1.9.6, Executive Dashboard runs in **summary mode** by default. Ins
 
 ```bash
 # Default: summary mode
-poetry run fs-report run --recipe "Executive Dashboard" --output ./reports
+fs-report run --recipe "Executive Dashboard" --output ./reports
 
 # Legacy per-finding pipeline
-poetry run fs-report run --recipe "Executive Dashboard" --detailed --output ./reports
+fs-report run --recipe "Executive Dashboard" --detailed --output ./reports
 ```
 
 ---
@@ -45,10 +45,10 @@ By default, fs-report only fetches findings from the **latest version** of each 
 
 ```bash
 # Default: Latest version only (recommended for most use cases)
-poetry run fs-report --period 1w
+fs-report --period 1w
 
 # Include all historical versions when needed
-poetry run fs-report --period 1w --all-versions
+fs-report --period 1w --all-versions
 ```
 
 ---
@@ -71,17 +71,17 @@ The reporting kit includes an intelligent caching system that significantly impr
 
 ### Performance Benefits
 
-- **Reduced API Calls**: Up to 67% reduction when running multiple reports
-- **Faster Execution**: Subsequent reports run much faster
-- **Reduced Data Transfer**: Less bandwidth usage
-- **Better Reliability**: Resume capability for large reports
+- **Reduced API calls** when several recipes share the same scope and run in one invocation (the underlying `/findings` fetch is shared)
+- **Faster subsequent reports** that reuse already-fetched pages
+- **Lower bandwidth** for the second and later recipes in a multi-recipe run
+- **Resume capability** for large reports interrupted mid-fetch
 
 ### Monitoring Cache Usage
 
 Use `--verbose` to see detailed cache information:
 
 ```bash
-poetry run fs-report --verbose
+fs-report --verbose
 ```
 
 Look for these indicators:
@@ -123,13 +123,13 @@ For long-running reports or iterative development, the SQLite cache provides per
 
 ```bash
 # Enable persistent cache with 1-hour TTL
-poetry run fs-report --cache-ttl 1h
+fs-report --cache-ttl 1h
 
 # Other TTL formats: 30m, 2h, 1d, 1w
-poetry run fs-report --cache-ttl 30m
+fs-report --cache-ttl 30m
 
 # Force fresh data (ignore any cached data)
-poetry run fs-report --no-cache
+fs-report --no-cache
 
 # Clear all cached data
 fs-report cache clear --api
@@ -162,7 +162,7 @@ Progress is now tracked in SQLite (when `--cache-ttl` is set) for better crash r
 
 ```bash
 # If a report is interrupted, simply rerun the same command
-poetry run fs-report --period 1w --cache-ttl 1h
+fs-report --period 1w --cache-ttl 1h
 
 # The tool automatically resumes from where it left off
 # Look for: "Resuming from offset X, Y records already fetched"
@@ -177,7 +177,7 @@ JSON progress files (`*_progress.json`) are deprecated. If you have old progress
 rm ~/reports/*_progress.json
 
 # Use SQLite cache instead
-poetry run fs-report --cache-ttl 1h
+fs-report --cache-ttl 1h
 ```
 
 ## Performance Tips
@@ -186,40 +186,40 @@ poetry run fs-report --cache-ttl 1h
 
 ```bash
 # Good: Specific date range
-poetry run fs-report --start 2024-01-01 --end 2024-01-31
+fs-report --start 2024-01-01 --end 2024-01-31
 
 # Better: Use period shortcuts for recent data
-poetry run fs-report --period 1m
-poetry run fs-report --period 7d
+fs-report --period 1m
+fs-report --period 7d
 ```
 
 ### 2. Filter by Project When Possible
 
 ```bash
 # Good: All projects
-poetry run fs-report --period 1w
+fs-report --period 1w
 
 # Better: Specific project
-poetry run fs-report --period 1w --project "MyProject"
+fs-report --period 1w --project "MyProject"
 ```
 
 ### 3. Run Multiple Reports Together
 
 ```bash
 # Efficient: Run all reports together to share cache
-poetry run fs-report --period 1w --recipe "Executive Summary" --recipe "Component Vulnerability Analysis" --recipe "Findings by Project"
+fs-report --period 1w --recipe "Executive Summary" --recipe "Component Vulnerability Analysis" --recipe "Findings by Project"
 
 # Less efficient: Run reports separately
-poetry run fs-report --period 1w --recipe "Executive Summary"
-poetry run fs-report --period 1w --recipe "Component Vulnerability Analysis"
-poetry run fs-report --period 1w --recipe "Findings by Project"
+fs-report --period 1w --recipe "Executive Summary"
+fs-report --period 1w --recipe "Component Vulnerability Analysis"
+fs-report --period 1w --recipe "Findings by Project"
 ```
 
 ### 4. Monitor Performance
 
 ```bash
 # Use verbose mode to see cache usage and performance
-poetry run fs-report --verbose --period 1w
+fs-report --verbose --period 1w
 ```
 
 ## Troubleshooting Performance Issues
@@ -244,31 +244,13 @@ poetry run fs-report --verbose --period 1w
 2. **Check Progress Files**: Resume instead of restarting
 3. **Monitor Verbose Output**: Watch for memory-related messages
 
-## Performance Metrics
+## Order-of-Magnitude Expectations
 
-### Typical Performance Improvements
+These numbers come from internal portfolio runs and vary widely by tenant size, scope, and network. Treat as ballpark, not guarantees.
 
-- **Cache Sharing**: 67% reduction in API calls when running multiple reports
-- **Resume Capability**: 50-90% time savings when resuming interrupted reports
-- **API-Level Filtering**: 80-95% reduction in data transfer with project filters
-- **Progress Files**: Eliminate redundant API calls for large datasets
+- **Cache sharing across recipes in one invocation**: substantial — the per-finding fetch happens once and is reused. Two or three recipes in one command typically run nearly as fast as one.
+- **Resume on a partially-fetched recipe**: skips already-paged offsets entirely; the savings scale with how much was completed before interruption.
+- **Project / version scoping at the API level**: cuts data transfer by however much narrower the scope is than the full portfolio (often 1–2 orders of magnitude for a single project on a large portfolio).
+- **`--current-version-only` (default)**: skips historical version findings; on a portfolio with many versions per project, this is typically a multi-x reduction over `--all-versions`.
 
-### Example Performance Comparison
-
-**Without Optimizations:**
-```
-Executive Summary: 2 API calls (178,375 + 8,338 records)
-CVA: 2 API calls (178,375 + 11,424 records)
-Findings by Project: 2 API calls (178,375 + 8,338 records)
-Total: 6 API calls, ~2GB+ data transfer
-```
-
-**With Optimizations:**
-```
-Executive Summary: 1 API call (38,879 records)
-CVA: Uses cache
-Findings by Project: Uses cache
-Total: 1 API call, minimal data transfer
-```
-
-This represents a **83% reduction** in API calls and **95% reduction** in data transfer.
+If you want concrete numbers for your portfolio, run with `--verbose` and compare a cold run to a warm cache-hit run.

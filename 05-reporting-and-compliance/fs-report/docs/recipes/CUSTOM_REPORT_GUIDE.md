@@ -1,5 +1,8 @@
 # Creating Custom Reports with Recipes
 
+> **⚠️ This guide is outdated and slated for a rewrite after the 2.0 release.**
+> Several examples and field references no longer match the current recipe schema or API shape. Use the built-in recipes under `fs_report/recipes/` as your reference until the rewrite lands.
+
 A comprehensive guide to creating custom security reports using the Finite State Reporting Kit's YAML recipe system.
 
 ## Table of Contents
@@ -597,7 +600,9 @@ row['Project Name']             # Project name
 row['CVE ID']                   # CVE identifier
 row['Component']                # Affected component
 row['CVSS']                     # CVSS score
-row['# of known exploits']      # Exploit count
+row['Exploit Maturity']                       # Single maturity tier (poc / weaponized / empty)
+row['# exploit signal categories']            # Count of exploitInfo signal categories
+row['# in-the-wild exploitation signals']     # Count of botnet/ransomware/threat-actor signals
 ```
 
 ## Best Practices

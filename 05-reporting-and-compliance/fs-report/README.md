@@ -32,6 +32,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Component Vulnerability Analysis | Riskiest components across the portfolio |
 | Findings by Project | Complete findings inventory per project with CVE details, severity, and platform links |
 | Component List | Software inventory (SBOM) for compliance |
+| CVE Component Evidence | For a project version, lists CVE-bearing components with their associated CVE IDs and the firmware file paths where each was detected; intended for per-version triage *(on-demand, requires `--project` + `--version`)* |
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
 | Configuration Analysis Triage | Config/secrets/crypto triage — private keys, hardcoded credentials, insecure configs *(on-demand)* |
 | License Report | Component license risk classification (Permissive, Copyleft, Proprietary) with policy analysis |
@@ -41,7 +42,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Component Remediation Package | Zero-day remediation guidance for a component — upgrade paths, breaking changes, mitigations, and AI-powered recommendations *(on-demand)* |
 | Component Impact | Portfolio blast radius for a named component — affected projects, versions, and severity breakdown *(on-demand)* |
 | Version Comparison | Full version and component changelog (every version pair); fixed/new findings and component churn per step; CSV/XLSX include summary plus detail *(on-demand)* |
-| CRA Compliance | EU Cyber Resilience Act — exploited and KEV-listed vulnerabilities requiring regulatory notification *(on-demand)* |
+| CRA Compliance | EU Cyber Resilience Act Article 14 — 5-section morning-queue (🔥 SLA-Breach, 🆕 Newly Above Threshold, 🔁 Re-emerged, ⏰ Still-in-Triage, 📋 Snapshot) with CISA KEV notification clock, action-driven KPIs (OVERDUE / DUE_SOON / Unknown Clock / Reachable / In Triage), VulnCheck threat-actor evidence on queue rows, and `--since` delta detection for daily automation runs *(on-demand)* |
 | False Positive Analysis | Surface likely false positives using mechanical checks and AI applicability analysis; auto-apply VEX with `--autotriage` *(on-demand)* |
 | Scan Quality | Per-asset scan coverage and quality signals — scan type gaps and reachability unknowns *(on-demand)* |
 
@@ -207,6 +208,17 @@ fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --ai
 fs-report run --recipe "Remediation Package" --project "MyProject"
 fs-report run --recipe "Remediation Package" --project "MyProject" --ai
 fs-report run --recipe "Remediation Package" --folder "Product Line A"
+```
+
+**CVE Component Evidence** — per-version triage: every CVE-bearing component with its CVE IDs and the firmware file paths where it was detected. Scoped to a single project version; uses the same `affected==<componentId>` findings join the platform UI uses. The `Evidence File Paths` column comes from an internal endpoint (`/api/fs/v1/.../evidence`) — the existing X-Authorization token works against it. Per-component calls are parallelized and cached; lower `FS_REPORT_EVIDENCE_WORKERS` (default 5) if the internal endpoint starts returning 500s.
+
+```bash
+fs-report run --recipe "CVE Component Evidence" \
+    --project "MyProject" --version 1234567890 --cache-ttl 4h
+fs-report run --recipe "CVE Component Evidence" \
+    --project "MyProject" --version "v1.2.3" --cache-ttl 4h     # version name also works
+FS_REPORT_EVIDENCE_WORKERS=1 fs-report run \
+    --recipe "CVE Component Evidence" --project "MyProject" --version 1234567890
 ```
 
 **Persistent cache** — crash recovery and faster reruns:

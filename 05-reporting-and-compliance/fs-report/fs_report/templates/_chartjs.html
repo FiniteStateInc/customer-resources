@@ -1,0 +1,23 @@
+{# Chart.js library include used by recipe templates that emit <canvas>
+   elements (Executive Summary, Assessment Overview, User Activity,
+   standalone chart-bearing templates, etc.).
+
+   Placed in this partial so a future version bump is a one-file change
+   and so chart-less base-extending recipes (Findings by Project, FPA,
+   Workflow Summary) don't pay the ~80 KB jsDelivr fetch.
+
+   Must be included BEFORE _standalone_shell.html so the shell's
+   Chart.defaults block (which checks `typeof Chart !== 'undefined'`)
+   actually picks up the design-token font/color/border defaults.
+
+   Skipped in pdf_target mode — WeasyPrint can't execute JS. The renderer
+   builds a `server_svgs` dict (keyed by recipe.output.charts[].name) in
+   pdf_target/fragment_mode, but individual base-extending templates
+   (executive_summary, user_activity, assessment_overview) still emit
+   raw <canvas> instead of consuming server_svgs — so PDF/fragment
+   renders for those reports currently have blank chart slots. Tracked
+   as a follow-up; the standalone chart-bearing templates already use
+   server_svgs correctly. #}
+{% if not pdf_target %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+{% endif %}

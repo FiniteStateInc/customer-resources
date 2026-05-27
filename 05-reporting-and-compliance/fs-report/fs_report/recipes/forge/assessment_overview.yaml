@@ -1,5 +1,6 @@
 name: "Assessment Overview"
 category: assessment
+nav_category: Executive
 description: "Internal management snapshot for a project or folder."
 execution_order: 25
 auto_run: false

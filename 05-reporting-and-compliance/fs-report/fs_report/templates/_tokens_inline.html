@@ -1,0 +1,10 @@
+{# Inline the canonical design tokens.
+   Used by standalone HTML reports and the WeasyPrint PDF path —
+   the latter can't fetch /static/canonical/css/tokens.css over HTTP
+   or resolve /static/... paths against the temp dir.
+
+   The tokens_inline_css context var is the verbatim contents of
+   fs_report/static/css/tokens.css, read once at HTMLRenderer init
+   time. Browser-side --serve consumers (Phase 2) reference the
+   canonical mount directly instead of inlining. #}
+<style>{{ tokens_inline_css | default('') | safe }}</style>

@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 
+{% block chart_libs %}{% include "_chartjs.html" %}{% endblock %}
+
 {% block title %}Assessment Overview — {{ scan_metadata.project_name if scan_metadata else recipe_name }}{% endblock %}
 
 {% block content %}

@@ -113,6 +113,19 @@ class ReportRenderer:
 
         generated_files = []
 
+        # Schema sidecar — emitted unconditionally when recipe.output.columns
+        # is set, before format-specific branches. CSV/JSON consumers can read
+        # column docs from the JSON sidecar; XLSX gets its own Schema sheet
+        # and HTML/MD get an inline column-reference banner. Doing this here
+        # (rather than inside _render_table_formats) means JSON-only or
+        # HTML-only format configurations still get the sidecar.
+        if recipe.output.columns:
+            base_filename = self._sanitize_filename(recipe.name)
+            sidecar_path = recipe_output_dir / f"{base_filename}_schema.json"
+            self._write_schema_sidecar(recipe, sidecar_path)
+            generated_files.append(str(sidecar_path))
+            self.logger.debug(f"Generated schema sidecar: {sidecar_path}")
+
         # Generate table-based formats if requested
         if any(fmt in formats for fmt in ["csv", "xlsx"]):
             generated_files += self._render_table_formats(
@@ -141,6 +154,124 @@ class ReportRenderer:
 
         return generated_files
 
+    @staticmethod
+    def _schema_sheet(recipe: Recipe) -> tuple[str, pd.DataFrame] | None:
+        """Build a `("Schema", df)` tuple for any recipe with output.columns set.
+
+        Multi-sheet XLSX branches call this and append the result to their
+        sheets list. Returns None when the recipe doesn't define output.columns,
+        so calling branches can ignore the value cleanly.
+        """
+        cols = recipe.output.columns
+        if not cols:
+            return None
+        return (
+            "Schema",
+            pd.DataFrame(
+                [
+                    {
+                        "Column": c.name,
+                        "Source": c.source,
+                        "Description": c.description,
+                    }
+                    for c in cols
+                ]
+            ),
+        )
+
+    @staticmethod
+    def _write_schema_sidecar(recipe: Recipe, sidecar_path: Path) -> None:
+        """Write the column schema as a sidecar JSON file next to data files.
+
+        CSV and JSON outputs can't carry inline column documentation, so
+        integrators consuming those formats get a companion `<recipe>_schema.json`
+        with the same content as the XLSX Schema sheet and HTML/MD column
+        reference. No-op when the recipe doesn't define output.columns.
+        """
+        cols = recipe.output.columns
+        if not cols:
+            return
+        sidecar_path.write_text(
+            json.dumps(
+                {
+                    "recipe": recipe.name,
+                    "columns": [
+                        {
+                            "name": c.name,
+                            "source": c.source,
+                            "description": c.description,
+                        }
+                        for c in cols
+                    ],
+                },
+                indent=2,
+            )
+        )
+
+    def _executive_dashboard_tables(
+        self, recipe: Recipe, additional_data: dict[str, Any]
+    ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+        """Return (project_table_df, top_risk_products_df) for Executive Dashboard.
+
+        Both come from ``additional_data["transform_result"]``. CSV and XLSX
+        branches read from the same source here so they can't drift
+        independently — earlier the CSV branch silently emitted a 1-byte
+        file while the XLSX renderer produced full output, because each
+        side was pulling from a different place.
+
+        Accepts either ``list[dict]`` or ``pd.DataFrame`` for either field
+        and normalises to DataFrame. Returns ``None`` for either slot if
+        the field is absent or empty.
+
+        Logs a WARNING when ``project_table`` is missing/empty — that's
+        the specific symptom the regression test guards against, so we
+        want it visible in logs rather than just rolling back to empty
+        output. Returns ``(None, None)`` (no warning) when the recipe
+        isn't Executive Dashboard.
+        """
+        if recipe.name != "Executive Dashboard":
+            return (None, None)
+
+        transform_result = additional_data.get("transform_result")
+        if not isinstance(transform_result, dict):
+            self.logger.warning(
+                "Executive Dashboard: additional_data['transform_result'] is "
+                "%s, expected dict. CSV/XLSX will fall back to top-level data.",
+                type(transform_result).__name__,
+            )
+            return (None, None)
+
+        def _to_df(val: Any) -> pd.DataFrame | None:
+            if val is None:
+                return None
+            if isinstance(val, pd.DataFrame):
+                return val if not val.empty else None
+            try:
+                df = pd.DataFrame(val)
+            except (ValueError, TypeError) as exc:
+                self.logger.warning(
+                    "Executive Dashboard: could not normalise value of type "
+                    "%s to DataFrame: %s",
+                    type(val).__name__,
+                    exc,
+                )
+                return None
+            return df if not df.empty else None
+
+        project_df = _to_df(transform_result.get("project_table"))
+        top_risk_df = _to_df(transform_result.get("top_risk_products"))
+
+        if project_df is None:
+            self.logger.warning(
+                "Executive Dashboard: transform_result['project_table'] is "
+                "missing or empty. CSV/XLSX will fall back to top-level data, "
+                "which is typically empty for this recipe — expect a near-"
+                "empty CSV / single-sheet XLSX unless the transform stage "
+                "populated `data` directly."
+            )
+
+        return (project_df, top_risk_df)
+
     def _render_table_formats(
         self,
         recipe: Recipe,
@@ -164,6 +295,14 @@ class ReportRenderer:
 
             additional_data = report_data.metadata.get("additional_data", {})
             transform_result = additional_data.get("transform_result", {})
+            # Executive Dashboard: resolve the two summary DataFrames ONCE
+            # here, then reuse them in both the CSV and XLSX branches. If
+            # we called the helper per-format the missing-`project_table`
+            # WARNING would fire twice for a default `formats: [csv, xlsx]`
+            # run, which made the qabot/CI logs noisier than necessary.
+            ed_project_df, ed_top_risk_df = self._executive_dashboard_tables(
+                recipe, additional_data
+            )
             detail_findings = additional_data.get("detail_findings")
             detail_findings_churn = additional_data.get("detail_findings_churn")
             detail_component_churn = additional_data.get("detail_component_churn")
@@ -260,9 +399,20 @@ class ReportRenderer:
             # CSV output
             if "csv" in formats:
                 csv_path = output_dir / f"{base_filename}.csv"
-                self.csv_renderer.render(table_data, csv_path)
+                # Executive Dashboard reuses ed_project_df / ed_top_risk_df
+                # computed at the top of this method (see comment there).
+                # The helper returned (None, None) for any other recipe,
+                # so the conditional below is a no-op outside the dashboard.
+                if ed_project_df is not None:
+                    self.csv_renderer.render(ed_project_df, csv_path)
+                else:
+                    self.csv_renderer.render(table_data, csv_path)
                 self.logger.debug(f"Generated CSV: {csv_path}")
                 generated_files.append(str(csv_path))
+                if ed_top_risk_df is not None:
+                    top_risk_csv = output_dir / f"{base_filename}_Top_Risk_Products.csv"
+                    self.csv_renderer.render(ed_top_risk_df, top_risk_csv)
+                    generated_files.append(str(top_risk_csv))
                 if has_detail and not detail_findings_df.empty:
                     detail_csv = output_dir / f"{base_filename}_Detail_Findings.csv"
                     self.csv_renderer.render(detail_findings_df, detail_csv)
@@ -306,6 +456,15 @@ class ReportRenderer:
                 self._write_vc_progression_xlsx(vc_progression_df, progression_xlsx)
                 self.logger.debug(f"Generated VC Progression XLSX: {progression_xlsx}")
                 generated_files.append(str(progression_xlsx))
+            # Schema sidecar lives at the render() entry point (above the
+            # format-specific branches) so it ships for every format combo
+            # including JSON-only / HTML-only configurations.
+
+            # Resolve the schema sheet tuple once and append it to whichever
+            # multi-sheet branch ends up handling this recipe. Eliminates the
+            # need for each branch to repeat the construction.
+            schema_sheet = self._schema_sheet(recipe)
+
             # XLSX output
             if "xlsx" in formats:
                 xlsx_path = output_dir / f"{base_filename}.xlsx"
@@ -323,28 +482,23 @@ class ReportRenderer:
                         and not detail_component_churn_df.empty
                     ):
                         sheets.append(("Component Churn", detail_component_churn_df))
+                    if schema_sheet is not None:
+                        sheets.append(schema_sheet)
                     self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
                 elif recipe.name == "Executive Dashboard":
-                    # Executive Dashboard: multi-sheet with Project Summary + Top Risk Products
-                    transform_result = additional_data.get("transform_result", {})
-                    if isinstance(transform_result, dict):
-                        project_table_data = transform_result.get("project_table")
-                        top_risk_data = transform_result.get("top_risk_products")
-                        ed_sheets: list[tuple[str, Any]] = []
-                        if project_table_data:
-                            ed_sheets.append(
-                                ("Project Summary", pd.DataFrame(project_table_data))
-                            )
-                        if top_risk_data:
-                            ed_sheets.append(
-                                ("Top Risk Products", pd.DataFrame(top_risk_data))
-                            )
-                        if ed_sheets:
-                            self.xlsx_renderer.render_multi_sheet(ed_sheets, xlsx_path)
-                        else:
-                            self.xlsx_renderer.render(
-                                table_data, xlsx_path, recipe.name
-                            )
+                    # Executive Dashboard: multi-sheet with Project Summary +
+                    # Top Risk Products. Reuses ed_project_df / ed_top_risk_df
+                    # computed once at the top of this method — same source
+                    # the CSV branch uses, can't drift.
+                    ed_sheets: list[tuple[str, Any]] = []
+                    if ed_project_df is not None:
+                        ed_sheets.append(("Project Summary", ed_project_df))
+                    if ed_top_risk_df is not None:
+                        ed_sheets.append(("Top Risk Products", ed_top_risk_df))
+                    if schema_sheet is not None:
+                        ed_sheets.append(schema_sheet)
+                    if ed_sheets:
+                        self.xlsx_renderer.render_multi_sheet(ed_sheets, xlsx_path)
                     else:
                         self.xlsx_renderer.render(table_data, xlsx_path, recipe.name)
                 elif recipe.name == "Component List":
@@ -425,6 +579,8 @@ class ReportRenderer:
                         if isinstance(cop_dist, pd.DataFrame) and not cop_dist.empty:
                             cl_sheets.append(("Copyleft Distribution", cop_dist))
 
+                        if schema_sheet is not None:
+                            cl_sheets.append(schema_sheet)
                         self.xlsx_renderer.render_multi_sheet(cl_sheets, xlsx_path)
                     else:
                         self.xlsx_renderer.render(table_data, xlsx_path, recipe.name)
@@ -432,13 +588,25 @@ class ReportRenderer:
                     sheets = [("Summary", table_data)]
                     if not scan_quality_detail_df.empty:
                         sheets.append(("Version Detail", scan_quality_detail_df))
+                    if schema_sheet is not None:
+                        sheets.append(schema_sheet)
                     self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
                 elif has_license_detail:
                     sheets = [
                         ("Summary", table_data),
                         ("Detail", license_detail_df),
                     ]
+                    if schema_sheet is not None:
+                        sheets.append(schema_sheet)
                     self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
+                elif schema_sheet is not None:
+                    # Recipe defines per-column schema docs but hits none of
+                    # the recipe-specific multi-sheet branches above; emit
+                    # data + Schema sheet directly.
+                    self.xlsx_renderer.render_multi_sheet(
+                        [(recipe.name, table_data), schema_sheet],
+                        xlsx_path,
+                    )
                 else:
                     self.xlsx_renderer.render(table_data, xlsx_path, recipe.name)
                 self.logger.debug(f"Generated XLSX: {xlsx_path}")

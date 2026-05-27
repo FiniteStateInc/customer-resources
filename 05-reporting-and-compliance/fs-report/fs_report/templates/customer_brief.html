@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% if mode == 'detailed' %}Customer Brief Detailed{% else %}Customer Brief{% endif %}{% if scan_metadata and scan_metadata.project_name %} — {{ scan_metadata.project_name }}{% endif %}</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
+      {% include "_standalone_shell.html" %}
+<style>
   /* Base typography */
   * { box-sizing: border-box; }
   body { margin: 0; font-family: "Inter", "Segoe UI", system-ui, sans-serif; color: #333; background: #fff; }
@@ -293,7 +294,7 @@
   }
   </style>
 </head>
-<body>
+<body data-nav-category="{{ nav_category_slug }}">
 
 <!-- PDF Cover Page -->
 <div class="cover-page" {% if cover_image_b64 %}style="background-image:url('data:image/jpeg;base64,{{ cover_image_b64 }}');"{% endif %}>

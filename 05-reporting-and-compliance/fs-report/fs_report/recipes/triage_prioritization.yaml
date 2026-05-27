@@ -1,5 +1,6 @@
 name: "Triage Prioritization"
 category: assessment  # Current state: shows today's triage priorities regardless of time period
+nav_category: Remediation
 template: "triage_prioritization.html"
 description: >
   Per-project vulnerability triage prioritization using a tiered-gates scoring model.

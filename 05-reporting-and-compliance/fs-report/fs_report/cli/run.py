@@ -44,6 +44,13 @@ _SCORING_FILE_EXPECTED_KEYS = frozenset(
 )
 
 
+def _split_csv(value: Union[str, None]) -> Union[list[str], None]:
+    """Split a comma-separated string into a list of stripped, non-empty strings."""
+    if value is None:
+        return None
+    return [s.strip() for s in value.split(",") if s.strip()]
+
+
 def _validate_scoring_file(path: str) -> None:
     """Fail fast if --scoring-file is missing, unreadable, or malformed.
 
@@ -190,6 +197,15 @@ def create_config(
     compare_version: Union[str, None] = None,
     standalone: bool = False,
     detailed: bool = False,
+    since: str = "24h",
+    exploit_maturity_threshold: Union[list[str], None] = None,
+    include_status: Union[list[str], None] = None,
+    exclude_status: Union[list[str], None] = None,
+    reachable_only: bool = False,
+    with_triage_age: bool = False,
+    kev_due_date_source: str = "cisa",
+    unfilterable_tier_strategy: str = "wide-fetch",
+    snapshot_diff: str = "on",
 ) -> Config:
     """Build a Config object from CLI args, config file, and env vars."""
     _component_match: Literal["contains", "exact"] = cast(
@@ -515,6 +531,15 @@ def create_config(
         compare_version=compare_version,
         standalone=standalone,
         detailed_mode=detailed,
+        since=since,
+        exploit_maturity_threshold=exploit_maturity_threshold,
+        include_status=include_status,
+        exclude_status=exclude_status,
+        reachable_only=reachable_only,
+        with_triage_age=with_triage_age,
+        kev_due_date_source=kev_due_date_source,
+        unfilterable_tier_strategy=unfilterable_tier_strategy,
+        snapshot_diff=snapshot_diff,
     )
 
 
@@ -589,6 +614,15 @@ def run_reports(
     compare_version: Union[str, None] = None,
     standalone: bool = False,
     detailed: bool = False,
+    since: str = "24h",
+    exploit_maturity_threshold: Union[list[str], None] = None,
+    include_status: Union[list[str], None] = None,
+    exclude_status: Union[list[str], None] = None,
+    reachable_only: bool = False,
+    with_triage_age: bool = False,
+    kev_due_date_source: str = "cisa",
+    unfilterable_tier_strategy: str = "wide-fetch",
+    snapshot_diff: str = "on",
 ) -> Any:
     """Execute the report generation pipeline."""
     run_id = setup_logging(verbose)
@@ -666,6 +700,15 @@ def run_reports(
             compare_version=compare_version,
             standalone=standalone,
             detailed=detailed,
+            since=since,
+            exploit_maturity_threshold=exploit_maturity_threshold,
+            include_status=include_status,
+            exclude_status=exclude_status,
+            reachable_only=reachable_only,
+            with_triage_age=with_triage_age,
+            kev_due_date_source=kev_due_date_source,
+            unfilterable_tier_strategy=unfilterable_tier_strategy,
+            snapshot_diff=snapshot_diff,
         )
 
         file_handler = attach_file_logging(run_id, config.auth_token)
@@ -1104,6 +1147,90 @@ def run_command(
         "filter (includes predecessor as implicit baseline). Other assessment "
         "recipes (CVA, Triage, Findings by Project) ignore it.",
         rich_help_panel=_TIME_RANGE,
+    ),
+    since: str = typer.Option(
+        "24h",
+        "--since",
+        help=(
+            "CRA Compliance --since delta window: Nh (e.g. 24h), Nd (e.g. 7d), "
+            "ISO 8601 datetime, or 'last-run'. Default: 24h."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    exploit_maturity: Union[str, None] = typer.Option(
+        None,
+        "--exploit-maturity",
+        help=(
+            "CRA threshold tiers, comma-separated. Values: "
+            "kev,weaponized,poc,ransomware,threat_actor. "
+            "Default (from recipe YAML): kev,ransomware,threat_actor,weaponized."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    include_status: Union[str, None] = typer.Option(
+        None,
+        "--include-status",
+        help=(
+            "Statuses to include in Fetch A, comma-separated. "
+            "Default (recipe YAML): OPEN,NO_STATUS,UNKNOWN,IN_TRIAGE."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    exclude_status: Union[str, None] = typer.Option(
+        None,
+        "--exclude-status",
+        help=(
+            "Statuses to exclude from Fetch A, comma-separated. "
+            "Default (recipe YAML): FALSE_POSITIVE,NOT_AFFECTED,RESOLVED,RESOLVED_WITH_PEDIGREE."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    reachable_only: bool = typer.Option(
+        False,
+        "--reachable-only",
+        help="CRA Compliance: filter output to reachability_label==REACHABLE.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    with_triage_age: bool = typer.Option(
+        False,
+        "--with-triage-age",
+        help=(
+            "Enable per-finding /activity fan-out to compute "
+            "triage_age_days for the ⏰ section. Off by default to "
+            "avoid the per-finding API cost."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    kev_due_date_source: str = typer.Option(
+        "cisa",
+        "--kev-due-date-source",
+        help=(
+            "Source for the CRA Article 14 notification clock. "
+            "'cisa' (default) joins on the public CISA KEV catalog. "
+            "'none' disables CISA enrichment and suppresses the 🔥 SLA-Breach "
+            "section. 'api' is reserved for a future platform endpoint and "
+            "currently raises."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    unfilterable_tier_strategy: str = typer.Option(
+        "wide-fetch",
+        "--unfilterable-tier-strategy",
+        help=(
+            "How to handle tiers (ransomware, threat_actor) that "
+            "the /findings API cannot filter directly. "
+            "Choices: wide-fetch (default), drop-tier, require-rsql."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    snapshot_diff: str = typer.Option(
+        "on",
+        "--snapshot-diff",
+        help=(
+            "CRA Compliance snapshot-diff mode. "
+            "Choices: on (default), read-only, off."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
     ),
     token: Union[str, None] = typer.Option(
         None,
@@ -1550,6 +1677,35 @@ def run_command(
     if ctx.invoked_subcommand is not None:
         return
 
+    # ── CRA Compliance cross-flag validation ─────────────────────────
+    _valid_unfilterable = {"wide-fetch", "drop-tier", "require-rsql"}
+    if unfilterable_tier_strategy not in _valid_unfilterable:
+        typer.echo(
+            f"--unfilterable-tier-strategy must be one of "
+            f"{sorted(_valid_unfilterable)}; got {unfilterable_tier_strategy!r}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    _valid_snapshot_diff = {"on", "read-only", "off"}
+    if snapshot_diff not in _valid_snapshot_diff:
+        typer.echo(
+            f"--snapshot-diff must be one of {sorted(_valid_snapshot_diff)}; "
+            f"got {snapshot_diff!r}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    # Cross-flag validation: --since=last-run requires snapshot state,
+    # which --snapshot-diff=off disables. Reject the combination at
+    # parse time (spec §0 ~line 895).
+    if since.lower() == "last-run" and snapshot_diff == "off":
+        typer.echo(
+            "--since=last-run requires --snapshot-diff != off "
+            "(last-run reads the snapshot state file).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
     # Parse cache TTL
     cache_ttl_seconds = 0
     if no_cache:
@@ -1659,6 +1815,15 @@ def run_command(
         compare_version=compare_version,
         standalone=standalone,
         detailed=detailed,
+        since=since,
+        exploit_maturity_threshold=_split_csv(exploit_maturity),
+        include_status=_split_csv(include_status),
+        exclude_status=_split_csv(exclude_status),
+        reachable_only=reachable_only,
+        with_triage_age=with_triage_age,
+        kev_due_date_source=kev_due_date_source,
+        unfilterable_tier_strategy=unfilterable_tier_strategy,
+        snapshot_diff=snapshot_diff,
     )
 
     # In headless mode, print a structured JSON summary to stdout

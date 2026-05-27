@@ -1,11 +1,15 @@
 {% extends "base.html" %}
 
+{% block chart_libs %}{% include "_chartjs.html" %}{% endblock %}
+
 {% block content %}
 <div class="chart-container">
     <h2>Distribution Analysis</h2>
-    <div class="chart-wrapper">
-        <canvas id="barChart"></canvas>
-    </div>
+    {% if pdf_target or fragment_mode %}
+        <div class="chart-server-svg">{{ server_svgs.get('main', '') | safe }}</div>
+    {% else %}
+        <div class="chart-wrapper"><canvas id="barChart"></canvas></div>
+    {% endif %}
 </div>
 
 <div class="table-container">
@@ -30,6 +34,7 @@
     </table>
 </div>
 
+{% if not pdf_target and not fragment_mode %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const ctx = document.getElementById('barChart').getContext('2d');
@@ -78,4 +83,5 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 </script>
-{% endblock %} 
+{% endif %}
+{% endblock %}

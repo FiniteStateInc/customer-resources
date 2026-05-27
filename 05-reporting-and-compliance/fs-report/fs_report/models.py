@@ -229,7 +229,43 @@ class ChartConfig(BaseModel):
     stacked: bool | None = Field(None, description="Stacked option for bar charts")
     x_column: str | None = Field(None, description="X-axis column name")
     y_columns: list[str] | None = Field(None, description="Y-axis column names")
+    y_column: str | None = Field(
+        None,
+        description="Single Y-axis column (used by line, scatter, heatmap, bar charts that plot a single series)",
+    )
+    value_column: str | None = Field(
+        None,
+        description="Numeric value column for pie/doughnut/heatmap charts",
+    )
+    label_column: str | None = Field(
+        None,
+        description="Label column for pie/doughnut charts",
+    )
     labels: dict[str, str] | None = Field(None, description="Custom labels for columns")
+
+
+class ColumnSchema(BaseModel):
+    """Per-column documentation surfaced in the rendered report itself.
+
+    Renderers (xlsx Schema sheet, HTML/MD column-reference banner) source
+    these descriptions so customers can answer "what does this column
+    mean?" without leaving the report file. Added 2026-05-26 after the
+    Netgear column-confusion incident showed the meta-bug: report-output
+    semantics shouldn't require reading fs-report source.
+    """
+
+    name: str = Field(
+        ...,
+        description="Column header exactly as it appears in the rendered output.",
+    )
+    source: str = Field(
+        ...,
+        description="How this column is derived — API field path, computed-from-X, etc.",
+    )
+    description: str = Field(
+        ...,
+        description="One- or two-sentence plain-language explanation for the customer.",
+    )
 
 
 class OutputConfig(BaseModel):
@@ -247,6 +283,13 @@ class OutputConfig(BaseModel):
     formats: list[str] | None = Field(
         default=None,
         description="List of output formats to generate (e.g., ['csv', 'xlsx', 'html'])",
+    )
+    columns: list[ColumnSchema] | None = Field(
+        default=None,
+        description=(
+            "Per-column documentation. When set, xlsx output gains a Schema "
+            "sheet and HTML/MD output gains a column-reference banner."
+        ),
     )
 
 
@@ -276,6 +319,15 @@ class Recipe(BaseModel):
         description="Consumer audience for this recipe. None = standard user-facing. "
         "Set automatically from the recipe's subdirectory name (e.g., 'forge', 'fs_cli'). "
         "Audience recipes are hidden from 'list recipes' by default.",
+    )
+    nav_category: (
+        Literal["Executive", "Investigation", "Remediation", "Compliance"] | None
+    ) = Field(
+        None,
+        description="UI grouping for --serve and report-server sidebars. "
+        "Values: Executive | Investigation | Remediation | Compliance. "
+        "Distinct from `audience` (consumer subdir) and `category` "
+        "(assessment | operational | compound).",
     )
     template: str | None = Field(None, description="HTML template to use for rendering")
     description: str | None = Field(None, description="Recipe description")
@@ -638,6 +690,61 @@ class Config(BaseModel):
         None,
         description="Version ID on the secondary server (optional; defaults to latest).",
     )
+
+    # ---- CRA Compliance morning-queue (added 2026-05-24, spec step 3) ----
+    since: str = Field(
+        "24h",
+        description="CRA Compliance --since window: duration (e.g. '24h', '7d'), ISO 8601 datetime, or 'last-run'.",
+    )
+    exploit_maturity_threshold: list[str] | None = Field(
+        None,
+        description="CRA tier set above threshold. Values: kev, weaponized, poc, ransomware, threat_actor. None defers to the recipe YAML default (kev, ransomware, threat_actor, weaponized).",
+    )
+    include_status: list[str] | None = Field(
+        None,
+        description="Statuses to include in CRA Fetch A. None defers to recipe YAML (OPEN, NO_STATUS, UNKNOWN, IN_TRIAGE — matches _OPEN_STATUSES used elsewhere).",
+    )
+    exclude_status: list[str] | None = Field(
+        None,
+        description="Statuses to exclude from Fetch A even when included. None defers to recipe YAML (FALSE_POSITIVE, NOT_AFFECTED, RESOLVED, RESOLVED_WITH_PEDIGREE).",
+    )
+    reachable_only: bool = Field(
+        False,
+        description="CRA Compliance: filter output to reachability_label==REACHABLE.",
+    )
+    with_triage_age: bool = Field(
+        False,
+        description="CRA Compliance: enable per-finding /activity fan-out to compute triage_age_days for the ⏰ section. Off by default to avoid the per-finding API cost.",
+    )
+    kev_due_date_source: str = Field(
+        "cisa",
+        description="CRA Compliance: source for the Article 14 notification clock. 'cisa' (default) joins on the public CISA KEV catalog. 'none' disables CISA enrichment and suppresses the 🔥 SLA-Breach section (useful for tenants without CISA KEV coverage). 'api' is reserved for a future platform-side due-date endpoint (wishlist #14) and currently raises.",
+    )
+    unfilterable_tier_strategy: str = Field(
+        "wide-fetch",
+        description="CRA Compliance: how to handle tiers (ransomware, threat_actor) that the /findings API cannot filter directly. 'wide-fetch' (default): drop the threshold filter from Fetch A and narrow client-side. 'drop-tier': warn and omit the unfilterable tiers from the effective threshold. 'require-rsql': abort with a clear error.",
+    )
+    snapshot_diff: str = Field(
+        "on",
+        description="CRA Compliance snapshot-diff mode. 'on' (default): fetch the status-agnostic baseline, persist new state after a successful run, detect KEV / ransomware / threat-actor crossings. 'read-only': read prior state but do not write a new one. 'off': skip Fetch C entirely; KEV / ransomware / threat-actor crossings will not be reported.",
+    )
+
+    @field_validator("kev_due_date_source")
+    @classmethod
+    def validate_kev_due_date_source(cls, v: str) -> str:
+        valid = {"cisa", "none", "api"}
+        if v not in valid:
+            raise ValueError(
+                f"kev_due_date_source must be one of {sorted(valid)}; got {v!r}"
+            )
+        if v == "api":
+            raise ValueError(
+                "kev_due_date_source='api' is not yet implemented (waiting on "
+                "platform wishlist #14 — a /cve/{id}/due-date endpoint). Use "
+                "'cisa' for CISA KEV joins, or 'none' to disable the "
+                "🔥 SLA-Breach section."
+            )
+        return v
 
     @field_validator("compare_domain", mode="before")
     @classmethod

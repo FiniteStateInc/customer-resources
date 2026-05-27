@@ -1,5 +1,6 @@
 name: "License Report"
 category: assessment
+nav_category: Compliance
 template: "license_report.html"
 description: >
   License risk analysis report showing component licenses grouped by risk

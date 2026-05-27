@@ -315,6 +315,42 @@ def _v2_category_to_type(category: str) -> str | None:
     return _V2_CATEGORY_TO_TYPE.get(category.upper())
 
 
+def _strip_project_scope(filter_str: str | None) -> str | None:
+    """Strip `project==X` and `project=in=(...)` clauses from an RSQL filter.
+
+    Use when the filter is being combined with a more specific
+    ``projectVersion==`` / ``projectVersion=in=(...)`` clause — the project
+    *inclusion* scope is then redundant. Keeping it bloats the URL with
+    the full project list (large folders => HTTP 414). Caller passes the
+    result to a query that already scopes by version IDs.
+
+    Only inclusion operators (``project==`` and ``project=in=``) are
+    stripped. Exclusion operators (``project!=`` and ``project=out=``) are
+    deliberately preserved — those carry filter semantics ("exclude this
+    project") that a version-ID list does not encode, so removing them
+    would change the result set.
+
+    ``projectVersion`` clauses are also preserved (different field).
+
+    Returns the filter with redundant clauses removed, or ``None`` if
+    nothing remains. ``None`` / empty-string inputs pass through unchanged
+    (both indicate "no filter").
+    """
+    if not filter_str:
+        return filter_str
+    kept: list[str] = []
+    for part in filter_str.split(";"):
+        stripped = part.strip()
+        # Keep projectVersion clauses untouched (different field name).
+        if stripped.startswith("projectVersion"):
+            kept.append(part)
+            continue
+        if stripped.startswith("project==") or stripped.startswith("project=in="):
+            continue
+        kept.append(part)
+    return ";".join(kept) if kept else None
+
+
 def build_findings_type_params(finding_types: str) -> dict[str, Any]:
     """
     Build API parameters for finding type/category filtering.
@@ -821,33 +857,17 @@ class ReportEngine:
         except Exception:
             return False
 
-    def _resolve_project_name(self, project_name: str) -> int | None:
+    def _resolve_project_name(self, project_name: str) -> int | str | None:
+        """Delegate to APIClient.resolve_project (added 2026-05-24 for
+        CRA Compliance, spec §0).
+
+        Return type broadened from int | None to int | str | None
+        because some FS tenants return string/UUID project IDs that the
+        original signature silently coerced. The sole engine caller
+        (line 2137) does str(resolved_id) and truthiness checks, so
+        this widening is safe.
         """
-        Resolve a project name to its numeric API ID.
-
-        Fetches the project list from the API and performs a case-insensitive
-        name match.  Returns the numeric project ID, or None if not found.
-        """
-        from fs_report.models import QueryConfig, QueryParams
-
-        projects_query = QueryConfig(
-            endpoint="/public/v0/projects",
-            params=QueryParams(limit=10000, archived=False, excluded=False),
-        )
-        projects = self.api_client.fetch_data(projects_query)
-
-        for p in projects:
-            name = p.get("name", "")
-            if name.lower() == project_name.lower():
-                return p.get("id")
-
-        # Fuzzy hint: show close matches
-        available = [p.get("name", "") for p in projects if p.get("name")]
-        close = [n for n in available if project_name.lower() in n.lower()]
-        if close:
-            self.logger.info(f"Did you mean one of these? {close[:5]}")
-
-        return None
+        return self.api_client.resolve_project(project_name)
 
     @staticmethod
     def _is_id_like(value: str) -> bool:
@@ -926,27 +946,73 @@ class ReportEngine:
         except Exception:
             return None
 
+    def _get_project_versions(self, project_id: int | str) -> list[dict]:
+        """Fetch all versions for a project, walking pages and caching the
+        result on the engine instance.
+
+        Single source of truth for ``/public/v0/projects/{pid}/versions``
+        — ``_resolve_version_name`` and ``_lookup_version_display_name``
+        both go through here so we only hit the API once per project per
+        run, regardless of who asks first. Returns an empty list on any
+        error (callers must handle the empty-or-missing case).
+        """
+        pid_str = str(project_id)
+        if pid_str in self._project_versions_cache:
+            return self._project_versions_cache[pid_str]
+
+        base_url = f"{self.api_client.base_url}/public/v0/projects/{pid_str}/versions"
+        page_size = min(1000, self.api_client.max_page_size)
+        versions: list[dict] = []
+        offset = 0
+        try:
+            while True:
+                resp = self.api_client.client.get(
+                    base_url, params={"limit": page_size, "offset": offset}
+                )
+                resp.raise_for_status()
+                page = resp.json()
+                if not isinstance(page, list) or not page:
+                    break
+                versions.extend(page)
+                if len(page) < page_size:
+                    break
+                offset += page_size
+        except Exception as e:
+            self.logger.debug(f"Error fetching versions for project {pid_str}: {e}")
+            # Don't cache on error — let a future call retry.
+            return versions
+
+        self._project_versions_cache[pid_str] = versions
+        return versions
+
+    def _lookup_version_display_name(
+        self, project_id: int | str, version_id: int | str
+    ) -> str:
+        """Resolve a version ID to its human-readable name.
+
+        Inverse of _resolve_version_name. Returns ``str(version_id)`` on any
+        failure so callers can blindly substitute without raising — used to
+        backfill ``projectVersion.version`` on rows fetched from the
+        version-scoped endpoint, which omits that field.
+        """
+        for v in self._get_project_versions(project_id):
+            if str(v.get("id")) == str(version_id):
+                name = v.get("version") or v.get("name")
+                if name:
+                    return str(name)
+        return str(version_id)
+
     def _resolve_version_name(
         self, project_id: int | str, version_name: str
     ) -> int | str | None:
         """Resolve a version name to its API ID within a project.
 
-        Fetches the version list for *project_id* and performs a
-        case-insensitive name match.  Returns the version ID,
-        or None if not found.
+        Performs a case-insensitive name match against the cached version
+        list (see _get_project_versions). Returns the version ID, or None
+        if not found.
         """
-        try:
-            url = (
-                f"{self.api_client.base_url}"
-                f"/public/v0/projects/{project_id}/versions"
-            )
-            resp = self.api_client.client.get(url)
-            resp.raise_for_status()
-            versions = resp.json()
-            if not isinstance(versions, list):
-                return None
-        except Exception as e:
-            self.logger.debug(f"Error fetching versions for project {project_id}: {e}")
+        versions = self._get_project_versions(project_id)
+        if not versions:
             return None
 
         for v in versions:
@@ -1761,11 +1827,19 @@ class ReportEngine:
                         # null).  Convert category filters to the `type`
                         # URL param instead, and strip projectVersion
                         # clauses (endpoint is already version-scoped).
+                        # Strip project== / project=in=() too — the URL is
+                        # already scoped to a specific version (which
+                        # uniquely identifies its project), and keeping a
+                        # large project list in every batch URL hits HTTP
+                        # 414 on customer deployments. See CST-747.
+                        # Project-scope stripping is shared with the legacy
+                        # path via _strip_project_scope().
                         per_version_filter: str | None = None
                         v2_finding_type = base_query.params.finding_type
-                        if base_query.params.filter:
+                        _v2_filter_in = _strip_project_scope(base_query.params.filter)
+                        if _v2_filter_in:
                             kept_parts: list[str] = []
-                            for p in base_query.params.filter.split(";"):
+                            for p in _v2_filter_in.split(";"):
                                 stripped = p.strip()
                                 if stripped.startswith("projectVersion"):
                                     continue
@@ -1839,9 +1913,18 @@ class ReportEngine:
                         f"projectVersion=in=({','.join(str(v) for v in batch_ids)})"
                     )
 
-                    # Combine with existing filter (MUST preserve base filter like type!=file)
-                    if base_query.params.filter:
-                        combined_filter = f"{base_query.params.filter};{version_filter}"
+                    # Combine with existing filter (MUST preserve base filter
+                    # like type!=file). Strip any project== / project=in=()
+                    # clauses though — the per-batch projectVersion=in=(...)
+                    # uniquely identifies both project and version, and
+                    # keeping a 706-project list in every batch URL pushes
+                    # past nginx's 8 KB default and yields HTTP 414. See
+                    # CST-747.
+                    base_filter_stripped = _strip_project_scope(
+                        base_query.params.filter
+                    )
+                    if base_filter_stripped:
+                        combined_filter = f"{base_filter_stripped};{version_filter}"
                     else:
                         combined_filter = version_filter
 
@@ -3125,31 +3208,21 @@ class ReportEngine:
 
                 # 3. Fetch from API (only on cache miss)
                 if versions is None:
-                    try:
-                        url = (
-                            f"{self.api_client.base_url}"
-                            f"/public/v0/projects/{pid}/versions"
-                        )
-                        resp = self.api_client.client.get(url)
-                        resp.raise_for_status()
-                        versions = resp.json()
-                        if not isinstance(versions, list):
-                            versions = []
-                    except Exception as e:
-                        self.logger.debug(
-                            "Error fetching versions for %s (%s): %s",
-                            pname,
-                            pid,
-                            e,
-                        )
+                    # Route through _get_project_versions so paginated and
+                    # cache-coherent with _lookup_version_display_name /
+                    # _resolve_version_name. A previous direct unpaginated
+                    # GET here could poison _project_versions_cache with a
+                    # truncated first page when VC ran before any
+                    # version-name lookup on the same project.
+                    versions = self._get_project_versions(pid)
+                    if delay > 0:
+                        time.sleep(delay)
+                    if not versions:
+                        # API error or empty list — _get_project_versions
+                        # already logged the underlying exception.
                         continue
-                    finally:
-                        # Only delay after actual API calls
-                        if delay > 0:
-                            time.sleep(delay)
-
-                    # Store in both caches
-                    self._project_versions_cache[pid] = versions
+                    # In-mem cache already populated by _get_project_versions
+                    # on success. Persist to SQLite too if configured.
                     if sqlite_cache and cache_ttl > 0:
                         sqlite_cache.store_version_list(pid, versions)
 
@@ -3609,7 +3682,11 @@ class ReportEngine:
                                     self._cve_impact_nvd_missing,
                                 ) = self._fetch_cve_reachability(raw_data)
 
-                    elif recipe.name in ("Component List", "License Report"):
+                    elif recipe.name in (
+                        "Component List",
+                        "License Report",
+                        "CVE Component Evidence",
+                    ):
                         # Assessment report: shows current component inventory
                         # No date filtering by default (current state, not period-bound)
                         filters = []
@@ -3645,6 +3722,58 @@ class ReportEngine:
                                 self._folder_name or "(unknown)",
                             )
                             raw_data = pd.DataFrame()
+                        elif self.config.version_filter:
+                            # Version-scoped endpoint path: encode the version
+                            # in the URL so we don't need a projectVersion==
+                            # RSQL clause (which returns HTTP 400 against
+                            # /public/v0/components on /api/-prefixed
+                            # deployments). Preserve every other constraint
+                            # the non-version path applies — `type!=file`,
+                            # optional `--detected-after`, `archived=False`,
+                            # `excluded=False` — so version-filtered runs of
+                            # Component List / License Report / CVE Component
+                            # Evidence return the same component universe as
+                            # the RSQL path. The `project==` clause is
+                            # intentionally omitted since the project is
+                            # implicit in the projectVersion URL.
+                            pvid = str(self.config.version_filter)
+                            combined_filter = ";".join(filters) if filters else None
+                            unified_query = QueryConfig(
+                                endpoint=f"/public/v0/versions/{pvid}/components",
+                                params=QueryParams(
+                                    limit=recipe.query.params.limit,
+                                    filter=combined_filter,
+                                    archived=False,
+                                    excluded=False,
+                                ),
+                            )
+                            self.logger.info(
+                                f"Fetching components for {recipe.name} via "
+                                f"version-scoped endpoint "
+                                f"/public/v0/versions/{pvid}/components"
+                            )
+                            _fetched = self.api_client.fetch_all_with_resume(
+                                unified_query
+                            )
+                            raw_data = (
+                                pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
+                            )
+                            del _fetched
+                            # The version-scoped endpoint omits projectVersion
+                            # on each row (the version is implicit in the
+                            # URL). Backfill it so downstream transforms that
+                            # read projectVersion.version (Component List,
+                            # License Report) don't render "Unknown".
+                            if not raw_data.empty:
+                                _v_name = self._lookup_version_display_name(
+                                    self.config.project_filter or "", pvid
+                                )
+                                _pv_obj = {"id": pvid, "version": _v_name}
+                                raw_data["projectVersion"] = pd.Series(
+                                    [_pv_obj] * len(raw_data),
+                                    index=raw_data.index,
+                                    dtype=object,
+                                )
                         else:
                             if self.config.project_filter:
                                 try:
@@ -3661,11 +3790,6 @@ class ReportEngine:
                                     f"project=in=({','.join(str(pid) for pid in folder_pids)})"
                                 )
 
-                            if self.config.version_filter:
-                                filters.append(
-                                    f"projectVersion=={self.config.version_filter}"
-                                )
-
                             combined_filter = ";".join(filters)
 
                             unified_query = QueryConfig(
@@ -3679,10 +3803,7 @@ class ReportEngine:
                             )
 
                             # Use batched version filtering if current_version_only is enabled
-                            if (
-                                self.config.current_version_only
-                                and not self.config.version_filter
-                            ):
+                            if self.config.current_version_only:
                                 # Scope version resolution to only the projects
                                 # being queried — avoids fetching version IDs (and
                                 # then components) for projects that the filter will
@@ -5224,10 +5345,14 @@ class ReportEngine:
                 "Assessment Overview",
                 "Customer Brief",
                 "Customer Brief Detailed",
+                "CRA Compliance",  # added 2026-05-24 per CRA Seagate spec step 2
+                "CVE Component Evidence",
             ):
                 additional_data["api_client"] = self.api_client
                 if "domain" not in additional_data:
                     additional_data["domain"] = self.config.domain
+                if recipe.name == "CRA Compliance" and self._folder_project_ids:
+                    additional_data["folder_project_ids"] = self._folder_project_ids
 
             # Inject API client and domain for Remediation Package / CRP (SBOM fetching)
             if recipe.name in ("Remediation Package", "Component Remediation Package"):
@@ -5723,6 +5848,7 @@ class ReportEngine:
                     "start_date": self.config.start_date,
                     "end_date": self.config.end_date,
                     "project_filter": self.config.project_filter,
+                    "project_name": self.resolved_project_name,
                     "folder_name": self._folder_name,
                     "folder_path": self._folder_path,
                     "folder_filter": self.config.folder_filter,

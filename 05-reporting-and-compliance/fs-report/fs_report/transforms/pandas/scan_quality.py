@@ -40,6 +40,19 @@ _DEFAULT_STALENESS_THRESHOLDS: dict[str, int] = {
     "stale": 365,
 }
 
+# Canonical order for unpack-rating chart buckets and any UI that enumerates
+# every possible rating. _score_to_rating() must only ever return values from
+# this list; _build_charts() uses it directly for the rating-distribution
+# chart's `labels`. Adding a new tier here without updating _score_to_rating
+# (or vice versa) will surface in tests.
+_UNPACK_RATING_LABELS: list[str] = [
+    "Excellent",
+    "Good",
+    "Fair",
+    "Poor",
+    "Not Applicable",
+]
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -110,7 +123,16 @@ def _load_staleness_thresholds(
 
 
 def _score_to_rating(score: int) -> str:
-    """Convert an unpack score (0–100) to a human-readable rating tier."""
+    """Convert an unpack score to a human-readable rating tier.
+
+    Valid input range is [1, 100], plus the sentinel value -1 which signals
+    'Not Applicable' — used by STP when no unpacking work was possible
+    regardless of product capability (e.g. fully encrypted firmware, blank
+    uploads, or files too small to be firmware). -1 is rendered as
+    'Not Applicable' rather than rolled into the Poor band.
+    """
+    if score == -1:
+        return "Not Applicable"
     if score >= 85:
         return "Excellent"
     if score >= 70:
@@ -510,8 +532,22 @@ def _build_charts(
         and "unpack_rating" in detail_df.columns
         and detail_df["unpack_rating"].notna().any()
     ):
-        rating_labels = ["Excellent", "Good", "Fair", "Poor"]
         rating_counts = detail_df["unpack_rating"].value_counts()
+        # Start with the canonical order so zero-count known buckets still
+        # appear (preserving the "no Excellent unpacks" zero-bar context).
+        # Append any observed labels that aren't in the canonical list so a
+        # future producer-side tier shows up in the chart instead of being
+        # silently dropped — and log a warning so contributors notice the
+        # constant needs updating.
+        observed = set(rating_counts.index)
+        unknown_labels = sorted(observed - set(_UNPACK_RATING_LABELS))
+        if unknown_labels:
+            logger.warning(
+                "scan_quality: unpack_rating values not in "
+                "_UNPACK_RATING_LABELS, appending to chart: %s",
+                unknown_labels,
+            )
+        rating_labels = list(_UNPACK_RATING_LABELS) + unknown_labels
         charts["unpack_rating_distribution"] = {
             "labels": rating_labels,
             "values": [int(rating_counts.get(label, 0)) for label in rating_labels],

@@ -23,8 +23,9 @@ _CSV_COLUMNS = [
     "Status",
     "Reachability",
     "Detected",
-    "# of known exploits",
-    "# of known weaponization",
+    "Exploit Maturity",
+    "# exploit signal categories",
+    "# in-the-wild exploitation signals",
     "CWE",
     "Description",
     "CVSS v2 Vector",
@@ -85,8 +86,27 @@ def findings_by_project_pandas_transform(
     # Select and rename required columns
     required_columns = {
         "cvss_score": "CVSS",
-        "exploit_count": "# of known exploits",
-        "weaponization_count": "# of known weaponization",
+        # Renamed 2026-05-26 (PR off Adam's Netgear-driven proposal). Old
+        # column name "# of known exploits" was misleading — it's len(exploitInfo),
+        # i.e. the count of *signal categories* (poc/weaponized/commercial/kev/
+        # vcKev/reported/threatActors/ransomware/botnets) the platform observed,
+        # not a count of per-source exploit references. The truthful name
+        # caps the cardinality customers see and stops the silent disagreement
+        # with the platform UI's "Exploits" tab (`counts.exploits`).
+        "exploit_count": "# exploit signal categories",
+        # Renamed 2026-05-26. Old column name "# of known weaponization" implied
+        # it counted weaponized-tier exploits, but the underlying logic scans
+        # exploitInfo tokens for `botnet`/`ransomware`/`threat`/`actor` —
+        # i.e. in-the-wild exploitation evidence, not maturity tier. The new
+        # name aligns the header with what the column actually counts.
+        "weaponization_count": "# in-the-wild exploitation signals",
+        # Direct field from API; single-value tier string ("poc"/"weaponized"
+        # or empty). Mirrors the platform GUI's `columns.exploitMaturity` so
+        # operators can filter on maturity tier from script output. Snake-case
+        # `exploit_maturity` (the cache-layer name in FINDINGS_FIELDS) is
+        # normalized to `exploitMaturity` in flatten_findings_data so this
+        # single mapping covers both ingestion paths.
+        "exploitMaturity": "Exploit Maturity",
         "component.group": "Component Group",
         "component.name": "Component",
         "component.version": "Component Version",
@@ -211,8 +231,9 @@ def findings_by_project_pandas_transform(
         {
             "CVE ID": "N/A",
             "CVSS": 0,
-            "# of known exploits": 0,
-            "# of known weaponization": 0,
+            "# exploit signal categories": 0,
+            "# in-the-wild exploitation signals": 0,
+            "Exploit Maturity": "",
             "Component Group": "",
             "Component": "Unknown",
             "Component Version": "Unknown",
@@ -293,6 +314,14 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     import ast
     import re
+
+    # Normalize snake_case cache-layer field names back to the camelCase API
+    # names this transform expects. fs_report.sqlite_cache._row_to_record
+    # usually does this reverse mapping when reading cached rows, but some
+    # pre-flattened ingestion paths leak the snake_case form. Map only the
+    # fields this transform consumes directly.
+    if "exploit_maturity" in df.columns and "exploitMaturity" not in df.columns:
+        df["exploitMaturity"] = df["exploit_maturity"]
 
     # Handle component data
     if "component" in df.columns:
@@ -475,9 +504,9 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
                         count += 1
             return count
 
-        df["exploit_count"] = df["exploitInfo"].apply(count_exploits)
-        df["weaponization_count"] = df["exploitInfo"].apply(
-            calculate_weaponization_count
+        df["exploit_count"] = df["exploitInfo"].apply(count_exploits).astype("int64")
+        df["weaponization_count"] = (
+            df["exploitInfo"].apply(calculate_weaponization_count).astype("int64")
         )
     else:
         # Preserve already-computed columns (report engine pre-flattens
@@ -486,6 +515,15 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
             df["exploit_count"] = 0
         if "weaponization_count" not in df.columns:
             df["weaponization_count"] = 0
+
+    # Normalize the count columns to int64. The pre-flattened path can
+    # leave them as float64 (NaN-imputable). Downstream CSV / JSON
+    # consumers expect integers, not `8.0`-style values.
+    for _count_col in ("exploit_count", "weaponization_count"):
+        if _count_col in df.columns:
+            df[_count_col] = (
+                pd.to_numeric(df[_count_col], errors="coerce").fillna(0).astype("int64")
+            )
 
     # Handle reachability score
     if "reachabilityScore" in df.columns:

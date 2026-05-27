@@ -1,6 +1,7 @@
 name: "Security Progress"
 template: "security_progress.html"
 category: operational
+nav_category: Executive
 description: "Version-over-version progress report — CVEs resolved, new CVEs introduced, net change per project and portfolio-wide. Shows what teams accomplished during the period."
 execution_order: 30
 auto_run: false

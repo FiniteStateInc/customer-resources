@@ -24,6 +24,7 @@ import importlib.resources
 import json
 import logging
 import math
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -32,8 +33,30 @@ import pandas as pd
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from fs_report.models import Recipe, ReportData
+from fs_report.renderers.chart_palette import (
+    FS_CHART_PALETTE,
+    FS_FONT_BODY,
+    FS_FONT_DISPLAY,
+    FS_HAIRLINE,
+    FS_INK,
+    FS_INK_DIM,
+    FS_NAV_PALETTE,
+    FS_SEV_PALETTE,
+    SLACK_LINK_COLOR,
+)
+from fs_report.renderers.fragment_extractor import extract_fragment
 
 logger = logging.getLogger(__name__)
+
+
+_SLUG_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _recipe_scope_class(recipe: Recipe) -> str:
+    """Derive the ``.fs-section-<slug>`` class used for fragment scoping."""
+    name = (recipe.name or "section").strip().lower()
+    slug = _SLUG_NON_ALNUM_RE.sub("-", name).strip("-")
+    return f"fs-section-{slug or 'section'}"
 
 
 def _slack_mrkdwn_to_html(text: str) -> str:
@@ -51,15 +74,18 @@ def _slack_mrkdwn_to_html(text: str) -> str:
     h = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     # Slack links: <url|label> → <a href="url">label</a>
+    # Color comes from chart_palette.SLACK_LINK_COLOR (resolved hex, not a
+    # CSS var — inline style="..." attrs don't reliably resolve var()
+    # across arbitrary DOM contexts).
     h = re.sub(
         r"&lt;(https?://[^|&]+)\|([^&]+)&gt;",
-        r'<a href="\1" style="color:#1976d2;">\2</a>',
+        rf'<a href="\1" style="color:{SLACK_LINK_COLOR};">\2</a>',
         h,
     )
     # Bare Slack links: <url> → <a href="url">url</a>
     h = re.sub(
         r"&lt;(https?://[^&]+)&gt;",
-        r'<a href="\1" style="color:#1976d2;">\1</a>',
+        rf'<a href="\1" style="color:{SLACK_LINK_COLOR};">\1</a>',
         h,
     )
 
@@ -170,10 +196,41 @@ class HTMLRenderer:
         )
         self.env.filters["slack_mrkdwn"] = _slack_mrkdwn_to_html
 
+        # Read canonical tokens.css once at init time so standalone reports
+        # and PDFs (which can't fetch /static/canonical/css/tokens.css)
+        # inline the same source content via _tokens_inline.html.
+        try:
+            tokens_path = importlib.resources.files("fs_report").joinpath(
+                "static/css/tokens.css"
+            )
+            self._tokens_inline_css = tokens_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to load canonical tokens.css; reports will fall back to "
+                "browser-default styling for design tokens: %s",
+                exc,
+            )
+            self._tokens_inline_css = ""
+
+        # Pre-serialize palette literals once — server-side emit into
+        # _standalone_shell.html's Chart.js bootstrap.
+        self._chart_palette_json = json.dumps(list(FS_CHART_PALETTE))
+        self._sev_palette_json = json.dumps(dict(FS_SEV_PALETTE))
+        self._nav_palette_json = json.dumps(dict(FS_NAV_PALETTE))
+
     def render(
-        self, recipe: Recipe, report_data: ReportData, output_path: Path
+        self,
+        recipe: Recipe,
+        report_data: ReportData,
+        output_path: Path,
+        pdf_target: bool = False,
     ) -> None:
-        """Render the report to HTML."""
+        """Render the report to HTML.
+
+        When ``pdf_target`` is True, charts are pre-rendered server-side to
+        inline SVG (WeasyPrint can't execute Chart.js). The same template
+        is used; branching happens via the ``pdf_target`` context flag.
+        """
         try:
             # Use template from recipe if specified
             template_name = getattr(recipe, "template", None)
@@ -208,7 +265,13 @@ class HTMLRenderer:
                 )
 
             # Prepare template data
-            template_data = self._prepare_template_data(recipe, report_data)
+            template_data = self._prepare_template_data(
+                recipe,
+                report_data,
+                pdf_target=pdf_target,
+                fragment_mode=False,
+                heading_depth=1,
+            )
 
             # Scan for any remaining pandas/numpy objects before rendering
             self.logger.debug("Scanning template_data for pandas/numpy objects...")
@@ -236,6 +299,81 @@ class HTMLRenderer:
             self.logger.error(f"Full traceback:\n{traceback.format_exc()}")
             raise
 
+    def render_fragment(
+        self,
+        recipe: Recipe,
+        report_data: ReportData,
+        heading_depth: int = 2,
+    ) -> str:
+        """Render the recipe as an embeddable HTML fragment.
+
+        Returns inline HTML with no ``<html>`` / ``<head>`` / ``<body>``
+        tags — selectors are prefixed with ``.fs-section-<slug>`` so styles
+        don't bleed across sections, charts are pre-rendered server-side
+        to inline SVG, and the top-level heading is rendered at
+        ``heading_depth`` (default ``<h2>`` for compound bundles).
+
+        Document-shell stripping, CSS scoping, heading promotion, and
+        ``<script>``/``<style>`` removal happen as a post-render pass in
+        ``fragment_extractor.extract_fragment`` — recipe templates do
+        not need to branch on ``fragment_mode`` for those concerns.
+
+        Per-recipe chrome (header / metadata / footer) is preserved in
+        the fragment. The Phase 2 compound assembler will decide how to
+        handle chrome at the bundle level — likely via per-recipe data
+        attributes or template conventions that distinguish top-level
+        chrome from inline content callouts.
+        """
+        # Reuse the template selection from `render` so single-recipe
+        # standalone and fragment-mode go through identical paths.
+        template_name = getattr(recipe, "template", None)
+        if template_name:
+            template = self.env.get_template(template_name)
+        elif (
+            recipe.output.charts
+            and len(recipe.output.charts) > 1
+            and recipe.name
+            in (
+                "Executive Summary",
+                "Executive Dashboard",
+                "Component Vulnerability Analysis",
+            )
+        ):
+            template = self._get_template("executive_summary", recipe.name)
+        else:
+            chart_type = None
+            if hasattr(recipe.output, "chart") and isinstance(
+                recipe.output.chart, dict
+            ):
+                chart_type = recipe.output.chart.get("type", "line")
+            else:
+                chart_type = recipe.output.chart
+                if chart_type is not None and hasattr(chart_type, "value"):
+                    chart_type = chart_type.value
+            template = self._get_template(
+                str(chart_type) if chart_type else None, recipe.name
+            )
+
+        scope_class = _recipe_scope_class(recipe)
+        template_data = self._prepare_template_data(
+            recipe,
+            report_data,
+            pdf_target=False,
+            fragment_mode=True,
+            heading_depth=heading_depth,
+        )
+        template_data["fragment_scope_class"] = scope_class
+        scan_for_pandas_objects(template_data)
+        template_data = convert_to_native_types(template_data)
+        rendered: str = template.render(**template_data)
+        nav_slug = template_data.get("nav_category_slug") or None
+        return extract_fragment(
+            rendered,
+            scope_class,
+            heading_depth=heading_depth,
+            nav_category_slug=nav_slug,
+        )
+
     def _get_template(
         self, chart_type: str | None, recipe_name: str | None = None
     ) -> Any:
@@ -259,12 +397,45 @@ class HTMLRenderer:
         return self.env.get_template(template_name)
 
     def _prepare_template_data(
-        self, recipe: Recipe, report_data: ReportData
+        self,
+        recipe: Recipe,
+        report_data: ReportData,
+        *,
+        pdf_target: bool = False,
+        fragment_mode: bool = False,
+        heading_depth: int = 1,
     ) -> dict[str, Any]:
-        """Prepare data for template rendering."""
-        # Convert data to DataFrame if needed
+        """Prepare data for template rendering.
+
+        Three new flags (added for fragment-mode + PDF charts):
+        - ``pdf_target``: emit pre-rendered SVGs and skip Chart.js bootstrap
+        - ``fragment_mode``: signals to templates that this render will be
+          consumed by ``extract_fragment``. Templates do NOT need to omit
+          ``<html>``/``<head>``/``<body>`` — the extractor strips those
+          post-render. The flag mainly suppresses the standalone-shell
+          Chart.js bootstrap (charts use server SVGs instead).
+        - ``heading_depth``: passed through for templates that want to
+          render at a specific level. The extractor also performs a
+          post-render heading shift based on this value.
+
+        These are passed through to Jinja as context vars
+        ``pdf_target``, ``fragment_mode``, ``heading_depth``.
+        """
+        # Convert data to DataFrame if needed.
+        # Custom-transform recipes (e.g. CRA Compliance) return a dict of
+        # named DataFrames rather than a single flat DataFrame.  In that case
+        # we take the "main" sub-frame for column-inspection purposes; the
+        # actual section data is extracted later by _build_cra_context.
         if isinstance(report_data.data, pd.DataFrame):
             df = report_data.data
+        elif isinstance(report_data.data, dict):
+            main_val = report_data.data.get("main")
+            if isinstance(main_val, pd.DataFrame):
+                df = main_val
+            elif main_val is not None:
+                df = pd.DataFrame(main_val)
+            else:
+                df = pd.DataFrame()
         else:
             df = pd.DataFrame(report_data.data)
 
@@ -523,6 +694,22 @@ class HTMLRenderer:
 
         template_data = {
             "recipe_name": recipe.name,
+            # Pre-extracted per-column schema for the in-output column
+            # reference banner. None when the recipe doesn't define
+            # output.columns (most recipes today). Single source of
+            # truth: recipes/<name>.yaml's `output.columns` block.
+            "columns_schema": (
+                [
+                    {
+                        "name": col.name,
+                        "source": col.source,
+                        "description": col.description,
+                    }
+                    for col in recipe.output.columns
+                ]
+                if recipe.output.columns
+                else None
+            ),
             "slide_title": recipe.output.slide_title or recipe.name,
             "chart_data": chart_data_objects,  # Original objects for template conditions
             "chart_data_json": chart_data_json,  # JSON strings for JavaScript
@@ -633,9 +820,498 @@ class HTMLRenderer:
                     template_data["table_data"] = value
                 else:
                     template_data[key] = value
+
+        # ── Recipe-specific context builders ────────────────────────────────
+        # CRA Compliance: build cra_sections, KPIs, metadata labels.
+        recipe_name = getattr(recipe, "name", "") or ""
+        if recipe_name == "CRA Compliance":
+            self._build_cra_context(recipe, report_data, template_data)
+
+        # ── Phase 1 additions: fragment-mode, server-side SVGs, tokens ──
+        # getattr defends against tests that mock Recipe with a fixed spec
+        # (pydantic Field-declared attrs don't appear in dir(Recipe) and
+        # so don't make it onto MagicMock(spec=Recipe) instances).
+        nav_category = getattr(recipe, "nav_category", None)
+        template_data["nav_category"] = nav_category
+        template_data["nav_category_slug"] = (
+            nav_category.lower() if isinstance(nav_category, str) else ""
+        )
+        template_data["pdf_target"] = pdf_target
+        template_data["fragment_mode"] = fragment_mode
+        template_data["heading_depth"] = heading_depth
+        template_data["tokens_inline_css"] = self._tokens_inline_css
+        template_data["chart_palette_json"] = self._chart_palette_json
+        template_data["sev_palette_json"] = self._sev_palette_json
+        template_data["nav_palette_json"] = self._nav_palette_json
+        template_data["fs_ink"] = FS_INK
+        template_data["fs_ink_dim"] = FS_INK_DIM
+        template_data["fs_hairline"] = FS_HAIRLINE
+        template_data["fs_font_body"] = FS_FONT_BODY
+        template_data["fs_font_display"] = FS_FONT_DISPLAY
+
+        # Server-side chart SVGs for PDF / fragment targets. Charts not
+        # declared in recipe.output.charts (inline-only charts) stay browser-
+        # only; their templates must check fragment_mode/pdf_target and either
+        # render a placeholder or omit themselves.
+        server_svgs: dict[str, str] = {}
+        if (pdf_target or fragment_mode) and recipe.output.charts:
+            try:
+                from fs_report.renderers.chart_renderer import ChartRenderer
+
+                renderer = ChartRenderer()
+                main_df = (
+                    report_data.data
+                    if isinstance(report_data.data, pd.DataFrame)
+                    else (
+                        pd.DataFrame(report_data.data)
+                        if not isinstance(report_data.data, dict)
+                        else pd.DataFrame()
+                    )
+                )
+                additional = report_data.metadata.get("additional_data", {}) or {}
+                for spec in recipe.output.charts:
+                    # Resolve a DataFrame for this specific chart by name —
+                    # multi-chart recipes (Executive Dashboard, etc.) put
+                    # per-chart frames in metadata['additional_data'][name].
+                    candidate = additional.get(spec.name)
+                    if isinstance(candidate, pd.DataFrame):
+                        df_for_chart = candidate
+                    elif isinstance(candidate, list | dict) and candidate:
+                        try:
+                            df_for_chart = pd.DataFrame(candidate)
+                        except Exception:
+                            df_for_chart = main_df
+                    else:
+                        df_for_chart = main_df
+                    if df_for_chart is None or len(df_for_chart) == 0:
+                        # Empty data → emit a placeholder so the chart slot
+                        # in the template doesn't silently collapse to
+                        # nothing. Differentiates "no data" from "render
+                        # failed" for downstream debugging.
+                        server_svgs[spec.name] = (
+                            '<div class="chart-unavailable">'
+                            f"No data available for chart '{spec.name}'"
+                            "</div>"
+                        )
+                        continue
+                    chart_type = spec.chart
+                    if hasattr(chart_type, "value"):
+                        chart_type = chart_type.value
+                    try:
+                        # render_chart_svg is attached to ChartRenderer via a
+                        # mixin at module import time; mypy can't see dynamic
+                        # attribute assignment, so the attr-defined ignore is
+                        # required until the mixin is folded into the class
+                        # body (Phase 2 refactor).
+                        server_svgs[spec.name] = renderer.render_chart_svg(  # type: ignore[attr-defined]
+                            df_for_chart, str(chart_type), spec.model_dump()
+                        )
+                    except Exception as exc:
+                        self.logger.warning(
+                            "Failed to render server SVG for chart %r: %s",
+                            spec.name,
+                            exc,
+                        )
+            except Exception as exc:
+                self.logger.warning(
+                    "Server-side SVG rendering pipeline failed: %s", exc
+                )
+        template_data["server_svgs"] = server_svgs
+
         # Convert all data to native Python types to prevent ambiguous truth value errors
         converted_data = convert_to_native_types(template_data)
         return cast(dict[str, Any], converted_data)
+
+    # ── CRA Compliance context builder ───────────────────────────────────
+
+    # Per-section column specs: (column_key, display_label) pairs.
+    _CRA_SLA_COLS: list[tuple[str, str]] = [
+        ("cve_id", "CVE"),
+        ("component", "Component"),
+        ("severity", "Severity"),
+        ("exploit_maturity", "Maturity"),
+        ("reachability_label", "Reachability"),
+        ("kev_source", "KEV Source"),
+        ("breach_status", "Breach Status"),
+        ("hours_until_cra_due", "Hours Until Due"),
+        ("cra_notification_deadline", "Notification Deadline"),
+        ("cisa_remediation_due", "CISA Remediation Due"),
+        # Threat Actors trails everything else — VulnCheck rows can list 30+
+        # actors so the cell is wide; keeping the breach-clock columns near
+        # the start preserves at-a-glance triage data.
+        ("threat_actor_names", "Threat Actors"),
+    ]
+    _CRA_NEWLY_ABOVE_COLS: list[tuple[str, str]] = [
+        ("cve_id", "CVE"),
+        ("component", "Component"),
+        ("severity", "Severity"),
+        ("cvss_score", "CVSS"),
+        ("crossed_to", "Crossed To"),
+        ("crossing_source", "Source"),
+        ("breach_status", "Breach Status"),
+        ("hours_until_cra_due", "Hours Until Due"),
+        ("cra_notification_deadline", "Notification Deadline"),
+        ("threat_actor_names", "Threat Actors"),
+    ]
+    _CRA_RE_EMERGED_COLS: list[tuple[str, str]] = [
+        ("cve_id", "CVE"),
+        ("component", "Component"),
+        ("previous_resolution", "Previous Resolution"),
+        ("resolution_date", "Resolution Date"),
+        ("crossed_to", "Crossed To"),
+        ("breach_status", "Breach Status"),
+        ("hours_until_cra_due", "Hours Until Due"),
+        ("cra_notification_deadline", "Notification Deadline"),
+        ("threat_actor_names", "Threat Actors"),
+    ]
+    _CRA_STILL_IN_TRIAGE_COLS: list[tuple[str, str]] = [
+        ("cve_id", "CVE"),
+        ("component", "Component"),
+        ("severity", "Severity"),
+        ("triage_age_days", "Triage Age (days)"),
+        ("epss_percentile", "EPSS"),
+        ("breach_status", "Breach Status"),
+        ("hours_until_cra_due", "Hours Until Due"),
+        ("cra_notification_deadline", "Notification Deadline"),
+    ]
+    _CRA_FULL_SNAPSHOT_COLS: list[tuple[str, str]] = [
+        ("cve_id", "CVE"),
+        ("component", "Component"),
+        ("severity", "Severity"),
+        ("cvss_score", "CVSS"),
+        ("exploit_maturity", "Maturity"),
+        ("reachability_label", "Reachability"),
+        ("status", "Status"),
+        ("breach_status", "Breach Status"),
+        ("cra_notification_deadline", "Notification Deadline"),
+    ]
+
+    # Section label map (emoji + text matching md_renderer)
+    _CRA_SECTION_LABELS: dict[str, str] = {
+        "sla_breach": "🔥 SLA-Breach Risk",
+        "newly_above": "🆕 Newly Above Threshold",
+        "re_emerged": "🔁 Re-emerged",
+        "still_in_triage": "⏰ Still in Triage",
+        "full_snapshot": "📋 Full Snapshot",
+    }
+
+    # Maximum rows rendered for full_snapshot (others show all)
+    _FULL_SNAPSHOT_MAX_ROWS = 500
+
+    @staticmethod
+    def _get_cra_section_dfs(report_data: "Any") -> "dict[str, Any]":
+        """Return the CRA section DataFrames keyed by section name.
+
+        The pandas transform dispatcher (data_transformer.py:
+        _apply_pandas_transform_function) unwraps a dict return value:
+        it stuffs the full dict into
+        ``additional_data["transform_result"]`` and returns only the
+        "main" DataFrame as the function return.  By the time
+        ``ReportData`` is constructed, ``report_data.data`` may therefore
+        be ``main_df`` (a DataFrame) rather than the ``{main, sla_breach,
+        ...}`` dict the renderer expects.
+
+        This helper checks both locations and always returns a dict with
+        all 6 expected keys, each guaranteed to be a DataFrame.
+        """
+        import pandas as pd
+
+        _KEYS = (
+            "main",
+            "sla_breach",
+            "newly_above",
+            "re_emerged",
+            "still_in_triage",
+            "full_snapshot",
+        )
+        data = report_data.data
+        if isinstance(data, dict):
+            section_dict: dict[str, Any] = data
+        else:
+            # Engine unwrapped to main_df — sections live in additional_data.
+            meta = getattr(report_data, "metadata", {}) or {}
+            ad = meta.get("additional_data", {}) or {}
+            section_dict = ad.get("transform_result", {}) or {}
+            if not isinstance(section_dict, dict):
+                section_dict = {}
+
+        result: dict[str, Any] = {}
+        for key in _KEYS:
+            v = section_dict.get(key, pd.DataFrame())
+            result[key] = v if isinstance(v, pd.DataFrame) else pd.DataFrame()
+
+        # Fallback: if "main" is empty but report_data.data is a non-empty
+        # DataFrame, that DataFrame IS main.
+        if result["main"].empty and isinstance(data, pd.DataFrame) and not data.empty:
+            result["main"] = data
+
+        return result
+
+    @staticmethod
+    def _format_cra_row(row: dict[str, Any]) -> dict[str, Any]:
+        """Apply cosmetic formatting to a single CRA section row dict.
+
+        Fixes applied:
+        - hours_until_cra_due: float → rounded int + "h" suffix (e.g. "-570h")
+        - None / NaN / "None" / "nan" values → empty string
+        - cra_notification_deadline / cisa_remediation_due: strip "T00:00:00Z"
+          suffix so ISO datetimes display as date-only strings
+        """
+        import math
+
+        _DATE_COLS = ("cra_notification_deadline", "cisa_remediation_due")
+        out: dict[str, Any] = {}
+        for k, v in row.items():
+            # Treat None / NaN / "None" / "nan" as empty
+            if v is None:
+                out[k] = ""
+                continue
+            if isinstance(v, float) and math.isnan(v):
+                out[k] = ""
+                continue
+            if isinstance(v, str) and v.lower() in ("none", "nan"):
+                out[k] = ""
+                continue
+
+            # hours_until_cra_due: format as integer hours
+            if k == "hours_until_cra_due":
+                try:
+                    out[k] = f"{int(round(float(v)))}h"
+                except (ValueError, TypeError):
+                    out[k] = str(v)
+                continue
+
+            # Date columns: strip T00:00:00Z / T00:00:00+00:00 suffixes
+            if k in _DATE_COLS and isinstance(v, str):
+                # "2026-05-02T00:00:00Z" → "2026-05-02"
+                out[k] = v.split("T")[0] if "T" in v else v
+                continue
+
+            out[k] = v
+        return out
+
+    def _build_cra_context(
+        self,
+        recipe: "Any",
+        report_data: "Any",
+        template_data: dict[str, Any],
+    ) -> None:
+        """Populate CRA-specific template context vars in-place.
+
+        Reads ``report_data.data`` (a dict of DataFrames keyed by section
+        name, or a DataFrame with sections in additional_data) and writes
+        the following keys into *template_data*:
+
+        - ``sla_breach_count`` — int, drives the notification-obligation banner
+        - ``kpi_total`` — total finding count
+        - ``kpi_overdue`` — 🔥 rows with breach_status==OVERDUE
+        - ``kpi_due_soon`` — 🔥 rows with breach_status==DUE_SOON
+        - ``kpi_unknown_clock`` — 🔥 rows with breach_status==UNKNOWN (typically VcKEV)
+        - ``kpi_reachable`` — main_df rows with reachability_label==REACHABLE
+        - ``kpi_in_triage`` — main_df rows with status==IN_TRIAGE
+        - ``scope_label`` — human-readable scope string (folder > project > All)
+        - ``threshold_label`` — comma-joined threshold tiers from recipe_params
+        - ``since_label`` — since-window label from metadata
+        - ``cra_sections`` — list of 5 section dicts for the Jinja template
+
+        All values are native Python types (the outer convert_to_native_types
+        pass will clean any survivors).
+        """
+        import pandas as pd
+
+        # ── Extract DataFrames ──────────────────────────────────────────
+        def _to_df(val: Any) -> "pd.DataFrame":
+            if isinstance(val, pd.DataFrame):
+                return val
+            if isinstance(val, list):
+                return pd.DataFrame(val) if val else pd.DataFrame()
+            return pd.DataFrame()
+
+        section_dfs = self._get_cra_section_dfs(report_data)
+        main_df = _to_df(section_dfs.get("main"))
+        sla_df = _to_df(section_dfs.get("sla_breach"))
+        newly_df = _to_df(section_dfs.get("newly_above"))
+        re_df = _to_df(section_dfs.get("re_emerged"))
+        triage_df = _to_df(section_dfs.get("still_in_triage"))
+        snapshot_df = _to_df(section_dfs.get("full_snapshot"))
+
+        # ── SLA breach count (drives banner) ───────────────────────────
+        sla_count = len(sla_df) if not sla_df.empty else 0
+        template_data["sla_breach_count"] = sla_count
+
+        # ── KPIs from main_df ───────────────────────────────────────────
+        total = len(main_df) if not main_df.empty else 0
+        template_data["kpi_total"] = total
+
+        def _col_count(df: "pd.DataFrame", col: str, val: Any) -> int:
+            if df.empty or col not in df.columns:
+                return 0
+            return int((df[col] == val).sum())
+
+        # Action-driven KPIs (replaces P1/P2/P3 + KEV which were low signal):
+        #   OVERDUE      — past their CRA notification deadline (act NOW)
+        #   DUE_SOON     — within 24h of the deadline (act today)
+        #   Unknown Clock — no awareness timestamp (can't compute deadline)
+        #   Reachable    — `reachability_label == "REACHABLE"` (binary scans only)
+        #   In Triage    — `status == IN_TRIAGE` (kept from prior set)
+        #
+        # KPIs read from `main_df` (queue-section concat + finding-row-id
+        # dedup, queue assignment wins over 📋) — so they reflect what the
+        # operator actually sees in the highest-priority table for each
+        # row. Round 4 review M1-2 / M2-1 caught the earlier scoping to
+        # `sla_df` only: UX-10 spread breach_status into 🆕/🔁/⏰/📋 but
+        # the KPIs hadn't been updated to roll those in.
+        template_data["kpi_overdue"] = _col_count(main_df, "breach_status", "OVERDUE")
+        template_data["kpi_due_soon"] = _col_count(main_df, "breach_status", "DUE_SOON")
+        template_data["kpi_unknown_clock"] = _col_count(
+            main_df, "breach_status", "UNKNOWN"
+        )
+        template_data["kpi_in_triage"] = _col_count(main_df, "status", "IN_TRIAGE")
+
+        # Reachability detection: the FS platform only runs reachability on
+        # binary scans. Source-code-scanned projects return UNKNOWN on every
+        # row → suppress the KPI card and the 📋 column. Single source of
+        # truth in cra.sections.has_reachability_data so HTML and MD can't
+        # diverge on the heuristic.
+        from fs_report.cra.sections import has_reachability_data
+
+        has_reachability = has_reachability_data(
+            (main_df, sla_df, newly_df, re_df, triage_df, snapshot_df)
+        )
+        template_data["has_reachability"] = has_reachability
+        if has_reachability:
+            template_data["kpi_reachable"] = _col_count(
+                main_df, "reachability_label", "REACHABLE"
+            )
+
+        # ── Metadata labels ─────────────────────────────────────────────
+        meta = report_data.metadata or {}
+        additional_data = meta.get("additional_data", {}) or {}
+        recipe_params: dict[str, Any] = additional_data.get("recipe_parameters") or {}
+
+        # Period KPI — humanized --since window so the customer sees the
+        # report's time span at a glance ("24h", "7d", "30d"). Falls back
+        # from additional_data to top-level metadata (matches the
+        # since_label code path below).
+        from fs_report.cra.sections import format_since_period_label
+
+        _since_start = (
+            additional_data.get("since_start", "") or meta.get("since_start", "") or ""
+        )
+        _since_end = (
+            additional_data.get("since_end", "") or meta.get("since_end", "") or ""
+        )
+        template_data["kpi_period"] = format_since_period_label(
+            _since_start, _since_end
+        )
+
+        # scope_label: prefer folder > project > All
+        # For project_filter, prefer the human-readable name stored in
+        # metadata["project_name"] (if set) over the raw filter value which
+        # may be a numeric ID when the user passed --project <numeric-id>.
+        folder = meta.get("folder_name", "") or meta.get("folder_filter", "") or ""
+        project_name = meta.get("project_name", "") or ""
+        project = meta.get("project_filter", "") or ""
+        scope_project = project_name or project
+        if folder:
+            template_data.setdefault("scope_label", f"folder: {folder}")
+        elif scope_project:
+            template_data.setdefault("scope_label", f"project: {scope_project}")
+        else:
+            template_data.setdefault("scope_label", "All projects")
+
+        # threshold_label — prefer the effective threshold the transform
+        # actually used (reflects CLI override + unfilterable-tier strategy
+        # resolution); fall back to recipe_params for the YAML default.
+        threshold = additional_data.get("effective_threshold") or recipe_params.get(
+            "exploit_maturity_threshold", []
+        )
+        if threshold:
+            template_data.setdefault(
+                "threshold_label", ", ".join(str(t) for t in threshold)
+            )
+        else:
+            template_data.setdefault("threshold_label", "—")
+
+        # since_label: prefer metadata window strings
+        since_start = meta.get("since_start", "") or additional_data.get(
+            "since_start", ""
+        )
+        since_end = meta.get("since_end", "") or additional_data.get("since_end", "")
+        if since_start and since_end:
+            template_data.setdefault("since_label", f"{since_start} → {since_end}")
+        elif since_start:
+            template_data.setdefault("since_label", f"From {since_start}")
+        else:
+            template_data.setdefault("since_label", "24h")
+
+        # ── Build the 5 section dicts ────────────────────────────────────
+        # Strip reachability columns from 📋 Full Snapshot when the project
+        # type (source-code scan) doesn't populate them. Keeps the table
+        # informative for binary scans, removes empty noise for everything
+        # else. Same filter applies to 🔥 SLA-Breach because reachability is
+        # a high-signal triage column on actively-exploited rows.
+        from fs_report.cra.sections import filter_reachability_cols
+
+        def _f(cols: list[tuple[str, str]]) -> list[tuple[str, str]]:
+            return filter_reachability_cols(cols, has_reachability=has_reachability)
+
+        section_specs: list[
+            tuple[str, pd.DataFrame, list[tuple[str, str]], int | None]
+        ] = [
+            ("sla_breach", sla_df, _f(self._CRA_SLA_COLS), None),
+            ("newly_above", newly_df, self._CRA_NEWLY_ABOVE_COLS, None),
+            ("re_emerged", re_df, self._CRA_RE_EMERGED_COLS, None),
+            ("still_in_triage", triage_df, self._CRA_STILL_IN_TRIAGE_COLS, None),
+            (
+                "full_snapshot",
+                snapshot_df,
+                _f(self._CRA_FULL_SNAPSHOT_COLS),
+                self._FULL_SNAPSHOT_MAX_ROWS,
+            ),
+        ]
+
+        cra_sections: list[dict[str, Any]] = []
+        for key, df, col_specs, max_rows in section_specs:
+            n = len(df) if not df.empty else 0
+            # Subset to columns that actually exist in the DataFrame
+            available_cols = [
+                {"key": col, "display": label}
+                for col, label in col_specs
+                if df.empty or col in df.columns
+            ]
+            # If no spec'd columns exist, fall back to first 6 raw columns
+            if not available_cols and not df.empty:
+                available_cols = [
+                    {"key": c, "display": c} for c in list(df.columns)[:6]
+                ]
+
+            truncated = max_rows is not None and n > max_rows
+            shown = min(n, max_rows) if max_rows is not None else n
+
+            if not df.empty and n > 0:
+                display_df = df.head(shown) if max_rows is not None else df
+                col_keys = [c["key"] for c in available_cols]
+                raw_rows: list[dict[str, Any]] = display_df[  # type: ignore[assignment]
+                    [c for c in col_keys if c in display_df.columns]
+                ].to_dict(orient="records")
+                rows = [self._format_cra_row(r) for r in raw_rows]
+            else:
+                rows = []
+
+            cra_sections.append(
+                {
+                    "key": key,
+                    "label": self._CRA_SECTION_LABELS.get(key, key),
+                    "count": n,
+                    "shown": shown,
+                    "truncated": truncated,
+                    "columns": available_cols,
+                    "rows": rows,
+                }
+            )
+
+        template_data["cra_sections"] = cra_sections
 
     def _json_serializer(self, obj: Any) -> Any:
         """Custom JSON serializer to handle numpy types and booleans."""
