@@ -2,6 +2,12 @@
 
 All notable changes to fs-cli are documented in this file.
 
+## v2.0.15
+
+### Added
+
+- `fs-cli rbac-report` — read-only audit of user and/or group access on the Finite State platform. Resolves one-or-many emails (via `--users`) and/or group names/ids (via `--groups`) and reports each subject's group memberships, member emails, and folder access (direct + via group) with `read` / `write` / `admin` roles and `orgRoles`. Supports `--format table` (default), `--format csv` (one row per subject × access), and `--format json` (structured single-document). User lookup tries `email==` first, then `username==` (the platform's `userId` is often an IDP handle, not the email). Inputs with RSQL-structural characters are rejected at parse time; multi-match lookups are reported as `AMBIGUOUS` rather than guessed. At least one of `--users` / `--groups` is required; both may be combined in a single run. Group-only runs skip the org-wide membership fan-out (`--groups` without `--users` is materially cheaper on large tenants). Per-folder and per-group API calls run in parallel — tune with `--workers` (default 3).
+
 ## v2.0.14
 
 ### Added
