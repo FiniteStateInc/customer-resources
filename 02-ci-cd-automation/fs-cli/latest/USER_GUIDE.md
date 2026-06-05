@@ -11,6 +11,7 @@
   - [import](#import)
   - [third-party](#third-party)
   - [deliver](#deliver)
+  - [query](#query)
   - [update](#update)
   - [version](#version)
 - [Global Flags](#global-flags)
@@ -471,6 +472,119 @@ fs-cli deliver scan.json --endpoint app.finitestate.io --token $FS_TOKEN
 
 # 4b. (Optional) Verify the signature matches a known public key
 fs-cli deliver scan.json --verify-key public.pem --endpoint app.finitestate.io --token $FS_TOKEN
+```
+
+---
+
+### query
+
+Read-only query of the platform, built for CI/build-pipeline gating: run a scan, then query the result and let the **process exit code fail the build**. There are two modes, selected by `--type`:
+
+- `--type scan` — report scan completion across all scan types for a project version.
+- `--type project` — fail if any finding matches all of a set of AND-combined conditions (severity + exploitability).
+
+The project version is resolved from `--name` + `--version`. `--version` is matched against the platform's `name` **or** `version` field — a version's display string can live in either — so `query` resolves the same versions that `scan` / `upload` do. Pass `--project-id` and/or `--version-id` to skip the name lookups, and `--folder` / `--folder-id` to disambiguate a project name that repeats across folders.
+
+#### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--type` | (required) | `scan` or `project`. |
+| `--name` / `--project` | | Project name (resolved to an ID). |
+| `--version` | | Version string (matches the platform's `name` *or* `version` field). Required unless `--version-id` is given. |
+| `--project-id` | | Project UUID (skips `--name` lookup). |
+| `--version-id` | | Project-version UUID (skips all lookups). |
+| `--folder` / `--folder-id` | | Scope the project-name lookup. |
+| `--format` | `table` | `table` or `json`. |
+| `--timeout` | `10` | Timeout (minutes) for version resolution and the status/findings read. The `--wait` poll is bounded separately by `--poll-timeout`, not this. |
+| `--wait` *(scan)* | `false` | Poll until every scan for the version has settled (all scan types completed or failed). |
+| `--poll-timeout` *(scan)* | `30` | Max minutes to wait when `--wait` is set. |
+| `--fail-on-scan-incomplete` *(scan)* | `false` | Exit non-zero if any scan for the version is still running (or no scans found). |
+| `--finding-scope` *(project)* | `cve` | Categories to fetch & evaluate (limits API calls): comma-separated `cve` \| `bsast` \| `config` \| `all`. |
+| `--fail-on-severity` *(project)* | | Gate condition: finding severity is **at this level or higher** (`critical` \| `high` \| `medium` \| `low`). E.g. `medium` gates on medium, high, and critical; `critical` gates on critical only. |
+| `--vulns-in-kev` *(project)* | `false` | Gate condition: finding is in the **CISA KEV** catalog. |
+| `--vulns-in-vc-kev` *(project)* | `false` | Gate condition: finding is in **VulnCheck KEV**. |
+| `--reachable` *(project)* | `false` | Gate condition: finding's vulnerable code is reachable. |
+| `--exploit-maturity` *(project)* | | Gate condition: finding's CVSS exploit maturity is **≥** this level: `attacked` \| `proof-of-concept` \| `unreported` \| `not-defined`. Aliases: `none` = `not-defined`, `poc` = `proof-of-concept`. |
+| `--max-epss` *(project)* | | Gate condition: finding's EPSS score (0–100 integer) **exceeds** this threshold. |
+
+#### The gate: per-finding AND
+
+The project gate conditions are **AND-combined per finding**: the run fails (exit non-zero) if **at least one finding satisfies every configured condition**. With no conditions set, it just prints the findings-by-severity counts and exits zero.
+
+This is a per-finding match, not independent checks. `--fail-on-severity critical --reachable` fails only on a finding that is **both** critical **and** reachable — *not* on all criticals plus all reachables. If the criticals and the reachable findings are different findings, the gate **passes**.
+
+`--fail-on-severity` names the **lowest severity that gates** and expands to that level plus every level more severe. So `--fail-on-severity critical` gates on critical only, `--fail-on-severity high` gates on high and critical, `--fail-on-severity medium` gates on medium, high, and critical, and `--fail-on-severity low` gates on everything. The gated severities form a **set**; a finding matches if its severity is any of them, and that set is then AND-ed with the other conditions. Example: `--fail-on-severity high --vulns-in-kev --reachable` = "a high-or-critical finding that is in CISA KEV **and** reachable."
+
+Condition details:
+
+- `--exploit-maturity` uses the official CVSS (FIRST) Exploit Code Maturity levels, ranked highest-threat first `attacked > proof-of-concept > unreported > not-defined`; a finding matches when its derived level is **at or above** the chosen level. Each finding's level is derived from the platform's exploit data:
+
+  | Derived level | When the finding has… |
+  |---|---|
+  | **attacked** | is in CISA KEV, or is weaponized / used by botnets, commercial kits, threat actors, or ransomware |
+  | **proof-of-concept** | has public proof-of-concept exploit code |
+  | **not-defined** | no exploit signal |
+
+  The platform emits no distinct "unreported" signal, so `unreported` and `proof-of-concept` behave the same (both catch PoC-or-worse), and `not-defined` matches any CVE finding. The two practically useful values are **`proof-of-concept`** and **`attacked`**.
+
+- `--max-epss` gates on the **EPSS** (Exploit Prediction Scoring System) score — the estimated probability a CVE will be exploited in the wild. Pass a whole-number threshold from 0 to 100; a finding matches when its score **exceeds** it (a score equal to the threshold does not match). So `--max-epss 90` matches CVEs scoring above 90%, and `--max-epss 0` matches any CVE with a nonzero score.
+
+- `--reachable` matches a finding whose vulnerable code is **reachable** — i.e. the platform's reachability analysis produced a positive reachability score. Findings not analyzed or determined not reachable do not match.
+
+The severity conditions apply to **all** findings (CVE and non-CVE). The exploitability conditions (`--vulns-in-*`, `--exploit-maturity`, `--max-epss`, `--reachable`) key off fields (KEV membership, exploit maturity, EPSS, reachability) that the platform populates from its CVE/SCA pipeline, so in practice they match only CVE findings — AND-ing one of them effectively restricts the gate to CVEs even under a wider `--finding-scope`. (The match is field-based, not category-enforced: a non-CVE finding that somehow carried one of these fields would match it.)
+
+**Scope (`--finding-scope`).** This limits which finding categories are fetched from the API and evaluated, primarily as a performance knob. It defaults to `cve` and is comma-combinable:
+
+| Scope | Categories |
+|---|---|
+| `cve` | CVE / SCA vulnerabilities (includes third-party / SBOM-imported CVEs) |
+| `bsast` | Binary SAST findings |
+| `config` | configuration issues, credentials, and crypto-material findings |
+| `all` | every category |
+
+The gate (and the severity breakdown) only consider findings within the chosen scope. So with the default `cve`, `--fail-on-severity critical` matches critical **CVE** findings only; to also gate on Binary SAST or config-type findings, widen the scope, e.g. `--finding-scope cve,bsast` or `--finding-scope all`. (Third-party findings are SBOM/tool-imported CVEs and are already included in `cve` — they are distinguished by source, not category, so there is no separate scope for them.)
+
+When a gate is active, the "Findings by severity" breakdown is computed from the same per-finding list the gate evaluates, so the counts agree with the gate's match counts. This counts finding *instances* (the same CVE on multiple components counts once per component) and can therefore differ from the platform's deduplicated severity totals. A plain `--type project` with no conditions uses the platform's aggregate counts endpoint instead.
+
+**No-scans check (always on).** Before fetching any findings, a `--type project` query verifies the version has at least one terminally-successful (`COMPLETED`/`NOT_APPLICABLE`) scan and **fails fast if not** — unconditionally, with no flag. A version that was never successfully scanned has an empty/stale findings list, so a gate against it would pass vacuously (a silent false-green); failing instead makes that impossible. This check runs ahead of, and independently of, the per-finding gate.
+
+#### Exit codes
+
+- `--type scan`: rolls up every scan type the version ran (SCA, CONFIG, binary SAST, vulnerability/reachability analysis, …). Exits non-zero when any scan failed, and — with `--fail-on-scan-incomplete` — when any scan is still running (or no scans exist). A version is "complete" only when every scan type has settled, so a finished SCA scan can't mask a still-running reachability or binary-SAST scan. Under `--wait`, a version with no scans at all returns promptly (after a brief grace to absorb the lag right after a scan is kicked off) rather than polling to `--poll-timeout`.
+- `--type project`: exits non-zero when the version has no terminally-successful scan (checked first, always), or when at least one finding matches **all** configured gate conditions. With no conditions set — and a successfully-scanned version — it prints the counts and exits zero.
+
+#### Examples
+
+```sh
+# Snapshot the version's scan completion (all scan types)
+fs-cli query --type scan --name myapp --version v1.2.3
+
+# Block until every scan finishes (fails the build if any scan errored)
+fs-cli query --type scan --name myapp --version v1.2.3 --wait
+
+# Fail on any critical finding
+fs-cli query --type project --name myapp --version v1.2.3 --fail-on-severity critical
+
+# Fail only on a critical that is reachable AND in CISA KEV
+fs-cli query --type project --name myapp --version v1.2.3 --fail-on-severity critical --reachable --vulns-in-kev
+
+# Fail on a high-or-critical CVE that is actively exploited (attacked maturity)
+fs-cli query --type project --name myapp --version v1.2.3 --fail-on-severity high --exploit-maturity attacked
+
+# Fail on any critical CVE with a high likelihood of exploitation (EPSS above 90)
+fs-cli query --type project --name myapp --version v1.2.3 --fail-on-severity critical --max-epss 90
+
+# Widen the scope to gate on critical Binary SAST and config findings too
+fs-cli query --type project --name myapp --version v1.2.3 --finding-scope cve,bsast,config --fail-on-severity critical
+
+# Machine-readable output for a dashboard
+fs-cli query --type project --name myapp --version v1.2.3 --format json | jq .
+
+# Full pipeline gate
+fs-cli scan  --name myapp --version "$CI_COMMIT" --release .
+fs-cli query --type scan    --name myapp --version "$CI_COMMIT" --wait
+fs-cli query --type project --name myapp --version "$CI_COMMIT" --fail-on-severity critical --reachable
 ```
 
 ---

@@ -2,6 +2,25 @@
 
 All notable changes to fs-cli are documented in this file.
 
+## v2.0.16
+
+### Added
+
+- `fs-cli query` — read-only query of the platform for CI/build-pipeline gating; **the process exit code is the gate** (non-zero on failure). Two modes:
+  - **`--type scan`** reports scan completion **across all scan types** for a project version (SCA, CONFIG, binary SAST, vulnerability/reachability analysis, …), so a finished SCA scan can't mask a still-running reachability or binary-SAST scan. Exits non-zero when any scan failed. With `--wait` it polls until every scan has settled (`--poll-timeout`, default 30 min, bounded independently of `--timeout`); `--fail-on-scan-incomplete` makes a still-running (or missing) scan a failure in the non-wait snapshot.
+  - **`--type project`** prints the version's findings-by-severity counts and then applies an opt-in **per-finding gate**: conditions are AND-combined, so the run exits non-zero when at least one finding satisfies *every* configured condition (with none set it just prints the counts).
+  - Gate conditions (AND-combined per finding — a finding trips the gate only when it matches *every* set condition; e.g. `--fail-on-severity critical --reachable` fails only on a finding that is *both* critical and reachable):
+    - `--fail-on-severity <critical|high|medium|low>` — severity at the named level *or higher* (`medium` → medium/high/critical; `low` → everything; `critical` → critical only)
+    - `--vulns-in-kev` — finding is listed in the CISA Known Exploited Vulnerabilities catalog
+    - `--vulns-in-vc-kev` — finding is listed in the VulnCheck KEV catalog
+    - `--reachable` — vulnerable code path is reachable in the scanned binary
+    - `--exploit-maturity <level>` — CVSS Exploit Code Maturity is at or above the given level (`not-defined` / `unreported` / `proof-of-concept` / `attacked`; `none` and `poc` accepted as aliases)
+    - `--max-epss <0-100>` — EPSS percentile score exceeds the given integer threshold
+  - `--finding-scope` (default `cve`, comma-separated `cve`/`bsast`/`config`/`all`) limits which finding categories are fetched and evaluated — `cve` (CVE/SCA, including third-party/SBOM-imported CVEs), `bsast` (Binary SAST), `config` (config issues + credentials + crypto material), or `all` — so the gate stays cheap and, by default, scoped to CVEs (widen it to gate on non-CVE findings).
+  - A `--type project` query always exits non-zero if the version has no terminally-successful (`COMPLETED`/`NOT_APPLICABLE`) scan — checked before any findings are fetched — so a gate can't pass vacuously against a version that was never scanned (where the findings list is empty or stale).
+  - The project version is resolved from `--name` + `--version`, with `--project-id` / `--version-id` to skip the lookups and `--folder` / `--folder-id` to disambiguate a project name that repeats across folders. Supports `--format table` (default) and `--format json`.
+  - **Planned:** structured exit codes to distinguish failure modes (gate failure vs. scan error vs. API/auth error) are targeted for a future release. The current gate uses a single non-zero exit code for all failure modes.
+
 ## v2.0.15
 
 ### Added

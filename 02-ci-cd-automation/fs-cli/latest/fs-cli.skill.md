@@ -118,6 +118,24 @@ Key flags:
 - `--version-id <uuid>`: skip version creation, upload to this version ID directly
 - `--timeout <minutes>`: timeout (default: 5)
 
+### Query scan status / finding gate (CI gating)
+
+```sh
+fs-cli query --type scan    --name <project> --version <version> [--wait]
+fs-cli query --type project --name <project> --version <version> --fail-on-severity critical --reachable
+fs-cli query --type project --name <project> --version <version> --fail-on-severity high --vulns-in-kev
+```
+
+Read-only query of the platform for build-pipeline gating — the **process exit code is the gate**.
+
+- `--type scan`: reports scan completion across **all scan types** for the version (SCA, CONFIG, binary SAST, vulnerability/reachability analysis, …) — a finished SCA scan can't mask a still-running reachability/SAST scan. Exits non-zero when any scan failed. `--wait` polls until every scan settles (`--poll-timeout`, default 30 min); `--fail-on-scan-incomplete` also fails when any scan is still running (or none found).
+- `--type project`: prints findings-by-severity counts, then applies a gate. The gate conditions are **AND-combined per finding** — exits non-zero if ≥1 finding matches *all* set conditions; no conditions = print counts, exit zero.
+- Conditions: `--fail-on-severity <critical|high|medium|low>` (finding severity is at this level **or higher** — gates on the named level plus every more-severe level, so `medium` gates on medium/high/critical, `critical` gates on critical only, `low` gates on everything), `--vulns-in-kev` (CISA KEV), `--vulns-in-vc-kev` (VulnCheck KEV), `--reachable` (vulnerable code reachable), `--exploit-maturity <not-defined|unreported|proof-of-concept|attacked>` (CVSS Exploit Code Maturity >= level; aliases `none`/`poc`; *attacked* = CISA KEV or weaponized/botnet/commercial/threat-actor/ransomware; useful values are `proof-of-concept` and `attacked`), `--max-epss <0-100>` (EPSS score exceeds the integer threshold). e.g. `--fail-on-severity critical --reachable` fails only on a finding that is *both* critical and reachable, not all criticals plus all reachables.
+- `--finding-scope` (default `cve`, comma-separated `cve|bsast|config|all`) limits which categories are fetched/evaluated for performance: `cve`=CVE/SCA (incl. third-party/SBOM-imported CVEs), `bsast`=Binary SAST, `config`=config issues+credentials+crypto material, `all`=everything. The gate and severity breakdown only see the chosen scope; widen (e.g. `all`) to gate on non-CVE findings. (No third-party scope: those are SBOM-imported CVEs, already under `cve`.)
+- No-scans check (always on, no flag): a `--type project` query verifies the version has a terminally-successful (`COMPLETED`/`NOT_APPLICABLE`) scan before fetching findings and **fails fast if not** — a never-scanned version has an empty/stale findings list, so a gate would otherwise pass vacuously.
+
+Shared flags: `--name`/`--project` + `--version` to resolve the version (`--version` matches the platform's `name` *or* `version` field, like scan/upload), or `--project-id`/`--version-id` to skip lookups; `--folder`/`--folder-id` to disambiguate; `--format table|json`; `--timeout <minutes>` (default 10).
+
 ### Update
 
 ```sh
@@ -219,14 +237,19 @@ Select with `--output`:
 - name: Install fs-cli
   run: curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/install.sh | sh
 
-- name: Scan
+- name: Scan and gate the build
   env:
     FS_TOKEN: ${{ secrets.FS_TOKEN }}
     FS_ENDPOINT: app.finitestate.io
-  run: fs-cli scan --name "${{ github.event.repository.name }}" .
+  run: |
+    NAME="${{ github.event.repository.name }}"
+    VER="${{ github.sha }}"
+    fs-cli scan  --name "$NAME" --version "$VER" --release .
+    fs-cli query --type scan    --name "$NAME" --version "$VER" --wait
+    fs-cli query --type project --name "$NAME" --version "$VER" --fail-on-severity high
 ```
 
-Set `FS_NO_UPDATE_CHECK=1` in CI to suppress update notifications.
+The two `query` steps fail the job (non-zero exit) if the scan errored or a finding matches the gate — here, any critical or high finding. Set `FS_NO_UPDATE_CHECK=1` in CI to suppress update notifications.
 
 ## Airgap workflow
 
