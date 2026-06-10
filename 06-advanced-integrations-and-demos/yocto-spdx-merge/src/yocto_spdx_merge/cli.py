@@ -75,9 +75,15 @@ def main(argv: list[str] | None = None) -> None:
         1 for p in packages
         if any(r.get("referenceType") == "purl" for r in p.get("externalRefs", []))
     )
+    download_count = sum(
+        1 for p in packages
+        if p.get("downloadLocation") not in ("", "NOASSERTION", "NONE")
+    )
     if packages:
         pct = 100 * cpe_count // len(packages)
         print(f"  CPE mapped: {cpe_count}/{len(packages)} ({pct}%), all {purl_count} have purl", file=sys.stderr)
+        dl_pct = 100 * download_count // len(packages)
+        print(f"  downloadLocation populated: {download_count}/{len(packages)} ({dl_pct}%)", file=sys.stderr)
     else:
         print("  No component packages extracted (all refs were runtime/recipe or unresolved)", file=sys.stderr)
 
@@ -104,7 +110,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Step 9: Summary
     size_kb = output.stat().st_size / 1024
-    print(f"  Validation passed", file=sys.stderr)
+    print("  Validation passed", file=sys.stderr)
     print(f"  Output: {output_path} ({size_kb:.1f} KB, {len(packages)} packages)", file=sys.stderr)
 
 
