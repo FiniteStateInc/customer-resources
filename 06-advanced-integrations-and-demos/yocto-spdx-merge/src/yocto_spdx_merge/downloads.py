@@ -15,6 +15,9 @@ import re
 _DOWNLOAD_IDX_PATTERN = re.compile(r"-(\d+)$")
 _RECIPE_SPDXID_PREFIX = "SPDXRef-Recipe-"
 _DOWNLOAD_SPDXID_PREFIX = "SPDXRef-Download-"
+# A URI with a real scheme (https://, git+https://, svn://, ...) — bare paths,
+# missing-colon typos, and other schemeless strings fail spdx-tools validation
+_URI_SCHEME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 
 
 def _download_sort_key(spdx_id: str) -> int:
@@ -24,13 +27,15 @@ def _download_sort_key(spdx_id: str) -> int:
 
 
 def is_real_location(value) -> bool:
-    """A usable upstream location: a non-sentinel string that isn't a local path."""
+    """A usable upstream location: a scheme-bearing URI that isn't a local path."""
     if not isinstance(value, str):
         return False
     stripped = value.strip()
     if stripped in ("", "NOASSERTION", "NONE"):
         return False
-    return not stripped.lower().startswith("file:")
+    if stripped.lower().startswith("file:"):
+        return False
+    return bool(_URI_SCHEME_PATTERN.match(stripped))
 
 
 def _find_recipe_targets(package_spdxid: str, package_doc: dict) -> list[tuple[str, str]]:

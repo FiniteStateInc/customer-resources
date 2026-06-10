@@ -403,6 +403,30 @@ class TestExtractPackagesBackfill:
 
         assert packages[0]["downloadLocation"] == "git://git.busybox.net/busybox@abc123"
 
+    def test_normalizes_schemeless_and_malformed_values(self):
+        # Bare local paths and malformed URIs fail spdx-tools validation just
+        # like file:// — anything without a real URI scheme must normalize
+        for value in ("/build/tmp/work/src.tar.gz", "http//missing-colon", "foo"):
+            pkg_doc = make_package_doc(download_location=value)
+            index = {pkg_doc["documentNamespace"]: pkg_doc}
+
+            packages, _ = extract_packages(self._refs_for(pkg_doc), index)
+
+            assert packages[0]["downloadLocation"] == "NOASSERTION", value
+
+    def test_preserves_real_scheme_uris(self):
+        # Yocto-style VCS and plain URLs are real and must never be touched
+        for value in (
+            "git+https://git.busybox.net/busybox@abc123",
+            "https://downloads.example.com/src.tar.bz2",
+        ):
+            pkg_doc = make_package_doc(download_location=value)
+            index = {pkg_doc["documentNamespace"]: pkg_doc}
+
+            packages, _ = extract_packages(self._refs_for(pkg_doc), index)
+
+            assert packages[0]["downloadLocation"] == value
+
     def test_normalizes_uppercase_and_padded_file_uris(self):
         # Case/whitespace variants of file: must not dodge normalization —
         # spdx-tools rejects them just the same
