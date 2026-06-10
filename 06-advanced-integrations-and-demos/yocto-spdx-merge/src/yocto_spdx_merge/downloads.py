@@ -14,6 +14,7 @@ import re
 
 _DOWNLOAD_IDX_PATTERN = re.compile(r"-(\d+)$")
 _RECIPE_SPDXID_PREFIX = "SPDXRef-Recipe-"
+_DOWNLOAD_SPDXID_PREFIX = "SPDXRef-Download-"
 
 
 def _download_sort_key(spdx_id: str) -> int:
@@ -23,11 +24,15 @@ def _download_sort_key(spdx_id: str) -> int:
 
 
 def _is_real_location(value) -> bool:
-    return isinstance(value, str) and value not in ("", "NOASSERTION", "NONE")
+    """A usable upstream location: a non-sentinel string that isn't a local path."""
+    if not isinstance(value, str) or value in ("", "NOASSERTION", "NONE"):
+        return False
+    return not value.startswith("file:")
 
 
-def _find_recipe_target(package_spdxid: str, package_doc: dict) -> tuple[str, str] | None:
-    """Return (doc_ref_id, recipe_spdxid) from the package's GENERATED_FROM edge."""
+def _find_recipe_targets(package_spdxid: str, package_doc: dict) -> list[tuple[str, str]]:
+    """Return all (doc_ref_id, recipe_spdxid) GENERATED_FROM targets for the package."""
+    targets = []
     for rel in package_doc.get("relationships", []):
         if (
             rel.get("relationshipType") == "GENERATED_FROM"
@@ -35,8 +40,8 @@ def _find_recipe_target(package_spdxid: str, package_doc: dict) -> tuple[str, st
         ):
             target = rel.get("relatedSpdxElement", "")
             if isinstance(target, str) and ":" in target:
-                return tuple(target.split(":", 1))
-    return None
+                targets.append(tuple(target.split(":", 1)))
+    return targets
 
 
 def _resolve_doc_ref(
@@ -69,31 +74,37 @@ def resolve_download_location(
     ``extra_doc_refs`` (e.g. the image doc's refs) are consulted when the
     package document lacks its own external ref for the recipe.
     """
-    target = _find_recipe_target(package_spdxid, package_doc)
-    if target is None:
-        return None
-    doc_ref_id, recipe_spdxid = target
+    for doc_ref_id, recipe_spdxid in _find_recipe_targets(package_spdxid, package_doc):
+        recipe_ns = _resolve_doc_ref(doc_ref_id, package_doc, extra_doc_refs)
+        if not recipe_ns:
+            continue
+        recipe_doc = namespace_index.get(recipe_ns)
+        if recipe_doc is None:
+            continue
+        location = _location_from_recipe_doc(recipe_doc, recipe_spdxid)
+        if location is not None:
+            return location
+    return None
 
-    recipe_ns = _resolve_doc_ref(doc_ref_id, package_doc, extra_doc_refs)
-    if not recipe_ns:
-        return None
-    recipe_doc = namespace_index.get(recipe_ns)
-    if recipe_doc is None:
-        return None
 
+def _location_from_recipe_doc(recipe_doc: dict, recipe_spdxid: str) -> str | None:
+    """Pick the first real download URI from a resolved recipe document."""
     # Collect download packages from BUILD_DEPENDENCY_OF edges to the recipe
     # element, unioned with the SPDXRef-Download-<pn>- ID convention (scoped
     # to this recipe) so incomplete relationship sets don't drop candidates.
+    # Both sources are restricted to SPDXRef-Download-* IDs so a stray edge
+    # from a non-download package can't win the sort.
     download_ids = {
         rel.get("spdxElementId")
         for rel in recipe_doc.get("relationships", [])
         if rel.get("relationshipType") == "BUILD_DEPENDENCY_OF"
         and rel.get("relatedSpdxElement") == recipe_spdxid
         and isinstance(rel.get("spdxElementId"), str)
+        and rel["spdxElementId"].startswith(_DOWNLOAD_SPDXID_PREFIX)
     }
     if recipe_spdxid.startswith(_RECIPE_SPDXID_PREFIX):
         pn = recipe_spdxid[len(_RECIPE_SPDXID_PREFIX):]
-        download_prefix = f"SPDXRef-Download-{pn}-"
+        download_prefix = f"{_DOWNLOAD_SPDXID_PREFIX}{pn}-"
         download_ids.update(
             pkg["SPDXID"]
             for pkg in recipe_doc.get("packages", [])

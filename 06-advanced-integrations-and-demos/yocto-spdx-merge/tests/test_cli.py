@@ -91,14 +91,22 @@ def test_merge_names_unresolved_packages(tmp_path, capsys):
     orphan_doc = make_package_doc(
         pkg="libfoo", pn="libfoo", recipe_ns="http://spdx.org/spdxdocs/recipe-libfoo-4444"
     )
-    image_doc = make_image_doc(package_doc)
-    image_doc["externalDocumentRefs"].append(
-        {
-            "externalDocumentId": "DocumentRef-libfoo",
-            "spdxDocument": orphan_doc["documentNamespace"],
-            "checksum": {"algorithm": "SHA1", "checksumValue": "0" * 40},
-        }
+    # third package with an explicit NONE assertion — not "unresolved"
+    none_doc = make_package_doc(
+        pkg="libbar",
+        pn="libbar",
+        recipe_ns="http://spdx.org/spdxdocs/recipe-libbar-5555",
+        download_location="NONE",
     )
+    image_doc = make_image_doc(package_doc)
+    for doc in (orphan_doc, none_doc):
+        image_doc["externalDocumentRefs"].append(
+            {
+                "externalDocumentId": f"DocumentRef-{doc['name']}",
+                "spdxDocument": doc["documentNamespace"],
+                "checksum": {"algorithm": "SHA1", "checksumValue": "0" * 40},
+            }
+        )
 
     tar_path = tmp_path / "core-image-minimal.spdx.tar"
     write_archive(
@@ -107,6 +115,7 @@ def test_merge_names_unresolved_packages(tmp_path, capsys):
             "core-image-minimal.spdx.json": image_doc,
             "packages/busybox.spdx.json": package_doc,
             "packages/libfoo.spdx.json": orphan_doc,
+            "packages/libbar.spdx.json": none_doc,
             "recipes/recipe-busybox.spdx.json": recipe_doc,
         },
     )
@@ -115,5 +124,5 @@ def test_merge_names_unresolved_packages(tmp_path, capsys):
     main([str(tar_path), "-o", str(out_path)])
 
     stderr = capsys.readouterr().err
-    assert "downloadLocation populated: 1/2" in stderr
+    assert "downloadLocation populated: 2/3" in stderr
     assert "downloadLocation unresolved for 1 package(s): libfoo" in stderr

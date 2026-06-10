@@ -270,6 +270,61 @@ class TestResolveDownloadLocation:
 
         assert uri == "https://example.com/recipe-src.tar.gz"
 
+    def test_rejects_file_uri_locations(self):
+        # A file:// path is useless as an SBOM downloadLocation
+        recipe = make_recipe_doc([])
+        recipe["packages"][0]["downloadLocation"] = "file:///build/downloads/src.tar.gz"
+        pkg_doc = make_package_doc()
+        index = {RECIPE_NS: recipe}
+
+        uri = resolve_download_location("SPDXRef-Package-busybox", pkg_doc, index)
+
+        assert uri is None
+
+    def test_ignores_non_download_relationship_candidates(self):
+        # A BUILD_DEPENDENCY_OF edge from a non-download package must not win
+        # over the real download package (it would sort first with key 0)
+        recipe = make_recipe_doc(["https://example.com/right.tar.gz"])
+        recipe["packages"].append(
+            {
+                "SPDXID": "SPDXRef-Helper-busybox",
+                "name": "helper",
+                "downloadLocation": "https://example.com/wrong.tar.gz",
+            }
+        )
+        recipe["relationships"].append(
+            {
+                "spdxElementId": "SPDXRef-Helper-busybox",
+                "relationshipType": "BUILD_DEPENDENCY_OF",
+                "relatedSpdxElement": "SPDXRef-Recipe-busybox",
+            }
+        )
+        pkg_doc = make_package_doc()
+        index = {RECIPE_NS: recipe}
+
+        uri = resolve_download_location("SPDXRef-Package-busybox", pkg_doc, index)
+
+        assert uri == "https://example.com/right.tar.gz"
+
+    def test_tries_all_generated_from_edges(self):
+        # First GENERATED_FROM edge points at an unresolvable target; the
+        # second one (the real recipe) must still be followed
+        recipe = make_recipe_doc(["git://git.busybox.net/busybox"])
+        pkg_doc = make_package_doc()
+        pkg_doc["relationships"].insert(
+            0,
+            {
+                "spdxElementId": "SPDXRef-Package-busybox",
+                "relationshipType": "GENERATED_FROM",
+                "relatedSpdxElement": "DocumentRef-dependency-other:SPDXRef-Recipe-other",
+            },
+        )
+        index = {RECIPE_NS: recipe}
+
+        uri = resolve_download_location("SPDXRef-Package-busybox", pkg_doc, index)
+
+        assert uri == "git://git.busybox.net/busybox"
+
     def test_resolves_recipe_ref_via_extra_doc_refs(self):
         # If the package doc lacks its own externalDocumentRefs, top-level
         # refs (e.g. from the image doc) are consulted as a fallback
@@ -328,3 +383,25 @@ class TestExtractPackagesBackfill:
         packages, _ = extract_packages(self._refs_for(pkg_doc), index)
 
         assert packages[0]["downloadLocation"] == "NOASSERTION"
+
+    def test_preserves_explicit_none(self):
+        # NONE is a valid SPDX assertion ("intentionally no download location")
+        recipe = make_recipe_doc(["git://git.busybox.net/busybox"])
+        pkg_doc = make_package_doc(download_location="NONE")
+        index = {RECIPE_NS: recipe, pkg_doc["documentNamespace"]: pkg_doc}
+
+        packages, _ = extract_packages(self._refs_for(pkg_doc), index)
+
+        assert packages[0]["downloadLocation"] == "NONE"
+
+    def test_backfills_via_top_level_doc_refs(self):
+        # Package doc without its own externalDocumentRefs resolves through
+        # the top-level refs passed as all_external_doc_refs
+        recipe = make_recipe_doc(["git://git.busybox.net/busybox@abc123"])
+        pkg_doc = make_package_doc()
+        top_refs = pkg_doc.pop("externalDocumentRefs") + self._refs_for(pkg_doc)
+        index = {RECIPE_NS: recipe, pkg_doc["documentNamespace"]: pkg_doc}
+
+        packages, _ = extract_packages(self._refs_for(pkg_doc), index, top_refs)
+
+        assert packages[0]["downloadLocation"] == "git://git.busybox.net/busybox@abc123"

@@ -75,9 +75,11 @@ def main(argv: list[str] | None = None) -> None:
         1 for p in packages
         if any(r.get("referenceType") == "purl" for r in p.get("externalRefs", []))
     )
+    # NONE is a deliberate SPDX assertion ("no download location exists"),
+    # so it counts as populated — only NOASSERTION means resolution failed
     unresolved = [
         p["name"] for p in packages
-        if p.get("downloadLocation") in ("", "NOASSERTION", "NONE")
+        if p.get("downloadLocation") in ("", "NOASSERTION")
     ]
     download_count = len(packages) - len(unresolved)
     if packages:
