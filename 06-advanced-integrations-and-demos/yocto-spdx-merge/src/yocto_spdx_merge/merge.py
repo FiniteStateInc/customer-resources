@@ -84,9 +84,10 @@ def extract_packages(
             # (Yocto leaves it NOASSERTION on runtime package documents)
             download_location = pkg.get("downloadLocation", "NOASSERTION")
             if download_location in ("", "NOASSERTION"):
-                resolved = resolve_download_location(pkg["SPDXID"], doc, namespace_index)
-                if resolved:
-                    download_location = resolved
+                resolved = resolve_download_location(
+                    pkg["SPDXID"], doc, namespace_index, all_external_doc_refs
+                )
+                download_location = resolved or "NOASSERTION"
 
             extracted = {
                 "SPDXID": new_id,

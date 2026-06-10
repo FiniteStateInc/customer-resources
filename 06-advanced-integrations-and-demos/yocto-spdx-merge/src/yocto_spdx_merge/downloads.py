@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 
 _DOWNLOAD_IDX_PATTERN = re.compile(r"-(\d+)$")
+_RECIPE_SPDXID_PREFIX = "SPDXRef-Recipe-"
 
 
 def _download_sort_key(spdx_id: str) -> int:
@@ -21,70 +22,98 @@ def _download_sort_key(spdx_id: str) -> int:
     return int(match.group(1)) if match else 0
 
 
-def _is_real_location(value: str | None) -> bool:
-    return bool(value) and value not in ("NOASSERTION", "NONE")
+def _is_real_location(value) -> bool:
+    return isinstance(value, str) and value not in ("", "NOASSERTION", "NONE")
+
+
+def _find_recipe_target(package_spdxid: str, package_doc: dict) -> tuple[str, str] | None:
+    """Return (doc_ref_id, recipe_spdxid) from the package's GENERATED_FROM edge."""
+    for rel in package_doc.get("relationships", []):
+        if (
+            rel.get("relationshipType") == "GENERATED_FROM"
+            and rel.get("spdxElementId") == package_spdxid
+        ):
+            target = rel.get("relatedSpdxElement", "")
+            if isinstance(target, str) and ":" in target:
+                return tuple(target.split(":", 1))
+    return None
+
+
+def _resolve_doc_ref(
+    doc_ref_id: str,
+    package_doc: dict,
+    extra_doc_refs: list[dict] | None,
+) -> str | None:
+    """Map a DocumentRef ID to a namespace, preferring the package doc's own refs."""
+    ref_lists = [package_doc.get("externalDocumentRefs", [])]
+    if extra_doc_refs:
+        ref_lists.append(extra_doc_refs)
+    for refs in ref_lists:
+        for ref in refs:
+            if ref.get("externalDocumentId") == doc_ref_id:
+                return ref.get("spdxDocument")
+    return None
 
 
 def resolve_download_location(
     package_spdxid: str,
     package_doc: dict,
     namespace_index: dict[str, dict],
+    extra_doc_refs: list[dict] | None = None,
 ) -> str | None:
     """Resolve a package's upstream download location from its recipe document.
 
     Returns the first real download URI (lowest SRC_URI index), or None when
     the chain cannot be resolved (no GENERATED_FROM relationship, recipe doc
     not in the archive, or a file://-only recipe with no download packages).
+    ``extra_doc_refs`` (e.g. the image doc's refs) are consulted when the
+    package document lacks its own external ref for the recipe.
     """
-    # 1. Find the GENERATED_FROM edge for this package
-    recipe_target = None
-    for rel in package_doc.get("relationships", []):
-        if (
-            rel.get("relationshipType") == "GENERATED_FROM"
-            and rel.get("spdxElementId") == package_spdxid
-        ):
-            recipe_target = rel.get("relatedSpdxElement", "")
-            break
-    if not recipe_target or ":" not in recipe_target:
+    target = _find_recipe_target(package_spdxid, package_doc)
+    if target is None:
         return None
-    doc_ref_id, recipe_spdxid = recipe_target.split(":", 1)
+    doc_ref_id, recipe_spdxid = target
 
-    # 2. Resolve the DocumentRef to the recipe doc via the package doc's own refs
-    recipe_ns = None
-    for ref in package_doc.get("externalDocumentRefs", []):
-        if ref.get("externalDocumentId") == doc_ref_id:
-            recipe_ns = ref.get("spdxDocument")
-            break
+    recipe_ns = _resolve_doc_ref(doc_ref_id, package_doc, extra_doc_refs)
     if not recipe_ns:
         return None
     recipe_doc = namespace_index.get(recipe_ns)
     if recipe_doc is None:
         return None
 
-    # 3. Collect download packages: prefer BUILD_DEPENDENCY_OF edges to the
-    #    recipe element, falling back to the SPDXRef-Download- ID convention.
-    download_ids = [
+    # Collect download packages from BUILD_DEPENDENCY_OF edges to the recipe
+    # element, unioned with the SPDXRef-Download-<pn>- ID convention (scoped
+    # to this recipe) so incomplete relationship sets don't drop candidates.
+    download_ids = {
         rel.get("spdxElementId")
         for rel in recipe_doc.get("relationships", [])
         if rel.get("relationshipType") == "BUILD_DEPENDENCY_OF"
         and rel.get("relatedSpdxElement") == recipe_spdxid
-    ]
-    if not download_ids:
-        download_ids = [
+        and isinstance(rel.get("spdxElementId"), str)
+    }
+    if recipe_spdxid.startswith(_RECIPE_SPDXID_PREFIX):
+        pn = recipe_spdxid[len(_RECIPE_SPDXID_PREFIX):]
+        download_prefix = f"SPDXRef-Download-{pn}-"
+        download_ids.update(
             pkg["SPDXID"]
             for pkg in recipe_doc.get("packages", [])
-            if pkg.get("SPDXID", "").startswith("SPDXRef-Download-")
-        ]
-    if not download_ids:
-        return None
+            if isinstance(pkg.get("SPDXID"), str) and pkg["SPDXID"].startswith(download_prefix)
+        )
 
-    # 4. Return the first real location by SRC_URI index
     by_id = {pkg.get("SPDXID"): pkg for pkg in recipe_doc.get("packages", [])}
     for download_id in sorted(download_ids, key=_download_sort_key):
         pkg = by_id.get(download_id)
         if pkg is None:
             continue
         location = pkg.get("downloadLocation")
+        if _is_real_location(location):
+            return location
+
+    # Defensive fallback: some create-spdx variants may carry the location on
+    # the recipe package itself.
+    recipe_pkg = by_id.get(recipe_spdxid)
+    if recipe_pkg is not None:
+        location = recipe_pkg.get("downloadLocation")
         if _is_real_location(location):
             return location
     return None

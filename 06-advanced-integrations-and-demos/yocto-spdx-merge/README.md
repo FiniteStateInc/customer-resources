@@ -23,6 +23,15 @@ pip install -e '.[zstd]'   # or: uv sync --extra zstd
 
 Requires Python 3.9+.
 
+## Development
+
+```bash
+uv sync            # installs dev dependencies (pytest) too
+uv run pytest      # run the test suite
+```
+
+With plain pip, install pytest separately: `pip install -e . pytest`.
+
 ## Usage
 
 ```bash
@@ -64,12 +73,14 @@ the first 20 error messages.
    document is present; otherwise the whole expression collapses to `NOASSERTION`).
    Deprecated SPDX IDs like `GPL-3.0-with-GCC-exception` are normalized to SPDX 2.3
    `WITH`-form equivalents (`licenses.py`).
-5. **Backfill downloadLocation** — Yocto leaves `downloadLocation` as `NOASSERTION` on
-   runtime package documents; the real SRC_URI-derived location lives on synthetic
-   `<recipe>-source-N` packages inside the recipe documents. Each package's
-   `GENERATED_FROM` relationship is followed back to its recipe document (still in
-   the archive) and the first real download URI is copied onto the package
-   (`downloads.py`). Packages from `file://`-only recipes stay `NOASSERTION`.
+5. **Backfill downloadLocation** (runs during step 4, per package) — Yocto leaves
+   `downloadLocation` as `NOASSERTION` on runtime package documents; the real
+   SRC_URI-derived location lives on synthetic `<recipe>-source-N` packages inside
+   the recipe documents. Each package's `GENERATED_FROM` relationship is followed
+   back to its recipe document (still in the archive) and the first real download
+   URI is copied onto the package (`downloads.py`, called from
+   `merge.extract_packages`). Packages from `file://`-only recipes stay
+   `NOASSERTION`; unresolved packages are named on stderr.
    `copyrightText` is *not* backfilled: Yocto performs no copyright extraction, so
    `NOASSERTION` is the honest, spec-valid value — populating it requires a source
    scanner (ScanCode / FOSSology via meta-spdxscanner).

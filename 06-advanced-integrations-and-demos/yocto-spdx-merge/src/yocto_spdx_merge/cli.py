@@ -75,15 +75,23 @@ def main(argv: list[str] | None = None) -> None:
         1 for p in packages
         if any(r.get("referenceType") == "purl" for r in p.get("externalRefs", []))
     )
-    download_count = sum(
-        1 for p in packages
-        if p.get("downloadLocation") not in ("", "NOASSERTION", "NONE")
-    )
+    unresolved = [
+        p["name"] for p in packages
+        if p.get("downloadLocation") in ("", "NOASSERTION", "NONE")
+    ]
+    download_count = len(packages) - len(unresolved)
     if packages:
         pct = 100 * cpe_count // len(packages)
         print(f"  CPE mapped: {cpe_count}/{len(packages)} ({pct}%), all {purl_count} have purl", file=sys.stderr)
         dl_pct = 100 * download_count // len(packages)
         print(f"  downloadLocation populated: {download_count}/{len(packages)} ({dl_pct}%)", file=sys.stderr)
+        if unresolved:
+            shown = ", ".join(unresolved[:10])
+            more = f", ... and {len(unresolved) - 10} more" if len(unresolved) > 10 else ""
+            print(
+                f"  downloadLocation unresolved for {len(unresolved)} package(s): {shown}{more}",
+                file=sys.stderr,
+            )
     else:
         print("  No component packages extracted (all refs were runtime/recipe or unresolved)", file=sys.stderr)
 

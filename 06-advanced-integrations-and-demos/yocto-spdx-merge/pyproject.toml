@@ -26,3 +26,6 @@ packages = ["src/yocto_spdx_merge"]
 dev = [
     "pytest>=8.4.2",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]

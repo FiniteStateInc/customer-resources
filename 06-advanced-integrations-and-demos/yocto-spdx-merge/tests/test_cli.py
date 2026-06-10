@@ -82,3 +82,38 @@ def test_merge_backfills_download_location_end_to_end(tmp_path, capsys):
 
     stderr = capsys.readouterr().err
     assert "downloadLocation populated: 1/1" in stderr
+
+
+def test_merge_names_unresolved_packages(tmp_path, capsys):
+    recipe_doc = make_recipe_doc(["git://git.busybox.net/busybox@abc123"])
+    package_doc = make_package_doc()
+    # second package whose recipe doc is absent from the archive
+    orphan_doc = make_package_doc(
+        pkg="libfoo", pn="libfoo", recipe_ns="http://spdx.org/spdxdocs/recipe-libfoo-4444"
+    )
+    image_doc = make_image_doc(package_doc)
+    image_doc["externalDocumentRefs"].append(
+        {
+            "externalDocumentId": "DocumentRef-libfoo",
+            "spdxDocument": orphan_doc["documentNamespace"],
+            "checksum": {"algorithm": "SHA1", "checksumValue": "0" * 40},
+        }
+    )
+
+    tar_path = tmp_path / "core-image-minimal.spdx.tar"
+    write_archive(
+        tar_path,
+        {
+            "core-image-minimal.spdx.json": image_doc,
+            "packages/busybox.spdx.json": package_doc,
+            "packages/libfoo.spdx.json": orphan_doc,
+            "recipes/recipe-busybox.spdx.json": recipe_doc,
+        },
+    )
+    out_path = tmp_path / "out.spdx.json"
+
+    main([str(tar_path), "-o", str(out_path)])
+
+    stderr = capsys.readouterr().err
+    assert "downloadLocation populated: 1/2" in stderr
+    assert "downloadLocation unresolved for 1 package(s): libfoo" in stderr

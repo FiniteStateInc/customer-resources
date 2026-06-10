@@ -178,6 +178,112 @@ class TestResolveDownloadLocation:
 
         assert uri == "git://git.busybox.net/busybox"
 
+    def test_tolerates_relationship_without_spdx_element_id(self):
+        # A malformed BUILD_DEPENDENCY_OF edge must not crash resolution
+        recipe = make_recipe_doc(["git://git.busybox.net/busybox"])
+        recipe["relationships"].append(
+            {
+                "relationshipType": "BUILD_DEPENDENCY_OF",
+                "relatedSpdxElement": "SPDXRef-Recipe-busybox",
+            }
+        )
+        pkg_doc = make_package_doc()
+        index = {RECIPE_NS: recipe}
+
+        uri = resolve_download_location("SPDXRef-Package-busybox", pkg_doc, index)
+
+        assert uri == "git://git.busybox.net/busybox"
+
+    def test_prefix_fallback_is_scoped_to_the_recipe(self):
+        # A download package belonging to a different recipe in the same doc
+        # must not be picked up by the prefix fallback
+        recipe = make_recipe_doc([])
+        recipe["relationships"] = []
+        recipe["packages"].append(
+            {
+                "SPDXID": "SPDXRef-Download-otherpkg-1",
+                "name": "otherpkg-source-1",
+                "downloadLocation": "https://example.com/otherpkg.tar.gz",
+            }
+        )
+        pkg_doc = make_package_doc()
+        index = {RECIPE_NS: recipe}
+
+        uri = resolve_download_location("SPDXRef-Package-busybox", pkg_doc, index)
+
+        assert uri is None
+
+    def test_unions_relationship_and_prefix_candidates(self):
+        # Relationship edges only cover Download-2; Download-1 (lower SRC_URI
+        # index) is discoverable by ID convention and must win
+        recipe = make_recipe_doc(
+            ["https://example.com/first.tar.gz", "https://example.com/second.tar.gz"]
+        )
+        recipe["relationships"] = [
+            rel
+            for rel in recipe["relationships"]
+            if rel.get("spdxElementId") != "SPDXRef-Download-busybox-1"
+        ]
+        pkg_doc = make_package_doc()
+        index = {RECIPE_NS: recipe}
+
+        uri = resolve_download_location("SPDXRef-Package-busybox", pkg_doc, index)
+
+        assert uri == "https://example.com/first.tar.gz"
+
+    def test_handles_src_uri_index_gap(self):
+        # Yocto enumerates all SRC_URI entries but skips file:// ones, so the
+        # first emitted download package may be Download-<pn>-2
+        recipe = make_recipe_doc([])
+        for idx, uri in ((2, "https://example.com/remote.tar.gz"), (3, "https://example.com/extra.tar.gz")):
+            download_id = f"SPDXRef-Download-busybox-{idx}"
+            recipe["packages"].append(
+                {
+                    "SPDXID": download_id,
+                    "name": f"busybox-source-{idx}",
+                    "downloadLocation": uri,
+                }
+            )
+            recipe["relationships"].append(
+                {
+                    "spdxElementId": download_id,
+                    "relationshipType": "BUILD_DEPENDENCY_OF",
+                    "relatedSpdxElement": "SPDXRef-Recipe-busybox",
+                }
+            )
+        pkg_doc = make_package_doc()
+        index = {RECIPE_NS: recipe}
+
+        uri = resolve_download_location("SPDXRef-Package-busybox", pkg_doc, index)
+
+        assert uri == "https://example.com/remote.tar.gz"
+
+    def test_falls_back_to_recipe_package_download_location(self):
+        # Defensive: if a create-spdx variant puts the location on the recipe
+        # package itself, use it when no download packages exist
+        recipe = make_recipe_doc([])
+        recipe["packages"][0]["downloadLocation"] = "https://example.com/recipe-src.tar.gz"
+        pkg_doc = make_package_doc()
+        index = {RECIPE_NS: recipe}
+
+        uri = resolve_download_location("SPDXRef-Package-busybox", pkg_doc, index)
+
+        assert uri == "https://example.com/recipe-src.tar.gz"
+
+    def test_resolves_recipe_ref_via_extra_doc_refs(self):
+        # If the package doc lacks its own externalDocumentRefs, top-level
+        # refs (e.g. from the image doc) are consulted as a fallback
+        recipe = make_recipe_doc(["git://git.busybox.net/busybox"])
+        pkg_doc = make_package_doc()
+        extra_refs = pkg_doc.pop("externalDocumentRefs")
+        index = {RECIPE_NS: recipe}
+
+        uri = resolve_download_location(
+            "SPDXRef-Package-busybox", pkg_doc, index, extra_doc_refs=extra_refs
+        )
+
+        assert uri == "git://git.busybox.net/busybox"
+
 
 class TestExtractPackagesBackfill:
     def _refs_for(self, pkg_doc: dict) -> list[dict]:
@@ -209,6 +315,14 @@ class TestExtractPackagesBackfill:
 
     def test_leaves_noassertion_when_unresolvable(self):
         pkg_doc = make_package_doc()  # recipe doc absent from index
+        index = {pkg_doc["documentNamespace"]: pkg_doc}
+
+        packages, _ = extract_packages(self._refs_for(pkg_doc), index)
+
+        assert packages[0]["downloadLocation"] == "NOASSERTION"
+
+    def test_normalizes_empty_download_location_to_noassertion(self):
+        pkg_doc = make_package_doc(download_location="")  # recipe doc absent
         index = {pkg_doc["documentNamespace"]: pkg_doc}
 
         packages, _ = extract_packages(self._refs_for(pkg_doc), index)
