@@ -23,6 +23,15 @@ pip install -e '.[zstd]'   # or: uv sync --extra zstd
 
 Requires Python 3.9+.
 
+## Development
+
+```bash
+uv sync            # installs dev dependencies (pytest) too
+uv run pytest      # run the test suite
+```
+
+With plain pip, install pytest separately: `pip install -e . pytest`.
+
 ## Usage
 
 ```bash
@@ -41,6 +50,8 @@ Reading core-image-minimal.spdx.tar...
   Top-level image: core-image-minimal
   Package refs: 312 (skipped 530 runtime/recipe)
   CPE mapped: 187/312 (59%), all 312 have purl
+  downloadLocation populated: 298/312 (95%)
+  downloadLocation unresolved for 14 package(s): packagegroup-core-boot, ...
   Assembled 312 packages
   Validating SPDX 2.3 compliance...
   Validation passed
@@ -63,16 +74,29 @@ the first 20 error messages.
    document is present; otherwise the whole expression collapses to `NOASSERTION`).
    Deprecated SPDX IDs like `GPL-3.0-with-GCC-exception` are normalized to SPDX 2.3
    `WITH`-form equivalents (`licenses.py`).
-5. **Enrich** — every package gets a `pkg:yocto/<name>@<version>` purl. Packages
+5. **Backfill downloadLocation** (runs during step 4, per package) — Yocto leaves
+   `downloadLocation` as `NOASSERTION` on runtime package documents; the real
+   SRC_URI-derived location lives on synthetic `<recipe>-source-N` packages inside
+   the recipe documents. Each package's `GENERATED_FROM` relationship is followed
+   back to its recipe document (still in the archive) and the first real download
+   URI is copied onto the package (`downloads.py`, called from
+   `merge.extract_packages`). Packages from `file://`-only recipes stay
+   `NOASSERTION`, and pre-existing local `file://` paths are likewise
+   normalized to `NOASSERTION` when unresolvable (spdx-tools rejects them
+   as download locations); unresolved packages are named on stderr.
+   `copyrightText` is *not* backfilled: Yocto performs no copyright extraction, so
+   `NOASSERTION` is the honest, spec-valid value — populating it requires a source
+   scanner (ScanCode / FOSSology via meta-spdxscanner).
+6. **Enrich** — every package gets a `pkg:yocto/<name>@<version>` purl. Packages
    whose name (or a dash-stripped base) matches `data/cpe_map.yaml` also get a
    CPE 2.3 `externalRef`. Yocto `+git` version suffixes are stripped from CPE
    versions; existing `externalRefs` are preserved and deduplicated by locator
    (`enrich.py`).
-6. **Assemble** — emit a single SPDX 2.3 document: the image package plus all
+7. **Assemble** — emit a single SPDX 2.3 document: the image package plus all
    component packages, with a `DESCRIBES` relationship from the document to the
    image and `DEPENDS_ON` relationships from the image to each component
    (`merge.assemble_document`).
-7. **Validate** — parse and validate the output with `spdx-tools`. On failure,
+8. **Validate** — parse and validate the output with `spdx-tools`. On failure,
    delete the output and exit 1.
 
 ## Project layout
@@ -83,6 +107,7 @@ src/yocto_spdx_merge/
   extract.py         # tar reading, top-level doc detection, namespace index
   merge.py           # ref filtering, package extraction, document assembly
   licenses.py        # cross-doc LicenseRef resolution, deprecated ID mapping
+  downloads.py       # downloadLocation backfill from recipe documents
   enrich.py          # purl + CPE externalRef generation
   validate.py        # spdx-tools wrapper
   data/cpe_map.yaml  # Yocto recipe name → {vendor, product} for CPE lookup

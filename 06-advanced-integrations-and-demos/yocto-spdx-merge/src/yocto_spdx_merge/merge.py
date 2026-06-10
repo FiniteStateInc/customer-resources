@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import re
-import sys
 import uuid
 from datetime import datetime, timezone
 
 from yocto_spdx_merge import __version__
+from yocto_spdx_merge.downloads import is_real_location, resolve_download_location
 from yocto_spdx_merge.enrich import load_cpe_map, enrich_package
 from yocto_spdx_merge.licenses import resolve_license_expression
 
@@ -80,11 +80,25 @@ def extract_packages(
                 license_declared, namespace_index, all_external_doc_refs
             )
 
+            # Backfill downloadLocation from the recipe doc's source packages
+            # (Yocto leaves it NOASSERTION on runtime package documents).
+            # Anything that isn't a real upstream URI — NOASSERTION, empty,
+            # null, file:// build paths — is a backfill candidate; NONE is a
+            # deliberate SPDX assertion and is preserved. Unresolvable values
+            # normalize to NOASSERTION (spdx-tools rejects file:// here, so
+            # keeping a local path would fail output validation).
+            download_location = pkg.get("downloadLocation", "NOASSERTION")
+            if not is_real_location(download_location) and download_location != "NONE":
+                resolved = resolve_download_location(
+                    pkg["SPDXID"], doc, namespace_index, all_external_doc_refs
+                )
+                download_location = resolved or "NOASSERTION"
+
             extracted = {
                 "SPDXID": new_id,
                 "name": pkg["name"],
                 "versionInfo": pkg.get("versionInfo", ""),
-                "downloadLocation": pkg.get("downloadLocation", "NOASSERTION"),
+                "downloadLocation": download_location,
                 "licenseConcluded": pkg.get("licenseConcluded", "NOASSERTION"),
                 "licenseDeclared": license_declared,
                 "copyrightText": pkg.get("copyrightText", "NOASSERTION"),

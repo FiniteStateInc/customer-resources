@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from yocto_spdx_merge import __version__
+from yocto_spdx_merge.downloads import is_real_location
 from yocto_spdx_merge.extract import open_tar, find_top_level_doc, build_namespace_index
 from yocto_spdx_merge.merge import filter_package_refs, extract_packages, assemble_document
 from yocto_spdx_merge.validate import validate_spdx_file
@@ -75,9 +76,26 @@ def main(argv: list[str] | None = None) -> None:
         1 for p in packages
         if any(r.get("referenceType") == "purl" for r in p.get("externalRefs", []))
     )
+    # NONE is a deliberate SPDX assertion ("no download location exists"),
+    # so it counts as populated; anything that isn't a real upstream URI
+    # (NOASSERTION, empty, local paths) counts as unresolved
+    unresolved = [
+        p["name"] for p in packages
+        if p.get("downloadLocation") != "NONE" and not is_real_location(p.get("downloadLocation"))
+    ]
+    download_count = len(packages) - len(unresolved)
     if packages:
         pct = 100 * cpe_count // len(packages)
         print(f"  CPE mapped: {cpe_count}/{len(packages)} ({pct}%), all {purl_count} have purl", file=sys.stderr)
+        dl_pct = 100 * download_count // len(packages)
+        print(f"  downloadLocation populated: {download_count}/{len(packages)} ({dl_pct}%)", file=sys.stderr)
+        if unresolved:
+            shown = ", ".join(unresolved[:10])
+            more = f", ... and {len(unresolved) - 10} more" if len(unresolved) > 10 else ""
+            print(
+                f"  downloadLocation unresolved for {len(unresolved)} package(s): {shown}{more}",
+                file=sys.stderr,
+            )
     else:
         print("  No component packages extracted (all refs were runtime/recipe or unresolved)", file=sys.stderr)
 
@@ -104,7 +122,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Step 9: Summary
     size_kb = output.stat().st_size / 1024
-    print(f"  Validation passed", file=sys.stderr)
+    print("  Validation passed", file=sys.stderr)
     print(f"  Output: {output_path} ({size_kb:.1f} KB, {len(packages)} packages)", file=sys.stderr)
 
 
