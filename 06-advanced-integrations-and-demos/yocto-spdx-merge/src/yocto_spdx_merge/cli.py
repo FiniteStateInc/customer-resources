@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from yocto_spdx_merge import __version__
+from yocto_spdx_merge.downloads import is_real_location
 from yocto_spdx_merge.extract import open_tar, find_top_level_doc, build_namespace_index
 from yocto_spdx_merge.merge import filter_package_refs, extract_packages, assemble_document
 from yocto_spdx_merge.validate import validate_spdx_file
@@ -76,10 +77,11 @@ def main(argv: list[str] | None = None) -> None:
         if any(r.get("referenceType") == "purl" for r in p.get("externalRefs", []))
     )
     # NONE is a deliberate SPDX assertion ("no download location exists"),
-    # so it counts as populated — only NOASSERTION means resolution failed
+    # so it counts as populated; anything that isn't a real upstream URI
+    # (NOASSERTION, empty, local paths) counts as unresolved
     unresolved = [
         p["name"] for p in packages
-        if p.get("downloadLocation") in ("", "NOASSERTION")
+        if p.get("downloadLocation") != "NONE" and not is_real_location(p.get("downloadLocation"))
     ]
     download_count = len(packages) - len(unresolved)
     if packages:

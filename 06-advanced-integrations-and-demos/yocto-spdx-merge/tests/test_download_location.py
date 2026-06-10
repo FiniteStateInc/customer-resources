@@ -270,6 +270,15 @@ class TestResolveDownloadLocation:
 
         assert uri == "https://example.com/recipe-src.tar.gz"
 
+    def test_rejects_whitespace_only_locations(self):
+        recipe = make_recipe_doc(["   "])
+        pkg_doc = make_package_doc()
+        index = {RECIPE_NS: recipe}
+
+        uri = resolve_download_location("SPDXRef-Package-busybox", pkg_doc, index)
+
+        assert uri is None
+
     def test_rejects_file_uri_locations(self):
         # A file:// path is useless as an SBOM downloadLocation
         recipe = make_recipe_doc([])
@@ -394,14 +403,16 @@ class TestExtractPackagesBackfill:
 
         assert packages[0]["downloadLocation"] == "git://git.busybox.net/busybox@abc123"
 
-    def test_keeps_file_uri_when_unresolvable(self):
-        # Don't destroy a source-asserted value when backfill can't improve it
+    def test_normalizes_file_uri_to_noassertion_when_unresolvable(self):
+        # spdx-tools rejects file:// downloadLocation values, so an
+        # unresolvable local path must become NOASSERTION or the merged
+        # document fails validation
         pkg_doc = make_package_doc(download_location="file:///build/tmp/work/src.tar.gz")
         index = {pkg_doc["documentNamespace"]: pkg_doc}
 
         packages, _ = extract_packages(self._refs_for(pkg_doc), index)
 
-        assert packages[0]["downloadLocation"] == "file:///build/tmp/work/src.tar.gz"
+        assert packages[0]["downloadLocation"] == "NOASSERTION"
 
     def test_backfills_null_download_location(self):
         # JSON null is not a valid SPDX value — backfill or normalize it

@@ -25,7 +25,7 @@ def _download_sort_key(spdx_id: str) -> int:
 
 def is_real_location(value) -> bool:
     """A usable upstream location: a non-sentinel string that isn't a local path."""
-    if not isinstance(value, str) or value in ("", "NOASSERTION", "NONE"):
+    if not isinstance(value, str) or value.strip() in ("", "NOASSERTION", "NONE"):
         return False
     return not value.startswith("file:")
 

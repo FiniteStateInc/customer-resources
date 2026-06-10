@@ -81,7 +81,9 @@ the first 20 error messages.
    back to its recipe document (still in the archive) and the first real download
    URI is copied onto the package (`downloads.py`, called from
    `merge.extract_packages`). Packages from `file://`-only recipes stay
-   `NOASSERTION`; unresolved packages are named on stderr.
+   `NOASSERTION`, and pre-existing local `file://` paths are likewise
+   normalized to `NOASSERTION` when unresolvable (spdx-tools rejects them
+   as download locations); unresolved packages are named on stderr.
    `copyrightText` is *not* backfilled: Yocto performs no copyright extraction, so
    `NOASSERTION` is the honest, spec-valid value — populating it requires a source
    scanner (ScanCode / FOSSology via meta-spdxscanner).

@@ -98,8 +98,15 @@ def test_merge_names_unresolved_packages(tmp_path, capsys):
         recipe_ns="http://spdx.org/spdxdocs/recipe-libbar-5555",
         download_location="NONE",
     )
+    # fourth package with a retained local build path — counts as unresolved
+    file_doc = make_package_doc(
+        pkg="libqux",
+        pn="libqux",
+        recipe_ns="http://spdx.org/spdxdocs/recipe-libqux-6666",
+        download_location="file:///build/tmp/work/libqux.tar.gz",
+    )
     image_doc = make_image_doc(package_doc)
-    for doc in (orphan_doc, none_doc):
+    for doc in (orphan_doc, none_doc, file_doc):
         image_doc["externalDocumentRefs"].append(
             {
                 "externalDocumentId": f"DocumentRef-{doc['name']}",
@@ -116,6 +123,7 @@ def test_merge_names_unresolved_packages(tmp_path, capsys):
             "packages/busybox.spdx.json": package_doc,
             "packages/libfoo.spdx.json": orphan_doc,
             "packages/libbar.spdx.json": none_doc,
+            "packages/libqux.spdx.json": file_doc,
             "recipes/recipe-busybox.spdx.json": recipe_doc,
         },
     )
@@ -127,7 +135,9 @@ def test_merge_names_unresolved_packages(tmp_path, capsys):
     by_name = {p["name"]: p for p in merged["packages"]}
     assert by_name["libbar"]["downloadLocation"] == "NONE"
     assert by_name["libfoo"]["downloadLocation"] == "NOASSERTION"
+    # local build path is normalized away (spdx-tools rejects file:// here)
+    assert by_name["libqux"]["downloadLocation"] == "NOASSERTION"
 
     stderr = capsys.readouterr().err
-    assert "downloadLocation populated: 2/3" in stderr
-    assert "downloadLocation unresolved for 1 package(s): libfoo" in stderr
+    assert "downloadLocation populated: 2/4" in stderr
+    assert "downloadLocation unresolved for 2 package(s): libfoo, libqux" in stderr
