@@ -123,6 +123,11 @@ def test_merge_names_unresolved_packages(tmp_path, capsys):
 
     main([str(tar_path), "-o", str(out_path)])
 
+    merged = json.loads(out_path.read_text())
+    by_name = {p["name"]: p for p in merged["packages"]}
+    assert by_name["libbar"]["downloadLocation"] == "NONE"
+    assert by_name["libfoo"]["downloadLocation"] == "NOASSERTION"
+
     stderr = capsys.readouterr().err
     assert "downloadLocation populated: 2/3" in stderr
     assert "downloadLocation unresolved for 1 package(s): libfoo" in stderr

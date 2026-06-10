@@ -384,6 +384,45 @@ class TestExtractPackagesBackfill:
 
         assert packages[0]["downloadLocation"] == "NOASSERTION"
 
+    def test_replaces_file_uri_when_recipe_resolvable(self):
+        # A pre-existing local build path is upgraded to the real upstream URI
+        recipe = make_recipe_doc(["git://git.busybox.net/busybox@abc123"])
+        pkg_doc = make_package_doc(download_location="file:///build/tmp/work/src.tar.gz")
+        index = {RECIPE_NS: recipe, pkg_doc["documentNamespace"]: pkg_doc}
+
+        packages, _ = extract_packages(self._refs_for(pkg_doc), index)
+
+        assert packages[0]["downloadLocation"] == "git://git.busybox.net/busybox@abc123"
+
+    def test_keeps_file_uri_when_unresolvable(self):
+        # Don't destroy a source-asserted value when backfill can't improve it
+        pkg_doc = make_package_doc(download_location="file:///build/tmp/work/src.tar.gz")
+        index = {pkg_doc["documentNamespace"]: pkg_doc}
+
+        packages, _ = extract_packages(self._refs_for(pkg_doc), index)
+
+        assert packages[0]["downloadLocation"] == "file:///build/tmp/work/src.tar.gz"
+
+    def test_backfills_null_download_location(self):
+        # JSON null is not a valid SPDX value — backfill or normalize it
+        recipe = make_recipe_doc(["git://git.busybox.net/busybox@abc123"])
+        pkg_doc = make_package_doc()
+        pkg_doc["packages"][0]["downloadLocation"] = None
+        index = {RECIPE_NS: recipe, pkg_doc["documentNamespace"]: pkg_doc}
+
+        packages, _ = extract_packages(self._refs_for(pkg_doc), index)
+
+        assert packages[0]["downloadLocation"] == "git://git.busybox.net/busybox@abc123"
+
+    def test_normalizes_null_to_noassertion_when_unresolvable(self):
+        pkg_doc = make_package_doc()
+        pkg_doc["packages"][0]["downloadLocation"] = None
+        index = {pkg_doc["documentNamespace"]: pkg_doc}
+
+        packages, _ = extract_packages(self._refs_for(pkg_doc), index)
+
+        assert packages[0]["downloadLocation"] == "NOASSERTION"
+
     def test_preserves_explicit_none(self):
         # NONE is a valid SPDX assertion ("intentionally no download location")
         recipe = make_recipe_doc(["git://git.busybox.net/busybox"])

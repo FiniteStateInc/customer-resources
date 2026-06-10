@@ -23,7 +23,7 @@ def _download_sort_key(spdx_id: str) -> int:
     return int(match.group(1)) if match else 0
 
 
-def _is_real_location(value) -> bool:
+def is_real_location(value) -> bool:
     """A usable upstream location: a non-sentinel string that isn't a local path."""
     if not isinstance(value, str) or value in ("", "NOASSERTION", "NONE"):
         return False
@@ -117,7 +117,7 @@ def _location_from_recipe_doc(recipe_doc: dict, recipe_spdxid: str) -> str | Non
         if pkg is None:
             continue
         location = pkg.get("downloadLocation")
-        if _is_real_location(location):
+        if is_real_location(location):
             return location
 
     # Defensive fallback: some create-spdx variants may carry the location on
@@ -125,6 +125,6 @@ def _location_from_recipe_doc(recipe_doc: dict, recipe_spdxid: str) -> str | Non
     recipe_pkg = by_id.get(recipe_spdxid)
     if recipe_pkg is not None:
         location = recipe_pkg.get("downloadLocation")
-        if _is_real_location(location):
+        if is_real_location(location):
             return location
     return None
