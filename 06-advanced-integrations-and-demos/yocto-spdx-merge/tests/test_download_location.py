@@ -403,6 +403,17 @@ class TestExtractPackagesBackfill:
 
         assert packages[0]["downloadLocation"] == "git://git.busybox.net/busybox@abc123"
 
+    def test_normalizes_uppercase_and_padded_file_uris(self):
+        # Case/whitespace variants of file: must not dodge normalization —
+        # spdx-tools rejects them just the same
+        for value in ("FILE:///build/src.tar.gz", " file:///build/src.tar.gz"):
+            pkg_doc = make_package_doc(download_location=value)
+            index = {pkg_doc["documentNamespace"]: pkg_doc}
+
+            packages, _ = extract_packages(self._refs_for(pkg_doc), index)
+
+            assert packages[0]["downloadLocation"] == "NOASSERTION", value
+
     def test_normalizes_file_uri_to_noassertion_when_unresolvable(self):
         # spdx-tools rejects file:// downloadLocation values, so an
         # unresolvable local path must become NOASSERTION or the merged

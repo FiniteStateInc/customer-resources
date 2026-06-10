@@ -25,9 +25,12 @@ def _download_sort_key(spdx_id: str) -> int:
 
 def is_real_location(value) -> bool:
     """A usable upstream location: a non-sentinel string that isn't a local path."""
-    if not isinstance(value, str) or value.strip() in ("", "NOASSERTION", "NONE"):
+    if not isinstance(value, str):
         return False
-    return not value.startswith("file:")
+    stripped = value.strip()
+    if stripped in ("", "NOASSERTION", "NONE"):
+        return False
+    return not stripped.lower().startswith("file:")
 
 
 def _find_recipe_targets(package_spdxid: str, package_doc: dict) -> list[tuple[str, str]]:
