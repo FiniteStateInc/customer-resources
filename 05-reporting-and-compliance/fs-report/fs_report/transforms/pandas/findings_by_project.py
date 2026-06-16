@@ -28,7 +28,6 @@ _CSV_COLUMNS = [
     "# in-the-wild exploitation signals",
     "CWE",
     "Description",
-    "CVSS v2 Vector",
     "CVSS v3 Vector",
     "NVD URL",
     "FS Link",
@@ -86,7 +85,7 @@ def findings_by_project_pandas_transform(
     # Select and rename required columns
     required_columns = {
         "cvss_score": "CVSS",
-        # Renamed 2026-05-26 (PR off Adam's Netgear-driven proposal). Old
+        # Renamed 2026-05-26 (customer-driven column-naming proposal). Old
         # column name "# of known exploits" was misleading — it's len(exploitInfo),
         # i.e. the count of *signal categories* (poc/weaponized/commercial/kev/
         # vcKev/reported/threatActors/ransomware/botnets) the platform observed,
@@ -151,15 +150,12 @@ def findings_by_project_pandas_transform(
         cve_details = additional_data.get("cve_details", {})
         domain = additional_data.get("domain", "")
 
-    # Description, CVSS v2 Vector, CVSS v3 Vector from cve_details lookup
+    # Description, CVSS v3 Vector from cve_details lookup. CVSS v2 Vector was
+    # dropped (2026-06-14) — NVD stopped assigning CVSS v2 (~2016+), so it is
+    # ~always empty for modern data.
     output_df["Description"] = output_df["CVE ID"].map(
         lambda cve: (
             cve_details.get(cve, {}).get("description", "") if cve_details else ""
-        )
-    )
-    output_df["CVSS v2 Vector"] = output_df["CVE ID"].map(
-        lambda cve: (
-            cve_details.get(cve, {}).get("cvss_v2_vector", "") if cve_details else ""
         )
     )
     output_df["CVSS v3 Vector"] = output_df["CVE ID"].map(
@@ -223,8 +219,20 @@ def findings_by_project_pandas_transform(
             csv_cols.append(dep_col)
     output_df = output_df[csv_cols]
 
-    # Sort by CVSS score (descending) and then by Project Name
-    output_df = output_df.sort_values(["CVSS", "Project Name"], ascending=[False, True])
+    # Sort: projects as contiguous blocks ordered by finding count
+    # (descending), CVSS descending within each block. The old
+    # ["CVSS", "Project Name"] sort interleaved projects, which made the
+    # template's project-divider rows fire repeatedly and left the
+    # project order looking arbitrary (2026-06-06 visual QA).
+    project_totals = output_df.groupby("Project Name")["Project Name"].transform("size")
+    output_df = (
+        output_df.assign(_project_total=project_totals)
+        .sort_values(
+            ["_project_total", "Project Name", "CVSS"],
+            ascending=[False, True, False],
+        )
+        .drop(columns=["_project_total"])
+    )
 
     # Handle missing data gracefully
     output_df = output_df.fillna(
@@ -246,7 +254,6 @@ def findings_by_project_pandas_transform(
             "Reachability": "UNKNOWN",
             "KEV": "",
             "Description": "",
-            "CVSS v2 Vector": "",
             "CVSS v3 Vector": "",
             "NVD URL": "",
             "FS Link": "",

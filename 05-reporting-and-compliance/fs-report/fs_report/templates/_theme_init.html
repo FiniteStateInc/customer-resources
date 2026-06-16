@@ -1,0 +1,72 @@
+{# Finite State theme init — runs in <head> before paint to avoid flash.
+
+   Resolves the active theme as follows:
+
+   - If pdf_mode is True (set by pdf_renderer.py), use the server-rendered
+     theme exactly. Bypasses localStorage / URL / prefers-color-scheme so
+     PDF output stays deterministic. This matters with JS-executing
+     headless browsers (e.g. Playwright) where prefers-color-scheme can
+     match dark in a non-pinned context and yield an unintended dark PDF.
+
+   - Otherwise, if the server passed an EXPLICIT theme ('light' or
+     'dark'), honor it as the authoritative initial render. We skip
+     localStorage and prefers-color-scheme so an author who ran
+     ``--theme dark`` gets dark for every viewer regardless of their
+     browser state. The in-page toggle button still writes localStorage
+     for in-session UX, but that storage no longer overrides the next
+     load of an explicit-theme report.
+
+   - Otherwise (server theme was 'auto'), resolve user preference:
+       1. localStorage "fs-theme" (user's prior choice)
+       2. ?theme= URL param (one-off overrides, e.g. for sharing)
+       3. system preference (prefers-color-scheme: dark)
+       4. server-rendered fallback (defaults to light when auto)
+
+   Sets data-theme on <html>; CSS in _design_system.html keys off this. #}
+{# Capture whether the caller asked for 'auto' BEFORE collapsing to a concrete
+   light/dark value — the JS needs both signals to honor explicit themes. #}
+{% set _fs_theme_raw = theme | default('light') %}
+{% set _fs_theme_wanted_auto = (_fs_theme_raw == 'auto') %}
+{% set _fs_theme_default = 'light' if _fs_theme_wanted_auto else _fs_theme_raw %}
+<script>
+    (function () {
+        var serverDefault = {{ _fs_theme_default | tojson }};
+        var serverWantedAuto = {{ _fs_theme_wanted_auto | tojson }};
+        var pdfMode = {{ (pdf_mode | default(false)) | tojson }};
+        if (pdfMode) {
+            // PDF: always use the server-rendered theme exactly.
+            document.documentElement.setAttribute('data-theme', serverDefault);
+            return;
+        }
+        if (!serverWantedAuto) {
+            // Server picked an explicit theme — honor it as the authoritative
+            // initial render. The toggle button can still flip it in-session.
+            document.documentElement.setAttribute('data-theme', serverDefault);
+            return;
+        }
+        // Server theme is 'auto' — fall through to user/browser preference.
+        try {
+            var theme = null;
+            try {
+                var stored = window.localStorage.getItem('fs-theme');
+                if (stored === 'light' || stored === 'dark') { theme = stored; }
+            } catch (_storageErr) { /* private mode / blocked storage — ignore */ }
+
+            if (!theme) {
+                try {
+                    var qs = new URLSearchParams(window.location.search).get('theme');
+                    if (qs === 'light' || qs === 'dark') { theme = qs; }
+                } catch (_qsErr) { /* IE/old browsers — ignore */ }
+            }
+
+            if (!theme && window.matchMedia &&
+                window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                theme = 'dark';
+            }
+
+            document.documentElement.setAttribute('data-theme', theme || serverDefault);
+        } catch (_e) {
+            document.documentElement.setAttribute('data-theme', serverDefault);
+        }
+    })();
+</script>

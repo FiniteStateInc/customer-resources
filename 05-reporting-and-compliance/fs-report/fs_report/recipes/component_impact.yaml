@@ -2,6 +2,10 @@ name: "Component Impact"
 template: "component_impact.html"
 category: assessment
 nav_category: Investigation
+# The component IS the primary input — refuse to run (and route the web
+# launcher to configure) without a --component (B4 #25).
+requires_component: true
+chart_libraries: []
 description: "Portfolio-wide blast radius for a named component — shows all projects/assets where the component is present, with severity breakdown and version distribution"
 execution_order: 20
 auto_run: false

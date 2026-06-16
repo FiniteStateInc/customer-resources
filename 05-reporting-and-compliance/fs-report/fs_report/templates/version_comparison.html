@@ -1,496 +1,428 @@
+{% if render_mode != 'fragment' %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
     <title>Version Comparison - Finite State Report</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
-        {% include "_standalone_shell.html" %}
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+    {% include "_echarts_ready.html" %}
+{% endif %}
+
 <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+    /* Mini-KPI row inside each project section — preserved from
+       pre-migration template (legacy class .mini-kpi). Renamed
+       .vc-mini-kpi for scope clarity in compound bundles. */
+    .vc-mini-kpi-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+    .vc-mini-kpi {
+        background: var(--surface-card);
+        border: 1px solid var(--hairline);
+        border-radius: 8px;
+        padding: 12px;
+        text-align: center;
+    }
+    .vc-mini-kpi .label {
+        font-size: 0.75em;
+        color: var(--ink-mute);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .vc-mini-kpi .value {
+        font-size: 1.4em;
+        font-weight: 700;
+        color: var(--ink-strong);
+        margin: 4px 0;
+    }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            background-color: #f8f9fa;
-        }
+    .vc-chart-wrapper {
+        width: 100%;
+        height: 320px;
+    }
 
-        .container {
-            margin: 0 auto;
-            padding: 20px;
-            background-color: white;
-            border: 1px solid #dee2e6;
-            min-height: 100%;
-        }
+    /* Project section header — clickable to collapse the body. */
+    .vc-project-header {
+        cursor: pointer;
+        padding: 16px 20px;
+        background: var(--surface-card);
+        border: 1px solid var(--hairline);
+        border-radius: 8px 8px 0 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .vc-project-header h2 {
+        margin: 0;
+        font-size: 1.2em;
+        color: var(--ink-strong);
+    }
+    .vc-project-meta {
+        font-size: 0.85em;
+        color: var(--ink-mute);
+    }
+    .vc-project-body {
+        padding: 16px 20px;
+        border: 1px solid var(--hairline);
+        border-top: none;
+        border-radius: 0 0 8px 8px;
+        background: var(--surface-card);
+        margin-bottom: 20px;
+    }
 
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-            padding-bottom: 20px;
-            border-bottom: 2px solid #e9ecef;
-        }
+    /* Hidden-row toggle inside detail tables. */
+    .vc-hidden-row { display: none; }
+    .vc-show-more-btn {
+        background: var(--accent-teal);
+        color: white;
+        border: none;
+        padding: 4px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.85em;
+    }
 
-        .logo-container { margin-bottom: 20px; }
-        .company-logo { max-height: 50px; width: auto; margin: 0 auto; display: block; }
-        .header h1 { color: #2c3e50; font-size: 2.2em; margin-bottom: 10px; }
-        .header .subtitle { color: #6c757d; font-size: 1.1em; }
+    .vc-changelog-entry {
+        margin-top: 16px;
+        border: 1px solid var(--hairline);
+        border-radius: 6px;
+        overflow: hidden;
+    }
+    .vc-changelog-entry-header {
+        padding: 10px 14px;
+        cursor: pointer;
+        background: var(--surface-muted);
+        font-weight: 600;
+        color: var(--ink-strong);
+    }
+    .vc-changelog-entry-body {
+        padding: 12px 14px;
+        display: none;
+    }
+    .vc-changelog-entry.expanded .vc-changelog-entry-body {
+        display: block;
+    }
 
-        .metadata {
-            background-color: #f8f9fa;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 30px;
-            font-size: 0.9em;
-            color: #6c757d;
-        }
+    .vc-fetch-failed-row {
+        background: var(--sev-medium-bg);
+        color: var(--sev-medium-text);
+    }
 
-        /* KPI Cards */
-        .kpi-row {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 16px;
-            margin-bottom: 30px;
-        }
+    .vc-banner-warning {
+        background: var(--sev-medium-bg);
+        color: var(--sev-medium-text);
+        border: 1px solid var(--sev-medium-text);
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin-bottom: 20px;
+    }
 
-        .kpi-card {
-            background-color: #fff;
-            border: 1px solid #dee2e6;
-            border-radius: 10px;
-            padding: 20px;
-            text-align: center;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-        }
+    .vc-num-improved  { color: var(--sev-low-text); }
+    .vc-num-regressed { color: var(--sev-critical-text); }
+    .vc-delta-improved  { color: var(--sev-low-text); font-weight: 600; }
+    .vc-delta-regressed { color: var(--sev-critical-text); font-weight: 600; }
+    .vc-delta-zero      { color: var(--ink-mute); }
 
-        .kpi-card .kpi-title {
-            font-size: 0.85em;
-            color: #6c757d;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 8px;
-        }
+    .vc-badge-fetch-fail {
+        margin-left: 6px;
+        font-size: 0.75em;
+        padding: 1px 6px;
+        border-radius: 3px;
+        background: var(--sev-medium-bg);
+        color: var(--sev-medium-text);
+    }
 
-        .kpi-card .kpi-values {
-            display: flex;
-            justify-content: center;
-            align-items: baseline;
-            gap: 8px;
-            font-size: 1.6em;
-            font-weight: 700;
-            color: #2c3e50;
-        }
+    .vc-changes-summary {
+        display: flex;
+        gap: 20px;
+        padding: 8px 0;
+        margin-bottom: 12px;
+        font-size: 0.9em;
+        color: var(--ink-mute);
+    }
+    .vc-changes-fixed { color: var(--sev-low-text); }
+    .vc-changes-new   { color: var(--sev-critical-text); }
 
-        .kpi-card .kpi-arrow { font-size: 0.7em; color: #6c757d; }
+    .vc-changes-two-col {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+    }
+    @media (max-width: 900px) {
+        .vc-changes-two-col { grid-template-columns: 1fr; }
+    }
+    .vc-changes-col-title {
+        font-size: 0.95em;
+        font-weight: 600;
+        margin-bottom: 8px;
+        color: var(--ink-strong);
+    }
 
-        .kpi-card .kpi-delta {
-            font-size: 0.55em;
-            font-weight: 600;
-            padding: 3px 8px;
-            border-radius: 12px;
-            margin-top: 8px;
-            display: inline-block;
-        }
+    .vc-section-prose {
+        font-size: 0.88em;
+        color: var(--ink-mute);
+        margin-bottom: 12px;
+    }
 
-        .kpi-delta.improved { background-color: #e8f5e9; color: #2e7d32; }
-        .kpi-delta.regressed { background-color: #ffebee; color: #c62828; }
-        .kpi-delta.neutral { background-color: #f5f5f5; color: #757575; }
+    .vc-empty-state {
+        font-size: 0.88em;
+        color: var(--ink-mute);
+        font-style: italic;
+        padding: 12px 0;
+    }
+    .vc-empty-state-card {
+        text-align: center;
+        padding: 32px 16px;
+        color: var(--ink-mute);
+    }
+    .vc-empty-state-card h3 {
+        color: var(--ink-strong);
+        margin-bottom: 8px;
+    }
 
-        /* Project sections */
-        .project-section {
-            margin-bottom: 40px;
-            border: 1px solid #dee2e6;
-            border-radius: 10px;
-            overflow: hidden;
-        }
+    .vc-external-note {
+        font-size: 0.82em;
+        color: var(--sev-high-text);
+    }
 
-        .project-header {
-            background-color: #f8f9fa;
-            padding: 16px 20px;
-            border-bottom: 1px solid #dee2e6;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            cursor: pointer;
-        }
+    /* Change-type chips for component_churn rows. */
+    .vc-change-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.85em;
+        font-weight: 600;
+    }
+    .vc-change-badge.vc-change-added     { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .vc-change-badge.vc-change-removed   { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .vc-change-badge.vc-change-updated   { background: var(--accent-teal);     color: #fff; }
 
-        .project-header h2 { font-size: 1.3em; color: #2c3e50; }
+    /* Changelog badges (per-step rollup chips). */
+    .vc-changelog-version { font-weight: 600; color: var(--ink-strong); }
+    .vc-badge {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 12px;
+        font-size: 0.78em;
+        font-weight: 600;
+        margin-left: 6px;
+    }
+    .vc-badge-fixed { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .vc-badge-new   { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .vc-badge-churn { background: var(--surface-muted);   color: var(--ink-mute); }
+</style>
 
-        .project-header .project-meta {
-            font-size: 0.85em;
-            color: #6c757d;
-        }
-
-        .project-body { padding: 20px; }
-
-        /* Mini KPI row inside project */
-        .mini-kpi-row {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-
-        .mini-kpi {
-            text-align: center;
-            padding: 10px;
-            border-radius: 8px;
-            background-color: #f8f9fa;
-        }
-
-        .mini-kpi .label { font-size: 0.75em; color: #6c757d; text-transform: uppercase; }
-        .mini-kpi .value { font-size: 1.4em; font-weight: 700; color: #2c3e50; }
-
-        /* Charts */
-        .chart-container {
-            background-color: white;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-            border: 1px solid #dee2e6;
-        }
-
-        .chart-wrapper { position: relative; height: 300px; }
-
-        /* Tables */
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.9em;
-        }
-
-        .data-table thead th {
-            background-color: #f8f9fa;
-            border-bottom: 2px solid #dee2e6;
-            padding: 10px 12px;
-            text-align: left;
-            font-weight: 600;
-            color: #495057;
-        }
-
-        .data-table tbody td {
-            padding: 8px 12px;
-            border-bottom: 1px solid #e9ecef;
-        }
-
-        .data-table tbody tr:hover { background-color: #f8f9fa; }
-
-        .data-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-
-        /* Progression table special styling */
-        .progression-table .delta-positive { color: #c62828; }
-        .progression-table .delta-negative { color: #2e7d32; }
-        .progression-table .delta-zero { color: #757575; }
-
-        /* Severity badges */
-        .severity-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 0.8em;
-            font-weight: 600;
-            text-transform: uppercase;
-        }
-
-        .severity-CRITICAL { background-color: #ffebee; color: #b71c1c; }
-        .severity-HIGH { background-color: #fff3e0; color: #e65100; }
-        .severity-MEDIUM { background-color: #fff8e1; color: #f57f17; }
-        .severity-LOW { background-color: #e8f5e9; color: #2e7d32; }
-        .severity-INFO { background-color: #e3f2fd; color: #1565c0; }
-        .severity-UNSPECIFIED { background-color: #f5f5f5; color: #757575; }
-
-        /* Change type badges */
-        .change-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; }
-        .change-added { background-color: #e8f5e9; color: #2e7d32; }
-        .change-removed { background-color: #ffebee; color: #c62828; }
-        .change-updated { background-color: #e3f2fd; color: #1565c0; }
-
-        /* Partial report banner */
-        .partial-report-banner {
-            background: #fff3cd;
-            border: 1px solid #ffc107;
-            border-left: 4px solid #e6a817;
-            padding: 12px 16px;
-            margin-bottom: 20px;
-            border-radius: 4px;
-            font-size: 0.95em;
-        }
-        .partial-report-banner strong { color: #856404; }
-
-        /* Fetch-failed rows */
-        .fetch-failed-row { background-color: #fef9f0 !important; color: #6c757d; }
-        .fetch-failed-row:hover { background-color: #fef3dc !important; }
-        .badge-fetch-fail {
-            display: inline-block;
-            background: #fd7e14;
-            color: #fff;
-            padding: 1px 6px;
-            border-radius: 3px;
-            font-size: 0.75em;
-            font-weight: 600;
-            margin-left: 6px;
-            vertical-align: middle;
-        }
-
-        /* Collapsible sections */
-        .section { margin-bottom: 20px; }
-
-        .section-header {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 12px;
-            padding-bottom: 8px;
-            border-bottom: 1px solid #e9ecef;
-        }
-
-        .section-header h3 { font-size: 1.1em; color: #2c3e50; }
-
-        .badge { font-size: 0.8em; padding: 3px 10px; border-radius: 12px; font-weight: 600; }
-        .badge-fixed { background-color: #e8f5e9; color: #2e7d32; }
-        .badge-new { background-color: #ffebee; color: #c62828; }
-        .badge-churn { background-color: #e3f2fd; color: #1565c0; }
-
-        .changes-summary { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 16px; font-size: 0.9em; color: #495057; }
-        .changes-summary-fixed { color: #2e7d32; font-weight: 500; }
-        .changes-summary-new { color: #c62828; font-weight: 500; }
-        .changes-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-        @media (max-width: 900px) { .changes-two-col { grid-template-columns: 1fr; } }
-        .changes-col { min-width: 0; }
-        .changes-col-title { font-size: 1em; color: #2c3e50; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #e9ecef; }
-        .empty-state-inline { color: #6c757d; font-style: italic; padding: 12px 0; margin: 0; }
-
-        .changelog-section { margin-top: 24px; }
-        .changelog-section h3 { margin-bottom: 12px; }
-        .changelog-entry { border: 1px solid #e9ecef; border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
-        .changelog-entry-header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: #f8f9fa; cursor: pointer; font-weight: 500; }
-        .changelog-entry-header:hover { background: #e9ecef; }
-        .changelog-entry-header .changelog-version { color: #2c3e50; }
-        .changelog-entry-body { padding: 16px; display: none; border-top: 1px solid #e9ecef; }
-        .changelog-entry.expanded .changelog-entry-body { display: block; }
-
-        .show-more-row td { text-align: center; padding: 10px; }
-        .show-more-btn {
-            background: none;
-            border: 1px solid #dee2e6;
-            border-radius: 6px;
-            padding: 6px 16px;
-            color: #495057;
-            cursor: pointer;
-            font-size: 0.9em;
-        }
-        .show-more-btn:hover { background-color: #f8f9fa; }
-        .hidden-row { display: none; }
-
-        .empty-state {
-            text-align: center;
-            padding: 40px 20px;
-            color: #6c757d;
-        }
-        .empty-state p { font-size: 1.1em; margin-bottom: 8px; }
-
-        .footer {
-            text-align: center;
-            padding: 20px 0;
-            margin-top: 30px;
-            border-top: 1px solid #e9ecef;
-            color: #adb5bd;
-            font-size: 0.85em;
-        }
-    </style>
+{% if render_mode != 'fragment' %}
 </head>
-<body data-nav-category="{{ nav_category_slug }}">
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            {% include "_default_logo.html" %}
-            <h1>Version Comparison</h1>
-            {% if transform_result and transform_result.is_pair_comparison and transform_result.projects %}
-            {% set _p0 = transform_result.projects[0] %}
-            {% set _bpn = _p0.latest_delta.baseline_project_name | default('') %}
-            {% set _cpn = _p0.latest_delta.current_project_name | default('') %}
-            {% if _bpn and _cpn and _bpn != _cpn %}
-            <p class="subtitle">{{ _bpn }} &harr; {{ _cpn }}</p>
-            {% elif _bpn %}
-            <p class="subtitle">{{ _bpn }}</p>
-            {% else %}
-            <p class="subtitle">Two-version comparison</p>
-            {% endif %}
-            {% elif transform_result and transform_result.project_count %}
-            <p class="subtitle">Version-over-version progression across {{ transform_result.project_count }} project{{ 's' if transform_result.project_count != 1 else '' }}</p>
-            {% else %}
-            <p class="subtitle">Version-over-version progression</p>
-            {% endif %}
+<body class="console">
+{% endif %}
+
+{% import "_console_macros.html" as fs with context %}
+
+{# Defensive context defaults — defined OUTSIDE the gate so any
+   downstream reference (status_bar, topbar) is safe in both
+   branches. The non-empty branch overwrites `result` below. #}
+{% set result = transform_result | default({}) %}
+{% if not result is mapping %}{% set result = {} %}{% endif %}
+
+{# Chrome (topbar) renders in both branches — it's identifying info
+   for the page, not data-conditional. #}
+{% if render_mode != 'fragment' %}
+{{ fs.topbar(
+    crumbs=["Finite State", "Version Comparison"],
+    meta=[
+        {"label": "Domain", "value": domain or "—"},
+        {"label": "Projects", "value": (result.get('project_count', 0)) | string},
+        {"label": "Filter", "value": (project_label if project_label else (metadata.folder_filter if metadata is defined and metadata.folder_filter else "—"))},
+        {"label": "Generated", "value": generated_at or "—"},
+    ],
+    controls=[],
+) }}
+{% endif %}
+
+<main class="main">
+{# Data gate. The non-empty branch sets richer locals + renders the
+   per-project tree; the {% else %} branch renders the empty-state
+   guidance card. `<main>` is opened OUTSIDE this gate so both
+   branches sit inside well-formed chrome — round-2 multi-review M1-1
+   / M2-1 caught the prior version's orphan `</main>` bug. #}
+    {# Page head renders in BOTH branches so empty-portfolio runs
+       still get the H1 + subtitle (round-2 M1-4). #}
+    <div class="page-head">
+        <h1 data-fs-section-title>Version Comparison</h1>
+        <p class="subtitle">Per-project progression of findings across versions; fixed + new counts per pair; component churn; externally-driven CVE changes.</p>
+    </div>
+
+{% if transform_result and transform_result.projects and transform_result.projects | length > 0 %}
+{% set result = transform_result %}
+{% set kpi = result.kpi | default({}) %}
+{% set projects = result.projects | default([]) %}
+
+    {# Partial-report banner — top-level `partial_report` and
+       `failed_version_names` (not under transform_result). #}
+    {% if partial_report %}
+    <div class="vc-banner-warning partial-report-banner">
+        <strong>⚠ Partial report:</strong>
+        {{ failed_version_names | length }} version{{ 's' if failed_version_names | length != 1 else '' }} could not be fetched
+        ({{ failed_version_names | join(", ") }}). These appear as placeholders below.
+    </div>
+    {% endif %}
+
+    {# Aggregate KPI row — nested baseline→current shape per
+       _aggregate_kpi (`total_findings.baseline/current/delta/pct`). The
+       fs.kpi_cell macro takes a single label + value; render the arrow
+       form (baseline → current) inside the value so the existing
+       --sev-low/--sev-critical dot still signals improvement vs
+       regression. #}
+    {% set tf = kpi.total_findings | default({'baseline': 0, 'current': 0, 'delta': 0, 'pct': 0.0}) %}
+    {% set cf = kpi.critical_findings | default({'baseline': 0, 'current': 0, 'delta': 0, 'pct': 0.0}) %}
+    {% set hf = kpi.high_findings | default({'baseline': 0, 'current': 0, 'delta': 0, 'pct': 0.0}) %}
+    {% set cp = kpi.components | default({'baseline': 0, 'current': 0, 'delta': 0, 'pct': 0.0}) %}
+    {# Use `.kpi-row` (from _design_system.html) — the spaced grid
+       designed for `.kpi-card` children. The compact `.kpi-bar`
+       (from _console_shell.html) is intended for `.kpi-cell`
+       children and would squash these baseline→current delta cards
+       in standalone HTML/PDF. Round-1 multi-review M1-1 caught the
+       double-class regression. #}
+    <div class="kpi-row" style="margin-bottom: 20px;">
+        <div class="kpi-card">
+            <div class="kpi-title">Total Findings</div>
+            <div class="kpi-values">
+                <span>{{ tf.baseline }}</span>
+                <span class="kpi-arrow">→</span>
+                <span>{{ tf.current }}</span>
+            </div>
+            <span class="kpi-delta {% if tf.delta < 0 %}improved{% elif tf.delta > 0 %}regressed{% else %}neutral{% endif %}">
+                {% if tf.delta > 0 %}+{% endif %}{{ tf.delta }} ({% if tf.delta > 0 %}+{% endif %}{{ tf.pct }}%)
+            </span>
         </div>
-
-        <!-- Metadata -->
-        <div class="metadata">
-            <strong>Report Generated:</strong> {{ metadata.start_date | default('N/A') }} |
-            {% if transform_result and transform_result.is_pair_comparison and transform_result.projects %}
-            {% set _md_p0 = transform_result.projects[0] %}
-            {% set _md_bpn = _md_p0.latest_delta.baseline_project_name | default('') %}
-            {% set _md_cpn = _md_p0.latest_delta.current_project_name | default('') %}
-            {% if _md_bpn and _md_cpn and _md_bpn != _md_cpn %}
-            <strong>Project A:</strong> {{ _md_bpn }} |
-            <strong>Project B:</strong> {{ _md_cpn }} |
-            {% elif _md_bpn %}
-            <strong>Project:</strong> {{ _md_bpn }} |
-            {% endif %}
-            {% elif metadata.project_filter %}
-            <strong>Project:</strong> {{ metadata.project_filter }} |
-            {% endif %}
-            {% if metadata.folder_filter %}
-            <strong>Folder:</strong> {{ metadata.folder_filter }} |
-            {% endif %}
-            <strong>Generated by:</strong> Finite State
+        <div class="kpi-card">
+            <div class="kpi-title">Critical</div>
+            <div class="kpi-values">
+                <span>{{ cf.baseline }}</span>
+                <span class="kpi-arrow">→</span>
+                <span>{{ cf.current }}</span>
+            </div>
+            <span class="kpi-delta {% if cf.delta < 0 %}improved{% elif cf.delta > 0 %}regressed{% else %}neutral{% endif %}">
+                {% if cf.delta > 0 %}+{% endif %}{{ cf.delta }}
+            </span>
         </div>
-
-        {% if transform_result and transform_result.projects and transform_result.projects|length > 0 %}
-        {% set result = transform_result %}
-        {% set kpi = result.kpi %}
-
-        <!-- Partial Report Banner -->
-        {% if partial_report %}
-        <div class="partial-report-banner">
-            <strong>&#9888; Partial report:</strong>
-            {{ failed_version_names|length }} version{{ 's' if failed_version_names|length != 1 else '' }} could not be fetched
-            ({{ failed_version_names|join(", ") }}).
-            These appear as placeholders below.
+        <div class="kpi-card">
+            <div class="kpi-title">High</div>
+            <div class="kpi-values">
+                <span>{{ hf.baseline }}</span>
+                <span class="kpi-arrow">→</span>
+                <span>{{ hf.current }}</span>
+            </div>
+            <span class="kpi-delta {% if hf.delta < 0 %}improved{% elif hf.delta > 0 %}regressed{% else %}neutral{% endif %}">
+                {% if hf.delta > 0 %}+{% endif %}{{ hf.delta }}
+            </span>
         </div>
-        {% endif %}
-
-        <!-- Aggregate KPI Cards -->
-        <div class="kpi-row">
-            <div class="kpi-card">
-                <div class="kpi-title">Total Findings</div>
-                <div class="kpi-values">
-                    <span>{{ kpi.total_findings.baseline }}</span>
-                    <span class="kpi-arrow">&rarr;</span>
-                    <span>{{ kpi.total_findings.current }}</span>
-                </div>
-                {% set tf = kpi.total_findings %}
-                <span class="kpi-delta {% if tf.delta < 0 %}improved{% elif tf.delta > 0 %}regressed{% else %}neutral{% endif %}">
-                    {% if tf.delta > 0 %}+{% endif %}{{ tf.delta }} ({% if tf.delta > 0 %}+{% endif %}{{ tf.pct }}%)
-                </span>
+        <div class="kpi-card">
+            <div class="kpi-title">Components</div>
+            <div class="kpi-values">
+                <span>{{ cp.baseline }}</span>
+                <span class="kpi-arrow">→</span>
+                <span>{{ cp.current }}</span>
             </div>
-
-            <div class="kpi-card">
-                <div class="kpi-title">Critical</div>
-                <div class="kpi-values">
-                    <span>{{ kpi.critical_findings.baseline }}</span>
-                    <span class="kpi-arrow">&rarr;</span>
-                    <span>{{ kpi.critical_findings.current }}</span>
-                </div>
-                {% set cf = kpi.critical_findings %}
-                <span class="kpi-delta {% if cf.delta < 0 %}improved{% elif cf.delta > 0 %}regressed{% else %}neutral{% endif %}">
-                    {% if cf.delta > 0 %}+{% endif %}{{ cf.delta }}
-                </span>
-            </div>
-
-            <div class="kpi-card">
-                <div class="kpi-title">High</div>
-                <div class="kpi-values">
-                    <span>{{ kpi.high_findings.baseline }}</span>
-                    <span class="kpi-arrow">&rarr;</span>
-                    <span>{{ kpi.high_findings.current }}</span>
-                </div>
-                {% set hf = kpi.high_findings %}
-                <span class="kpi-delta {% if hf.delta < 0 %}improved{% elif hf.delta > 0 %}regressed{% else %}neutral{% endif %}">
-                    {% if hf.delta > 0 %}+{% endif %}{{ hf.delta }}
-                </span>
-            </div>
-
-            <div class="kpi-card">
-                <div class="kpi-title">Components</div>
-                <div class="kpi-values">
-                    <span>{{ kpi.components.baseline }}</span>
-                    <span class="kpi-arrow">&rarr;</span>
-                    <span>{{ kpi.components.current }}</span>
-                </div>
-                {% set cp = kpi.components %}
-                <span class="kpi-delta neutral">
-                    {% if cp.delta > 0 %}+{% endif %}{{ cp.delta }}
-                </span>
-            </div>
-
-            <div class="kpi-card">
-                <div class="kpi-title">Fixed (latest)</div>
-                <div class="kpi-values">
-                    <span style="color:#2e7d32">{{ kpi.fixed_count }}</span>
-                </div>
-            </div>
-
-            <div class="kpi-card">
-                <div class="kpi-title">New (latest)</div>
-                <div class="kpi-values">
-                    <span style="color:#c62828">{{ kpi.new_count }}</span>
-                </div>
+            <span class="kpi-delta neutral">
+                {% if cp.delta > 0 %}+{% endif %}{{ cp.delta }}
+            </span>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Fixed (latest)</div>
+            <div class="kpi-values">
+                <span class="vc-num-improved">{{ kpi.fixed_count | default(0) }}</span>
             </div>
         </div>
+        <div class="kpi-card">
+            <div class="kpi-title">New (latest)</div>
+            <div class="kpi-values">
+                <span class="vc-num-regressed">{{ kpi.new_count | default(0) }}</span>
+            </div>
+        </div>
+    </div>
 
-        <!-- Per-project sections -->
-        {% for proj in result.projects %}
-        <div class="project-section" id="project-{{ loop.index }}">
-            {% set is_pair = proj.is_pair_comparison | default(false) %}
-            <div class="project-header" onclick="toggleProject('project-body-{{ loop.index }}')">
-                <h2>{{ proj.project_name }}</h2>
-                <span class="project-meta">
-                    {% if is_pair %}
-                    {{ proj.latest_delta.baseline_label }} &rarr; {{ proj.latest_delta.current_label }}
+    {# Per-project sections. #}
+    {% for proj in projects %}
+    {% set proj_idx = loop.index %}
+    {% set is_pair = proj.get('is_pair_comparison', False) %}
+    {% set body_id = fragment_scope_class ~ '-vc-project-body-' ~ proj_idx %}
+    {% set chart_id = fragment_scope_class ~ '-vc-chart-' ~ proj_idx %}
+    <div class="vc-project-section" id="{{ fragment_scope_class }}-vc-project-{{ proj_idx }}">
+        {# In fragment mode `<script>` blocks are stripped by
+           fragment_extractor.py:109, so vc_toggle* helpers don't
+           exist; omit the onclick attribute to avoid undefined-
+           function errors when a compound-bundle reader clicks
+           the header. The body remains visible by default since
+           no `display:none` is applied without the JS toggle. #}
+        <div class="vc-project-header"{% if render_mode != 'fragment' %} onclick="vc_toggleProject('{{ body_id }}')"{% endif %}>
+            <h2>{{ proj.project_name }}</h2>
+            <span class="vc-project-meta">
+                {% if is_pair %}
+                    {{ proj.latest_delta.baseline_label | default('—') }} → {{ proj.latest_delta.current_label | default('—') }}
+                {% else %}
+                    {{ proj.progression | length }} versions | {{ proj.progression[0].version }} → {{ proj.progression[-1].version }}
+                {% endif %}
+            </span>
+        </div>
+        <div class="vc-project-body" id="{{ body_id }}">
+            {# Mini-KPI row for this project. #}
+            <div class="vc-mini-kpi-row">
+                <div class="vc-mini-kpi">
+                    <div class="label">{% if is_pair %}Baseline{% else %}First Version{% endif %}</div>
+                    <div class="value">{% if proj.progression[0].total is none %}—{% else %}{{ proj.progression[0].total }}{% endif %}</div>
+                    <div class="label">findings</div>
+                </div>
+                <div class="vc-mini-kpi">
+                    <div class="label">{% if is_pair %}Current{% else %}Latest Version{% endif %}</div>
+                    <div class="value">{% if proj.progression[-1].total is none %}—{% else %}{{ proj.progression[-1].total }}{% endif %}</div>
+                    <div class="label">findings</div>
+                </div>
+                <div class="vc-mini-kpi">
+                    <div class="label">Net Change</div>
+                    {% if proj.progression[-1].total is none or proj.progression[0].total is none %}
+                    <div class="value">—</div>
                     {% else %}
-                    {{ proj.progression|length }} versions |
-                    {{ proj.progression[0].version }} &rarr; {{ proj.progression[-1].version }}
+                    {% set net = proj.progression[-1].total - proj.progression[0].total %}
+                    <div class="value">{% if net > 0 %}+{% endif %}{{ net }}</div>
                     {% endif %}
-                </span>
+                </div>
+                <div class="vc-mini-kpi">
+                    <div class="label">Latest Fixed</div>
+                    <div class="value">{% if proj.latest_delta.fixed_count is defined %}{{ proj.latest_delta.fixed_count }}{% else %}—{% endif %}</div>
+                </div>
+                <div class="vc-mini-kpi">
+                    <div class="label">Latest New</div>
+                    <div class="value">{% if proj.latest_delta.new_count is defined %}{{ proj.latest_delta.new_count }}{% else %}—{% endif %}</div>
+                </div>
             </div>
-            <div class="project-body" id="project-body-{{ loop.index }}">
-                {% set proj_idx = loop.index %}
 
-                <!-- Mini KPI for this project -->
-                <div class="mini-kpi-row">
-                    <div class="mini-kpi">
-                        <div class="label">{% if is_pair %}Baseline{% else %}First Version{% endif %}</div>
-                        <div class="value">{% if proj.progression[0].total is none %}—{% else %}{{ proj.progression[0].total }}{% endif %}</div>
-                        <div class="label">findings</div>
-                    </div>
-                    <div class="mini-kpi">
-                        <div class="label">{% if is_pair %}Current{% else %}Latest Version{% endif %}</div>
-                        <div class="value">{% if proj.progression[-1].total is none %}—{% else %}{{ proj.progression[-1].total }}{% endif %}</div>
-                        <div class="label">findings</div>
-                    </div>
-                    <div class="mini-kpi">
-                        <div class="label">Net Change</div>
-                        {% if proj.progression[-1].total is none or proj.progression[0].total is none %}
-                        <div class="value" style="color:#757575">—</div>
-                        {% else %}
-                        {% set net = proj.progression[-1].total - proj.progression[0].total %}
-                        <div class="value" style="color:{% if net < 0 %}#2e7d32{% elif net > 0 %}#c62828{% else %}#757575{% endif %}">
-                            {% if net > 0 %}+{% endif %}{{ net }}
-                        </div>
-                        {% endif %}
-                    </div>
-                    <div class="mini-kpi">
-                        <div class="label">Latest Fixed</div>
-                        <div class="value" style="color:#2e7d32">{% if proj.latest_delta.fixed_count is defined %}{{ proj.latest_delta.fixed_count }}{% else %}—{% endif %}</div>
-                    </div>
-                    <div class="mini-kpi">
-                        <div class="label">Latest New</div>
-                        <div class="value" style="color:#c62828">{% if proj.latest_delta.new_count is defined %}{{ proj.latest_delta.new_count }}{% else %}—{% endif %}</div>
-                    </div>
-                </div>
+            {# Progression chart — live ECharts in standalone HTML and under
+               Option X compound assembly (fragment_scripts_enabled=True),
+               dropped in the default script-free fragment path (per-project;
+               not in recipe.output.charts, so server-SVG dispatch can't
+               reach it). #}
+            {% if render_mode != 'fragment' or fragment_scripts_enabled %}
+            <div class="panel" style="margin-bottom: 16px;">
+                <div id="{{ chart_id }}" class="vc-chart-wrapper"></div>
+            </div>
+            {% endif %}
 
-                <!-- Progression Chart -->
-                <div class="chart-container">
-                    <div class="chart-wrapper">
-                        <canvas id="chart-{{ loop.index }}"></canvas>
-                    </div>
-                </div>
-
-                <!-- Progression Table -->
-                <div class="section">
-                    <div class="section-header">
-                        <h3>{% if is_pair %}Version Comparison{% else %}Version Progression{% endif %}</h3>
-                    </div>
+            {# Progression table — step.created is the version date
+               (NOT step.date). Pre-migration template adds delta-tint
+               classes on fixed/new cells; preserved. #}
+            <div class="table-panel" style="margin-bottom: 16px;">
+                {{ fs.panel_head((is_pair and "Version comparison") or "Version progression", meta=((proj.progression | length) | string) ~ " versions") }}
+                <div class="body" style="overflow-x: auto;">
                     <table class="data-table progression-table">
                         <thead>
                             <tr>
@@ -509,135 +441,149 @@
                         </thead>
                         <tbody>
                             {% for step in proj.progression %}
-                            <tr{% if step.fetch_failed %} class="fetch-failed-row"{% endif %}>
+                            <tr{% if step.fetch_failed %} class="vc-fetch-failed-row"{% endif %}>
                                 <td>{{ step.version_project_name or proj.project_name }}</td>
                                 <td>
                                     <strong>{{ step.version }}</strong>
-                                    {% if step.fetch_failed %}<span class="badge-fetch-fail">&#9888; fetch failed</span>{% endif %}
+                                    {% if step.fetch_failed %}<span class="vc-badge-fetch-fail">⚠ fetch failed</span>{% endif %}
                                 </td>
-                                <td>{{ step.created }}</td>
-                                <td class="num">{% if step.total is none %}&#8212;{% else %}{{ step.total }}{% endif %}</td>
-                                <td class="num">{% if step.critical is none %}&#8212;{% else %}{{ step.critical }}{% endif %}</td>
-                                <td class="num">{% if step.high is none %}&#8212;{% else %}{{ step.high }}{% endif %}</td>
-                                <td class="num">{% if step.medium is none %}&#8212;{% else %}{{ step.medium }}{% endif %}</td>
-                                <td class="num">{% if step.low is none %}&#8212;{% else %}{{ step.low }}{% endif %}</td>
-                                <td class="num {% if step.fixed and step.fixed > 0 %}delta-negative{% else %}delta-zero{% endif %}">
-                                    {% if step.fixed is none %}&mdash;{% elif step.fixed > 0 %}-{{ step.fixed }}{% elif loop.index0 == 0 %}&mdash;{% else %}0{% endif %}
+                                <td>{{ step.created or '—' }}</td>
+                                <td class="num">{% if step.total is none %}—{% else %}{{ step.total }}{% endif %}</td>
+                                <td class="num">{% if step.critical is none %}—{% else %}{{ step.critical }}{% endif %}</td>
+                                <td class="num">{% if step.high is none %}—{% else %}{{ step.high }}{% endif %}</td>
+                                <td class="num">{% if step.medium is none %}—{% else %}{{ step.medium }}{% endif %}</td>
+                                <td class="num">{% if step.low is none %}—{% else %}{{ step.low }}{% endif %}</td>
+                                <td class="num {% if step.fixed and step.fixed > 0 %}vc-delta-improved{% else %}vc-delta-zero{% endif %}">
+                                    {% if step.fixed is none %}—{% elif step.fixed > 0 %}-{{ step.fixed }}{% elif loop.index0 == 0 %}—{% else %}0{% endif %}
                                 </td>
-                                <td class="num {% if step.new and step.new > 0 %}delta-positive{% else %}delta-zero{% endif %}">
-                                    {% if step.new is none %}&mdash;{% elif step.new > 0 %}+{{ step.new }}{% elif loop.index0 == 0 %}&mdash;{% else %}0{% endif %}
+                                <td class="num {% if step.new and step.new > 0 %}vc-delta-regressed{% else %}vc-delta-zero{% endif %}">
+                                    {% if step.new is none %}—{% elif step.new > 0 %}+{{ step.new }}{% elif loop.index0 == 0 %}—{% else %}0{% endif %}
                                 </td>
-                                <td class="num">{% if step.components is none %}&#8212;{% else %}{{ step.components }}{% endif %}</td>
+                                <td class="num">{% if step.components is none %}—{% else %}{{ step.components }}{% endif %}</td>
                             </tr>
                             {% endfor %}
                         </tbody>
                     </table>
                 </div>
+            </div>
 
-                <!-- Latest Delta: Changes (Fixed | New) — always shown -->
-                <div class="section">
-                    <div class="section-header">
-                        <h3>Changes ({{ proj.latest_delta.baseline_label | default(proj.latest_delta.baseline_version) }} &rarr; {{ proj.latest_delta.current_label | default(proj.latest_delta.current_version) }})</h3>
-                        <span class="badge badge-fixed">{{ proj.latest_delta.fixed_count|default('—') }} fixed</span>
-                        <span class="badge badge-new">{{ proj.latest_delta.new_count|default('—') }} new</span>
-                        {% if proj.latest_delta.externally_changed_count | default(0) > 0 %}
-                        <span class="badge" style="background-color:#fff3e0;color:#e65100;">{{ proj.latest_delta.externally_changed_count }} external</span>
-                        {% endif %}
-                    </div>
-                    <div class="changes-summary">
-                        <span class="changes-summary-fixed">Fixed: {{ proj.latest_delta.fixed_severity_summary }}</span>
-                        <span class="changes-summary-new">New: {{ proj.latest_delta.new_severity_summary }}</span>
-                    </div>
-                    <div class="changes-two-col">
-                        <div class="changes-col">
-                            <h4 class="changes-col-title">Fixed in {{ proj.latest_delta.current_label | default(proj.latest_delta.current_version) }}</h4>
-                            {% if proj.latest_delta.fixed_findings and proj.latest_delta.fixed_findings|length > 0 %}
-                            <table class="data-table" id="fixed-{{ loop.index }}">
-                                <thead>
-                                    <tr>
-                                        <th>ID</th>
-                                        <th>Severity</th>
-                                        <th>Component</th>
-                                        <th class="num">Score</th>
-                                        <th>Title</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for row in proj.latest_delta.fixed_findings %}
-                                    <tr class="{% if loop.index > 10 %}hidden-row{% endif %}">
-                                        <td>{{ row.display_id if row.display_id else '—' }}</td>
-                                        <td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td>
-                                        <td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td>
-                                        <td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk else '—' }}</td>
-                                        <td>{{ row.title if row.title else '—' }}</td>
-                                    </tr>
-                                    {% endfor %}
-                                    {% if proj.latest_delta.fixed_findings|length > 10 %}
-                                    <tr class="show-more-row">
-                                        <td colspan="5">
-                                            <button class="show-more-btn" onclick="toggleRows('fixed-{{ loop.index }}')">
-                                                Show {{ proj.latest_delta.fixed_findings|length - 10 }} more...
-                                            </button>
-                                        </td>
-                                    </tr>
-                                    {% endif %}
-                                </tbody>
-                            </table>
-                            {% else %}
-                            <p class="empty-state-inline">No fixed findings.</p>
-                            {% endif %}
-                        </div>
-                        <div class="changes-col">
-                            <h4 class="changes-col-title">New in {{ proj.latest_delta.current_label | default(proj.latest_delta.current_version) }}</h4>
-                            {% if proj.latest_delta.new_findings and proj.latest_delta.new_findings|length > 0 %}
-                            <table class="data-table" id="new-{{ loop.index }}">
-                                <thead>
-                                    <tr>
-                                        <th>ID</th>
-                                        <th>Severity</th>
-                                        <th>Component</th>
-                                        <th class="num">Score</th>
-                                        <th>Title</th>
-                                        <th>Note</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for row in proj.latest_delta.new_findings %}
-                                    <tr class="{% if loop.index > 10 %}hidden-row{% endif %}">
-                                        <td>{{ row.display_id if row.display_id else '—' }}</td>
-                                        <td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td>
-                                        <td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td>
-                                        <td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk else '—' }}</td>
-                                        <td>{{ row.title if row.title else '—' }}</td>
-                                        <td style="font-size:0.8em;color:#e65100;">{{ row.external_change_note if row.external_change_note else '' }}</td>
-                                    </tr>
-                                    {% endfor %}
-                                    {% if proj.latest_delta.new_findings|length > 10 %}
-                                    <tr class="show-more-row">
-                                        <td colspan="6">
-                                            <button class="show-more-btn" onclick="toggleRows('new-{{ loop.index }}')">
-                                                Show {{ proj.latest_delta.new_findings|length - 10 }} more...
-                                            </button>
-                                        </td>
-                                    </tr>
-                                    {% endif %}
-                                </tbody>
-                            </table>
-                            {% else %}
-                            <p class="empty-state-inline">No new findings.</p>
-                            {% endif %}
-                        </div>
-                    </div>
+            {# Latest delta: Fixed | New two-column changes block —
+               preserved from pre-migration template. Finding rows have
+               `display_id`, `severity`, `component_name`,
+               `component_version`, `risk` (API-scale 0-100; display as
+               risk/10.0), `title`. New findings also carry
+               `external_change_note`. Hidden-row toggle renamed
+               vc_toggleRows; row IDs scoped per project. #}
+            {% set ld = proj.latest_delta | default({}) %}
+            <div class="panel" style="margin-bottom: 16px;">
+                {# Empty latest_delta (all-failed project) renders em-dash
+                   placeholders for the count badges, matching the
+                   pre-migration template's `default('—')` behavior.
+                   tests/test_renderers.py:3003 asserts this. #}
+                {{ fs.panel_head("Changes (" ~ (ld.baseline_label | default(ld.baseline_version | default('—'))) ~ " → " ~ (ld.current_label | default(ld.current_version | default('—'))) ~ ")", meta=(ld.fixed_count | default('—') | string) ~ " fixed · " ~ (ld.new_count | default('—') | string) ~ " new" ~ ((" · " ~ (ld.externally_changed_count | string) ~ " external") if (ld.externally_changed_count | default(0) > 0) else "")) }}
+
+                <div class="vc-changes-summary">
+                    <span class="vc-changes-fixed">Fixed: {{ ld.fixed_severity_summary | default('—') }}</span>
+                    <span class="vc-changes-new">New: {{ ld.new_severity_summary | default('—') }}</span>
                 </div>
 
-                <!-- Latest Delta: Externally Changed (Unchanged CVE findings with platform updates) -->
-                {% if proj.latest_delta.externally_changed and proj.latest_delta.externally_changed|length > 0 %}
-                <div class="section">
-                    <div class="section-header">
-                        <h3>Externally Changed Findings ({{ proj.latest_delta.baseline_label | default(proj.latest_delta.baseline_version) }} &rarr; {{ proj.latest_delta.current_label | default(proj.latest_delta.current_version) }})</h3>
-                        <span class="badge" style="background-color:#fff3e0;color:#e65100;">{{ proj.latest_delta.externally_changed_count }} CVEs</span>
+                <div class="vc-changes-two-col">
+                    <div class="vc-changes-col">
+                        <h4 class="vc-changes-col-title">Fixed in {{ ld.current_label | default(ld.current_version) }}</h4>
+                        {% if ld.fixed_findings and ld.fixed_findings | length > 0 %}
+                        {% set fixed_table_id = fragment_scope_class ~ '-vc-fixed-' ~ proj_idx %}
+                        <table class="data-table" id="{{ fixed_table_id }}">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Severity</th>
+                                    <th>Component</th>
+                                    <th class="num">Score</th>
+                                    <th>Title</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for row in ld.fixed_findings %}
+                                <tr class="{% if loop.index > 10 and render_mode != 'fragment' %}vc-hidden-row{% endif %}">
+                                    <td>{{ row.display_id if row.display_id else '—' }}</td>
+                                    <td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td>
+                                    <td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td>
+                                    <td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk is not none else '—' }}</td>
+                                    <td>{{ row.title if row.title else '—' }}</td>
+                                </tr>
+                                {% endfor %}
+                                {% if ld.fixed_findings | length > 10 and render_mode != 'fragment' %}
+                                <tr class="vc-show-more-row">
+                                    <td colspan="5">
+                                        <button class="vc-show-more-btn" onclick="vc_toggleRows('{{ fixed_table_id }}')">
+                                            Show {{ ld.fixed_findings | length - 10 }} more…
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endif %}
+                            </tbody>
+                        </table>
+                        {% else %}
+                        <p class="vc-empty-state">No fixed findings.</p>
+                        {% endif %}
                     </div>
-                    <p style="font-size:0.88em;color:#6c757d;margin-bottom:12px;">CVEs present in both versions whose severity or exploit status changed due to platform intelligence updates — not developer action. These findings remain open and may require re-prioritization.</p>
+
+                    <div class="vc-changes-col">
+                        <h4 class="vc-changes-col-title">New in {{ ld.current_label | default(ld.current_version) }}</h4>
+                        {% if ld.new_findings and ld.new_findings | length > 0 %}
+                        {% set new_table_id = fragment_scope_class ~ '-vc-new-' ~ proj_idx %}
+                        <table class="data-table" id="{{ new_table_id }}">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Severity</th>
+                                    <th>Component</th>
+                                    <th class="num">Score</th>
+                                    <th>Title</th>
+                                    <th>Note</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for row in ld.new_findings %}
+                                <tr class="{% if loop.index > 10 and render_mode != 'fragment' %}vc-hidden-row{% endif %}">
+                                    <td>{{ row.display_id if row.display_id else '—' }}</td>
+                                    <td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td>
+                                    <td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td>
+                                    <td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk is not none else '—' }}</td>
+                                    <td>{{ row.title if row.title else '—' }}</td>
+                                    <td class="vc-external-note">{{ row.external_change_note if row.external_change_note else '' }}</td>
+                                </tr>
+                                {% endfor %}
+                                {% if ld.new_findings | length > 10 and render_mode != 'fragment' %}
+                                <tr class="vc-show-more-row">
+                                    <td colspan="6">
+                                        <button class="vc-show-more-btn" onclick="vc_toggleRows('{{ new_table_id }}')">
+                                            Show {{ ld.new_findings | length - 10 }} more…
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endif %}
+                            </tbody>
+                        </table>
+                        {% else %}
+                        <p class="vc-empty-state">No new findings.</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            {# Externally-changed: CVEs present in both versions whose
+               severity/exploit status changed due to platform
+               intelligence updates — NOT developer action. Per
+               latest_delta.externally_changed[*] shape: cve_id,
+               component_name, change_type (snake_case → Title Case via
+               replace + title filter), old_severity, new_severity,
+               old_exploit, new_exploit. #}
+            {% if ld.externally_changed and ld.externally_changed | length > 0 %}
+            <div class="panel" style="margin-bottom: 16px;">
+                {{ fs.panel_head("Externally changed (" ~ (ld.baseline_label | default(ld.baseline_version)) ~ " → " ~ (ld.current_label | default(ld.current_version)) ~ ")", meta=(ld.externally_changed_count | string) ~ " CVEs") }}
+                <p class="vc-section-prose">CVEs present in both versions whose severity or exploit status changed due to platform intelligence updates — not developer action. These findings remain open and may need re-prioritization.</p>
+                <div class="body" style="overflow-x: auto;">
                     <table class="data-table">
                         <thead>
                             <tr>
@@ -651,56 +597,61 @@
                             </tr>
                         </thead>
                         <tbody>
-                            {% for entry in proj.latest_delta.externally_changed %}
+                            {% for entry in ld.externally_changed %}
                             <tr>
                                 <td>{{ entry.cve_id }}</td>
                                 <td>{{ entry.component_name if entry.component_name else '—' }}</td>
                                 <td>{{ entry.change_type | replace('_', ' ') | title }}</td>
                                 <td>{% if entry.old_severity %}<span class="severity-badge severity-{{ entry.old_severity }}">{{ entry.old_severity }}</span>{% else %}—{% endif %}</td>
                                 <td>{% if entry.new_severity %}<span class="severity-badge severity-{{ entry.new_severity }}">{{ entry.new_severity }}</span>{% else %}—{% endif %}</td>
-                                <td style="font-size:0.85em;">{{ entry.old_exploit if entry.old_exploit else '—' }}</td>
-                                <td style="font-size:0.85em;">{{ entry.new_exploit if entry.new_exploit else '—' }}</td>
+                                <td>{{ entry.old_exploit if entry.old_exploit else '—' }}</td>
+                                <td>{{ entry.new_exploit if entry.new_exploit else '—' }}</td>
                             </tr>
                             {% endfor %}
                         </tbody>
                     </table>
                 </div>
-                {% endif %}
+            </div>
+            {% endif %}
 
-                <!-- Latest Delta: Component Churn -->
-                {% if proj.latest_delta.component_churn and proj.latest_delta.component_churn|length > 0 %}
-                <div class="section">
-                    <div class="section-header">
-                        <h3>Component Changes ({{ proj.latest_delta.baseline_label | default(proj.latest_delta.baseline_version) }} &rarr; {{ proj.latest_delta.current_label | default(proj.latest_delta.current_version) }})</h3>
-                        <span class="badge badge-churn">{{ proj.latest_delta.component_churn|length }} changes</span>
-                    </div>
-                    <table class="data-table" id="churn-{{ loop.index }}">
+            {# Component churn — latest_delta.component_churn[*] shape:
+               name (NOT component_name), version_baseline (NOT baseline_version),
+               version_current, change_type, findings_impact. Hidden-row
+               toggle scoped per project via fragment_scope_class. #}
+            {% if ld.component_churn and ld.component_churn | length > 0 %}
+            <div class="panel" style="margin-bottom: 16px;">
+                {{ fs.panel_head("Component changes (" ~ (ld.baseline_label | default(ld.baseline_version)) ~ " → " ~ (ld.current_label | default(ld.current_version)) ~ ")", meta=((ld.component_churn | length) | string) ~ " changes") }}
+                <div class="body" style="overflow-x: auto;">
+                    {% set churn_table_id = fragment_scope_class ~ '-vc-churn-' ~ proj_idx %}
+                    <table class="data-table" id="{{ churn_table_id }}">
                         <thead>
                             <tr>
                                 <th>Change</th>
                                 <th>Component</th>
                                 <th>Old Version</th>
                                 <th>New Version</th>
-                                <th>Findings Impact</th>
+                                <th class="num">Findings Impact</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {% for row in proj.latest_delta.component_churn %}
-                            <tr class="{% if loop.index > 15 %}hidden-row{% endif %}">
-                                <td><span class="change-badge change-{{ row.change_type }}">
-                                    {% if row.change_type == 'added' %}+ Added{% elif row.change_type == 'removed' %}- Removed{% else %}&uarr; Updated{% endif %}
-                                </span></td>
+                            {% for row in ld.component_churn %}
+                            <tr class="{% if loop.index > 15 and render_mode != 'fragment' %}vc-hidden-row{% endif %}">
+                                <td>
+                                    <span class="vc-change-badge vc-change-{{ row.change_type | lower }}">
+                                        {% if row.change_type | lower == 'added' %}+ Added{% elif row.change_type | lower == 'removed' %}− Removed{% else %}↑ Updated{% endif %}
+                                    </span>
+                                </td>
                                 <td>{{ row.name }}</td>
-                                <td>{{ row.version_baseline | default('-', true) }}</td>
-                                <td>{{ row.version_current | default('-', true) }}</td>
-                                <td>{{ row.findings_impact | default(0) }}</td>
+                                <td>{{ row.version_baseline | default('—', true) }}</td>
+                                <td>{{ row.version_current | default('—', true) }}</td>
+                                <td class="num">{{ row.findings_impact | default(0) }}</td>
                             </tr>
                             {% endfor %}
-                            {% if proj.latest_delta.component_churn|length > 15 %}
-                            <tr class="show-more-row">
+                            {% if ld.component_churn | length > 15 and render_mode != 'fragment' %}
+                            <tr class="vc-show-more-row">
                                 <td colspan="5">
-                                    <button class="show-more-btn" onclick="toggleRows('churn-{{ loop.index }}')">
-                                        Show {{ proj.latest_delta.component_churn|length - 15 }} more...
+                                    <button class="vc-show-more-btn" onclick="vc_toggleRows('{{ churn_table_id }}')">
+                                        Show {{ ld.component_churn | length - 15 }} more…
                                     </button>
                                 </td>
                             </tr>
@@ -708,237 +659,313 @@
                         </tbody>
                     </table>
                 </div>
-                {% endif %}
+            </div>
+            {% endif %}
 
-                <!-- Version changelog: all version-to-version changes (skip for 2-version pairs — already shown above) -->
-                {% if proj.progression|length > 2 %}
-                <div class="section changelog-section">
-                    <div class="section-header">
-                        <h3>Version changelog</h3>
+            {# Version changelog — built from progression steps where
+               step.from_version is non-empty. Per-step churn is
+               step.component_churn. Skip for two-version pairs (already
+               surfaced above). Default-expanded entry is loop.index == 2
+               (matches pre-migration UX). #}
+            {% if proj.progression | length > 2 %}
+            <div class="panel vc-changelog-section" style="margin-bottom: 16px;">
+                {{ fs.panel_head("Version changelog", meta="all version-to-version changes") }}
+                {% for step in proj.progression %}
+                {% if step.from_version %}
+                {% set step_churn = step.component_churn | default([]) %}
+                {% set entry_id = fragment_scope_class ~ '-vc-changelog-' ~ proj_idx ~ '-' ~ loop.index %}
+                {# In fragment mode all changelog entries render
+                   expanded (no JS to toggle), and the header is
+                   non-clickable. #}
+                <div class="vc-changelog-entry{% if loop.index == 2 or render_mode == 'fragment' %} expanded{% endif %}" id="{{ entry_id }}">
+                    <div class="vc-changelog-entry-header"{% if render_mode != 'fragment' %} onclick="vc_toggleChangelog('{{ entry_id }}')"{% endif %}>
+                        <span class="vc-changelog-version">{{ step.from_version }} → {{ step.version }}</span>
+                        <span class="vc-badge vc-badge-fixed">{% if step.fixed is none %}—{% else %}{{ step.fixed }}{% endif %} fixed</span>
+                        <span class="vc-badge vc-badge-new">{% if step.new is none %}—{% else %}{{ step.new }}{% endif %} new</span>
+                        <span class="vc-badge vc-badge-churn">{{ step_churn | length }} component{{ 's' if (step_churn | length) != 1 else '' }}</span>
                     </div>
-                    {% for step in proj.progression %}
-                    {% if step.from_version %}
-                    {% set step_churn_list = step.component_churn | default([]) %}
-                    <div class="changelog-entry{% if loop.index == 2 %} expanded{% endif %}" id="changelog-{{ proj_idx }}-{{ loop.index }}">
-                        <div class="changelog-entry-header" onclick="toggleChangelog('changelog-{{ proj_idx }}-{{ loop.index }}')">
-                            <span class="changelog-version">{{ step.from_version }} &rarr; {{ step.version }}</span>
-                            <span class="badge badge-fixed">{% if step.fixed is none %}—{% else %}{{ step.fixed }}{% endif %} fixed</span>
-                            <span class="badge badge-new">{% if step.new is none %}—{% else %}{{ step.new }}{% endif %} new</span>
-                            <span class="badge badge-churn">{{ step_churn_list | length }} component{{ 's' if step_churn_list | length != 1 else '' }}</span>
+                    <div class="vc-changelog-entry-body">
+                        {# Per-step severity summary lines — preserved
+                           from pre-migration template lines 731-734
+                           (round-2 M1-2). Same data shape as the
+                           latest_delta section but scoped per step. #}
+                        <div class="vc-changes-summary">
+                            <span class="vc-changes-fixed">Fixed: {{ step.fixed_severity_summary | default('—') }}</span>
+                            <span class="vc-changes-new">New: {{ step.new_severity_summary | default('—') }}</span>
                         </div>
-                        <div class="changelog-entry-body">
-                            <div class="changes-summary" style="margin-bottom: 12px;">
-                                <span class="changes-summary-fixed">Fixed: {{ step.fixed_severity_summary }}</span>
-                                <span class="changes-summary-new">New: {{ step.new_severity_summary }}</span>
-                            </div>
-                            <div class="changes-two-col">
-                                <div class="changes-col">
-                                    <h4 class="changes-col-title">Fixed</h4>
-                                    {% if step.fixed_findings and step.fixed_findings|length > 0 %}
-                                    <table class="data-table">
-                                        <thead>
-                                            <tr><th>ID</th><th>Severity</th><th>Component</th><th class="num">Score</th><th>Title</th></tr>
-                                        </thead>
-                                        <tbody>
-                                            {% for row in step.fixed_findings %}
-                                            <tr><td>{{ row.display_id if row.display_id else '—' }}</td><td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td><td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td><td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk else '—' }}</td><td>{{ row.title if row.title else '—' }}</td></tr>
-                                            {% endfor %}
-                                        </tbody>
-                                    </table>
-                                    {% else %}
-                                    <p class="empty-state-inline">No fixed findings.</p>
-                                    {% endif %}
-                                </div>
-                                <div class="changes-col">
-                                    <h4 class="changes-col-title">New</h4>
-                                    {% if step.new_findings and step.new_findings|length > 0 %}
-                                    <table class="data-table">
-                                        <thead>
-                                            <tr><th>ID</th><th>Severity</th><th>Component</th><th class="num">Score</th><th>Title</th></tr>
-                                        </thead>
-                                        <tbody>
-                                            {% for row in step.new_findings %}
-                                            <tr><td>{{ row.display_id if row.display_id else '—' }}</td><td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td><td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td><td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk else '—' }}</td><td>{{ row.title if row.title else '—' }}</td></tr>
-                                            {% endfor %}
-                                        </tbody>
-                                    </table>
-                                    {% else %}
-                                    <p class="empty-state-inline">No new findings.</p>
-                                    {% endif %}
-                                </div>
-                            </div>
-                            <div class="changelog-components" style="margin-top: 16px;">
-                                <h4 class="changes-col-title">Component changes</h4>
-                                {% if step_churn_list and step_churn_list|length > 0 %}
-                                <table class="data-table">
+
+                        {# Per-step Fixed | New two-column finding tables —
+                           preserved from pre-migration template lines
+                           735-770. Same field shape as latest_delta.fixed_findings
+                           / new_findings (display_id, severity,
+                           component_name, component_version, risk, title).
+                           Round-2 M1-2 caught the prior version omitting
+                           this. #}
+                        {# Per-step finding tables get the same 10-row
+                           cap pattern as latest_delta tables (round-2
+                           M1-5). Large multi-version histories would
+                           otherwise produce huge fragment HTML. The
+                           show-more button is gated by render_mode so
+                           fragments show all rows (no JS to toggle). #}
+                        {% set step_fixed_id = fragment_scope_class ~ '-vc-step-fixed-' ~ proj_idx ~ '-' ~ loop.index %}
+                        {% set step_new_id = fragment_scope_class ~ '-vc-step-new-' ~ proj_idx ~ '-' ~ loop.index %}
+                        <div class="vc-changes-two-col">
+                            <div class="vc-changes-col">
+                                <h4 class="vc-changes-col-title">Fixed</h4>
+                                {% if step.fixed_findings and step.fixed_findings | length > 0 %}
+                                <table class="data-table" id="{{ step_fixed_id }}">
                                     <thead>
-                                        <tr>
-                                            <th>Change</th>
-                                            <th>Component</th>
-                                            <th>Previous Version</th>
-                                            <th>Current Version</th>
-                                            <th class="num">Findings Impact</th>
-                                        </tr>
+                                        <tr><th>ID</th><th>Severity</th><th>Component</th><th class="num">Score</th><th>Title</th></tr>
                                     </thead>
                                     <tbody>
-                                        {% for row in step_churn_list %}
-                                        <tr>
-                                            <td><span class="change-badge change-{{ row.change_type | default('unchanged') }}">{% if row.change_type == 'added' %}+ Added{% elif row.change_type == 'removed' %}- Removed{% elif row.change_type == 'updated' %}&uarr; Updated{% else %}—{% endif %}</span></td>
-                                            <td>{{ row.name | default('—') }}</td>
-                                            <td>{{ row.version_baseline | default('—', true) }}</td>
-                                            <td>{{ row.version_current | default('—', true) }}</td>
-                                            <td class="num">{{ row.findings_impact | default(0) }}</td>
+                                        {% for row in step.fixed_findings %}
+                                        <tr class="{% if loop.index > 10 and render_mode != 'fragment' %}vc-hidden-row{% endif %}">
+                                            <td>{{ row.display_id if row.display_id else '—' }}</td>
+                                            <td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td>
+                                            <td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td>
+                                            <td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk is not none else '—' }}</td>
+                                            <td>{{ row.title if row.title else '—' }}</td>
                                         </tr>
                                         {% endfor %}
+                                        {% if step.fixed_findings | length > 10 and render_mode != 'fragment' %}
+                                        <tr class="vc-show-more-row">
+                                            <td colspan="5">
+                                                <button class="vc-show-more-btn" onclick="vc_toggleRows('{{ step_fixed_id }}')">
+                                                    Show {{ step.fixed_findings | length - 10 }} more…
+                                                </button>
+                                            </td>
+                                        </tr>
+                                        {% endif %}
                                     </tbody>
                                 </table>
                                 {% else %}
-                                <p class="empty-state-inline">No component changes.</p>
+                                <p class="vc-empty-state">No fixed findings.</p>
+                                {% endif %}
+                            </div>
+                            <div class="vc-changes-col">
+                                <h4 class="vc-changes-col-title">New</h4>
+                                {% if step.new_findings and step.new_findings | length > 0 %}
+                                <table class="data-table" id="{{ step_new_id }}">
+                                    <thead>
+                                        <tr><th>ID</th><th>Severity</th><th>Component</th><th class="num">Score</th><th>Title</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for row in step.new_findings %}
+                                        <tr class="{% if loop.index > 10 and render_mode != 'fragment' %}vc-hidden-row{% endif %}">
+                                            <td>{{ row.display_id if row.display_id else '—' }}</td>
+                                            <td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td>
+                                            <td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td>
+                                            <td class="num">{{ "%.1f"|format(row.risk / 10.0) if row.risk is not none else '—' }}</td>
+                                            <td>{{ row.title if row.title else '—' }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                        {% if step.new_findings | length > 10 and render_mode != 'fragment' %}
+                                        <tr class="vc-show-more-row">
+                                            <td colspan="5">
+                                                <button class="vc-show-more-btn" onclick="vc_toggleRows('{{ step_new_id }}')">
+                                                    Show {{ step.new_findings | length - 10 }} more…
+                                                </button>
+                                            </td>
+                                        </tr>
+                                        {% endif %}
+                                    </tbody>
+                                </table>
+                                {% else %}
+                                <p class="vc-empty-state">No new findings.</p>
                                 {% endif %}
                             </div>
                         </div>
+
+                        <h4 class="vc-changes-col-title" style="margin-top: 16px;">Component changes</h4>
+                        {% if step_churn and step_churn | length > 0 %}
+                        <table class="data-table">
+                            <thead>
+                                <tr><th>Change</th><th>Component</th><th>Old</th><th>New</th><th class="num">Findings Impact</th></tr>
+                            </thead>
+                            <tbody>
+                                {% for c in step_churn %}
+                                <tr>
+                                    <td><span class="vc-change-badge vc-change-{{ c.change_type | lower }}">{{ c.change_type | replace('_', ' ') | title }}</span></td>
+                                    <td>{{ c.name }}</td>
+                                    <td>{{ c.version_baseline | default('—', true) }}</td>
+                                    <td>{{ c.version_current | default('—', true) }}</td>
+                                    <td class="num">{{ c.findings_impact | default(0) }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                        {% else %}
+                        <p class="vc-empty-state">No component changes in this step.</p>
+                        {% endif %}
                     </div>
-                    {% endif %}
-                    {% endfor %}
                 </div>
                 {% endif %}
-
+                {% endfor %}
             </div>
+            {% endif %}
         </div>
-        {% endfor %}
-
-        {% else %}
-        <!-- No data state -->
-        <div class="empty-state">
-            <p><strong>No comparison data available.</strong></p>
-            <p>Ensure projects have at least two scanned versions, or scope with <code>--project</code> or <code>--folder</code>.</p>
-        </div>
-        {% endif %}
-
-        {% include "_default_footer.html" %}
     </div>
+    {% endfor %}
+{% else %}
+    {# Empty-state guard — preserved from pre-migration template. Zero
+       projects in the transform output renders a guidance card, not
+       misleading zero KPIs. #}
+    <div class="panel" style="margin-bottom: 20px;">
+        <div class="vc-empty-state-card">
+            <h3>No comparison data available</h3>
+            <p>The version-comparison transform returned no projects. Confirm <code>--project</code> / <code>--folder</code> scope and that the targeted versions exist on the platform.</p>
+        </div>
+    </div>
+{% endif %}
+</main>
 
-    <script>
-    // Toggle hidden rows in a table
-    function toggleRows(tableId) {
-        const table = document.getElementById(tableId);
-        if (!table) return;
-        const hiddenRows = table.querySelectorAll('.hidden-row');
-        const showMoreRow = table.querySelector('.show-more-row');
-        hiddenRows.forEach(row => row.classList.toggle('hidden-row'));
-        if (showMoreRow) showMoreRow.style.display = 'none';
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Version Comparison",
+    "Projects: " ~ ((result.get('project_count', 0)) | string),
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+{% if render_mode != 'fragment' or fragment_scripts_enabled %}
+<script>
+// Namespaced toggle helpers — recipe-scoped to avoid collisions in
+// compound bundles (multiple sibling sections sharing window scope).
+function vc_toggleProject(bodyId) {
+    const body = document.getElementById(bodyId);
+    if (!body) return;
+    body.style.display = body.style.display === 'none' ? 'block' : 'none';
+}
+
+function vc_toggleRows(tableId) {
+    const table = document.getElementById(tableId);
+    if (!table) return;
+    const hiddenRows = table.querySelectorAll('.vc-hidden-row');
+    const showMoreRow = table.querySelector('.vc-show-more-row');
+    hiddenRows.forEach(function(row) { row.classList.toggle('vc-hidden-row'); });
+    if (showMoreRow) showMoreRow.style.display = 'none';
+}
+
+function vc_toggleChangelog(entryId) {
+    const el = document.getElementById(entryId);
+    if (!el) return;
+    el.classList.toggle('expanded');
+}
+
+(function() {
+    if (typeof echarts === 'undefined') {
+        if (typeof console !== 'undefined' && console.error) {
+            console.error('ECharts library not loaded — Version Comparison charts will be blank');
+        }
+        return;
     }
 
-    // Toggle project body visibility
-    function toggleProject(bodyId) {
-        const body = document.getElementById(bodyId);
-        if (!body) return;
-        body.style.display = body.style.display === 'none' ? 'block' : 'none';
+    function _tokens() {
+        const cs = getComputedStyle(document.documentElement);
+        return {
+            inkBody:     cs.getPropertyValue('--ink-body').trim() || '#374151',
+            surfaceCard: cs.getPropertyValue('--surface-card').trim() || '#ffffff',
+            hairline:    cs.getPropertyValue('--hairline').trim() || '#dee2e6',
+            inkMute:     cs.getPropertyValue('--ink-mute').trim() || '#6c757d',
+        };
     }
 
-    // Toggle changelog entry expand/collapse
-    function toggleChangelog(entryId) {
-        const el = document.getElementById(entryId);
-        if (!el) return;
-        el.classList.toggle('expanded');
-    }
+    function _initProjectChart(elId, progression) {
+        const el = document.getElementById(elId);
+        if (!el || !progression || progression.length === 0) return;
+        const inst = fsEChartsInit(el, { renderer: 'canvas' });
+        const labels = progression.map(function(s) { return s.version; });
+        const totals = progression.map(function(s) { return s.total; });
+        const fixed = progression.map(function(s) { return s.fixed; });
+        const news  = progression.map(function(s) { return s.new; });
 
-    // Build progression charts for each project
-    {% if transform_result and transform_result.projects %}
-    {% for proj in transform_result.projects %}
-    (function() {
-        const ctx = document.getElementById('chart-{{ loop.index }}');
-        if (!ctx) return;
-
-        const labels = [{% for s in proj.progression %}'{{ s.version }}'{% if not loop.last %}, {% endif %}{% endfor %}];
-        const totals = [{% for s in proj.progression %}{% if s.total is none %}null{% else %}{{ s.total }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}];
-        const fixed = [{% for s in proj.progression %}{% if s.fixed is none %}null{% else %}{{ s.fixed }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}];
-        const newFindings = [{% for s in proj.progression %}{% if s.new is none %}null{% else %}{{ s.new }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}];
-
-        new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: labels,
-                datasets: [
-                    {
-                        label: 'Total Findings',
-                        data: totals,
-                        borderColor: 'rgba(108, 117, 125, 0.8)',
-                        backgroundColor: 'rgba(108, 117, 125, 0.15)',
-                        borderWidth: 2,
-                        pointBackgroundColor: 'rgba(108, 117, 125, 0.95)',
-                        pointRadius: 4,
-                        pointHoverRadius: 6,
-                        fill: true,
-                        tension: 0.3,
-                    },
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                interaction: { mode: 'index', intersect: false },
-                plugins: {
-                    legend: {
-                        position: 'top',
-                        display: true,
-                    },
-                    title: {
-                        display: true,
-                        text: '{{ proj.project_name }} — {% if proj.is_pair_comparison %}Version Comparison{% else %}Version Progression{% endif %}',
-                        font: { size: 14, weight: '600' },
-                        padding: { bottom: 16 }
-                    },
-                    tooltip: {
-                        callbacks: {
-                            title: function(items) {
-                                if (!items.length) return '';
-                                return items[0].label;
-                            },
-                            label: function(ctx) {
-                                const i = ctx.dataIndex;
-                                const current = totals[i];
-                                if (current === null || current === undefined) {
-                                    return 'Data unavailable';
-                                }
-                                const lines = ['Total: ' + current];
-                                if (i > 0) {
-                                    const prev = totals[i - 1];
-                                    if (prev === null || prev === undefined) {
-                                        return lines;
-                                    }
-                                    const delta = current - prev;
-                                    const sign = delta > 0 ? '+' : '';
-                                    lines[0] += '  (' + sign + delta + ' net)';
-                                    if (fixed[i] > 0 || newFindings[i] > 0) {
-                                        lines.push('Fixed: -' + fixed[i] + '   New: +' + newFindings[i]);
-                                    }
-                                }
-                                return lines;
+        function buildOption() {
+            const t = _tokens();
+            return {
+                tooltip: {
+                    trigger: 'axis',
+                    backgroundColor: t.surfaceCard,
+                    borderColor: t.hairline,
+                    borderWidth: 1,
+                    textStyle: { color: t.inkBody },
+                    formatter: function(parts) {
+                        if (!parts || parts.length === 0) return '';
+                        const i = parts[0].dataIndex;
+                        const v = totals[i];
+                        if (v === null || v === undefined) return parts[0].axisValue + '<br>Data unavailable';
+                        let html = '<b>' + parts[0].axisValue + '</b><br>Total: <b>' + v + '</b>';
+                        if (i > 0 && totals[i - 1] !== null && totals[i - 1] !== undefined) {
+                            const delta = v - totals[i - 1];
+                            const sign = delta > 0 ? '+' : '';
+                            html += ' (' + sign + delta + ' net)';
+                            if ((fixed[i] || 0) > 0 || (news[i] || 0) > 0) {
+                                html += '<br>Fixed: −' + (fixed[i] || 0) + '   New: +' + (news[i] || 0);
                             }
                         }
+                        return html;
                     }
                 },
-                scales: {
-                    x: {
-                        grid: { display: false },
-                        ticks: {
-                            maxRotation: 45,
-                            font: { weight: '500' }
-                        }
-                    },
-                    y: {
-                        beginAtZero: true,
-                        title: { display: true, text: 'Findings Count' },
-                        ticks: { precision: 0 },
-                        grid: { color: 'rgba(0, 0, 0, 0.06)' },
-                    }
+                grid: { left: 50, right: 24, top: 20, bottom: 50 },
+                xAxis: {
+                    type: 'category',
+                    data: labels,
+                    axisLabel: { color: t.inkBody, fontSize: 10, rotate: 30 },
+                },
+                yAxis: {
+                    type: 'value',
+                    name: 'Findings',
+                    axisLabel: { color: t.inkBody },
+                    nameTextStyle: { color: t.inkMute },
+                    splitLine: { lineStyle: { color: t.hairline } },
+                },
+                series: [{
+                    name: 'Total',
+                    type: 'line',
+                    // fetch_failed steps emit null totals; render those
+                    // as gaps in the line series, not interpolated lines
+                    // through phantom data.
+                    data: totals,
+                    smooth: true,
+                    connectNulls: false,
+                    lineStyle: { color: t.inkMute, width: 2 },
+                    itemStyle: { color: t.inkMute },
+                    areaStyle: { color: t.inkMute, opacity: 0.12 },
+                }],
+            };
+        }
+
+        try {
+            inst.setOption(buildOption());
+        } catch (e) {
+            window.fsBeaconRelease();
+            throw e;
+        }
+        const obs = new MutationObserver(function(mutations) {
+            for (const m of mutations) {
+                if (m.attributeName === 'data-theme') {
+                    inst.setOption(buildOption());
+                    break;
                 }
             }
         });
-    })();
+        obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+        window.addEventListener('resize', function() { inst.resize(); });
+    }
+
+    {% if transform_result and transform_result.projects %}
+    {% for proj in transform_result.projects %}
+    _initProjectChart(
+        '{{ fragment_scope_class }}-vc-chart-{{ loop.index }}',
+        {{ proj.progression | tojson }}
+    );
     {% endfor %}
     {% endif %}
-    </script>
+})();
+</script>
+
+{% include '_action_buttons.html' %}
 </body>
 </html>
+{% endif %}

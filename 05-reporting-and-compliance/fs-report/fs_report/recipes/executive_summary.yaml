@@ -1,6 +1,7 @@
 name: "Executive Summary"
 category: operational  # Period-bound: shows trends and activity within the specified time window
 nav_category: Executive
+chart_libraries: ["echarts"]
 template: "executive_summary.html"
 description: "High-level security posture overview with key performance indicators and project-level breakdowns"
 execution_order: 20  # Reuses cached scans from Scan Analysis
@@ -24,10 +25,13 @@ transform:
       index: "project.name"
       columns: severity
       values: finding_count
-  # Sort by project name
+  # Worst offenders first: severity-major descending sort. This is the
+  # single authoritative order — the HTML table, the live ECharts bar
+  # chart, and the server-SVG fragment path all inherit it (2026-06-06
+  # visual QA: chart and table previously disagreed).
   - sort:
-      sort: ["project.name"]
-      ascending: true
+      sort: ["critical", "high", "medium", "low"]
+      ascending: false
 
 # Transform for open issues pie chart
 open_issues_transform:
@@ -50,7 +54,18 @@ open_issues_transform:
 scan_frequency_transform:
   - transform_function: executive_scan_frequency_transform
 
+# Transform for the Exploit Signals gauge (C1) — open-snapshot counts of
+# CISA KEV / VulnCheck KEV / Real exploits. Returns a 3-row (label, count) DF.
+exploit_signals_transform:
+  - transform_function: executive_exploit_signals_transform
+
+# Transform for the Exploits Over Time line (C2) — real-exploit findings
+# detected per period (day/week/month/quarter), parallel to scan frequency.
+exploits_over_time_transform:
+  - transform_function: executive_exploits_over_time_transform
+
 output:
+  formats: [csv, xlsx, html, pdf]  # PDF added without dropping the prior defaults
   charts:
     - name: "project_breakdown"
       chart: bar
@@ -67,7 +82,17 @@ output:
       chart: line
       title: "Security Findings Over Time"
       description: "Number of security findings detected per month"
-  
+
+    - name: "exploit_signals"
+      chart: bar
+      title: "Exploit Signals"
+      description: "Open findings carrying CISA KEV, VulnCheck KEV, or real-exploit signals"
+
+    - name: "exploits_over_time"
+      chart: line
+      title: "Exploits Over Time"
+      description: "Real-exploit findings detected per period"
+
   table: true
   slide_title: "Executive Security Summary"
   description: "High-level security posture overview with key performance indicators, risk metrics, and project-level breakdowns" 

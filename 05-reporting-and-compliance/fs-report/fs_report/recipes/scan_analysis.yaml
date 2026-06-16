@@ -1,6 +1,7 @@
 name: "Scan Analysis"
 category: operational  # Period-bound: shows scan activity within the specified time window
 nav_category: Investigation
+chart_libraries: ["echarts"]
 description: "Analyze scan throughput, durations, failures, and queue status"
 template: "scan_analysis.html"
 execution_order: 10  # Runs first - fetches scans that other reports reuse
@@ -21,36 +22,15 @@ transform_function: scan_analysis_transform
 
 output:
   formats: ["csv", "xlsx", "html"]
-  charts:
-    - name: "scan_throughput"
-      chart: line
-      title: "Scan Throughput Over Time"
-      description: "Number of scans started and completed per day"
-    
-    - name: "scan_durations"
-      chart: bar
-      title: "Average Scan Duration by Day" 
-      description: "Average scan duration in minutes for completed scans"
-    
-    - name: "failure_rate"
-      chart: bar
-      title: "Scan Success vs Failure Rate"
-      description: "Success rate percentage and failure counts by day"
-      
-    - name: "scan_types"
-      chart: pie
-      title: "Scan Type Distribution"
-      description: "Distribution of scan types (SCA, SAST, CONFIG)"
-    
-    - name: "failure_types"
-      chart: pie
-      title: "Failure Type Distribution"
-      description: "Distribution of failed scans by scan type"
-    
-    - name: "queue_vs_processing"
-      chart: bar
-      title: "Active Scan Status Analysis"
-      description: "Average time scans spend in INITIAL vs STARTED status by day"
-  
+  # Phase 1b Batch B.2 round-2: all 5 chart panels are rendered inline by the
+  # template's ECharts code (standalone mode) or as chart-unavailable
+  # placeholders (fragment mode). The YAML chart specs were dropped because
+  # the live template's chart semantics no longer match a static
+  # "pie/bar/line" spec (e.g. the failure_types panel renders as a dual-axis
+  # stacked-bar + line "Scan failures over time", not a pie). Mirrors the
+  # component_list recipe's `charts: []` pattern — no server-SVG dispatch.
+  charts: []
+  has_inline_charts: true
+
   table: true
-  slide_title: "Scan Operations Analysis" 
+  slide_title: "Scan Operations Analysis"

@@ -1,0 +1,39 @@
+{# Finite State theme toggle button — include where you want the sun/moon
+   control to appear (typically in the top bar / header).
+
+   Requires: _theme_init.html in <head> (sets the initial data-theme)
+             _design_system.html in <head> (provides .fs-theme-toggle styles)
+
+   The button shows the icon for the OTHER theme — sun in dark mode (click to
+   go light), moon in light mode (click to go dark). Persists choice in
+   localStorage under "fs-theme". #}
+<button class="fs-theme-toggle" type="button"
+        aria-label="Toggle light/dark theme"
+        title="Toggle light/dark theme">
+    <svg class="fs-t-sun" width="14" height="14" viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="4"/>
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+    </svg>
+    <svg class="fs-t-moon" width="14" height="14" viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+    </svg>
+</button>
+<script>
+    (function () {
+        var btn = document.currentScript.previousElementSibling;
+        while (btn && !btn.classList.contains('fs-theme-toggle')) {
+            btn = btn.previousElementSibling;
+        }
+        if (!btn) { return; }
+        btn.addEventListener('click', function () {
+            var root = document.documentElement;
+            var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            root.setAttribute('data-theme', next);
+            try { window.localStorage.setItem('fs-theme', next); } catch (_e) {}
+        });
+    })();
+</script>

@@ -1,0 +1,83 @@
+{# Full Scan-Queue body — swappable via HTMX (/api/queue/full).
+   Handles disconnected / error / empty / populated states internally.
+   (The /queue page redirects to /setup when unconfigured, but the polled
+   fragment can still return connected=False if config is lost mid-session —
+   so a disconnected tab must not masquerade as an empty queue.) #}
+{% if not connected %}
+<div class="kpi-strip">
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--ink-faint)"></span> Queued</div><div class="kv">—</div></div>
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--accent)"></span> Processing</div><div class="kv">—</div></div>
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--sev-high)"></span> Oldest</div><div class="kv">—</div></div>
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--sev-high)"></span> Stuck</div><div class="kv">—</div></div>
+</div>
+<div class="q-notice">
+  <span class="q-notice-ic">⚡</span> Not connected — configure a platform to see the scan queue.
+</div>
+
+{% elif error %}
+<div class="kpi-strip">
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--ink-faint)"></span> Queued</div><div class="kv">—</div></div>
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--accent)"></span> Processing</div><div class="kv">—</div></div>
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--sev-high)"></span> Oldest</div><div class="kv">—</div></div>
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--sev-high)"></span> Stuck</div><div class="kv">—</div></div>
+</div>
+<div class="q-notice">
+  <span class="q-notice-ic">⚠</span> {{ error }}
+</div>
+
+{% elif not queue or not queue.groups %}
+<div class="kpi-strip">
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--ink-faint)"></span> Queued</div><div class="kv">0</div></div>
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--accent)"></span> Processing</div><div class="kv">0</div></div>
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--sev-high)"></span> Oldest</div><div class="kv">—</div></div>
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--sev-high)"></span> Stuck</div><div class="kv">0</div></div>
+</div>
+<div class="q-empty">✓ No active scans</div>
+
+{% else %}
+<div class="kpi-strip">
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--ink-faint)"></span> Queued</div><div class="kv">{{ queue.total_queued }}</div></div>
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--accent)"></span> Processing</div><div class="kv" style="color:var(--accent)">{{ queue.total_processing }}</div></div>
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--sev-high)"></span> Oldest</div><div class="kv">{{ queue.oldest_wait if queue.oldest_wait else '—' }}</div></div>
+  <div class="kc"><div class="kl"><span class="d" style="background:var(--sev-high)"></span> Stuck</div><div class="kv" style="color:var(--sev-high)">{{ queue.total_stuck }}</div></div>
+</div>
+<div class="panel">
+  <div class="phd">
+    <h2>Active &amp; queued</h2>
+    <span class="meta">{{ queue.groups|length }} projects · {{ total_scans }} scans{% if capped %} · <span class="q-capped" title="Showing the recent active window (most recent scans), not the full scan history.">recent window</span>{% endif %}</span>
+  </div>
+  {% for group in queue.groups %}
+  {%- if group.has_error -%}{% set strip = 'qg-err' %}
+  {%- elif group.has_stuck -%}{% set strip = 'qg-stuck' %}
+  {%- elif group.has_running -%}{% set strip = 'qg-run' %}
+  {%- elif group.all_done -%}{% set strip = 'qg-done' %}
+  {%- else -%}{% set strip = 'qg-queued' %}{%- endif -%}
+  <div class="qg {{ strip }}"
+       data-has-running="{{ '1' if group.has_running else '0' }}"
+       data-has-stuck="{{ '1' if group.has_stuck else '0' }}"
+       data-all-done="{{ '1' if group.all_done else '0' }}">
+    <div class="qg-top">
+      <span class="qg-name" title="{{ group.project_name }}">{{ group.project_name }}</span>
+      {% if group.version_name %}<span class="qg-ver" title="{{ group.version_name }}">{{ group.version_name | truncate(20, True, '…') }}</span>{% endif %}
+      {% if group.has_stuck %}<span class="badge stuckb">⚠ stuck</span>{% endif %}
+      <span class="qg-ratio">{{ group.completed_count }} / {{ group.scans|length }}</span>
+      <span class="qg-wait">{{ group.oldest_wait_display }}</span>
+      {% if group.created_by %}<span class="qg-by">{{ group.created_by | join(', ') }}</span>{% endif %}
+    </div>
+    <div class="qg-scans">
+      {%- for scan in group.scans -%}
+        {%- if scan.is_error -%}{% set dot = 'err' %}
+        {%- elif scan.likely_stuck -%}{% set dot = 'stuck' %}
+        {%- elif scan.is_done -%}{% set dot = 'done' %}
+        {%- elif scan.status == 'STARTED' -%}{% set dot = 'run' %}
+        {%- else -%}{% set dot = 'init' %}{%- endif -%}
+        {%- set cls = 'scan' -%}
+        {%- if scan.status == 'STARTED' and not scan.likely_stuck and not scan.is_error and not scan.is_done -%}{% set cls = 'scan is-run' %}{%- endif -%}
+        {%- if scan.likely_stuck -%}{% set cls = 'scan is-stuck' %}{%- endif -%}
+        <span class="{{ cls }}" title="{{ scan.type }} — {{ scan.status }}"><span class="sd {{ dot }} qt-{{ scan.type_slug }}" style="--i:{{ loop.index0 }}"></span>{{ scan.type }}{% if scan.likely_stuck %} · stuck{% endif %}</span>
+      {%- endfor -%}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}

@@ -1,0 +1,488 @@
+{% if render_mode != 'fragment' %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>Finding Diff - Finite State Report</title>
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+{% endif %}
+
+<style>
+    /* ---- empty / inventory callouts (carried over) ---- */
+    .fd-empty-callout {
+        background: var(--surface-muted);
+        border: 1px solid var(--hairline);
+        border-radius: 8px;
+        padding: 24px;
+        text-align: center;
+        color: var(--ink-mute);
+        margin-bottom: 20px;
+    }
+    .fd-inventory-note {
+        background: var(--sev-high-bg);
+        color: var(--sev-high-text);
+        border: 1px solid var(--hairline);
+        border-radius: 6px;
+        padding: 12px 16px;
+        margin-bottom: 16px;
+        font-size: 0.9em;
+    }
+
+    /* ============================================================
+       META-COMPARE — finding worklist (ported from meta-compare.css,
+       this section's classes only). Scoped to .fs-section-finding-diff
+       by the fragment extractor.
+       ============================================================ */
+
+    /* section intro line + lede */
+    .mc-section-intro {
+        display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
+        justify-content: space-between; margin: 0 0 18px;
+    }
+    .mc-section-lede { font-size: 14px; line-height: 1.55; color: var(--ink-body); max-width: 70ch; }
+    .mc-section-lede strong { color: var(--ink); font-weight: 600; }
+    .mc-scope-tag {
+        font-family: var(--font-mono); font-size: 11px; color: var(--ink-mute);
+        display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+        padding: 6px 10px; border: 1px solid var(--hairline); border-radius: var(--r-sm);
+        background: var(--surface-card);
+    }
+    .mc-scope-tag .l { color: var(--accent-teal); font-weight: 600; }
+    .mc-scope-tag .r { color: var(--ink-body); font-weight: 600; }
+
+    .mc-muted-note { font-size: 12.5px; color: var(--ink-mute); line-height: 1.5; }
+    .mc-muted-note strong { color: var(--ink-body); }
+
+    /* worklist — severity-weighted, grouped by component */
+    .mc-worklist { display: flex; flex-direction: column; gap: 12px; }
+    .mc-wgroup { border: 1px solid var(--hairline); border-radius: var(--r-md); overflow: hidden; background: var(--surface-card); }
+    .mc-wgroup-head {
+        display: grid; grid-template-columns: auto 1fr auto auto; gap: 14px; align-items: center;
+        padding: 14px 18px; cursor: pointer; background: var(--surface-subtle);
+        border-bottom: 1px solid transparent; transition: background var(--dur-fast);
+        width: 100%; text-align: left; font-family: inherit; color: inherit;
+    }
+    .mc-wgroup-head:hover { background: var(--surface-hover); }
+    .mc-wgroup[open] .mc-wgroup-head { border-bottom-color: var(--hairline); }
+    .mc-wgroup-ic { width: 36px; height: 36px; border-radius: var(--r-sm); background: var(--surface-card); border: 1px solid var(--hairline); display: flex; align-items: center; justify-content: center; color: var(--ink-body); }
+    .mc-wgroup-title { min-width: 0; }
+    .mc-wgroup-title .name { font-size: 14px; font-weight: 600; color: var(--ink); display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+    .mc-wgroup-title .name .verflow { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-mute); display: inline-flex; align-items: center; gap: 6px; }
+    .mc-wgroup-title .name .verflow .new { color: var(--sev-low-text); }
+    .mc-wgroup-title .name .verflow .ar { color: var(--ink-faint); }
+    .mc-wgroup-title .fixpath { font-size: 12px; color: var(--ink-mute); margin-top: 4px; line-height: 1.4; }
+    .mc-wgroup-title .fixpath strong { color: var(--ink-body); }
+
+    /* fix-target cell (replaces the decorative risk gauge in the worklist) —
+       labels + glyph, never color alone */
+    .mc-fixtarget { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; }
+    .mc-fixtarget .old { color: var(--sev-high-text); }
+    .mc-fixtarget .ar { color: var(--ink-faint); }
+    .mc-fixtarget .new { color: var(--sev-low-text); font-weight: 600; }
+    .mc-fixtarget.rebuild { color: var(--ink-body); }
+
+    /* owner / variant rollup chips (the needs-action laggard variants) */
+    .mc-owners { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+    .mc-owners .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-mute); font-weight: 600; margin-right: 2px; }
+    .mc-owner {
+      display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-family: var(--font-mono);
+      color: var(--ink-body); background: var(--surface-subtle); border: 1px solid var(--hairline-soft);
+      padding: 3px 9px; border-radius: var(--radius-sm, 4px);
+    }
+    .mc-owner b { color: var(--ink); font-weight: 600; }
+    .mc-wgroup-count { text-align: right; }
+    .mc-wgroup-count .n { font-family: var(--font-mono); font-size: 22px; font-weight: 500; color: var(--ink); line-height: 1; font-variant-numeric: tabular-nums; }
+    .mc-wgroup-count .lbl { font-size: 10px; color: var(--ink-mute); text-transform: uppercase; letter-spacing: 0.06em; }
+    .mc-wgroup-sev { width: 96px; }
+    .mc-wgroup-sev .mc-sevbar { width: 96px; height: 7px; }
+    .mc-wgroup-sev .mc-mini-legend { font-family: var(--font-mono); font-size: 10px; color: var(--ink-mute); margin-top: 5px; text-align: right; white-space: nowrap; }
+    .mc-chev { color: var(--ink-mute); transition: transform var(--dur-fast); }
+    .mc-wgroup[open] .mc-chev { transform: rotate(180deg); }
+    @media (max-width: 700px) {
+        .mc-wgroup-head { grid-template-columns: auto 1fr auto; }
+        .mc-wgroup-sev { display: none; }
+    }
+
+    /* severity mini-bar (worklist variant) */
+    .mc-sevbar { display: flex; height: 9px; border-radius: 3px; overflow: hidden; width: 280px; max-width: 100%; }
+    .mc-sevbar > span { height: 100%; }
+    .mc-sevbar .s-crit { background: var(--sev-critical); }
+    .mc-sevbar .s-high { background: var(--sev-high); }
+    .mc-sevbar .s-med  { background: var(--sev-medium); }
+    .mc-sevbar .s-low  { background: var(--sev-low); }
+
+    /* worklist table — reuses .data-table look, adds the fixed↔open pair cell */
+    .mc-wbody { padding: 0; overflow-x: auto; }
+    .mc-wtable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .mc-wtable thead th {
+        text-align: left; font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+        text-transform: uppercase; color: var(--ink-mute); padding: 9px 16px;
+        border-bottom: 1px solid var(--hairline); white-space: nowrap; background: var(--surface-card);
+    }
+    .mc-wtable thead th.num { text-align: right; }
+    .mc-wtable tbody td { padding: 9px 16px; border-bottom: 1px solid var(--hairline-soft); color: var(--ink-strong); vertical-align: middle; }
+    .mc-wtable tbody tr:last-child td { border-bottom: none; }
+    .mc-wtable tbody tr:hover { background: var(--surface-subtle); }
+    .mc-wtable .cve { font-family: var(--font-mono); font-size: 12px; color: var(--link-cve); font-weight: 500; white-space: nowrap; }
+    .mc-wtable .proj { font-family: var(--font-mono); font-size: 11px; color: var(--ink-mute); white-space: nowrap; }
+
+    /* fixed ↔ open pair status cell — labels + glyphs, not color alone */
+    .mc-pair { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; font-family: var(--font-mono); white-space: nowrap; }
+    .mc-pair .st { display: inline-flex; align-items: center; gap: 4px; }
+    .mc-pair .st .ic { width: 13px; height: 13px; stroke-width: 2; }
+    .mc-pair .st.fixed { color: var(--sev-low-text); }
+    .mc-pair .st.open  { color: var(--sev-high-text); }
+    .mc-pair .arrow { color: var(--ink-faint); }
+    .mc-pair .who { color: var(--ink-mute); }
+
+    /* evidence chip */
+    .mc-ev { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: var(--radius-pill, 12px); font-size: 10.5px; font-weight: 600; font-family: var(--font-mono); }
+    .mc-ev.resolved { background: var(--sev-low-bg); color: var(--sev-low-text); }
+    .mc-ev.absent   { background: var(--sev-info-bg); color: var(--sev-info); }
+    .mc-ev .ic { width: 12px; height: 12px; stroke-width: 2; }
+
+    /* "show all / collapse tail" row */
+    .mc-more { padding: 11px 16px; text-align: center; border-top: 1px solid var(--hairline-soft); background: var(--surface-card); }
+    .mc-more button {
+        background: var(--surface-subtle); border: 1px solid var(--hairline); color: var(--ink-body);
+        padding: 7px 16px; border-radius: var(--radius-full, 999px); font-size: 12px; font-weight: 500; cursor: pointer;
+        font-family: var(--font-body); display: inline-flex; align-items: center; gap: 7px;
+        transition: border-color var(--dur-fast), color var(--dur-fast);
+    }
+    .mc-more button:hover { border-color: var(--accent-teal); color: var(--accent-teal); }
+    .mc-row-hidden { display: none; }
+    .mc-wtable.expanded .mc-row-hidden { display: table-row; }
+
+    /* collapsed reverse / shared-backlog disclosures */
+    .mc-backlog { border: 1px solid var(--hairline); border-radius: var(--r-md); background: var(--surface-card); overflow: hidden; }
+    .mc-backlog summary { list-style: none; cursor: pointer; padding: 15px 18px; display: grid; grid-template-columns: auto 1fr auto; gap: 14px; align-items: center; }
+    .mc-backlog summary::-webkit-details-marker { display: none; }
+    .mc-backlog summary:hover { background: var(--surface-subtle); }
+    .mc-backlog .bl-ic { width: 34px; height: 34px; border-radius: var(--r-sm); background: var(--surface-subtle); display: flex; align-items: center; justify-content: center; color: var(--ink-mute); }
+    .mc-backlog .bl-title { font-size: 13.5px; color: var(--ink); font-weight: 600; }
+    .mc-backlog .bl-sub { font-size: 12px; color: var(--ink-mute); margin-top: 2px; line-height: 1.4; }
+    .mc-backlog .bl-n { font-family: var(--font-mono); font-size: 26px; font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
+    .mc-backlog .bl-n .lbl { display: block; font-size: 10px; color: var(--ink-mute); text-transform: uppercase; letter-spacing: 0.06em; text-align: right; }
+    .mc-backlog[open] summary { border-bottom: 1px solid var(--hairline); }
+    .mc-backlog-body { padding: 18px; }
+
+    /* print / PDF: reveal collapsed tails + expand details so the record is complete */
+    @media print {
+        .mc-wgroup, .kpi-bar, .panel { page-break-inside: avoid; }
+        details { display: block; }
+        details > summary { list-style: none; }
+        details:not([open]) > *:not(summary) { display: block !important; }
+        .mc-chev, .mc-more { display: none !important; }
+        .mc-row-hidden { display: table-row !important; }
+        a[href^="#"] { color: inherit; text-decoration: none; }
+    }
+</style>
+
+{% if render_mode != 'fragment' %}
+</head>
+<body class="console">
+{% endif %}
+
+{% import "_console_macros.html" as fs with context %}
+
+{# Defensive defaults #}
+{% set summary = summary | default({}) %}
+{% if summary is not mapping %}{% set summary = {} %}{% endif %}
+{% set port_fixes_left_to_right = port_fixes_left_to_right | default([]) %}
+{% set port_fixes_right_to_left = port_fixes_right_to_left | default([]) %}
+{% set empty_side = empty_side | default(None) %}
+
+{% set left_label = summary.get('left_label', 'Left') if summary is mapping else 'Left' %}
+{% set right_label = summary.get('right_label', 'Right') if summary is mapping else 'Right' %}
+{% set inventory_available = summary.get('inventory_available', True) if summary is mapping else True %}
+
+{# Leader direction — injected by the two-pass engine (§5.0) as data.left_leads
+   / data.leader_label / data.laggard_label. Defaults keep the standalone path
+   (no compound) rendering left→right. The PRIMARY worklist is leader→laggard;
+   the reverse is collapsed. #}
+{% set left_leads = left_leads | default(True) %}
+{% set leader_label = leader_label | default(left_label) %}
+{% set laggard_label = laggard_label | default(right_label) %}
+{# Primary = leader→laggard rows; reverse = the other direction. #}
+{% set primary_rows = port_fixes_left_to_right if left_leads else port_fixes_right_to_left %}
+{% set reverse_rows = port_fixes_right_to_left if left_leads else port_fixes_left_to_right %}
+{% set primary_count = (summary.get('fixed_left_open_right_count', 0) if left_leads else summary.get('fixed_right_open_left_count', 0)) if summary is mapping else 0 %}
+{% set reverse_count = (summary.get('fixed_right_open_left_count', 0) if left_leads else summary.get('fixed_left_open_right_count', 0)) if summary is mapping else 0 %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "Finding Diff"],
+    meta=[
+        {"label": "Left", "value": left_label},
+        {"label": "Right", "value": right_label},
+        {"label": "Generated", "value": generated_at or "—"},
+    ],
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>Finding Comparison</h1>
+        <p class="subtitle">{{ left_label }} vs {{ right_label }}</p>
+    </div>
+
+    {% if empty_side %}
+    <div class="fd-empty-callout">
+        {% if empty_side == 'both' %}
+        <p>Both scopes had no findings data.</p>
+        {% elif empty_side == 'left' %}
+        <p><strong>{{ left_label }}</strong> scope had no data — nothing to compare.</p>
+        {% elif empty_side == 'right' %}
+        <p><strong>{{ right_label }}</strong> scope had no data — nothing to compare.</p>
+        {% endif %}
+    </div>
+    {% else %}
+
+    {# Inventory unavailable note #}
+    {% if not inventory_available %}
+    <div class="fd-inventory-note">
+        <strong>Note:</strong> Component inventory was not available for one or both scopes.
+        Findings absent from the other scope's finding list are excluded from the port-fix
+        tables (conservative default). Run with component inventory enabled for full
+        fix-evidence classification.
+    </div>
+    {% endif %}
+
+    {# ---- counts pulled once from summary (defensive) ---- #}
+    {% set fix_lr = summary.get('fixed_left_open_right_count', 0) if summary is mapping else 0 %}
+    {% set fix_rl = summary.get('fixed_right_open_left_count', 0) if summary is mapping else 0 %}
+    {% set both_n = summary.get('needs_action_in_both_count', 0) if summary is mapping else 0 %}
+    {% set supp_n = summary.get('suppressed_divergence_count', 0) if summary is mapping else 0 %}
+
+    {# Section intro: data-derived lede + scope tag #}
+    <div class="mc-section-intro">
+        <div>
+            <p class="mc-section-lede">
+                <strong>{{ fix_lr }}</strong> fixed in {{ left_label }}, open in {{ right_label }} ·
+                <strong>{{ fix_rl }}</strong> the reverse ·
+                <strong>{{ both_n }}</strong> open on both ·
+                <strong>{{ supp_n }}</strong> suppressed on one side only.
+            </p>
+        </div>
+        <span class="mc-scope-tag">
+            <span class="l">● {{ left_label }}</span>
+            <svg class="ic" viewBox="0 0 24 24" style="width:13px;height:13px;color:var(--ink-mute)"><use href="#i-arrow-right"/></svg>
+            <span class="r">{{ right_label }} ●</span>
+        </span>
+    </div>
+
+    {# KPI summary row #}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell("Needs action — both", both_n, delta="shared backlog") }}
+        {{ fs.kpi_cell("Port: " ~ left_label ~ " → " ~ right_label, fix_lr, delta="fixed left, open right", dot=("high" if fix_lr > 0 else None)) }}
+        {{ fs.kpi_cell("Port: " ~ right_label ~ " → " ~ left_label, fix_rl, delta="fixed right, open left") }}
+        {{ fs.kpi_cell("Suppressed divergence", supp_n, delta="see Triage §04", dot=("medium" if supp_n > 0 else None)) }}
+    </div>
+
+    {# ---- PRIMARY worklist: leader → laggard, grouped by the UPGRADE that
+         clears each component. Per-row FIX TARGET column replaces the
+         decorative risk gauge; Project column + owner rollup bind to
+         row.project_names (the needs-action laggard variants). ---- #}
+    {% if primary_rows and primary_rows | length > 0 %}
+    <h3 style="font-family:var(--font-display);font-size:16px;font-weight:700;letter-spacing:-0.01em;color:var(--ink);margin:0 0 4px;display:flex;align-items:center;gap:9px"><svg class="ic ic-20" viewBox="0 0 24 24" style="color:var(--accent-teal)"><use href="#i-package"/></svg>Grouped by the upgrade that clears them — {{ leader_label | short_scope }} → {{ laggard_label | short_scope }}</h3>
+    <p class="mc-muted-note" style="margin:0 0 14px">Fixes resolved in {{ leader_label | short_scope }}, still open in {{ laggard_label | short_scope }}. The action is the component bump at the top of each group; the CVE rows are the drill-down of what it clears.</p>
+
+    <div class="mc-worklist" style="margin-bottom:24px">
+        {% for component, rows in primary_rows | groupby('component_name') %}
+        {% set rows = rows | list %}
+        {% set g_crit = rows | selectattr('severity', 'eq', 'CRITICAL') | list | length %}
+        {% set g_high = rows | selectattr('severity', 'eq', 'HIGH') | list | length %}
+        {% set g_med = rows | selectattr('severity', 'eq', 'MEDIUM') | list | length %}
+        {% set g_low = rows | selectattr('severity', 'eq', 'LOW') | list | length %}
+        {% set ev = namespace(absent=0) %}
+        {% for r in rows %}{% if 'not present' in (r.fix_evidence or '') %}{% set ev.absent = ev.absent + 1 %}{% endif %}{% endfor %}
+        {% set ev_absent = ev.absent %}
+        {% set ev_vex = (rows | length) - ev_absent %}
+        {# Group fix_target: the single leader version off the rows (one per
+           component). Target-only header; the exact per-row arrow lives in the
+           FIX TARGET column. #}
+        {% set ft = namespace(v=None) %}
+        {% for r in rows %}{% if ft.v is none and r.fix_target %}{% set ft.v = r.fix_target %}{% endif %}{% endfor %}
+        {% set group_target = ft.v %}
+        {# Owner rollup: union of the group's rows' project_names. #}
+        {% set owner_ns = namespace(items=[]) %}
+        {% for r in rows %}{% for p in (r.project_names or []) %}{% if p and p not in owner_ns.items %}{% set _ = owner_ns.items.append(p) %}{% endif %}{% endfor %}{% endfor %}
+        {% set group_owners = owner_ns.items | sort %}
+        {% set tbl_id = 'fdp_' ~ loop.index %}
+        <details class="mc-wgroup" open>
+            <summary class="mc-wgroup-head">
+                <span class="mc-wgroup-ic"><svg class="ic ic-20" viewBox="0 0 24 24"><use href="#i-package"/></svg></span>
+                <span class="mc-wgroup-title">
+                    <span class="name">{% if group_target %}Upgrade {{ component or '—' }} <span class="verflow"><span class="ar">→</span><span class="new">{{ group_target }}</span></span>{% else %}Rebuild {{ component or '—' }}{% endif %}</span>
+                    <span class="fixpath"><strong>Clears {{ rows | length }}</strong> · evidence:
+                        {% if ev_vex > 0 %}{{ ev_vex }} VEX resolved{% endif %}{% if ev_vex > 0 and ev_absent > 0 %} · {% endif %}{% if ev_absent > 0 %}{{ ev_absent }} component change{% endif %}{% if ev_vex == 0 and ev_absent == 0 %}—{% endif %}</span>
+                    {% if group_owners %}
+                    <span class="mc-owners"><span class="lbl">Affects</span>{% for o in group_owners %}<span class="mc-owner"><b>{{ o | short_scope }}</b></span>{% endfor %}</span>
+                    {% endif %}
+                </span>
+                <span class="mc-wgroup-sev">
+                    <span class="mc-sevbar">
+                        {% if g_crit > 0 %}<span class="s-crit" style="flex:{{ g_crit }}"></span>{% endif %}
+                        {% if g_high > 0 %}<span class="s-high" style="flex:{{ g_high }}"></span>{% endif %}
+                        {% if g_med > 0 %}<span class="s-med" style="flex:{{ g_med }}"></span>{% endif %}
+                        {% if g_low > 0 %}<span class="s-low" style="flex:{{ g_low }}"></span>{% endif %}
+                    </span>
+                    <span class="mc-mini-legend">{{ g_crit }}C · {{ g_high }}H · {{ g_med }}M · {{ g_low }}L</span>
+                </span>
+                <span class="mc-wgroup-count"><span class="n">{{ rows | length }}</span><span class="lbl">fixes</span></span>
+                <svg class="ic mc-chev ic-20" viewBox="0 0 24 24"><use href="#i-chevron-down"/></svg>
+            </summary>
+            <div class="mc-wbody">
+                <table class="mc-wtable" id="{{ tbl_id }}">
+                    <thead><tr><th>CVE</th><th>Severity</th><th>Fix target</th><th>Status — {{ leader_label | short_scope }} → {{ laggard_label | short_scope }}</th><th>Fix evidence</th><th>Project</th></tr></thead>
+                    <tbody>
+                        {% for row in rows %}
+                        {% set is_absent = 'not present' in (row.fix_evidence or '') %}
+                        {% set sev = row.severity or 'UNSPECIFIED' %}
+                        <tr{% if loop.index > 10 %} class="mc-row-hidden"{% endif %}>
+                            <td class="cve">{{ row.display_id or '—' }}</td>
+                            <td><span class="severity-{{ sev }}">{{ row.severity or '—' }}</span></td>
+                            <td>{% if row.fix_target %}<span class="mc-fixtarget">{% if row.component_version %}<span class="old">{{ row.component_version }}</span><span class="ar">→</span>{% endif %}<span class="new">{{ row.fix_target }}</span></span>{% else %}<span class="mc-fixtarget rebuild">rebuild {{ row.component_name or '' }}</span>{% endif %}</td>
+                            <td><span class="mc-pair"><span class="st fixed"><svg class="ic" viewBox="0 0 24 24"><use href="#i-check"/></svg>Resolved</span><span class="arrow">→</span><span class="st open"><svg class="ic" viewBox="0 0 24 24"><use href="#i-circle"/></svg>{{ row.status or 'Open' }}</span></span></td>
+                            <td>{% if is_absent %}<span class="mc-ev absent">{{ row.fix_evidence }}</span>{% else %}<span class="mc-ev resolved"><svg class="ic" viewBox="0 0 24 24"><use href="#i-check"/></svg>{{ row.fix_evidence or '—' }}</span>{% endif %}</td>
+                            <td class="proj">{{ (row.project_names | join(', ')) if row.project_names else '—' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% if rows | length > 10 %}
+                {% set hidden_n = (rows | length) - 10 %}
+                <div class="mc-more"><button data-more="{{ tbl_id }}" data-expand="Show {{ hidden_n }} more (of {{ rows | length }})" data-collapse="Show fewer"><span class="more-lbl">Show {{ hidden_n }} more (of {{ rows | length }})</span><svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#i-chevron-down"/></svg></button></div>
+                {% endif %}
+            </div>
+        </details>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {# ---- REVERSE worklist: laggard → leader, collapsed in a disclosure ---- #}
+    {% if reverse_rows and reverse_rows | length > 0 %}
+    {% set r_crit = reverse_rows | selectattr('severity', 'eq', 'CRITICAL') | list | length %}
+    {% set r_high = reverse_rows | selectattr('severity', 'eq', 'HIGH') | list | length %}
+    {% set r_med = reverse_rows | selectattr('severity', 'eq', 'MEDIUM') | list | length %}
+    {% set r_low = reverse_rows | selectattr('severity', 'eq', 'LOW') | list | length %}
+    <details class="mc-backlog" style="margin-bottom:16px">
+        <summary>
+            <span class="bl-ic"><svg class="ic ic-20" viewBox="0 0 24 24" style="transform:scaleX(-1)"><use href="#i-arrow-right"/></svg></span>
+            <span>
+                <span class="bl-title">Port back — {{ laggard_label | short_scope }} → {{ leader_label | short_scope }}</span>
+                <span class="bl-sub">{{ reverse_count }} fixed in {{ laggard_label | short_scope }}, open in {{ leader_label | short_scope }}. Severity: {{ r_crit }} Critical · {{ r_high }} High · {{ r_med }} Medium · {{ r_low }} Low.</span>
+            </span>
+            <span class="bl-n">{{ reverse_count }}<span class="lbl">reverse</span></span>
+        </summary>
+        <div class="mc-backlog-body">
+            <div class="mc-worklist">
+                {% for component, rows in reverse_rows | groupby('component_name') %}
+                {% set rows = rows | list %}
+                {% set g_crit = rows | selectattr('severity', 'eq', 'CRITICAL') | list | length %}
+                {% set g_high = rows | selectattr('severity', 'eq', 'HIGH') | list | length %}
+                {% set g_med = rows | selectattr('severity', 'eq', 'MEDIUM') | list | length %}
+                {% set g_low = rows | selectattr('severity', 'eq', 'LOW') | list | length %}
+                {% set ft = namespace(v=None) %}
+                {% for r in rows %}{% if ft.v is none and r.fix_target %}{% set ft.v = r.fix_target %}{% endif %}{% endfor %}
+                {% set group_target = ft.v %}
+                {% set tbl_id = 'fdr_' ~ loop.index %}
+                <details class="mc-wgroup" open>
+                    <summary class="mc-wgroup-head">
+                        <span class="mc-wgroup-ic"><svg class="ic ic-20" viewBox="0 0 24 24"><use href="#i-package"/></svg></span>
+                        <span class="mc-wgroup-title">
+                            <span class="name">{% if group_target %}Upgrade {{ component or '—' }} <span class="verflow"><span class="ar">→</span><span class="new">{{ group_target }}</span></span>{% else %}Rebuild {{ component or '—' }}{% endif %}</span>
+                            <span class="fixpath"><strong>Clears {{ rows | length }}</strong></span>
+                        </span>
+                        <span class="mc-wgroup-sev">
+                            <span class="mc-sevbar">
+                                {% if g_crit > 0 %}<span class="s-crit" style="flex:{{ g_crit }}"></span>{% endif %}
+                                {% if g_high > 0 %}<span class="s-high" style="flex:{{ g_high }}"></span>{% endif %}
+                                {% if g_med > 0 %}<span class="s-med" style="flex:{{ g_med }}"></span>{% endif %}
+                                {% if g_low > 0 %}<span class="s-low" style="flex:{{ g_low }}"></span>{% endif %}
+                            </span>
+                            <span class="mc-mini-legend">{{ g_crit }}C · {{ g_high }}H · {{ g_med }}M · {{ g_low }}L</span>
+                        </span>
+                        <span class="mc-wgroup-count"><span class="n">{{ rows | length }}</span><span class="lbl">fixes</span></span>
+                        <svg class="ic mc-chev ic-20" viewBox="0 0 24 24"><use href="#i-chevron-down"/></svg>
+                    </summary>
+                    <div class="mc-wbody">
+                        <table class="mc-wtable" id="{{ tbl_id }}">
+                            <thead><tr><th>CVE</th><th>Severity</th><th>Fix target</th><th>Status — {{ laggard_label | short_scope }} → {{ leader_label | short_scope }}</th><th>Fix evidence</th><th>Project</th></tr></thead>
+                            <tbody>
+                                {% for row in rows %}
+                                {% set is_absent = 'not present' in (row.fix_evidence or '') %}
+                                {% set sev = row.severity or 'UNSPECIFIED' %}
+                                <tr{% if loop.index > 10 %} class="mc-row-hidden"{% endif %}>
+                                    <td class="cve">{{ row.display_id or '—' }}</td>
+                                    <td><span class="severity-{{ sev }}">{{ row.severity or '—' }}</span></td>
+                                    <td>{% if row.fix_target %}<span class="mc-fixtarget">{% if row.component_version %}<span class="old">{{ row.component_version }}</span><span class="ar">→</span>{% endif %}<span class="new">{{ row.fix_target }}</span></span>{% else %}<span class="mc-fixtarget rebuild">rebuild {{ row.component_name or '' }}</span>{% endif %}</td>
+                                    <td><span class="mc-pair"><span class="st fixed"><svg class="ic" viewBox="0 0 24 24"><use href="#i-check"/></svg>Resolved</span><span class="arrow">→</span><span class="st open"><svg class="ic" viewBox="0 0 24 24"><use href="#i-circle"/></svg>{{ row.status or 'Open' }}</span></span></td>
+                                    <td>{% if is_absent %}<span class="mc-ev absent">{{ row.fix_evidence }}</span>{% else %}<span class="mc-ev resolved"><svg class="ic" viewBox="0 0 24 24"><use href="#i-check"/></svg>{{ row.fix_evidence or '—' }}</span>{% endif %}</td>
+                                    <td class="proj">{{ (row.project_names | join(', ')) if row.project_names else '—' }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                        {% if rows | length > 10 %}
+                        {% set hidden_n = (rows | length) - 10 %}
+                        <div class="mc-more"><button data-more="{{ tbl_id }}" data-expand="Show {{ hidden_n }} more (of {{ rows | length }})" data-collapse="Show fewer"><span class="more-lbl">Show {{ hidden_n }} more (of {{ rows | length }})</span><svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#i-chevron-down"/></svg></button></div>
+                        {% endif %}
+                    </div>
+                </details>
+                {% endfor %}
+            </div>
+        </div>
+    </details>
+    {% endif %}
+
+    {# ---- No portable candidates at all ---- #}
+    {% if not primary_rows and not reverse_rows %}
+    <div class="fd-empty-callout">
+        <p>No portable fix candidates found between {{ left_label }} and {{ right_label }}.</p>
+    </div>
+    {% endif %}
+
+    {# ---- "Open on both" + "Suppressed divergence" disclosure ---- #}
+    {% if both_n > 0 or supp_n > 0 %}
+    <details class="mc-backlog">
+        <summary>
+            <span class="bl-ic"><svg class="ic ic-20" viewBox="0 0 24 24"><use href="#i-inbox"/></svg></span>
+            <span>
+                <span class="bl-title">Open on both sides</span>
+                <span class="bl-sub">{{ both_n }} findings need action in both scopes — open on both, so nothing to port.</span>
+            </span>
+            <span class="bl-n">{{ both_n }}<span class="lbl">shared</span></span>
+        </summary>
+        <div class="mc-backlog-body">
+            <p class="mc-muted-note" style="margin:0 0 8px">Both sides carry these findings, so a comparison cannot make them portable. Surfaced to account for the full finding population.</p>
+            {% if supp_n > 0 %}
+            <p class="mc-muted-note" style="margin:0">Suppressed divergence (<strong>{{ supp_n }}</strong>): suppressed on one side, open on the other — a triage judgment, not a code fix. Reconciled in <a href="#fs-section-triage-status-diff" style="color:var(--accent-teal)">Triage Status §04</a>.</p>
+            {% endif %}
+        </div>
+    </details>
+    {% endif %}
+
+    {% endif %}{# end empty_side else #}
+</main>
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Finding Diff",
+    "Left: " ~ left_label,
+    "Right: " ~ right_label,
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% include '_action_buttons.html' %}
+</body>
+</html>
+{% endif %}

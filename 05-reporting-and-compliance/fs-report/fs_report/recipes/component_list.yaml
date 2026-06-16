@@ -1,6 +1,7 @@
 name: "Component List"
 category: assessment  # Current state: shows today's component inventory regardless of time period
 nav_category: Compliance
+chart_libraries: ["echarts"]
 description: "Comprehensive inventory of software components across projects with optional filtering"
 execution_order: 30  # Independent - fetches components
 auto_run: false  # Run explicitly with --recipe when needed
@@ -24,3 +25,4 @@ output:
   table: true
   charts: []
   formats: ["csv", "xlsx", "html"]
+  has_inline_charts: true

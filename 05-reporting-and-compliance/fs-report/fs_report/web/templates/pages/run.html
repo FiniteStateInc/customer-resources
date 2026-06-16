@@ -1,0 +1,287 @@
+{% extends "components/_cc_shell.html" %}
+
+{# ── Run canvas (Pass 4 · Task 5) — the STATIC visual layer ───────────────────
+   This template renders the DOM + Alpine bindings + the window.__RUN bootstrap.
+   The Alpine controller `runCanvas()` lives in a SEPARATE file (run-page.js, a
+   later task). This template DEFINES the template↔JS contract that run-page.js
+   implements against. The controller MUST expose exactly:
+
+     x-data="runCanvas()"  reads window.__RUN = {runId, kind, scope,
+                            workflowName, nodes, replay,
+                            terminal, events, result, startedAt, finishedAt}
+                            — the last five drive TERMINAL mode (spec §5.2): a
+                            past run re-rendered from its persisted _run.json.
+                            terminal:true → NO socket; replay `events` through
+                            the live handlers; orb from `result`; elapsed =
+                            finishedAt − startedAt. Live runs: terminal:false +
+                            events:[] (the SSE stream is the source).
+
+     DATA (reactive):
+       orbState   string  — "idle" | "running" | "complete" | "error"
+                            (drives the brand orb recolor via :data-state)
+       runState   string  — current run-state WORD (e.g. "running",
+                            "complete", "cancelled") shown in the run chip
+       elapsed    string  — elapsed time "mm:ss"
+       stepDone   number  — sections/steps reached a terminal state
+       stepTotal  number  — total sections/steps
+       unitLabel  string  — "sections" (compound) | "steps"/"recipes" (else)
+       pct        string  — progress percentage label, e.g. "38%"
+       canStop    bool    — Stop button enabled (run is in flight)
+       canReplay  bool    — Replay button enabled (run is terminal + replayable)
+
+     METHODS:
+       nodeClass(id)  -> string|object  — Alpine :class for node #n-<id>
+                          (the state class: s-queued/s-running/s-done/
+                           s-error/s-skipped, keyed off an internal
+                           runStates[id] map mirroring builder-page.js)
+       nodeBadge(id)  -> string         — the per-node badge text (x-text)
+       nodeMsg(id)    -> string         — the live running message (x-text)
+       onNodeClick(id)                  — click handler; the JS decides
+                          clickability by node kind + run kind (no-op for
+                          source / compound children; opens the report for a
+                          done workflow step or the deliverable)
+       stop()                           — POST cancel the run
+       replay()                         — re-launch via window.__RUN.replay
+       init()  + internal SSE / layout  — connect /api/run/<id>/events,
+                          place nodes, draw edges into #e-dorm/#e-done/#e-live
+
+   The node id hooks (id="n-<node.id>" + data-node-id) are what the JS lights
+   by SSE step_id — the node-id ↔ step-id invariant (spec §4.2). Keep exact. #}
+
+{% block title %}fs-report · Run{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="{{ static_v('css/run-page.css') }}">
+{% endblock %}
+
+{% block content %}
+{% if expired %}
+  {# ── Expired-run panel (spec §7) — no canvas, no x-data ─────────────── #}
+  <div class="run-expired">
+    <div class="re-card">
+      <div class="re-ic"><i data-lucide="clock-alert"></i></div>
+      <h1 class="re-title">This run has expired</h1>
+      <p class="re-body">
+        The live run <span class="mono">{{ run_id }}</span> is no longer in
+        memory. Browse the generated reports or read the captured log.
+      </p>
+      <div class="re-links">
+        <a class="re-link primary" href="/reports">
+          <i data-lucide="folder-open"></i> Report History
+        </a>
+        <a class="re-link" href="/run/{{ run_id }}/log">
+          <i data-lucide="scroll-text"></i> Run log
+        </a>
+      </div>
+    </div>
+  </div>
+{% else %}
+  {# ── Lane-color macro: category → the lane CSS var (spec §4) ─────────── #}
+  {% macro lane_var(category) -%}
+    {%- if category == "Executive" -%}var(--nav-executive)
+    {%- elif category == "Investigation" -%}var(--nav-investigation)
+    {%- elif category == "Remediation" -%}var(--nav-remediation)
+    {%- elif category == "Compliance" -%}var(--nav-compliance)
+    {%- else -%}var(--ink-faint){%- endif -%}
+  {%- endmacro %}
+
+  {# Node-count helpers (server-rendered honest context). The source node is
+     always index 0; everything after it is a section/step/recipe. The
+     deliverable (compound only) is a terminal node, not a "section". #}
+  {% set work_nodes = canvas_nodes[1:] %}
+  {% set section_count = work_nodes | rejectattr("kind", "equalto", "deliverable") | list | length %}
+
+  <div class="run-canvas" x-data="runCanvas()" data-run-root>
+
+    <!-- ═══════════════════ RUN TOOLBAR ═══════════════════ -->
+    <div class="run-toolbar">
+      {# Brand orb — the run page renders its own (the shell topbar has none).
+         Recolors via :data-state set by the controller (idle/running/complete/
+         error). SVG ported from the mockup (aura / ring / core). #}
+      <div class="brand-mark" id="orb" :data-state="orbState">
+        <svg viewBox="0 0 24 24" fill="none"><defs>
+          <radialGradient id="rc-aura" gradientUnits="userSpaceOnUse" cx="12" cy="12" r="6"><stop offset="0%" stop-color="currentColor" stop-opacity="0.55"/><stop offset="100%" stop-color="currentColor" stop-opacity="0"/></radialGradient>
+          <radialGradient id="rc-core" gradientUnits="userSpaceOnUse" cx="12" cy="12" r="3.5"><stop offset="0%" stop-color="#fff" stop-opacity="0.95"/><stop offset="55%" stop-color="currentColor" stop-opacity="0.95"/><stop offset="100%" stop-color="currentColor" stop-opacity="0.55"/></radialGradient></defs>
+          <circle cx="12" cy="12" r="6" fill="url(#rc-aura)"/>
+          <g class="ring"><circle cx="21" cy="12" r="0.95" fill="currentColor"/><circle cx="19.794" cy="16.5" r="0.95" fill="currentColor"/><circle cx="16.5" cy="19.794" r="0.95" fill="currentColor"/><circle cx="12" cy="21" r="0.95" fill="currentColor"/><circle cx="7.5" cy="19.794" r="0.95" fill="currentColor"/><circle cx="4.206" cy="16.5" r="0.95" fill="currentColor"/><circle cx="3" cy="12" r="0.95" fill="currentColor"/><circle cx="4.206" cy="7.5" r="0.95" fill="currentColor"/><circle cx="7.5" cy="4.206" r="0.95" fill="currentColor"/><circle cx="12" cy="3" r="0.95" fill="currentColor"/><circle cx="16.5" cy="4.206" r="0.95" fill="currentColor"/><circle cx="19.794" cy="7.5" r="0.95" fill="currentColor"/></g>
+          <circle cx="12" cy="12" r="3.2" fill="url(#rc-core)"/></svg>
+      </div>
+
+      {# Kind eyebrow — STATIC, server-rendered from `kind` (NOT a toggle). #}
+      <div class="eng-pill">
+        {% if kind == "compound" %}
+          <span class="eb">COMPOUND REPORT</span>
+          {% if workflow_name %}<span class="nm">{{ workflow_name }}</span>{% endif %}
+        {% elif kind == "workflow" %}
+          <span class="eb">WORKFLOW · SEQUENTIAL</span>
+          {% if workflow_name %}<span class="nm">{{ workflow_name }}</span>{% endif %}
+        {% else %}
+          <span class="eb">REPORT</span>
+          {% if workflow_name %}<span class="nm">{{ workflow_name }}</span>{% endif %}
+        {% endif %}
+      </div>
+
+      {# Run-state chip — state word + elapsed mm:ss. #}
+      <span class="run-chip">
+        <span class="rs" x-text="runState"></span>
+        <span class="re" x-text="elapsed"></span>
+      </span>
+
+      {# Legend — Running / Complete / Queued / Cached. #}
+      <div class="legend">
+        <span class="lg l-run"><span class="rng"></span>Running</span>
+        <span class="lg l-done"><span class="rng"></span>Complete</span>
+        <span class="lg l-queue"><span class="rng"></span>Queued</span>
+        <span class="lg l-cache"><span class="rng"></span>Cached</span>
+      </div>
+
+      <div class="tb-spacer"></div>
+
+      {# Transport — Stop + Replay (no Pause) + a persistent Run log link.
+         The Run log is ALWAYS reachable from the canvas (fix ④): canvas error
+         rows now reopen the canvas instead of jumping straight to the raw log,
+         so this link keeps the log one click away. #}
+      <div class="transport">
+        <button class="tbtn danger" type="button" @click="stop()"
+                :disabled="!canStop" title="Stop / cancel" aria-label="Stop run">
+          <i data-lucide="square"></i>
+        </button>
+        <button class="tbtn primary" type="button" @click="replay()"
+                :disabled="!canReplay" title="Replay" aria-label="Replay run">
+          <i data-lucide="rotate-ccw"></i>
+        </button>
+        <a class="tbtn" href="/run/{{ run_id }}/log"
+           title="Run log" aria-label="Open run log">
+          <i data-lucide="scroll-text"></i>
+        </a>
+        {# All runs ↗ — the Run canvas is one entry in the persistent /runs index
+           (spec §7); this keeps the full list one click away. #}
+        <a class="tbtn" href="/runs"
+           title="All runs" aria-label="All runs">
+          <i data-lucide="layers"></i>
+        </a>
+      </div>
+
+      {# Stats — N/M · pct readout. #}
+      <div class="tb-stats">
+        <b x-text="stepDone"></b> / <span x-text="stepTotal"></span>
+        <span x-text="unitLabel"></span> · <b x-text="pct"></b>
+      </div>
+    </div>
+
+    {# Context line — honest, server-rendered from `kind` + node counts. #}
+    <div class="ctx">
+      {% if kind == "compound" %}
+        Compound report — <b>{{ section_count }} section{{ "" if section_count == 1 else "s" }}</b> fan into one combined deliverable
+      {% elif kind == "workflow" %}
+        Workflow — <b>{{ section_count }} report-run{{ "" if section_count == 1 else "s" }}</b> walked in sequence
+      {% else %}
+        <b>{{ section_count }} report{{ "" if section_count == 1 else "s" }}</b>
+      {% endif %}
+    </div>
+
+    <!-- ═══════════════════ STAGE ═══════════════════ -->
+    <div class="run-viewport">
+      <div class="stage" id="stage">
+        {# Edges layer — the JS task draws bezier paths into the three groups.
+           Groups are left EMPTY here; the controller populates them on layout
+           + per SSE state. The <defs> gradients/markers are ported verbatim. #}
+        <svg class="edges" id="edges" viewBox="0 0 1120 600" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="g-done" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="rgba(45,212,191,.6)"/>
+              <stop offset="100%" stop-color="rgba(167,139,250,.6)"/>
+            </linearGradient>
+            <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10z" fill="rgba(148,168,220,.4)"/>
+            </marker>
+            <marker id="ar-d" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 0L10 5L0 10z" fill="rgba(45,212,191,.6)"/>
+            </marker>
+          </defs>
+          <g id="e-dorm"></g><g id="e-done"></g><g id="e-live"></g>
+        </svg>
+
+        {# Nodes layer — server-rendered from canvas_nodes so every node exists
+           before the SSE stream arrives. The JS lights each by id. #}
+        <div class="nodes" id="nodes">
+          {% for node in canvas_nodes %}
+          {# State class comes solely from :class="nodeClass(...)" (Alpine adds it
+             to the static class, so a static s-queued would never be cleared and
+             would dim a later s-done node — keep the static class state-free). #}
+          <div class="node t-{{ node.kind }}"
+               id="n-{{ node.id }}"
+               data-node-id="{{ node.id }}"
+               :class="nodeClass($el.dataset.nodeId)"
+               @click="onNodeClick($el.dataset.nodeId)"
+               style="--c: {{ lane_var(node.category) }};">
+            <div class="nhead">
+              <span class="ntag">
+                {%- if node.kind == "source" -%}Source
+                {%- elif node.kind == "mcp_tool" -%}Tool
+                {%- elif node.kind == "deliverable" -%}Deliverable
+                {%- else -%}Recipe{%- endif -%}
+              </span>
+              <span class="nbadge" x-text="nodeBadge($el.closest('[data-node-id]').dataset.nodeId)"></span>
+            </div>
+            <div class="ntitle">{{ node.title }}</div>
+
+            {% if node.kind == "source" %}
+              {# Source node shows the REAL scope string verbatim — never a
+                 fabricated portfolio count. #}
+              <div class="src-meta">
+                <div class="scope">{{ scope }}</div>
+                <div class="c">shared scope</div>
+              </div>
+            {% else %}
+              {# Done-state check (lit by the s-done class). #}
+              <div class="check"><i data-lucide="check"></i></div>
+              {# Format chips — one per format; "AI" → .chip.ai. #}
+              {% if node.formats %}
+              <div class="chips">
+                {% for fmt in node.formats %}
+                <span class="chip {{ fmt | lower }}">{{ fmt }}</span>
+                {% endfor %}
+              </div>
+              {% endif %}
+              {# Live block — running message + progress fill. #}
+              <div class="live">
+                <div class="lmsg" x-text="nodeMsg($el.closest('[data-node-id]').dataset.nodeId)"></div>
+                <div class="track"><div class="fill"></div></div>
+              </div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+  </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    window.__RUN = {
+      runId: {{ run_id | tojson }},
+      kind: {{ kind | tojson }},
+      scope: {{ scope | tojson }},
+      workflowName: {{ workflow_name | tojson }},
+      nodes: {{ canvas_nodes | tojson }},
+      replay: {{ replay | tojson }},
+      {# Terminal mode (spec §5.2): a past run re-rendered from its persisted
+         _run.json. When `terminal` is true, run-page.js opens NO EventSource —
+         it replays `events` through the same onStep/onProgress/onDone handlers a
+         live SSE replay uses, settling the graph; `result` drives the orb;
+         elapsed = finishedAt − startedAt (NOT the live 00:00 timer). A LIVE run
+         carries terminal:false + an empty events list (the socket is the source).
+         Defaults keep both the live, terminal, and expired renders robust. #}
+      terminal: {{ terminal | default(false) | tojson }},
+      events: {{ events | default([]) | tojson }},
+      result: {{ result | default(none) | tojson }},
+      startedAt: {{ started_at | default(none) | tojson }},
+      finishedAt: {{ finished_at | default(none) | tojson }}
+    };
+  </script>
+  <script src="{{ static_v('js/run-page.js') }}"></script>
+{% endblock %}

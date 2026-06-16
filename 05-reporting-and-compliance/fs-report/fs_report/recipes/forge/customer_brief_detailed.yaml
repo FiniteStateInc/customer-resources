@@ -1,6 +1,7 @@
 name: "Customer Brief Detailed"
 category: assessment
 nav_category: Executive
+chart_libraries: ["echarts"]
 description: "Detailed project security brief with per-finding analysis for customers and regulators."
 execution_order: 21
 auto_run: false
@@ -33,3 +34,17 @@ output:
     - md
     - pdf
   charts: []
+  has_inline_charts: true
+  pdf_header_template_id: pdf-header
+  # Footer migrates from CSS @page @bottom-center to Playwright's
+  # footer_template. Same caveat as customer_brief.yaml: Chromium has no
+  # per-page footer suppression, so the footer also appears on the cover
+  # page (small visual regression vs WeasyPrint's @page cover rule).
+  # NOTE: tests/test_pdf_parity.py parametrizes `customer_brief` and
+  # `cra_compliance` but NOT `customer_brief_detailed`, so this recipe's
+  # cover-page footer regression is NOT covered by automated parity
+  # tests. Verify visually after the cutover.
+  pdf_footer_template: |
+    <div style="font-size: 7.5pt; color: #999; width: 100%; text-align: center; padding: 0 0.75in;">
+      © 2026 Finite State, Inc. All rights reserved. | www.finitestate.io | support@finitestate.io
+    </div>

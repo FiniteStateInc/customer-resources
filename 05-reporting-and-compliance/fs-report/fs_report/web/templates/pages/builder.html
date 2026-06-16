@@ -1,0 +1,1560 @@
+{% extends "components/_cc_shell.html" %}
+
+{% block title %}fs-report · Builder{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="{{ static_v('css/builder-page.css') }}">
+{% endblock %}
+
+{% block content %}
+{# ── Builder authoring shell (PR1.5) ────────────────────────────────
+   ONE Alpine component (x-data="builder()") owns the doc model. model.kind
+   ∈ {workflow, compound, comparison} gates which canvas/rail panels render.
+   Shared shell: top-bar name field, Save/Run buttons, saved-docs picker.
+
+   Layout: a left rail (shared header + kind-gated options + library) and a
+   canvas (kind-gated pipeline or stub). The inspector exists for workflows. #}
+<div class="wfb" x-data="builder()" data-builder-root :class="{ 'insp-open': (model.kind === 'workflow' && inspStep()) || (model.kind === 'compound' && inspSection()) }">
+
+  <!-- ===================== LEFT RAIL ===================== -->
+  <aside class="wfb-rail">
+
+    <!-- Shared doc header: name field, Save, + New ▾ menu, saved picker -->
+    <div class="wfb-sec">
+      {# Label adapts to kind. #}
+      <div class="wfb-sec-label">
+        <template x-if="model.kind === 'workflow'"><span><i data-lucide="git-branch"></i> Workflow</span></template>
+        <template x-if="model.kind === 'compound'"><span><i data-lucide="layers"></i> Compound report</span></template>
+        <template x-if="model.kind === 'comparison'"><span><i data-lucide="git-compare"></i> Comparison report</span></template>
+      </div>
+      <div class="wfb-field">
+        <label for="wf-name">Name</label>
+        <input class="wfb-inp" id="wf-name" type="text"
+               x-model="model.name" placeholder="Untitled">
+      </div>
+      <div class="wfb-name-row">
+        <button class="wfb-btn primary sm" type="button" id="wf-save"
+                style="flex:1" @click="save()" :disabled="isSaving">
+          <i data-lucide="save"></i> Save
+        </button>
+        {# "+ New ▾" menu offering Workflow / Compound / Comparison. #}
+        <div class="wfb-new-menu">
+          <button class="wfb-btn sm" type="button" id="wf-new"
+                  aria-haspopup="true"
+                  :aria-expanded="newMenuOpen ? 'true' : 'false'"
+                  @click="toggleNewMenu($event)"
+                  @keydown.escape.window="closeNewMenu()">
+            <i data-lucide="plus"></i> New <i data-lucide="chevron-down" style="width:12px;height:12px"></i>
+          </button>
+          <div class="wfb-new-menu-drop" x-ref="newMenu" id="wf-new-menu"
+               x-show="newMenuOpen" x-cloak
+               @click.away="closeNewMenu()">
+            <button class="wfb-new-menu-item" type="button"
+                    @click="newOfKind('workflow'); closeNewMenu()">
+              <i data-lucide="workflow"></i> Workflow
+            </button>
+            <button class="wfb-new-menu-item" type="button"
+                    @click="newOfKind('compound'); closeNewMenu()">
+              <i data-lucide="layers"></i> Compound
+            </button>
+            <button class="wfb-new-menu-item" type="button"
+                    @click="newOfKind('comparison'); closeNewMenu()">
+              <i data-lucide="git-compare"></i> Comparison
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="wfb-field" style="margin-top:10px">
+        <label for="wf-saved">Saved</label>
+        <div class="wfb-saved-row">
+          <select class="wfb-sel" id="wf-saved" @change="loadSelected($event)">
+            <option value="">— load saved —</option>
+            <template x-for="w in saved" :key="w.kind + '_' + w.slug">
+              <option :value="w.kind + ':' + w.slug" :data-kind="w.kind"
+                      x-text="w.kind !== 'workflow' ? w.name + ' [' + w.kind + ']' : w.name"></option>
+            </template>
+          </select>
+          <button class="wfb-btn sm danger" type="button" id="wf-delete"
+                  title="Delete loaded doc" aria-label="Delete loaded doc"
+                  :disabled="!loadedSlug" @click="deleteLoaded()">
+            <i data-lucide="trash-2"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Global properties — workflow + compound (Task C: the compound rail is now
+         live, bound to model.global, parity with the workflow rail). -->
+    <div class="wfb-sec" x-show="model.kind === 'workflow' || model.kind === 'compound'">
+      <div class="wfb-sec-label"><i data-lucide="sliders-horizontal"></i> Global properties</div>
+      <div class="wfb-global-box" id="g-scope">
+        {# C2 / Task C: target-bound vs general.  ON = "general" — the doc carries
+           NO baked target; the project/folder/version below are the run-time
+           target (sent at run time) but NOT persisted into the saved/exported
+           doc.  OFF (default) = target-bound — the scope below is the pinned,
+           persisted target.  Wired to model.global.target_agnostic; round-tripped
+           by toEngineModel/fromEngineModel (workflow) and _compoundSaveBody /
+           loadRecipeBySlug (compound). #}
+        <div class="wfb-toggle" id="g-target-agnostic-row">
+          <span class="tl" x-text="model.kind === 'compound' ? 'General (portfolio) report' : 'General (portfolio) workflow'"
+                title="A general report has no saved target — pick a project/folder at run time. A target-bound report pins the scope below into the saved doc.">General (portfolio) workflow</span>
+          <div class="wfb-sw" id="g-target-agnostic"
+               :class="{ on: model.global.target_agnostic }"
+               role="switch" :aria-checked="model.global.target_agnostic" tabindex="0"
+               @click="model.global.target_agnostic = !model.global.target_agnostic"
+               @keydown.enter.prevent="model.global.target_agnostic = !model.global.target_agnostic"
+               @keydown.space.prevent="model.global.target_agnostic = !model.global.target_agnostic"></div>
+        </div>
+        {# Folder targeting (design §6): a global folder select feeds the
+           cascade (initScopeDropdowns folderId:"g-folder"). Option value = folder
+           ID, label = name; the cascade's onChange writes the model
+           (onGlobalScopeChange) with project-wins precedence. data-value seeds
+           the loaded/pinned folder so a re-init restores it. #}
+        <div class="wfb-field">
+          <label for="g-folder">Folder</label>
+          <select class="wfb-sel" id="g-folder" :data-value="model.global.folder_filter">
+            <option value="">Any folder</option>
+            {% if pinned_folder %}<option value="{{ pinned_folder }}" selected>{{ pinned_folder_name or pinned_folder }}</option>{% endif %}
+          </select>
+        </div>
+        <div class="wfb-field">
+          <label for="g-project">Project</label>
+          {# initScopeDropdowns sets .value PROGRAMMATICALLY (no input/change
+             event), so x-model never captures the seeded value.  Bind @change
+             to write the model authoritatively and seed `data-value` from the
+             model so a re-init (on load) re-seeds the loaded scope (fix A/B). #}
+          <select class="wfb-sel" id="g-project" :data-value="model.global.project_filter"
+                  @change="onGlobalProjectChange($event.target.value)">
+            <option value="">All projects</option>
+            {% if pinned_project %}<option value="{{ pinned_project }}" selected>{{ pinned_project }}</option>{% endif %}
+          </select>
+        </div>
+        <div class="wfb-row2">
+          <div class="wfb-field">
+            <label for="g-version">Version</label>
+            <select class="wfb-sel" id="g-version" :data-value="model.global.version_filter"
+                    @change="model.global.version_filter = $event.target.value">
+              <option value="">(latest)</option>
+              {% if pinned_version %}<option value="{{ pinned_version }}" selected>{{ pinned_version }}</option>{% endif %}
+            </select>
+          </div>
+          <div class="wfb-field">
+            <label for="g-period">Period</label>
+            <input class="wfb-inp" type="text" id="g-period"
+                   x-model="model.global.period"
+                   placeholder="30d, 2m, Q1, january-2024"
+                   @input="onGlobalPeriodInput()">
+          </div>
+        </div>
+        <div class="wfb-row2">
+          <div class="wfb-field">
+            <label for="g-range-from">From</label>
+            <input class="wfb-inp" type="date" id="g-range-from"
+                   x-model="model.global.start"
+                   @input="onGlobalRangeInput()">
+          </div>
+          <div class="wfb-field">
+            <label for="g-range-to">To</label>
+            <input class="wfb-inp" type="date" id="g-range-to"
+                   x-model="model.global.end"
+                   @input="onGlobalRangeInput()">
+          </div>
+        </div>
+        <div class="wfb-toggle">
+          <span class="tl">AI enrichment</span>
+          <div class="wfb-sw" :class="{ on: model.global.ai }"
+               role="switch" :aria-checked="model.global.ai" tabindex="0"
+               @click="model.global.ai = !model.global.ai"
+               @keydown.enter.prevent="model.global.ai = !model.global.ai"
+               @keydown.space.prevent="model.global.ai = !model.global.ai"></div>
+        </div>
+        <div class="wfb-field">
+          <label for="g-aidepth">AI depth</label>
+          <select class="wfb-sel" id="g-aidepth" x-model="model.global.ai_depth">
+            <option value="summary">summary</option>
+            <option value="full">full</option>
+          </select>
+        </div>
+        {# Run control (#5, B5): operational knob (cache) separated from the
+           report-config fields — mirrors the per-step inspector's group.
+           Workflow-only: cache_ttl is NOT a compound override (not in
+           COMPOUND_OVERRIDE_WHITELIST), so it isn't persisted for a compound —
+           don't surface a knob the compound save would silently drop. #}
+        <div class="wfb-runctl" x-show="model.kind === 'workflow'">
+          <div class="wfb-sec-label"><i data-lucide="settings-2"></i> Run control</div>
+          <div class="wfb-field">
+            <label for="g-cache">Cache TTL</label>
+            <select class="wfb-sel" id="g-cache" x-model="model.global.cache_ttl">
+              <option value="none">none</option>
+              <option value="1h">1h</option>
+              <option value="4h">4h</option>
+              <option value="8h">8h</option>
+              <option value="24h">24h</option>
+            </select>
+          </div>
+        </div>
+        <div class="wfb-foot-note">Applied to every report unless overridden.</div>
+      </div>
+    </div>
+
+    <!-- Report library (workflow-only) -->
+    <div class="wfb-sec" x-show="model.kind === 'workflow'">
+      <div class="wfb-sec-label"><i data-lucide="library"></i> Report library</div>
+
+      <div class="wfb-lib-label">Reports · run_recipe</div>
+      <div class="wfb-lib" id="lib-reports" data-lib="reports">
+        {% for r in recipes %}
+        <div class="wfb-libitem"
+             data-kind="recipe"
+             data-ref="{{ r.name }}"
+             data-title="{{ r.name }}"
+             data-tool="run_recipe"
+             data-cat="{{ r.nav_category }}"
+             style="--lc:var(--nav-{{ r.nav_category | lower | replace(' ', '-') }}, var(--purple))">
+          <div class="li-ic"><i data-lucide="file-text"></i></div>
+          <div class="li-tx">
+            <div class="li-t">{{ r.name }}</div>
+            <div class="li-s">run_recipe()</div>
+          </div>
+          <div class="li-grip"><i data-lucide="grip-vertical"></i></div>
+        </div>
+        {% endfor %}
+      </div>
+
+      {# #7 (B6): the Forge/MCP surface (MCP-tool library group + Forge export
+         targets) is gated behind FORGE_BUILDER_ENABLED, DEFAULT OFF for 2.0.
+         Backend (MCP_TOOLS, workflow_export) stays intact — only the UI hides. #}
+      {% if forge_builder_enabled %}
+      <div class="wfb-lib-label">MCP tools</div>
+      <div class="wfb-lib" id="lib-tools" data-lib="tools">
+        {% for t in mcp_tools %}
+        <div class="wfb-libitem mcp"
+             data-kind="mcp_tool"
+             data-ref="{{ t.id }}"
+             data-title="{{ t.title }}"
+             data-tool="{{ t.tool }}"
+             title="export-only — runs via Forge agent"
+             style="--lc:var(--blue)">
+          <div class="li-ic"><i data-lucide="{{ t.icon }}"></i></div>
+          <div class="li-tx">
+            <div class="li-t">{{ t.title }}</div>
+            <div class="li-s">{{ t.tool }}()</div>
+          </div>
+          <div class="li-grip"><i data-lucide="grip-vertical"></i></div>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="wfb-lib-note">MCP tools are export-only — they run via the Forge agent.</div>
+      {% endif %}
+    </div>
+
+    {# ── Compound rail: Add section palette + Title + Cover + Output (PR2.2a) ── #}
+
+    <!-- Add section palette (compound-only) — plain recipes only (Decision 10) -->
+    <div class="wfb-sec" id="compound-add-section" x-show="model.kind === 'compound'" x-cloak>
+      <div class="wfb-sec-label"><i data-lucide="plus-circle"></i> Add section</div>
+      <div class="wfb-lib" id="lib-compound-sections" data-lib="compound-sections">
+        {% for r in recipes %}{% if not r.kind %}
+        <div class="wfb-libitem"
+             data-kind="compound-section"
+             data-ref="{{ r.name }}"
+             data-title="{{ r.name }}"
+             data-cat="{{ r.nav_category }}"
+             style="--lc:var(--nav-{{ r.nav_category | lower | replace(' ', '-') }}, var(--purple))"
+             @click="addSection($el.getAttribute('data-ref'))">
+          <div class="li-ic"><i data-lucide="file-text"></i></div>
+          <div class="li-tx">
+            <div class="li-t">{{ r.name }}</div>
+          </div>
+        </div>
+        {% endif %}{% endfor %}
+      </div>
+    </div>
+
+    <!-- Compound Title field (compound-only) -->
+    <div class="wfb-sec" x-show="model.kind === 'compound'" x-cloak>
+      <div class="wfb-sec-label"><i data-lucide="type"></i> Title</div>
+      <div class="wfb-field">
+        <label for="cpd-title">Report title</label>
+        <input class="wfb-inp" id="cpd-title" type="text"
+               x-model="model.title" placeholder="Executive Security Report">
+      </div>
+    </div>
+
+    <!-- Compound metadata: Description + Type/nav_category (#20, B6) -->
+    <div class="wfb-sec" x-show="model.kind === 'compound'" x-cloak>
+      <div class="wfb-sec-label"><i data-lucide="info"></i> Metadata</div>
+      <div class="wfb-field">
+        <label for="cpd-desc">Description</label>
+        <textarea class="wfb-inp" id="cpd-desc" rows="2"
+                  x-model="model.description"
+                  placeholder="Short summary shown in the report nav / library"></textarea>
+      </div>
+      <div class="wfb-field">
+        <label for="cpd-navcat">Type</label>
+        <select class="wfb-sel" id="cpd-navcat" x-model="model.nav_category">
+          <option value="Executive">Executive</option>
+          <option value="Investigation">Investigation</option>
+          <option value="Remediation">Remediation</option>
+          <option value="Compliance">Compliance</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Compound Cover settings (compound-only) -->
+    <div class="wfb-sec" x-show="model.kind === 'compound'" x-cloak>
+      <div class="wfb-sec-label"><i data-lucide="layout"></i> Cover</div>
+      <div class="wfb-field">
+        <label for="cpd-subtitle">Subtitle</label>
+        <input class="wfb-inp" id="cpd-subtitle" type="text"
+               :value="model.cover?.subtitle || ''"
+               @input="model.cover && (model.cover.subtitle = $event.target.value)"
+               placeholder="e.g. {% raw %}{{project_name}}{% endraw %} · {% raw %}{{period}}{% endraw %}">
+        <small class="wfb-foot-note">Tokens supported: <code>{% raw %}{{project_name}}{% endraw %}</code>, <code>{% raw %}{{period}}{% endraw %}</code></small>
+      </div>
+      <div class="wfb-field">
+        <label for="cpd-logo-select">Logo</label>
+        <select class="wfb-sel" id="cpd-logo-select" @change="onLogoSelectChange($event)">
+          <option value="">(default Finite State logo)</option>
+        </select>
+        <input type="file" id="cpd-logo-upload" accept=".png,.jpg,.jpeg,.svg,.webp"
+               style="display:none" @change="onLogoUpload($event)">
+        <button class="wfb-btn sm" type="button" style="margin-top:6px"
+                @click="document.getElementById('cpd-logo-upload').click()">
+          <i data-lucide="upload"></i> Upload logo
+        </button>
+      </div>
+      <div class="wfb-field">
+        <label for="cpd-classification">Classification</label>
+        <input class="wfb-inp" id="cpd-classification" type="text"
+               :value="model.cover?.classification || ''"
+               @input="model.cover && (model.cover.classification = $event.target.value)"
+               placeholder="e.g. CONFIDENTIAL">
+      </div>
+    </div>
+
+    <!-- Compound Output settings (compound-only) -->
+    <div class="wfb-sec" x-show="model.kind === 'compound'" x-cloak>
+      <div class="wfb-sec-label"><i data-lucide="settings"></i> Output</div>
+      <div class="wfb-field">
+        <label>Formats</label>
+        <div class="wfb-checkgroup">
+          <label class="wfb-chk">
+            <input type="checkbox" :checked="model.output?.formats && model.output.formats.indexOf('html') !== -1"
+                   @change="toggleOutputFormat('html', $event.target.checked)">
+            <span>HTML</span>
+          </label>
+          <label class="wfb-chk">
+            <input type="checkbox" :checked="model.output?.formats && model.output.formats.indexOf('pdf') !== -1"
+                   @change="toggleOutputFormat('pdf', $event.target.checked)">
+            <span>PDF</span>
+          </label>
+        </div>
+      </div>
+      <div class="wfb-toggle">
+        <span class="tl">Table of contents</span>
+        <div class="wfb-sw" :class="{ on: model.output?.toc }"
+             role="switch" :aria-checked="!!model.output?.toc" tabindex="0"
+             @click="model.output.toc = !model.output.toc"
+             @keydown.enter.prevent="model.output.toc = !model.output.toc"
+             @keydown.space.prevent="model.output.toc = !model.output.toc"></div>
+      </div>
+      <div class="wfb-toggle">
+        <span class="tl">Page numbers</span>
+        <div class="wfb-sw" :class="{ on: model.output?.page_numbers }"
+             role="switch" :aria-checked="!!model.output?.page_numbers" tabindex="0"
+             @click="model.output.page_numbers = !model.output.page_numbers"
+             @keydown.enter.prevent="model.output.page_numbers = !model.output.page_numbers"
+             @keydown.space.prevent="model.output.page_numbers = !model.output.page_numbers"></div>
+      </div>
+    </div>
+
+    {# ── Comparison rail: Title + Diff-facet checkboxes + Output (PR3.1) ── #}
+
+    <!-- Comparison: Title field (comparison-only) -->
+    <div class="wfb-sec" id="cmp-rail-title" x-show="model.kind === 'comparison'" x-cloak>
+      <div class="wfb-sec-label"><i data-lucide="type"></i> Title</div>
+      <div class="wfb-field">
+        <label for="cmp-title-inp">Report title</label>
+        {# Auto-derived from Left → Right when blank; editable. Binds model.title. #}
+        <input class="wfb-inp" id="cmp-title-inp" type="text"
+               x-model="model.title"
+               :placeholder="cmpAutoTitle()">
+        <small class="wfb-foot-note">Auto-derived from Left → Right when blank.</small>
+      </div>
+    </div>
+
+    <!-- Comparison metadata: Description + Type/nav_category (#20, B6) -->
+    <div class="wfb-sec" id="cmp-rail-meta" x-show="model.kind === 'comparison'" x-cloak>
+      <div class="wfb-sec-label"><i data-lucide="info"></i> Metadata</div>
+      <div class="wfb-field">
+        <label for="cmp-desc">Description</label>
+        <textarea class="wfb-inp" id="cmp-desc" rows="2"
+                  x-model="model.description"
+                  placeholder="Short summary shown in the report nav / library"></textarea>
+      </div>
+      <div class="wfb-field">
+        <label for="cmp-navcat">Type</label>
+        <select class="wfb-sel" id="cmp-navcat" x-model="model.nav_category">
+          <option value="Executive">Executive</option>
+          <option value="Investigation">Investigation</option>
+          <option value="Remediation">Remediation</option>
+          <option value="Compliance">Compliance</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Comparison: Diff-facet checkboxes (comparison-only) -->
+    <div class="wfb-sec" id="cmp-rail-facets" x-show="model.kind === 'comparison'" x-cloak>
+      <div class="wfb-sec-label"><i data-lucide="diff"></i> Diff facets</div>
+      {% if comparison_recipes %}
+      <div class="wfb-checkgroup" id="cmp-facet-checkboxes">
+        {% for r in comparison_recipes %}
+        <label class="wfb-chk" id="cmp-facet-{{ r.slug }}">
+          <input type="checkbox" value="{{ r.slug }}"
+                 :checked="model.sections && model.sections.indexOf('{{ r.slug }}') !== -1"
+                 @change="toggleComparisonFacet('{{ r.slug }}', $event.target.checked)">
+          <span>{{ r.name }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% else %}
+      <small class="wfb-foot-note" id="cmp-no-facets">No comparison facet recipes installed.</small>
+      {% endif %}
+    </div>
+
+    <!-- Comparison: Output settings (comparison-only) -->
+    <div class="wfb-sec" id="cmp-rail-output" x-show="model.kind === 'comparison'" x-cloak>
+      <div class="wfb-sec-label"><i data-lucide="settings"></i> Output</div>
+      <div class="wfb-field">
+        <label>Formats</label>
+        <div class="wfb-checkgroup">
+          <label class="wfb-chk">
+            <input type="checkbox" :checked="model.output && model.output.formats && model.output.formats.indexOf('html') !== -1"
+                   @change="toggleOutputFormat('html', $event.target.checked)">
+            <span>HTML</span>
+          </label>
+          <label class="wfb-chk">
+            <input type="checkbox" :checked="model.output && model.output.formats && model.output.formats.indexOf('pdf') !== -1"
+                   @change="toggleOutputFormat('pdf', $event.target.checked)">
+            <span>PDF</span>
+          </label>
+        </div>
+      </div>
+      <div class="wfb-toggle">
+        <span class="tl">Table of contents</span>
+        <div class="wfb-sw" :class="{ on: model.output && model.output.toc }"
+             role="switch" :aria-checked="model.output && model.output.toc" tabindex="0"
+             @click="model.output.toc = !model.output.toc"
+             @keydown.enter.prevent="model.output.toc = !model.output.toc"
+             @keydown.space.prevent="model.output.toc = !model.output.toc"></div>
+      </div>
+      <div class="wfb-toggle">
+        <span class="tl">Page numbers</span>
+        <div class="wfb-sw" :class="{ on: model.output && model.output.page_numbers }"
+             role="switch" :aria-checked="model.output && model.output.page_numbers" tabindex="0"
+             @click="model.output.page_numbers = !model.output.page_numbers"
+             @keydown.enter.prevent="model.output.page_numbers = !model.output.page_numbers"
+             @keydown.space.prevent="model.output.page_numbers = !model.output.page_numbers"></div>
+      </div>
+      <div class="wfb-foot-note" id="cmp-scope-banner">
+        Scope is baked at Save. Finding types are chosen at Run (PR3.3).
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===================== CANVAS ===================== -->
+  <main class="wfb-canvas">
+    <div class="wfb-canvas-head">
+      <h1>
+        <template x-if="model.kind === 'workflow'"><span><i data-lucide="git-branch" style="width:18px;height:18px;color:var(--accent)"></i></span></template>
+        <template x-if="model.kind === 'compound'"><span><i data-lucide="layers" style="width:18px;height:18px;color:var(--accent)"></i></span></template>
+        <template x-if="model.kind === 'comparison'"><span><i data-lucide="git-compare" style="width:18px;height:18px;color:var(--accent)"></i></span></template>
+        <span x-text="model.name || (model.kind === 'comparison' ? 'Untitled comparison' : model.kind === 'compound' ? 'Untitled compound' : 'Untitled workflow')"></span>
+      </h1>
+      {# Step count — workflow-only (compound/comparison have sections, not steps). #}
+      <span class="wfb-cnt" id="step-count" x-show="model.kind === 'workflow'"
+            x-text="model.steps.length + (model.steps.length === 1 ? ' step' : ' steps')"></span>
+      {# Folder targeting (design §6): the readout shows the project, else the
+         folder NAME (resolved by globalScopeLabel from the #g-folder select),
+         else "Portfolio". A folder target uses a folder icon and hides the
+         "@ version" suffix (folders have no single version). Workflow-only. #}
+      {# C2: the pill title is conditional — a target-bound workflow with a
+         concrete target reads "Pinned scope"; a GENERAL/portfolio workflow has
+         no pinned scope (target picked at run time) so it must not claim one
+         (globalScopePillTitle()). #}
+      <span class="wfb-scope-pill" id="scope-pill" x-show="model.kind === 'workflow'"
+            :title="globalScopePillTitle()">
+        <i data-lucide="pin" x-show="!globalIsFolder() && !model.global.target_agnostic"></i>
+        <i data-lucide="globe" x-show="model.global.target_agnostic" x-cloak></i>
+        <i data-lucide="folder" x-show="globalIsFolder() && !model.global.target_agnostic" x-cloak></i>
+        <span x-text="globalScopeLabel()"></span>
+        <span class="v" x-show="!globalIsFolder() && !model.global.target_agnostic"
+              x-text="'@ ' + (model.global.version_filter || 'latest')"></span>
+      </span>
+      {# Run banner — live status pill while a workflow run streams (§6.3). Workflow-only. #}
+      <span class="wfb-run-banner" id="run-banner"
+            :class="{ show: runMode, done: runDone }" x-cloak
+            x-show="model.kind === 'workflow'"
+            role="status" aria-live="polite">
+        <span class="rb-dot"></span>
+        <span id="rb-text" x-text="runStatusText"></span>
+      </span>
+      <div class="wfb-ch-actions">
+        {# Edit returns from run-view to authoring (§6.3). Workflow-only. #}
+        <button class="wfb-btn sm" type="button" id="wf-edit"
+                x-show="model.kind === 'workflow' && runMode" x-cloak @click="exitRun()">
+          <i data-lucide="pencil"></i> Edit
+        </button>
+        {# Hand off to the standalone Run canvas once a run is live (§9). SAME-TAB
+           navigation (openRunCanvas → location.href) — NOT target=_blank: the SSE
+           stream is single-consumer per run, so a second tab would split it. Workflow-only. #}
+        <button class="wfb-btn sm" type="button" id="wf-open-run-canvas"
+                x-show="model.kind === 'workflow' && runMode && runId" x-cloak @click="openRunCanvas()"
+                title="Open this run in the full Run canvas">
+          <i data-lucide="external-link"></i> Open in Run canvas
+        </button>
+        <button class="wfb-btn sm" type="button" id="wf-clear"
+                x-show="model.kind === 'workflow' && !runMode" @click="clearCanvas()">
+          <i data-lucide="eraser"></i> Clear
+        </button>
+        {# Export modal — workflow-only (compound/comparison don't have this yet). #}
+        <button class="wfb-btn sm" type="button" id="wf-export"
+                x-show="model.kind === 'workflow' && !runMode" @click="openExport()"
+                :disabled="!model.steps.length"
+                title="Export this workflow">
+          <i data-lucide="file-code-2"></i> Export
+        </button>
+        {# Run flips to Stop while a run is in flight (§6.3).  Task D (T5):
+           kind-aware label/title — "Run workflow" | "Run compound" |
+           "Run comparison" (compound/comparison open the inline run drawer). #}
+        <button class="wfb-btn run sm" type="button" id="wf-run"
+                @click="runMode ? stopRun() : runWorkflow()"
+                :disabled="model.kind === 'workflow' && !runMode && (!runnableCount() || isRunning)"
+                :title="model.kind === 'workflow' ? runRunTitle() : runKindLabel()">
+          <template x-if="!runMode"><span><i data-lucide="play"></i> <span x-text="runKindLabel()"></span></span></template>
+          <template x-if="runMode"><span><i data-lucide="square"></i> Stop</span></template>
+        </button>
+      </div>
+    </div>
+
+    {# ── Workflow pipeline (gated to workflow kind) ── #}
+    <div class="wfb-pipeline" id="pipeline" x-show="model.kind === 'workflow'" :class="{ 'run-mode': runMode }">
+      <div class="wfb-pipe-start">
+        <span class="dot"></span> Portfolio snapshot
+      </div>
+      <div class="wfb-conn" id="start-conn" x-show="model.steps.length"></div>
+
+      {# Sortable receiver: ONLY the step cards live here. The model is the
+         single source of truth; indices/edges re-render from it. In run-view
+         each card carries a run-* state class driven by the `step` SSE event. #}
+      <div class="wfb-steps" id="wfb-steps" data-pipeline>
+        <template x-for="(step, i) in model.steps" :key="step.id">
+          <div class="wfb-step-wrap">
+            {# An unresolved recipe ref (not in the known recipe set) is flagged
+               with the `unresolved` class (folded into runStepClass) + a title
+               + a warning chip; it's excluded from the local run (runnableCount)
+               but preserved for export (spec §10). #}
+            <div class="wfb-step"
+                 :class="runStepClass(step)"
+                 :data-step-id="step.id"
+                 :style="'--sc:' + catColor(step)"
+                 :title="isUnresolvedRecipe(step) ? ('Unknown recipe “' + step.ref + '” — excluded from local run, preserved for export') : null"
+                 @click="selectStep(step.id)">
+              <div class="s-top">
+                <span class="s-grip" data-grip><i data-lucide="grip-vertical"></i></span>
+                <span class="s-idx mono" x-text="String(i + 1).padStart(2, '0')"></span>
+                <span class="s-ic"><i :data-lucide="iconFor(step)"></i></span>
+                <div class="s-tx">
+                  <div class="s-t" x-text="titleFor(step)"></div>
+                  <div class="s-tool mono">
+                    <span x-text="toolFor(step) + '()'"></span><span
+                       x-show="overrideCount(step)"
+                       x-text="' · ' + overrideCount(step) + ' override' + (overrideCount(step) > 1 ? 's' : '')"></span>
+                  </div>
+                </div>
+                {# Run-state badge (spinner while running, check when done). #}
+                <span class="s-status" x-show="runMode" x-cloak>
+                  <span class="spin" x-show="runState(step) === 'running'"></span>
+                  <span class="chk" x-show="runState(step) === 'done'"><i data-lucide="check"></i></span>
+                  <span class="err" x-show="runState(step) === 'error'"><i data-lucide="x"></i></span>
+                </span>
+                <button type="button" class="s-rm" title="Remove"
+                        x-show="!runMode" @click.stop="removeStep(step.id)">
+                  <i data-lucide="x"></i>
+                </button>
+              </div>
+              {# Effective-property chips — driven by the per-step effective
+                 config (global ← overrides). MCP steps show export-only. #}
+              <div class="s-chips" x-show="!runMode || runState(step) === 'done'">
+                {# Unresolved recipe ref → warning chip (excluded from run,
+                   preserved for export, spec §10). #}
+                <template x-if="isUnresolvedRecipe(step)">
+                  <span class="chip unresolved" data-unresolved
+                        :title="'Unknown recipe “' + step.ref + '” — excluded from local run, preserved for export'">
+                    <i data-lucide="alert-triangle"></i> unresolved
+                  </span>
+                </template>
+                <template x-if="step.kind === 'mcp_tool'">
+                  <span class="chip export-only">export-only</span>
+                </template>
+                <template x-if="step.kind === 'recipe'">
+                  <span class="chip"
+                        :class="{ ov: step.overrides && step.overrides.period }"
+                        x-text="'period ' + ((step.overrides && step.overrides.period) || model.global.period)"></span>
+                </template>
+                <template x-if="step.kind === 'recipe'">
+                  <span class="chip ai" x-text="'AI ' + (aiOn(step) ? 'on' : 'off')"></span>
+                </template>
+                <template x-if="step.kind === 'recipe' && effProject(step)">
+                  <span class="chip"
+                        :class="{ ov: step.overrides && step.overrides.project_filter }"
+                        x-text="effProject(step)"></span>
+                </template>
+                <template x-if="step.kind === 'recipe' && (step.overrides && step.overrides.cve_filter)">
+                  <span class="chip ov">CVE set</span>
+                </template>
+              </div>
+              {# Live run line — running message + indeterminate progress fill. #}
+              <div class="s-runline" x-show="runMode && runState(step) === 'running'" x-cloak>
+                <div class="rmsg" x-text="runMessage(step) || 'Working…'"></div>
+                <div class="rtrack"><div class="rfill"></div></div>
+              </div>
+              {# Done → clickable report link (§6.3). #}
+              <div class="s-runline done" x-show="runMode && runState(step) === 'done' && runReportUrl(step)" x-cloak>
+                <a class="r-open" :href="runReportUrl(step)" target="_blank" rel="noopener">
+                  <i data-lucide="external-link"></i> Open report
+                </a>
+              </div>
+              {# Skipped → reason-specific note. #}
+              <div class="s-runline skipped" x-show="runMode && runState(step) === 'skipped'" x-cloak>
+                <div class="rmsg" x-text="skipNote(step)"></div>
+              </div>
+              {# Error → message. #}
+              <div class="s-runline error" x-show="runMode && runState(step) === 'error'" x-cloak>
+                <div class="rmsg" x-text="runMessage(step) || 'Step failed'"></div>
+              </div>
+            </div>
+            <div class="wfb-conn mid"
+                 :class="{ lit: runConnLit(i), flow: runConnFlow(i) }"
+                 x-show="i < model.steps.length - 1"></div>
+          </div>
+        </template>
+      </div>
+
+      <div class="wfb-dropzone" id="dropzone" x-show="!model.steps.length" x-cloak>
+        <i data-lucide="plus-circle"></i>
+        <span>Drag a report or tool here to add a step</span>
+      </div>
+    </div>
+
+    {# ── Compound report editor (gated to compound kind) ── PR2.2a #}
+    <div class="wfb-compound-canvas" id="compound-stub" aria-label="Compound report editor" x-show="model.kind === 'compound'" x-cloak>
+      {# Section count badge #}
+      <div class="wfb-comp-count" x-show="(model.sections || []).length > 0">
+        <span class="wfb-cnt" x-text="(model.sections || []).length + ((model.sections || []).length === 1 ? ' section' : ' sections')"></span>
+      </div>
+
+      {# Ordered, drag-to-reorder section list.  Task C: sections are objects
+         ({recipe, overrides}); each row is click-to-select (parallel to step
+         selection) so the per-section override inspector opens for it. #}
+      <div class="wfb-section-list" id="wfb-section-list" data-section-pipeline>
+        <template x-for="(sec, i) in (model.sections || [])" :key="secRecipe(sec) + '_' + i">
+          <div class="wfb-section-row" :class="{ selected: selectedSection === i }"
+               :data-section-index="i" @click="selectSection(i)">
+            <div class="sec-grip" data-sec-grip @click.stop><i data-lucide="grip-vertical"></i></div>
+            <span class="sec-idx mono" x-text="String(i + 1).padStart(2, '0')"></span>
+            <div class="sec-ic"><i data-lucide="file-text"></i></div>
+            <div class="sec-tx">
+              <div class="sec-t" x-text="secRecipe(sec)"></div>
+              <div class="sec-tool mono" x-show="secOverrideCount(sec)" x-cloak
+                   x-text="secOverrideCount(sec) + ' override' + (secOverrideCount(sec) > 1 ? 's' : '')"></div>
+            </div>
+            <button type="button" class="sec-rm" title="Remove section"
+                    @click.stop="removeSection(i)">
+              <i data-lucide="x"></i>
+            </button>
+          </div>
+        </template>
+      </div>
+
+      {# Empty state when no sections #}
+      <div class="wfb-sec-empty" id="compound-empty" x-show="(model.sections || []).length === 0" x-cloak>
+        <i data-lucide="layers" style="width:28px;height:28px;opacity:0.35"></i>
+        <div class="sec-empty-t">No sections yet</div>
+        <div class="sec-empty-s">Click a recipe in the <b>Add section</b> panel on the left to add one.</div>
+      </div>
+    </div>
+
+    {# ── Comparison report editor (PR3.1) — Left/Right scope + "vs" divider ── #}
+    {# Two scope cascades — left/right scope pickers (folder → project → version).
+       Center canvas: Left panel | vs | Right panel; scopes baked at Save.
+       Rail: Diff facets + Title + Output (in the left rail above). #}
+    <div class="wfb-comparison-canvas" id="comparison-editor" x-show="model.kind === 'comparison'" x-cloak>
+      {# Scope baking banner #}
+      <div class="wfb-cmp-banner">
+        <i data-lucide="info" style="width:14px;height:14px;opacity:0.6"></i>
+        Scope is <strong>baked at Save</strong> — project/folder/version names are resolved
+        and stored in the recipe. Finding types are set at Run.
+      </div>
+
+      {# ── Left / Right scope panels ── #}
+      <div class="wfb-cmp-scopes">
+
+        {# Left scope #}
+        <div class="wfb-cmp-side" id="cmp-left-panel">
+          <div class="wfb-cmp-side-label"><i data-lucide="arrow-left"></i> Left</div>
+          <div class="version-picker-row">
+            <div class="wfb-field">
+              <label for="cmp-left-folder">Folder</label>
+              <select id="cmp-left-folder" class="wfb-sel version-picker-select"
+                      :data-value="model.left && model.left.folder || ''"
+                      @change="onCmpLeftScopeChange()">
+                <option value="">(any folder)</option>
+              </select>
+            </div>
+            <div class="wfb-field">
+              <label for="cmp-left-project">Project</label>
+              <select id="cmp-left-project" class="wfb-sel version-picker-select"
+                      :data-value="model.left && model.left.project || ''"
+                      @change="onCmpLeftScopeChange()">
+                <option value="">(pick a project)</option>
+              </select>
+            </div>
+            <div class="wfb-field">
+              <label for="cmp-left-version">Version</label>
+              <select id="cmp-left-version" class="wfb-sel version-picker-select"
+                      :data-value="model.left && model.left.version || ''"
+                      @change="onCmpLeftScopeChange()">
+                <option value="">(all versions)</option>
+              </select>
+            </div>
+          </div>
+          <div class="wfb-cmp-scope-preview" x-text="cmpSideLabel('left')"></div>
+        </div>
+
+        {# vs divider #}
+        <div class="wfb-cmp-vs">
+          <span>vs</span>
+        </div>
+
+        {# Right scope #}
+        <div class="wfb-cmp-side" id="cmp-right-panel">
+          <div class="wfb-cmp-side-label"><i data-lucide="arrow-right"></i> Right</div>
+          <div class="version-picker-row">
+            <div class="wfb-field">
+              <label for="cmp-right-folder">Folder</label>
+              <select id="cmp-right-folder" class="wfb-sel version-picker-select"
+                      :data-value="model.right && model.right.folder || ''"
+                      @change="onCmpRightScopeChange()">
+                <option value="">(any folder)</option>
+              </select>
+            </div>
+            <div class="wfb-field">
+              <label for="cmp-right-project">Project</label>
+              <select id="cmp-right-project" class="wfb-sel version-picker-select"
+                      :data-value="model.right && model.right.project || ''"
+                      @change="onCmpRightScopeChange()">
+                <option value="">(pick a project)</option>
+              </select>
+            </div>
+            <div class="wfb-field">
+              <label for="cmp-right-version">Version</label>
+              <select id="cmp-right-version" class="wfb-sel version-picker-select"
+                      :data-value="model.right && model.right.version || ''"
+                      @change="onCmpRightScopeChange()">
+                <option value="">(all versions)</option>
+              </select>
+            </div>
+          </div>
+          <div class="wfb-cmp-scope-preview" x-text="cmpSideLabel('right')"></div>
+        </div>
+
+      </div>{# /.wfb-cmp-scopes #}
+    </div>{# /#comparison-editor #}
+
+    {# ── Task D: inline RUN drawer (compound + comparison) ──
+       Rebuilds the prerun modal INLINE as a right-side drawer that slides in
+       OVER the editor.  The fragment is fetched + wired by
+       window.__openInlineRun (command-center.js) into #cpd-run-panel; the
+       runTriggers (_recipeKindCfg) flip cpdRunOpen and call it.  Gated to the
+       two recipe-doc kinds so a workflow never shows it (workflows keep the
+       in-canvas run-view).  Backdrop scrim closes on click; the panel slides
+       from the right.  Re-inject is fresh each open (innerHTML) so handlers
+       don't stack. #}
+    <div class="cpd-run-wrap"
+         x-show="(model.kind === 'compound' || model.kind === 'comparison') && cpdRunOpen"
+         x-cloak
+         @keydown.escape.window="cpdRunOpen && closeCpdRun()">
+      <div class="cpd-run-scrim" @click="closeCpdRun()"></div>
+      <aside class="cpd-run-drawer" role="dialog" aria-label="Run report">
+        {# Content host — the prerun fragment is injected here by
+           window.__openInlineRun (command-center.js).  Always in the DOM (the
+           wrapper is x-show, not x-if) so the injector's qs('#cpd-run-panel')
+           resolves the moment the runTrigger fires. #}
+        <div id="cpd-run-panel"></div>
+      </aside>
+    </div>
+  </main>
+
+  <!-- ===================== INSPECTOR (§5.4) — workflow + compound ===================== -->
+  {# All element lookups inside are subtree-scoped (#inspector / data-inspector
+     root) so each scope cascade binds only to the selected card/section (#117
+     lesson). The workflow body re-renders from the selected STEP; fields default
+     to "inherit from global" and write into step.overrides (recipe)/step.params
+     (mcp).  Task C adds the COMPOUND section body below it (gated separately) —
+     the leaner {recipe, overrides} section shape gets ONLY the whitelisted
+     fields and its own helpers (sec*), so it never derefs step-only fields.
+     Comparison still has no inspector (its own rail). #}
+  <aside class="wfb-inspector" id="inspector" data-inspector
+         x-show="model.kind === 'workflow' || model.kind === 'compound'">
+    {# Empty state — no selection (workflow OR compound). #}
+    <div class="wfb-insp-empty"
+         x-show="(model.kind === 'workflow' && !inspStep()) || (model.kind === 'compound' && !inspSection())">
+      <i data-lucide="mouse-pointer-click"></i>
+      <div class="ie-t" x-text="model.kind === 'compound' ? 'Select a section to set per-section overrides' : 'Select a step to set report-specific properties'"></div>
+    </div>
+
+    {# ===== Workflow step body — bound to the selected step. ===== #}
+    <div class="wfb-insp-body" id="insp-body" x-show="model.kind === 'workflow' && inspStep()" x-cloak>
+      <template x-if="inspStep()">
+        <div>
+          <div class="insp-head">
+            <div class="ih-ic" :style="'--sc:' + catColor(inspStep())">
+              <i :data-lucide="iconFor(inspStep())"></i>
+            </div>
+            <div class="ih-tx">
+              <div class="ih-t" x-text="titleFor(inspStep())"></div>
+              <div class="ih-s mono" x-text="toolFor(inspStep()) + '()'"></div>
+            </div>
+            <span class="ih-close" title="Close" @click="selectStep(inspStep().id)">
+              <i data-lucide="x"></i>
+            </span>
+          </div>
+
+          {# ---------- RECIPE step inspector ---------- #}
+          <template x-if="inspStep().kind === 'recipe'">
+            <div>
+              <div class="insp-note">
+                Settings here apply to <b>this report only</b> — scope, period and AI override the global properties; report-specific options (finding types, current-version-only) override the recipe defaults.
+                <span x-show="overrideCount(inspStep())"
+                      x-text="overrideCount(inspStep()) + ' override' + (overrideCount(inspStep()) > 1 ? 's' : '') + ' active'"></span>
+                <span x-show="!overrideCount(inspStep())">Leave a field unset to inherit its default.</span>
+              </div>
+
+              {# ── Run control (#5, B5): operational knobs (cache, on-error)
+                 grouped + visually distinct from the report-config fields
+                 below.  Mirrors the global-properties rail's Run control group. #}
+              <div class="wfb-runctl">
+                <div class="wfb-sec-label"><i data-lucide="settings-2"></i> Run control</div>
+                <div class="wfb-row2">
+                  <div class="wfb-field">
+                    <label for="insp-cache">Cache TTL
+                      <span class="with-global" x-text="'(global · ' + model.global.cache_ttl + ')'"></span>
+                    </label>
+                    <select class="wfb-sel" id="insp-cache"
+                            :value="inspStep().overrides.cache_ttl || ''"
+                            @change="applyOverride('cache_ttl', $event.target.value)">
+                      <option value="">(inherit from global)</option>
+                      <option value="none">none</option>
+                      <option value="1h">1h</option>
+                      <option value="4h">4h</option>
+                      <option value="8h">8h</option>
+                      <option value="24h">24h</option>
+                    </select>
+                  </div>
+                  <div class="wfb-field">
+                    <label for="insp-error">On error</label>
+                    <select class="wfb-sel" id="insp-error"
+                            :value="inspStep().overrides.error_policy || ''"
+                            @change="applyOverride('error_policy', $event.target.value)">
+                      <option value="">halt (default)</option>
+                      <option value="continue">continue</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {# Per-step Folder / Project / Version override — root-scoped
+                 cascade, unique ids so it can't collide with the global cascade.
+                 Folder targeting (design §6): the folder select lets a step
+                 re-target a different folder than the global; onInspScopeChange
+                 applies project-wins precedence into the step overrides. #}
+              <div class="wfb-field">
+                <label for="insp-folder">Folder override
+                  <span class="with-global" x-text="'(global · ' + (model.global.folder_filter || 'any') + ')'"></span>
+                </label>
+                {# No inner <template x-if> here — populateSelect (initScopeDropdowns)
+                   fills this select imperatively via innerHTML + appendChild.  Inner
+                   x-if templates cause Alpine to tear down + re-create the option nodes
+                   whenever overrides.folder_filter mutates (applyOverride), wiping the
+                   JS-injected options.  The saved value is recovered via the :data-value
+                   seed that initScopeDropdowns reads on bind + populateSelect's fallback. #}
+                <select class="wfb-sel" id="insp-folder"
+                        :data-value="inspStep().overrides.folder_filter || ''">
+                  <option value="">(inherit from global)</option>
+                </select>
+              </div>
+              <div class="wfb-field">
+                <label for="insp-project">Project override
+                  <span class="with-global" x-text="'(global · ' + (model.global.project_filter || 'all') + ')'"></span>
+                </label>
+                {# See folder comment above — no inner x-if template. #}
+                <select class="wfb-sel" id="insp-project"
+                        :data-value="inspStep().overrides.project_filter || ''"
+                        @change="applyOverride('project_filter', $event.target.value)">
+                  <option value="">(inherit from global)</option>
+                </select>
+              </div>
+              <div class="wfb-field">
+                <label for="insp-version">Version override</label>
+                {# See folder comment above — no inner x-if template. #}
+                <select class="wfb-sel" id="insp-version"
+                        :data-value="inspStep().overrides.version_filter || ''"
+                        @change="applyOverride('version_filter', $event.target.value)">
+                  <option value="">(latest)</option>
+                </select>
+              </div>
+
+              {# Period override (freeform) + per-step date range — only for
+                 recipes whose pipeline trims by date (show_period). #}
+              <div x-show="stepApplies(inspStep(), 'show_period')" x-cloak>
+              <div class="wfb-field">
+                <label for="insp-period">Period override
+                  <span class="with-global" x-text="'(global · ' + (model.global.period || 'range') + ')'"></span>
+                </label>
+                <input class="wfb-inp" type="text" id="insp-period"
+                       :value="inspStep().overrides.period || ''"
+                       placeholder="inherit; e.g. 7d, Q1"
+                       @change="applyOverride('period', $event.target.value)">
+              </div>
+              <div class="wfb-row2">
+                <div class="wfb-field">
+                  <label for="insp-range-from">From override</label>
+                  <input class="wfb-inp" type="date" id="insp-range-from"
+                         :value="inspStep().overrides.start || ''"
+                         @change="applyOverride('start', $event.target.value)">
+                </div>
+                <div class="wfb-field">
+                  <label for="insp-range-to">To override</label>
+                  <input class="wfb-inp" type="date" id="insp-range-to"
+                         :value="inspStep().overrides.end || ''"
+                         @change="applyOverride('end', $event.target.value)">
+                </div>
+              </div>
+              </div>
+
+              {# Finding types (multi-select, lowercase engine tokens) +
+                 Current-version-only — core report-config overrides, gated to
+                 the recipes whose pipeline consumes them (show_finding_types /
+                 show_current_version_only).  These let a workflow step fully
+                 define the report from the Builder rather than only at run time.
+                 finding_types is a comma-joined token set; current_version_only
+                 is a DEFAULT-TRUE bool (toggle off persists an explicit false —
+                 see cvoOn/toggleCvo). #}
+              <div x-show="stepApplies(inspStep(), 'show_finding_types')" x-cloak>
+                <div class="wfb-field">
+                  <label>Finding types</label>
+                  <div class="wfb-checkgroup">
+                    <template x-for="ft in [['cve','CVE'],['sast','SAST'],['thirdparty','3rd Party'],['credentials','Credentials'],['config_issues','Config'],['crypto_material','Crypto']]" :key="ft[0]">
+                      <label class="wfb-chk">
+                        <input type="checkbox" :name="'finding_types_' + ft[0]"
+                               :checked="findingTypeChecked(inspStep(), ft[0])"
+                               @change="toggleFindingType(ft[0])">
+                        <span x-text="ft[1]"></span>
+                      </label>
+                    </template>
+                  </div>
+                  <small class="wfb-foot-note">CVE checked = inheriting the default; check additional types to override (unchecking back to CVE-only clears the override).</small>
+                </div>
+              </div>
+
+              <div x-show="stepApplies(inspStep(), 'show_current_version_only')" x-cloak>
+                <div class="wfb-toggle">
+                  <span class="tl">Current version only</span>
+                  <div class="wfb-sw" :class="{ on: cvoOn(inspStep()) }"
+                       role="switch" :aria-checked="cvoOn(inspStep())" tabindex="0"
+                       @click="toggleCvo()"
+                       @keydown.enter.prevent="toggleCvo()"
+                       @keydown.space.prevent="toggleCvo()"></div>
+                </div>
+              </div>
+
+              {# AI enrichment + depth — only for AI-capable recipes (show_ai). #}
+              <div x-show="stepApplies(inspStep(), 'show_ai')" x-cloak>
+              <div class="wfb-toggle">
+                <span class="tl">AI enrichment
+                  <span class="with-global" x-text="'(global: ' + (model.global.ai ? 'on' : 'off') + ')'"></span>
+                </span>
+                <div class="wfb-sw" :class="{ on: aiOn(inspStep()) }"
+                     role="switch" :aria-checked="aiOn(inspStep())" tabindex="0"
+                     @click="toggleStepAi()" @keydown.enter.prevent="toggleStepAi()"
+                     @keydown.space.prevent="toggleStepAi()"></div>
+              </div>
+              <div class="wfb-field">
+                <label for="insp-aidepth">AI depth
+                  <span class="with-global" x-text="'(global · ' + model.global.ai_depth + ')'"></span>
+                </label>
+                <select class="wfb-sel" id="insp-aidepth"
+                        :value="inspStep().overrides.ai_depth || ''"
+                        @change="applyOverride('ai_depth', $event.target.value)">
+                  <option value="">(inherit from global)</option>
+                  <option value="summary">summary</option>
+                  <option value="full">full</option>
+                </select>
+              </div>
+              </div>
+
+              {# #10A (B6): structured deployment-context fields — parity with the
+                 prerun modal / Settings (the inspector previously exposed only
+                 the context-FILE upload).  Gated show_deployment_context (same as
+                 the file upload); each writes a step override the engine consumes
+                 via _effective_step_config (keys already in _VALID_OVERRIDE_KEYS). #}
+              <div x-show="stepApplies(inspStep(), 'show_deployment_context')" x-cloak>
+                <div class="wfb-sec-label" style="margin-top:10px"><i data-lucide="server"></i> Deployment context</div>
+                <div class="wfb-field">
+                  <label for="insp-product-type">Product type</label>
+                  <select class="wfb-sel" id="insp-product-type"
+                          :value="inspStep().overrides.product_type || ''"
+                          @change="applyOverride('product_type', $event.target.value)">
+                    <option value="">(inherit from global)</option>
+                    <option value="generic">Generic</option>
+                    <option value="firmware">Firmware</option>
+                    <option value="web_app">Web App</option>
+                    <option value="mobile_app">Mobile App</option>
+                    <option value="library">Library</option>
+                    <option value="device_driver">Device Driver</option>
+                    <option value="container">Container</option>
+                    <option value="desktop_app">Desktop App</option>
+                  </select>
+                </div>
+                <div class="wfb-field">
+                  <label for="insp-network-exposure">Network exposure</label>
+                  <select class="wfb-sel" id="insp-network-exposure"
+                          :value="inspStep().overrides.network_exposure || ''"
+                          @change="applyOverride('network_exposure', $event.target.value)">
+                    <option value="">(inherit from global)</option>
+                    <option value="unknown">Unknown</option>
+                    <option value="air_gapped">Air-gapped</option>
+                    <option value="internal_only">Internal Only</option>
+                    <option value="internet_facing">Internet-facing</option>
+                    <option value="mixed">Mixed</option>
+                  </select>
+                </div>
+                <div class="wfb-field">
+                  <label for="insp-regulatory">Regulatory frameworks</label>
+                  <input class="wfb-inp" type="text" id="insp-regulatory"
+                         placeholder="inherit; e.g. IEC-62443, FDA, NIST 800-53"
+                         :value="inspStep().overrides.regulatory || ''"
+                         @change="applyOverride('regulatory', $event.target.value)">
+                </div>
+                <div class="wfb-field">
+                  <label for="insp-deploy-notes">Deployment notes</label>
+                  <textarea class="wfb-inp" id="insp-deploy-notes" rows="3" maxlength="500"
+                            placeholder="inherit; additional context about the deployment environment…"
+                            :value="inspStep().overrides.deployment_notes || ''"
+                            @change="applyOverride('deployment_notes', $event.target.value)"></textarea>
+                </div>
+              </div>
+
+              {# ── FP-Analysis autotriage (#10B/B7) — DESTRUCTIVE VEX write,
+                 FP steps only (show_workflow_autotriage gates to FP).  Default
+                 off; toggling ON confirms.  A saved/exported workflow applies
+                 these VEX statuses headlessly when it runs — the persisted
+                 opt-in is the authorization (no run-time prompt). #}
+              <div x-show="stepApplies(inspStep(), 'show_workflow_autotriage')" x-cloak>
+                <div class="wfb-sec-label" style="margin-top:10px"><i data-lucide="alert-triangle"></i> Autotriage · writes VEX</div>
+                <div class="wfb-toggle">
+                  <span class="tl">Auto-apply VEX
+                    <span class="with-global">writes VEX to the platform when this workflow runs</span>
+                  </span>
+                  <div class="wfb-sw" :class="{ on: !!inspStep().overrides.autotriage }"
+                       role="switch" :aria-checked="!!inspStep().overrides.autotriage" tabindex="0"
+                       @click="toggleAutotriage()"
+                       @keydown.enter.prevent="toggleAutotriage()"
+                       @keydown.space.prevent="toggleAutotriage()"></div>
+                </div>
+                <div class="wfb-field" x-show="!!inspStep().overrides.autotriage" x-cloak>
+                  <label for="insp-autotriage-status">Status filter</label>
+                  <input class="wfb-inp" type="text" id="insp-autotriage-status"
+                         placeholder="all; e.g. NOT_AFFECTED or IN_TRIAGE,NOT_AFFECTED"
+                         :value="inspStep().overrides.autotriage_status || ''"
+                         @change="applyOverride('autotriage_status', $event.target.value)">
+                </div>
+                <p class="wfb-inert-text">Default off. A saved or exported workflow
+                   applies these VEX statuses <b>without a prompt</b> when it runs —
+                   enable only deliberately.</p>
+              </div>
+
+              {# CVE IDs — only when this step's recipe requires CVEs. #}
+              <div class="wfb-field" x-show="recipeRequiresCve(inspStep())" x-cloak>
+                <label for="insp-cve">CVE IDs</label>
+                <input class="wfb-inp mono" type="text" id="insp-cve"
+                       placeholder="CVE-2024-1234, CVE-2024-5678"
+                       :value="inspStep().overrides.cve_filter || ''"
+                       @change="applyOverride('cve_filter', $event.target.value)">
+              </div>
+
+              {# ── Triage group (gated: show_triage) ────────────────── #}
+              <div x-show="stepApplies(inspStep(), 'show_triage')" x-cloak>
+                <div class="wfb-sec-label" style="margin-top:10px"><i data-lucide="filter"></i> Triage</div>
+                {# tp_gate is Triage-Prioritization-only (show_tp_gate); top/triage
+                   below are shared with Config Analysis Triage (show_triage). #}
+                <div class="wfb-field" x-show="stepApplies(inspStep(), 'show_tp_gate')" x-cloak>
+                  <label for="insp-tp-gate">TP gate</label>
+                  <select class="wfb-sel" id="insp-tp-gate"
+                          :value="inspStep().overrides.tp_gate || ''"
+                          @change="applyOverride('tp_gate', $event.target.value)">
+                    <option value="">(inherit)</option>
+                    <option value="GATE_1">GATE_1</option>
+                    <option value="GATE_2">GATE_2</option>
+                    <option value="NONE">NONE</option>
+                  </select>
+                </div>
+                <div class="wfb-row2">
+                  <div class="wfb-field">
+                    <label for="insp-top">Top</label>
+                    <input class="wfb-inp" type="number" id="insp-top"
+                           :value="inspStep().overrides.top || ''"
+                           @change="applyOverride('top', $event.target.value)">
+                  </div>
+                  <div class="wfb-field">
+                    <label for="insp-triage">Triage</label>
+                    <input class="wfb-inp" type="number" id="insp-triage"
+                           :value="inspStep().overrides.triage || ''"
+                           @change="applyOverride('triage', $event.target.value)">
+                  </div>
+                </div>
+                {# #9 (B6): vex_override is an apply-time overwrite flag — it has
+                   NO effect on a TP step in a workflow.  TP autotriage is not a
+                   workflow path; only FP Analysis writes VEX in workflows (B7),
+                   so the note must NOT claim "the workflow never writes VEX".
+                   Render it inert (no interactive toggle) with an honest note,
+                   and make clear it isn't autotriage (Theme 3b). #}
+                <div class="wfb-inert-note" x-show="stepApplies(inspStep(), 'show_tp_gate')" x-cloak>
+                  <span class="tl">VEX override <span class="chip">no effect here</span></span>
+                  <p class="wfb-inert-text">TP does not write VEX in workflows; this
+                     apply-time flag has no effect on the TP step. (Not autotriage.)</p>
+                </div>
+              </div>
+
+              {# ── Recipe-specific gated fields ─────────────────────── #}
+              <div x-show="stepApplies(inspStep(), 'show_license')" x-cloak>
+                <div class="wfb-field">
+                  <label for="insp-license">License filter</label>
+                  <input class="wfb-inp" type="text" id="insp-license"
+                         :value="inspStep().overrides.license_filter || ''"
+                         @change="applyOverride('license_filter', $event.target.value)">
+                </div>
+              </div>
+
+              <div x-show="stepApplies(inspStep(), 'show_threat_context')" x-cloak>
+                <div class="wfb-field">
+                  <label for="insp-threat-context">Threat context</label>
+                  <textarea class="wfb-inp" id="insp-threat-context" rows="3"
+                            :value="inspStep().overrides.threat_context || ''"
+                            @change="applyOverride('threat_context', $event.target.value)"></textarea>
+                </div>
+              </div>
+
+              <div x-show="stepApplies(inspStep(), 'show_open_only')" x-cloak>
+                <div class="wfb-toggle">
+                  <span class="tl">Open only</span>
+                  <div class="wfb-sw" :class="{ on: !!inspStep().overrides.open_only }"
+                       role="switch" :aria-checked="!!inspStep().overrides.open_only" tabindex="0"
+                       @click="toggleStepBool('open_only')"
+                       @keydown.enter.prevent="toggleStepBool('open_only')"
+                       @keydown.space.prevent="toggleStepBool('open_only')"></div>
+                </div>
+              </div>
+
+              <div x-show="stepApplies(inspStep(), 'show_baseline_date')" x-cloak>
+                <div class="wfb-field">
+                  <label for="insp-baseline-date">Baseline date</label>
+                  <input class="wfb-inp" type="date" id="insp-baseline-date"
+                         :value="inspStep().overrides.baseline_date || ''"
+                         @change="applyOverride('baseline_date', $event.target.value)">
+                </div>
+              </div>
+
+              <div x-show="stepApplies(inspStep(), 'show_detailed')" x-cloak>
+                <div class="wfb-toggle">
+                  <span class="tl">Detailed</span>
+                  <div class="wfb-sw" :class="{ on: !!inspStep().overrides.detailed }"
+                       role="switch" :aria-checked="!!inspStep().overrides.detailed" tabindex="0"
+                       @click="toggleStepBool('detailed')"
+                       @keydown.enter.prevent="toggleStepBool('detailed')"
+                       @keydown.space.prevent="toggleStepBool('detailed')"></div>
+                </div>
+              </div>
+
+              {# ── Filters group — each knob gated to the recipes that consume
+                 it; the whole group hides when none apply (report-config-card-
+                 gating §5c). #}
+              <div x-show="stepApplies(inspStep(), 'show_component') || stepApplies(inspStep(), 'show_component_match') || stepApplies(inspStep(), 'show_component_version') || stepApplies(inspStep(), 'show_standalone') || stepApplies(inspStep(), 'show_detected_after') || stepApplies(inspStep(), 'show_scan_filters')" x-cloak>
+                <div class="wfb-sec-label" style="margin-top:10px"><i data-lucide="sliders-horizontal"></i> Filters</div>
+                {# B4 #25: component NAME — required for a requires_component step
+                   (Component Impact / Component Remediation Package), which
+                   workflow preflight now rejects without one. #}
+                <div class="wfb-field" x-show="stepApplies(inspStep(), 'show_component')" x-cloak>
+                  <label for="insp-comp-name">Component name</label>
+                  <input class="wfb-inp" type="text" id="insp-comp-name"
+                         placeholder="e.g. openssl, busybox"
+                         :value="inspStep().overrides.component_filter || ''"
+                         @change="applyOverride('component_filter', $event.target.value)">
+                </div>
+                <div class="wfb-field" x-show="stepApplies(inspStep(), 'show_component_match')" x-cloak>
+                  <label for="insp-comp-match">Component match</label>
+                  <select class="wfb-sel" id="insp-comp-match"
+                          :value="inspStep().overrides.component_match || ''"
+                          @change="applyOverride('component_match', $event.target.value)">
+                    <option value="">(inherit)</option>
+                    <option value="contains">contains</option>
+                    <option value="exact">exact</option>
+                  </select>
+                </div>
+                <div class="wfb-field" x-show="stepApplies(inspStep(), 'show_component_version')" x-cloak>
+                  {# B11 #28: version RANGE, not a single version. #}
+                  <label for="insp-comp-version">Component version range</label>
+                  <input class="wfb-inp" type="text" id="insp-comp-version"
+                         placeholder="e.g. 1.2.11, <2.0, >=1.0,<2.0"
+                         :value="inspStep().overrides.component_version || ''"
+                         @change="applyOverride('component_version', $event.target.value)">
+                  <small class="wfb-foot-note">Exact version or a range — 1.2.11, &lt;2.0, &gt;=1.0,&lt;2.0.</small>
+                </div>
+                <div class="wfb-toggle" x-show="stepApplies(inspStep(), 'show_standalone')" x-cloak>
+                  <span class="tl">Standalone</span>
+                  <div class="wfb-sw" :class="{ on: !!inspStep().overrides.standalone }"
+                       role="switch" :aria-checked="!!inspStep().overrides.standalone" tabindex="0"
+                       @click="toggleStepBool('standalone')"
+                       @keydown.enter.prevent="toggleStepBool('standalone')"
+                       @keydown.space.prevent="toggleStepBool('standalone')"></div>
+                </div>
+                <div class="wfb-field" x-show="stepApplies(inspStep(), 'show_detected_after')" x-cloak>
+                  <label for="insp-detected-after">Detected after</label>
+                  <input class="wfb-inp" type="date" id="insp-detected-after"
+                         :value="inspStep().overrides.detected_after || ''"
+                         @change="applyOverride('detected_after', $event.target.value)">
+                </div>
+                <div class="wfb-field" x-show="stepApplies(inspStep(), 'show_scan_filters')" x-cloak>
+                  <label>Scan types</label>
+                  <div class="wfb-checkgroup">
+                    <template x-for="tok in ['SCA','SAST','CONFIG','SOURCE_SCA','SBOM_IMPORT','VULNERABILITY_ANALYSIS']" :key="tok">
+                      <label class="wfb-chk">
+                        <input type="checkbox" :name="'scan_types_' + tok"
+                               :checked="scanTokenChecked(inspStep(), 'scan_types', tok)"
+                               @change="toggleScanToken('scan_types', tok)">
+                        <span x-text="tok"></span>
+                      </label>
+                    </template>
+                  </div>
+                </div>
+                <div class="wfb-field" x-show="stepApplies(inspStep(), 'show_scan_filters')" x-cloak>
+                  <label>Scan statuses</label>
+                  <div class="wfb-checkgroup">
+                    <template x-for="tok in ['INITIAL','PENDING_UPLOAD','UPLOAD_FAILED','COMPLETED','ERROR','STARTED','NOT_APPLICABLE']" :key="tok">
+                      <label class="wfb-chk">
+                        <input type="checkbox" :name="'scan_statuses_' + tok"
+                               :checked="scanTokenChecked(inspStep(), 'scan_statuses', tok)"
+                               @change="toggleScanToken('scan_statuses', tok)">
+                        <span x-text="tok"></span>
+                      </label>
+                    </template>
+                  </div>
+                </div>
+              </div>
+
+              {# ── Files group (SP3): uploaded scoring / context overrides ────
+                 Each control reuses the shared .fs-upload + uploads.js helper
+                 (kind=scoring|context → POST /api/uploads → fs-upload-done).
+                 The handler mirrors the returned path into the per-step
+                 override via applyOverride (omitted from exports — local-host
+                 paths). The name span reads from the model so a step switch /
+                 clear / reset reflects the per-step value. __fsWireUploads is
+                 (re)called from selectStep's $nextTick (see builder-page.js). #}
+              <div x-show="stepApplies(inspStep(), 'show_scoring') || stepApplies(inspStep(), 'show_deployment_context')" x-cloak>
+                <div class="wfb-sec-label" style="margin-top:10px"><i data-lucide="file-up"></i> Files</div>
+                <div class="wfb-field" x-show="stepApplies(inspStep(), 'show_scoring')" x-cloak>
+                  {# B11 #18: label/hint per consumer (staleness vs triage weights). #}
+                  <label x-text="stepApplies(inspStep(), 'scoring_is_staleness') ? 'Custom staleness thresholds (YAML)' : (stepApplies(inspStep(), 'scoring_is_triage') ? 'Custom triage scoring weights (YAML)' : 'Custom scoring file (YAML)')"></label>
+                  <div class="fs-upload" data-kind="scoring"
+                       @fs-upload-done="onUploadDone('scoring_file', $event)">
+                    <input type="file" class="fs-upload-input" accept=".yaml,.yml">
+                    <span class="fs-upload-name" x-text="uploadName(inspStep(), 'scoring_file')"></span>
+                    <button type="button" class="fs-upload-clear" aria-label="Clear">&times;</button>
+                  </div>
+                  <small class="wfb-foot-note" x-text="(stepApplies(inspStep(), 'scoring_is_staleness') ? 'Scan-age staleness thresholds (days, e.g. fresh/aging/stale)' : (stepApplies(inspStep(), 'scoring_is_triage') ? 'Triage scoring weights — reachability / EPSS / CVSS and gate cutoffs' : 'Custom scoring weights / staleness thresholds')) + ' (this report only). Not included in exports.'"></small>
+                </div>
+                <div class="wfb-field" x-show="stepApplies(inspStep(), 'show_deployment_context')" x-cloak>
+                  <label>AI deployment context (YAML)</label>
+                  <div class="fs-upload" data-kind="context"
+                       @fs-upload-done="onUploadDone('context_file', $event)">
+                    <input type="file" class="fs-upload-input" accept=".yaml,.yml">
+                    <span class="fs-upload-name" x-text="uploadName(inspStep(), 'context_file')"></span>
+                    <button type="button" class="fs-upload-clear" aria-label="Clear">&times;</button>
+                  </div>
+                  <small class="wfb-foot-note">Overrides AI prompt context (product type, exposure, notes). Not included in exports.</small>
+                </div>
+              </div>
+
+              <button class="wfb-btn sm" type="button" id="insp-reset"
+                      style="width:100%;margin-top:8px" @click="resetOverrides()">
+                <i data-lucide="rotate-ccw"></i> Reset to globals
+              </button>
+            </div>
+          </template>
+
+          {# ---------- MCP-TOOL step inspector (export-only) ---------- #}
+          <template x-if="inspStep().kind === 'mcp_tool'">
+            <div>
+              <div class="insp-note export-only-note">
+                <b>Export-only</b> — this tool runs via the Forge agent, not in a
+                local run. Set its params; they ride into every export.
+              </div>
+              <template x-if="!mcpParamKeys(inspStep()).length">
+                <div class="insp-note">
+                  This tool takes its inputs from the global properties and prior
+                  steps — no per-step params.
+                </div>
+              </template>
+              <template x-for="pk in mcpParamKeys(inspStep())" :key="pk">
+                <div class="wfb-field">
+                  <label :for="'insp-param-' + pk"
+                         x-text="pk + (mcpParamSpec(inspStep(), pk).required ? ' *' : '')"></label>
+                  {# Domain-constrained → select; otherwise free-text. #}
+                  <template x-if="mcpParamSpec(inspStep(), pk).domain">
+                    <select class="wfb-sel" :id="'insp-param-' + pk"
+                            :value="mcpParamValue(inspStep(), pk)"
+                            @change="applyParam(pk, $event.target.value)">
+                      <template x-for="dv in mcpParamSpec(inspStep(), pk).domain" :key="dv">
+                        <option :value="dv" x-text="dv"></option>
+                      </template>
+                    </select>
+                  </template>
+                  <template x-if="!mcpParamSpec(inspStep(), pk).domain">
+                    <input class="wfb-inp mono" type="text" :id="'insp-param-' + pk"
+                           :value="mcpParamValue(inspStep(), pk)"
+                           @change="applyParam(pk, $event.target.value)">
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+
+    {# ===== Compound SECTION body (Task C) — bound to the selected section. =====
+       The section is the LEAN {recipe, overrides} shape, so this body shows ONLY
+       the whitelisted overrides (scope, finding types, current-version-only, AI,
+       period/range) and uses the sec* helpers (NEVER inspStep / step-only
+       fields).  Scope selects use SECTION-unique ids (sec-insp-*) so the cascade
+       can't collide with the global (#g-*) or per-step (#insp-*) cascades. #}
+    <div class="wfb-insp-body" id="sec-insp-body" x-show="model.kind === 'compound' && inspSection()" x-cloak>
+      <template x-if="model.kind === 'compound' && inspSection()">
+        <div>
+          <div class="insp-head">
+            <div class="ih-ic" style="--sc:var(--purple)">
+              <i data-lucide="file-text"></i>
+            </div>
+            <div class="ih-tx">
+              <div class="ih-t" x-text="secRecipe(inspSection())"></div>
+              <div class="ih-s mono">section override</div>
+            </div>
+            <span class="ih-close" title="Close" @click="selectSection(selectedSection)">
+              <i data-lucide="x"></i>
+            </span>
+          </div>
+
+          <div class="insp-note">
+            Settings here apply to <b>this section only</b> — scope, period and AI
+            override the report's global properties; finding types and
+            current-version-only override the recipe defaults.
+            <span x-show="secOverrideCount(inspSection())"
+                  x-text="secOverrideCount(inspSection()) + ' override' + (secOverrideCount(inspSection()) > 1 ? 's' : '') + ' active'"></span>
+            <span x-show="!secOverrideCount(inspSection())">Leave a field unset to inherit its default.</span>
+          </div>
+
+          {# Per-section Folder / Project / Version override — root-scoped cascade,
+             SECTION-unique ids.  populateSelect fills these imperatively, so (as
+             in the per-step inspector) there is NO inner x-if template here — an
+             inner template would tear down the JS-injected options when an
+             override mutates.  The saved value is recovered via :data-value. #}
+          <div class="wfb-field">
+            <label for="sec-insp-folder">Folder override
+              <span class="with-global" x-text="'(global · ' + (model.global.folder_filter || 'any') + ')'"></span>
+            </label>
+            <select class="wfb-sel" id="sec-insp-folder"
+                    :data-value="inspSection().overrides.folder_filter || ''">
+              <option value="">(inherit from global)</option>
+            </select>
+          </div>
+          <div class="wfb-field">
+            <label for="sec-insp-project">Project override
+              <span class="with-global" x-text="'(global · ' + (model.global.project_filter || 'all') + ')'"></span>
+            </label>
+            <select class="wfb-sel" id="sec-insp-project"
+                    :data-value="inspSection().overrides.project_filter || ''"
+                    @change="secApplyOverride('project_filter', $event.target.value)">
+              <option value="">(inherit from global)</option>
+            </select>
+          </div>
+          <div class="wfb-field">
+            <label for="sec-insp-version">Version override</label>
+            <select class="wfb-sel" id="sec-insp-version"
+                    :data-value="inspSection().overrides.version_filter || ''"
+                    @change="secApplyOverride('version_filter', $event.target.value)">
+              <option value="">(latest)</option>
+            </select>
+          </div>
+
+          {# Period override (freeform) + per-section date range. #}
+          <div class="wfb-field">
+            <label for="sec-insp-period">Period override
+              <span class="with-global" x-text="'(global · ' + (model.global.period || 'range') + ')'"></span>
+            </label>
+            <input class="wfb-inp" type="text" id="sec-insp-period"
+                   :value="inspSection().overrides.period || ''"
+                   placeholder="inherit; e.g. 7d, Q1"
+                   @change="secApplyOverride('period', $event.target.value)">
+          </div>
+          <div class="wfb-row2">
+            <div class="wfb-field">
+              <label for="sec-insp-range-from">From override</label>
+              <input class="wfb-inp" type="date" id="sec-insp-range-from"
+                     :value="inspSection().overrides.start || ''"
+                     @change="secApplyOverride('start', $event.target.value)">
+            </div>
+            <div class="wfb-field">
+              <label for="sec-insp-range-to">To override</label>
+              <input class="wfb-inp" type="date" id="sec-insp-range-to"
+                     :value="inspSection().overrides.end || ''"
+                     @change="secApplyOverride('end', $event.target.value)">
+            </div>
+          </div>
+
+          {# Finding types (multi-select, lowercase engine tokens) — CVE checked =
+             inheriting the default; check more to override (unchecking back to
+             CVE-only clears the override). #}
+          <div class="wfb-field">
+            <label>Finding types</label>
+            <div class="wfb-checkgroup">
+              <template x-for="ft in [['cve','CVE'],['sast','SAST'],['thirdparty','3rd Party'],['credentials','Credentials'],['config_issues','Config'],['crypto_material','Crypto']]" :key="ft[0]">
+                <label class="wfb-chk">
+                  <input type="checkbox" :name="'sec_finding_types_' + ft[0]"
+                         :checked="secFindingTypeChecked(inspSection(), ft[0])"
+                         @change="secToggleFindingType(ft[0])">
+                  <span x-text="ft[1]"></span>
+                </label>
+              </template>
+            </div>
+            <small class="wfb-foot-note">CVE checked = inheriting the default; check additional types to override (unchecking back to CVE-only clears the override).</small>
+          </div>
+
+          {# Current version only — DEFAULT-TRUE bool (toggle off persists an
+             explicit false; toggle back on clears the override). #}
+          <div class="wfb-toggle">
+            <span class="tl">Current version only</span>
+            <div class="wfb-sw" :class="{ on: secCvoOn(inspSection()) }"
+                 role="switch" :aria-checked="secCvoOn(inspSection())" tabindex="0"
+                 @click="secToggleCvo()"
+                 @keydown.enter.prevent="secToggleCvo()"
+                 @keydown.space.prevent="secToggleCvo()"></div>
+          </div>
+
+          {# AI enrichment + depth. #}
+          <div class="wfb-toggle">
+            <span class="tl">AI enrichment
+              <span class="with-global" x-text="'(global: ' + (model.global.ai ? 'on' : 'off') + ')'"></span>
+            </span>
+            <div class="wfb-sw" :class="{ on: secAiOn(inspSection()) }"
+                 role="switch" :aria-checked="secAiOn(inspSection())" tabindex="0"
+                 @click="secToggleAi()" @keydown.enter.prevent="secToggleAi()"
+                 @keydown.space.prevent="secToggleAi()"></div>
+          </div>
+          <div class="wfb-field">
+            <label for="sec-insp-aidepth">AI depth
+              <span class="with-global" x-text="'(global · ' + model.global.ai_depth + ')'"></span>
+            </label>
+            <select class="wfb-sel" id="sec-insp-aidepth"
+                    :value="inspSection().overrides.ai_depth || ''"
+                    @change="secApplyOverride('ai_depth', $event.target.value)">
+              <option value="">(inherit from global)</option>
+              <option value="summary">summary</option>
+              <option value="full">full</option>
+            </select>
+          </div>
+
+          <button class="wfb-btn sm" type="button" id="sec-insp-reset"
+                  style="width:100%;margin-top:8px" @click="secResetOverrides()">
+            <i data-lucide="rotate-ccw"></i> Reset to globals
+          </button>
+        </div>
+      </template>
+    </div>
+  </aside>
+
+  <!-- ===================== EXPORT MODAL (§7) — workflow-only ===================== -->
+  {# Tabs come from exportTargets (CLI / GitHub Action always; Forge YAML / Forge
+     MCP only when FORGE_BUILDER_ENABLED — #7). On tab select we
+     POST /api/workflows/export?target=<...> with the current {model} and show
+     the returned text; Copy → clipboard, Download → Blob anchor with filename.
+     Inside the builder() x-data root so it shares the workflow model.
+     Hidden for compound/comparison — x-show gates the modal to workflow kind. #}
+  <div class="wfb-modal-ov" id="export-modal"
+       :class="{ open: exportOpen && model.kind === 'workflow' }" x-cloak
+       x-show="model.kind === 'workflow'"
+       @click.self="closeExport()"
+       @keydown.escape.window="closeExport()">
+    <div class="wfb-modal" role="dialog" aria-modal="true" aria-label="Export workflow">
+      <div class="modal-head">
+        <h2><i data-lucide="file-code-2"></i> Export workflow</h2>
+        <button type="button" class="x" title="Close" aria-label="Close export modal" @click="closeExport()"><i data-lucide="x"></i></button>
+      </div>
+      <div class="ex-tabs" id="ex-tabs">
+        <template x-for="t in exportTargets" :key="t.target">
+          <span class="ex-tab" :class="{ on: exportTarget === t.target }"
+                :data-fmt="t.target" @click="selectExportTab(t.target)">
+            <i :data-lucide="t.icon"></i> <span x-text="t.label"></span>
+          </span>
+        </template>
+      </div>
+      <div class="ex-body">
+        <pre class="ex-code" id="ex-code" x-text="exportLoading ? 'Generating…' : exportText"></pre>
+      </div>
+      <div class="ex-foot">
+        <span class="hint" id="ex-hint" x-text="exportFilename ? ('→ ' + exportFilename) : ''"></span>
+        <span class="sp"></span>
+        <button class="wfb-btn sm" type="button" id="ex-copy"
+                :disabled="!exportText" @click="copyExport()">
+          <i data-lucide="copy"></i> Copy
+        </button>
+        <button class="wfb-btn primary sm" type="button" id="ex-download"
+                :disabled="!exportText" @click="downloadExport()">
+          <i data-lucide="download"></i> Download
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+  {# Canonical MCP-tool param specs (id → {params}) — the single source the
+     inspector reads for each MCP-tool step's editable params (§5.4). JSON-safe
+     (the page route stringified any `type` objects). #}
+  <script>
+    window.__WFB_MCP = {{ mcp_tools | tojson }};
+    /* #7 (B6): single source of truth for the Forge/MCP surface flag — the
+       exportTargets array drops forge_yaml / forge_mcp when this is false. */
+    window.__WFB_FORGE_ENABLED = {{ forge_builder_enabled | tojson }};
+  </script>
+  {# Root-scoped, folder-less scope cascade for the global Project/Version
+     dropdowns + each per-step inspector cascade (Task 3 {root} + folder-less
+     form). Also used by the comparison editor's two independent scope cascades
+     (cmp-left-* / cmp-right-*). #}
+  {% include "components/_scope_dropdowns.html" %}
+  <script src="{{ static_v('vendor/sortable.min.js') }}"></script>
+  <script src="{{ static_v('js/builder-page.js') }}"></script>
+{% endblock %}

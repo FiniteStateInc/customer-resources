@@ -1,0 +1,288 @@
+{# Finite State briefing shell — full HTML document template consumed
+   via {% extends "_briefing_shell.html" %} (NOT include — {% block %}s
+   only resolve through inheritance).
+
+   Owns:
+     the document doctype, html, head (tokens via _design_system,
+     fonts, readiness beacons), body, the 880px briefing page frame,
+     and the per-page header/footer.
+
+   Fragment-mode contract (T0b § item 3):
+     The shell wraps ALL document chrome (DOCTYPE, html, head, body
+     open/close, briefing header/footer, .page wrapper) in a
+     render-mode gate (see the actual if/endif pair further down).
+
+     In fragment mode the shell emits ONLY the block content — no
+     chrome. The fragment_extractor (fs_report/renderers/fragment_extractor.py)
+     strips chrome and re-emits scoped styles; the compound assembler (B1) is
+     responsible for shared chrome (cover page, page-break CSS,
+     library loads) at bundle level.
+
+     Recipe templates that extend this shell do NOT add their own
+     render-mode wrapper — the shell owns it.
+
+   Token + design-system contract (post-T0a reconciliation):
+     This shell includes ONLY {% include "_design_system.html" %}.
+     _design_system.html includes _tokens_inline.html transitively
+     (T0a Task 3 outcome), so including _tokens_inline.html directly
+     here would double-emit the token <style> block. Same convention
+     as _standalone_shell.html.
+
+   Beacon contract:
+     Includes _ready_beacon.html (shared coordinator) PLUS both chart-
+     library wrappers: _echarts_ready.html (defines fsEChartsInit) and
+     _chart_ready.html (defines fsReportNewChart). Briefings can declare
+     Chart.js OR ECharts charts OR both, and the beacon coordinates all
+     of them. _chart_ready.html and _echarts_ready.html each include
+     _ready_beacon.html idempotently — the shared coordinator's typeof
+     guard prevents re-initialization.
+
+   Block contract — recipe templates override these (block names listed
+   below; the actual Jinja {% block ... %} definitions live further
+   down in this file):
+     - title              <title> tag content. Default: "<slide_title> - Finite State Report",
+                          or "Briefing - Finite State Report" if slide_title is undefined.
+     - head_extra         per-recipe head injections — chart-library CDN scripts (ECharts,
+                          Chart.js), recipe-specific style overrides, extra meta tags.
+                          Defaults empty. The shell's own head includes _design_system.html
+                          + _ready_beacon.html + _echarts_ready.html + the Inter font load
+                          + the briefing page-frame CSS — recipes don't repeat any of those.
+                          head_extra is gated by the same render-mode wrapper, so library
+                          loads don't leak into fragment-mode renders.
+     - hero               eyebrow + headline + deck
+     - stats              big-number row (up to 4 stats)
+     - actions            action card list
+     - distribution       portfolio split (bar + legend) + component cards
+     - methodology        prose explanation
+     - sections           escape hatch for recipes that need more zones
+     - page_frame         wraps all six content blocks; override to opt out of 880px column
+     - briefing_header    optional override for the per-page header (chrome only)
+     - briefing_footer    optional override for the per-page footer (chrome only)
+
+   Example usage (illustrative; lives in dev/template_migration.md):
+       extend this shell from a recipe template, then fill the hero,
+       stats, etc. blocks with the recipe's content.
+#}
+{% if render_mode != 'fragment' %}
+<!DOCTYPE html>
+<html lang="en"{% if theme %} data-theme="{{ theme }}"{% endif %}>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ slide_title | default("Briefing") }} - Finite State Report{% endblock %}</title>
+
+    {% include "_design_system.html" %}
+    {% include "_ready_beacon.html" %}
+    {% include "_echarts_ready.html" %}
+    {% include "_chart_ready.html" %}
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    {% block head_extra %}{% endblock %}
+{% endif %}
+
+    {# Briefing-shell styles render in BOTH standalone and fragment modes
+       so the fragment_extractor picks them up and scopes them under
+       .fs-section-<slug>. Without this, fragment-mode briefings render
+       unstyled because the CSS lived behind the head gate. (B1.4
+       follow-up: fragment-mode visual parity.) #}
+    <style>
+        /* Briefing page frame — narrow 880px column for prose-heavy
+           briefings. Recipes that want a wider layout can override
+           the page_frame block. */
+        /* Use .briefing (not body.briefing) so the base briefing
+           typography applies to BOTH the standalone body wrapper and
+           the fragment-mode div wrapper. The CSS scoper rewrites a
+           bare class selector to a DESCENDANT selector under the
+           fragment wrapper (.fs-section-X .briefing) — matching the
+           inner div, which is what we want. The earlier body-prefixed
+           form was rewritten to a same-element compound selector
+           (.fs-section-X.briefing) that never matched, since the
+           fragment wrapper class never co-occurs with .briefing on
+           one element. (Round-2 multi-review M2-1; round-3 M2-2
+           docstring correction.) */
+        .briefing {
+            background: var(--surface-page);
+            color: var(--ink-strong);
+            font-family: var(--font-body);
+            line-height: var(--line-height-body);
+        }
+        .briefing .page {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 32px 24px 48px;
+        }
+        .briefing .briefing-header {
+            border-bottom: 1px solid var(--hairline);
+            padding-bottom: 16px;
+            margin-bottom: 24px;
+            color: var(--ink-mute);
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        /* Header-scaled logo overrides — _default_logo.html's .company-logo
+           CSS in _design_system.html is sized for full-page header use
+           (max-height: 50px, margin: 0 auto, display: block). In the
+           briefing header it needs to be inline-flex compatible. */
+        .briefing .briefing-header .logo-container { margin: 0; }
+        .briefing .briefing-header .company-logo {
+            max-height: 32px;
+            margin: 0;
+            display: inline-block;
+            width: auto;
+        }
+        .briefing .briefing-header .meta {
+            text-align: right;
+            flex: 1;
+        }
+        /* Theme toggle sits at the far right of the header band; .meta's
+           flex:1 pushes it there. flex:none keeps the 28px control from
+           being squeezed when the meta band is long. */
+        .briefing .briefing-header .briefing-tools {
+            flex: none;
+            display: inline-flex;
+            align-items: center;
+        }
+        /* Keep each label+value unit together — bullets are the only
+           break points if the meta band wraps. */
+        .briefing .briefing-header .meta-segment {
+            white-space: nowrap;
+            display: inline-block;
+        }
+        .briefing .briefing-footer {
+            border-top: 1px solid var(--hairline);
+            padding-top: 16px;
+            margin-top: 32px;
+            color: var(--ink-mute);
+            font-size: 11px;
+            text-align: center;
+        }
+        .briefing .hero h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--ink);
+            letter-spacing: -0.02em;
+            margin-bottom: 8px;
+        }
+        .briefing .hero .eyebrow {
+            font-size: 11px;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--ink-mute);
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+        .briefing .hero .deck {
+            font-size: 15px;
+            color: var(--ink-body);
+            line-height: 1.55;
+            margin-bottom: 24px;
+        }
+        .briefing .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 16px;
+            margin: 24px 0;
+        }
+        .briefing .stat {
+            background: var(--surface-card);
+            border: 1px solid var(--hairline);
+            border-radius: 6px;
+            padding: 14px 16px;
+        }
+        .briefing .stat-label {
+            font-size: 10px;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--ink-mute);
+            margin-bottom: 4px;
+            font-weight: 600;
+        }
+        .briefing .stat-value {
+            font-family: var(--font-mono, monospace);
+            font-size: 22px;
+            font-weight: 500;
+            color: var(--ink);
+            font-variant-numeric: tabular-nums;
+            line-height: 1.1;
+        }
+        .briefing .actions {
+            margin: 24px 0;
+        }
+        .briefing .distribution {
+            margin: 24px 0;
+        }
+        .briefing .methodology {
+            margin: 24px 0;
+            color: var(--ink-body);
+            font-size: 13px;
+            line-height: 1.6;
+        }
+    </style>
+
+{% if render_mode != 'fragment' %}
+</head>
+<body class="briefing" data-nav-category="{{ nav_category_slug | default('') }}">
+<div class="page">
+    <header class="briefing-header">{% block briefing_header %}
+        {# Default chrome: Finite State logo on the left, metadata band
+           on the right (recipe name · period · generated · record count
+           · folder · project). Each label+value pair is wrapped in
+           .meta-segment with white-space:nowrap so segments stay
+           together; bullets between segments are the natural break
+           points if the band is too long for one line. Recipes
+           override this block ONLY if they need different chrome —
+           the default fits every Phase 1a briefing recipe. #}
+        {% include "_default_logo.html" %}
+        <span class="meta">
+            <span class="meta-segment"><strong>{{ recipe_name | default("Briefing") }}</strong></span>
+            {% if start_date and end_date %} · <span class="meta-segment">{{ start_date }} → {{ end_date }}</span>{% endif %}
+            {% if generated_at %} · <span class="meta-segment">Generated {{ generated_at }}</span>{% endif %}
+            {% if metadata and metadata.transformed_count is defined %} · <span class="meta-segment">{{ metadata.transformed_count }} records</span>{% endif %}
+            {% if folder_path %} · <span class="meta-segment">Folder: {{ folder_path }}</span>{% endif %}
+            {% if scan_metadata and scan_metadata.project_name %} · <span class="meta-segment">Project: {{ scan_metadata.project_name }}</span>{% elif project_label %} · <span class="meta-segment">Project: {{ project_label }}</span>{% endif %}
+            {# B1 #15: surface a portfolio-wide scope — the only case the project/
+               folder segments above leave blank — so an unpinned report isn't
+               silent about what it covers. #}
+            {% if effective_scope is defined and effective_scope and effective_scope.scope_kind == 'portfolio' %} · <span class="meta-segment">Scope: Portfolio</span>{% endif %}
+        </span>
+    {% endblock %}{# Theme toggle lives in the shell chrome (outside the
+       briefing_header block so a recipe overriding that block can't drop
+       it). _theme_init.html — included transitively via _design_system.html
+       in <head> — already restores localStorage["fs-theme"] pre-paint and
+       enforces explicit-theme/pdf_mode determinism, so the button only
+       mounts the control; it adds NO restore-on-load script (a second
+       initializer would fight the PDF determinism). @media print in
+       _design_system.html hides .fs-theme-toggle, so PDFs are unaffected. #}<span class="briefing-tools">{% include "_theme_toggle.html" %}</span></header>
+{% else %}
+{# Fragment mode: emit a <div class="briefing"> wrapper so the
+   ancestor-scoped .briefing CSS selectors continue to match. The
+   document <body class="briefing"> is gated out in fragment mode,
+   so without this wrapper the briefing styles would have nothing
+   to attach to. (B1.4 follow-up.) #}
+<div class="briefing">
+{% endif %}
+
+{# Content blocks render in ALL modes — fragment included. #}
+{% block page_frame %}
+    {% block hero %}{% endblock %}
+    {% block stats %}{% endblock %}
+    {% block actions %}{% endblock %}
+    {% block distribution %}{% endblock %}
+    {% block methodology %}{% endblock %}
+    {% block sections %}{% endblock %}
+{% endblock %}
+
+{% if render_mode != 'fragment' %}
+    <footer class="briefing-footer">{% block briefing_footer %}{% endblock %}</footer>
+</div>
+</body>
+</html>
+{% else %}
+</div>
+{% endif %}

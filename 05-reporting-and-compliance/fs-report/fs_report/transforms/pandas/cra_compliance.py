@@ -312,7 +312,7 @@ def _row_from_record_all(rec: dict[str, Any]) -> dict[str, Any]:
     for ALL records including resolved/not-affected/false-positive.
     Used by Phase C1 section assembly so re_emerged can see resolved rows.
     """
-    # CRA treats CISA KEV (inKev) and Verified-Compromise KEV (inVcKev) as
+    # CRA treats CISA KEV (inKev) and VulnCheck KEV (inVcKev) as
     # the same tier for both classification (kev) and KPI labeling. Round 2
     # multi-review caught the asymmetry: section assembly already groups
     # them via `inKev OR inVcKev`, but the row's `in_kev` and `cra_trigger`

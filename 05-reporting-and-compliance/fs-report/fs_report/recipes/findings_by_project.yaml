@@ -1,6 +1,7 @@
 name: "Findings by Project"
 category: assessment  # Current state: shows today's findings inventory regardless of time period
 nav_category: Investigation
+chart_libraries: []
 template: "findings_by_project.html"
 description: "Comprehensive inventory of findings across projects with optional filtering"
 execution_order: 20  # Reuses cached scans from Scan Analysis
@@ -88,9 +89,6 @@ output:
     - name: "Description"
       source: "Joined NVD enrichment"
       description: "CVE description from NVD when enrichment is available, otherwise empty."
-    - name: "CVSS v2 Vector"
-      source: "Joined NVD enrichment"
-      description: "CVSS v2 vector string when available."
     - name: "CVSS v3 Vector"
       source: "Joined NVD enrichment"
       description: "CVSS v3 vector string when available."

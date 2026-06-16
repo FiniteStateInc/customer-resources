@@ -1,16 +1,81 @@
 <!-- Cascading Project / Folder / Version dropdowns.
      Usage: include this template, then call:
        initScopeDropdowns({ projectId, folderId, versionId })
-     where each *Id is the id of a <select> element. -->
+     where each *Id is the id of a <select> element.
+
+     Extended options (all optional, all backward-compatible):
+       opts.root     — a DOM element to scope id lookups to (via
+                       root.querySelector('#'+id)).  When absent, falls back to
+                       document.getElementById — identical to previous behaviour.
+                       Pass the container element when multiple independent scope
+                       cascades coexist on one page (e.g. Workflow Builder step
+                       inspectors) so each instance binds only its own selects.
+       opts.folderId — omit or pass falsy to skip ALL folder logic (no folder
+                       fetch, no folder-based project filtering) and run a bare
+                       project→version cascade.  When present, behaviour is
+                       identical to before.
+       opts.folderEmptyLabel  — label for the folder select's empty option
+                       (default "Any folder").
+       opts.projectEmptyLabel — label for the project select's empty option
+                       (default "All projects").  The version select's empty
+                       option keeps the literal "(all)".
+       opts.onChange — optional callback invoked whenever the effective scope
+                       changes (folder, project, or version), called as
+                       onChange({ folder, project, version }) where `folder` is
+                       the selected folder ID or "" and `project`/`version` keep
+                       the select's current value.  Absent → behaviour unchanged.
+
+     Targeting model (spec §7):
+       The folder option's VALUE is the folder ID (its visible label remains the
+       folder name); filterProjects() resolves the selected folder by ID.  A
+       legacy `data-value` that holds a folder NAME (pre-ID-value seeding) is
+       migrated to that folder's ID on load so saved selections still restore.
+       When Project = "All projects" (value ""), the version select is disabled
+       and cleared (version is project-specific). -->
 <script>
 function initScopeDropdowns(opts) {
-    var projectSel = document.getElementById(opts.projectId);
-    var folderSel  = document.getElementById(opts.folderId);
-    var versionSel = document.getElementById(opts.versionId);
-    if (!projectSel || !folderSel || !versionSel) return;
+    /* Empty-option labels (parameterized; spec §7). Folder/project labels are
+       caller-overridable; version keeps the literal "(all)". */
+    var folderEmptyLabel  = (opts.folderEmptyLabel != null) ? opts.folderEmptyLabel : 'Any folder';
+    var projectEmptyLabel = (opts.projectEmptyLabel != null) ? opts.projectEmptyLabel : 'All projects';
+    var onChange = (typeof opts.onChange === 'function') ? opts.onChange : null;
+    /* opts.onReady (C2, optional) — fired EXACTLY ONCE after the programmatic
+       seed cascade fully settles (projects/folders loaded, the saved
+       project/folder/version restored, incl. the async loadVersions resolve).
+       The Builder's global cascade uses this to clear its _scopeSeeding sentinel
+       only after the LAST seed emit, so a programmatic re-seed never marks the
+       target dirty.  A no-op when absent (all other callers).  Fires whether the
+       cascade succeeds or its fetch fails (so the sentinel is always cleared). */
+    var onReady = (typeof opts.onReady === 'function') ? opts.onReady : null;
+    var _readyFired = false;
+    function fireReady() {
+        if (_readyFired) return;
+        _readyFired = true;
+        if (onReady) onReady();
+    }
+    /* ── element resolution: root-scoped when opts.root is given ── */
+    var root = opts.root || document;
+    function pick(id) {
+        return id ? (root === document ? document.getElementById(id)
+                                       : root.querySelector('#' + id))
+                  : null;
+    }
+
+    var projectSel = pick(opts.projectId);
+    var folderSel  = (opts.folderId ? pick(opts.folderId) : null);
+    var versionSel = pick(opts.versionId);
+
+    /* folderSel is optional; projectSel + versionSel are required.
+       Fire the ready callback before bailing so a caller's seeding sentinel
+       (e.g. the Builder's _scopeSeeding) can never get stuck true when the
+       selects are absent from the DOM. */
+    if (!projectSel || !versionSel) { fireReady(); return; }
+    /* When folderId was supplied but the element is absent, treat as no-folder
+       (same as if folderId were omitted — skip folder logic gracefully). */
+    var hasFolder = !!(folderSel);
 
     var allProjects = [];       // [{id, name}, ...] — full project list
-    var allFolders  = [];       // [{id, name, parent_id}, ...]
+    var allFolders  = [];       // [{id, name, parentFolderId}, ...] (API shape)
     var folderProjects = [];    // projects currently shown (folder-scoped or all)
     var nonce = window.NONCE || '';
 
@@ -20,7 +85,7 @@ function initScopeDropdowns(opts) {
         if (!spinner) {
             spinner = document.createElement('span');
             spinner.className = 'scope-spinner';
-            spinner.textContent = '\u23F3';
+            spinner.textContent = '⏳';
             sel.parentNode.appendChild(spinner);
         }
         spinner.style.display = loading ? 'inline' : 'none';
@@ -36,12 +101,38 @@ function initScopeDropdowns(opts) {
         });
     }
 
-    function populateSelect(sel, items, valueFn, labelFn, currentValue) {
+    /* Notify the caller of the current effective scope.  `folder` is the folder
+       select's value (a folder ID, or "" for "Any folder"); project/version keep
+       the select's current value shape.  No-op when opts.onChange is absent. */
+    function emitChange() {
+        if (!onChange) return;
+        onChange({
+            folder:  hasFolder ? (folderSel.value || '') : '',
+            project: projectSel.value || '',
+            version: versionSel.value || ''
+        });
+    }
+
+    /* Disable + clear the version select when no specific project is chosen
+       (Project = "All projects", value "").  Version is project-specific, so a
+       portfolio/folder-only scope leaves nothing to version-filter on.  Re-enabled
+       implicitly by loadVersions() (which calls setLoading(versionSel,false)) when
+       a specific project IS selected. */
+    function syncVersionEnabled() {
+        if (!projectSel.value) {
+            versionSel.value = '';
+            versionSel.innerHTML = '<option value="">(all)</option>';
+            versionSel.disabled = true;
+            hideSpinner(versionSel);
+        }
+    }
+
+    function populateSelect(sel, items, valueFn, labelFn, currentValue, emptyLabel) {
         var prevValue = currentValue || sel.value || '';
         sel.innerHTML = '';
         var allOpt = document.createElement('option');
         allOpt.value = '';
-        allOpt.textContent = '(all)';
+        allOpt.textContent = (emptyLabel != null) ? emptyLabel : '(all)';
         sel.appendChild(allOpt);
         items.forEach(function(item) {
             var o = document.createElement('option');
@@ -49,14 +140,30 @@ function initScopeDropdowns(opts) {
             o.textContent = labelFn(item);
             sel.appendChild(o);
         });
-        // Restore previous value if it exists
+        // Restore previous value if it exists in the list (by value or label).
         if (prevValue) {
+            var found = false;
             for (var i = 0; i < sel.options.length; i++) {
                 if (sel.options[i].value === prevValue ||
                     sel.options[i].textContent === prevValue) {
                     sel.selectedIndex = i;
+                    found = true;
                     break;
                 }
+            }
+            /* Fallback: the saved value is absent from the API list (e.g. stale
+               override, no live creds, project filtered out, or inspector reload
+               before the async fetch resolves).  Inject an explicit option so the
+               saved override value is always visible + selected — the user can
+               still see what was saved and change it if needed.  This is required
+               by the inspector override selects, whose :data-value seeds the saved
+               override value but whose option list is populated asynchronously. */
+            if (!found) {
+                var fallback = document.createElement('option');
+                fallback.value = prevValue;
+                fallback.textContent = prevValue;
+                sel.appendChild(fallback);
+                sel.selectedIndex = sel.options.length - 1;
             }
         }
     }
@@ -65,7 +172,7 @@ function initScopeDropdowns(opts) {
     function buildFolderTree(folders) {
         var byParent = {};
         folders.forEach(function(f) {
-            var pid = f.parent_id || '__root__';
+            var pid = f.parentFolderId || f.parent_id || '__root__';
             if (!byParent[pid]) byParent[pid] = [];
             byParent[pid].push(f);
         });
@@ -75,7 +182,7 @@ function initScopeDropdowns(opts) {
             children.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
             children.forEach(function(f) {
                 var prefix = '';
-                for (var i = 0; i < depth; i++) prefix += '\u00A0\u00A0';
+                for (var i = 0; i < depth; i++) prefix += '  ';
                 result.push({ id: f.id, label: prefix + (f.name || f.id), raw: f });
                 walk(f.id, depth + 1);
             });
@@ -91,58 +198,131 @@ function initScopeDropdowns(opts) {
         return result;
     }
 
-    /* ── load projects + folders ─────────────────────────────── */
+    /* ── one-time name→ID migration for a seeded folder value ──────
+       Folder option values are now folder IDs (was: folder names).  A saved
+       `data-value` may still hold a NAME from before that switch.  If `val`
+       isn't already a known folder ID but matches a folder by NAME, return that
+       folder's ID; otherwise return `val` unchanged (already an ID, empty, or
+       unknown).  Transparent + idempotent: ID-valued input passes straight
+       through, so re-running it never corrupts a value. */
+    function migrateFolderValue(val) {
+        if (!val) return val;
+        var byId = allFolders.find(function(f) { return String(f.id) === String(val); });
+        if (byId) return String(byId.id);
+        var byName = allFolders.find(function(f) { return (f.name || '') === val; });
+        return byName ? String(byName.id) : val;
+    }
+
+    /* ── load projects (+ folders when hasFolder) ────────────── */
     function loadAll() {
         setLoading(projectSel, true);
-        setLoading(folderSel, true);
+        if (hasFolder) setLoading(folderSel, true);
         setLoading(versionSel, true);
 
         var savedProject = projectSel.getAttribute('data-value') || projectSel.value || '';
-        var savedFolder = folderSel.getAttribute('data-value') || folderSel.value || '';
+        var savedFolder  = hasFolder ? (folderSel.getAttribute('data-value') || folderSel.value || '') : '';
         var savedVersion = versionSel.getAttribute('data-value') || versionSel.value || '';
 
-        Promise.all([
-            apiFetch('public/v0/projects?limit=10000&archived=false&excluded=false'),
-            apiFetch('public/v0/folders?limit=10000'),
-        ])
-        .then(function(results) {
-            var projData = results[0];
-            var foldData = results[1];
-            allProjects = (projData.items || projData || []);
-            allFolders  = (foldData.items || foldData || []);
+        if (hasFolder) {
+            /* Full path: fetch projects + folders in parallel */
+            Promise.all([
+                apiFetch('public/v0/projects?limit=10000&archived=false&excluded=false'),
+                apiFetch('public/v0/folders?limit=10000'),
+            ])
+            .then(function(results) {
+                var projData = results[0];
+                var foldData = results[1];
+                allProjects = (projData.items || projData || []);
+                allFolders  = (foldData.items || foldData || []);
 
-            // Populate folders
-            var tree = buildFolderTree(allFolders);
-            populateSelect(folderSel, tree,
-                function(f) { return f.raw.name || String(f.id); },
-                function(f) { return f.label; },
-                savedFolder
-            );
+                /* name→ID migration: callers historically seeded folder
+                   data-value with a folder NAME.  Folder option VALUES are now
+                   IDs, so map a saved NAME to its ID once (transparent) — else
+                   populateSelect's restore can't match the new ID-valued options
+                   and the saved folder silently drops. */
+                savedFolder = migrateFolderValue(savedFolder);
 
-            setLoading(folderSel, false);
+                // Populate folders (option value = folder ID, label = name)
+                var tree = buildFolderTree(allFolders);
+                populateSelect(folderSel, tree,
+                    function(f) { return String(f.id); },
+                    function(f) { return f.label; },
+                    savedFolder,
+                    folderEmptyLabel
+                );
 
-            // Populate projects (filtered if folder selected), then load versions
-            filterProjects(savedProject).then(function() {
+                setLoading(folderSel, false);
+
+                // Populate projects (filtered if folder selected), then load versions
+                filterProjects(savedProject).then(function() {
+                    setLoading(projectSel, false);
+                    var vp;
+                    if (projectSel.value) {
+                        vp = loadVersions(projectSel.value, savedVersion);
+                    } else {
+                        /* No specific project → disable + clear version (and hide
+                           its spinner).  Must NOT setLoading(false) here — that
+                           force-enables the select, undoing the disable. */
+                        syncVersionEnabled();
+                        vp = Promise.resolve();
+                    }
+                    /* emitChange() is the SINGLE programmatic seed emit; fire
+                       onReady ONLY after the (possibly async) version restore
+                       resolves so the LAST seed has landed (C2). */
+                    emitChange();
+                    Promise.resolve(vp).then(fireReady, fireReady);
+                });
+            })
+            .catch(function(err) {
+                console.warn('Failed to load scope data:', err);
                 setLoading(projectSel, false);
-                if (projectSel.value) {
-                    loadVersions(projectSel.value, savedVersion);
-                } else {
-                    setLoading(versionSel, false);
-                }
+                setLoading(folderSel, false);
+                setLoading(versionSel, false);
+                fireReady();
             });
-        })
-        .catch(function(err) {
-            console.warn('Failed to load scope data:', err);
-            setLoading(projectSel, false);
-            setLoading(folderSel, false);
-            setLoading(versionSel, false);
-        });
+        } else {
+            /* No-folder path: fetch projects only, then cascade to versions */
+            apiFetch('public/v0/projects?limit=10000&archived=false&excluded=false')
+            .then(function(projData) {
+                allProjects = (projData.items || projData || []);
+                folderProjects = allProjects.slice();
+                folderProjects.sort(function(a, b) {
+                    return (a.name || '').localeCompare(b.name || '');
+                });
+                populateSelect(projectSel, folderProjects,
+                    function(p) { return p.name || String(p.id); },
+                    function(p) { return p.name || String(p.id); },
+                    savedProject,
+                    projectEmptyLabel
+                );
+                setLoading(projectSel, false);
+                var vp;
+                if (projectSel.value) {
+                    vp = loadVersions(projectSel.value, savedVersion);
+                } else {
+                    /* No specific project → disable + clear version (see the
+                       folder-path note above; setLoading(false) would re-enable). */
+                    syncVersionEnabled();
+                    vp = Promise.resolve();
+                }
+                emitChange();
+                /* Fire onReady only after the version restore resolves (C2). */
+                Promise.resolve(vp).then(fireReady, fireReady);
+            })
+            .catch(function(err) {
+                console.warn('Failed to load scope data:', err);
+                setLoading(projectSel, false);
+                setLoading(versionSel, false);
+                fireReady();
+            });
+        }
     }
 
     /* ── filter projects by selected folder ──────────────────── */
+    /* Only called when hasFolder is true. */
     function filterProjects(restoreValue) {
-        var folderName = folderSel.value;
-        if (!folderName) {
+        var folderId = folderSel.value;
+        if (!folderId) {
             // No folder selected — show all projects
             folderProjects = allProjects.slice();
             folderProjects.sort(function(a, b) {
@@ -151,19 +331,21 @@ function initScopeDropdowns(opts) {
             populateSelect(projectSel, folderProjects,
                 function(p) { return p.name || String(p.id); },
                 function(p) { return p.name || String(p.id); },
-                restoreValue
+                restoreValue,
+                projectEmptyLabel
             );
             return Promise.resolve();
         }
-        // Find folder by name to get its id
+        // The folder select value is the folder ID — resolve by ID.
         var folder = allFolders.find(function(f) {
-            return (f.name || String(f.id)) === folderName;
+            return String(f.id) === String(folderId);
         });
         if (!folder) {
             populateSelect(projectSel, [],
                 function(p) { return ''; },
                 function(p) { return ''; },
-                restoreValue
+                restoreValue,
+                projectEmptyLabel
             );
             return Promise.resolve();
         }
@@ -178,7 +360,8 @@ function initScopeDropdowns(opts) {
             populateSelect(projectSel, folderProjects,
                 function(p) { return p.name || String(p.id); },
                 function(p) { return p.name || String(p.id); },
-                restoreValue
+                restoreValue,
+                projectEmptyLabel
             );
             setLoading(projectSel, false);
         })
@@ -188,12 +371,28 @@ function initScopeDropdowns(opts) {
         });
     }
 
+    /* Hide the loading spinner for `sel` WITHOUT toggling sel.disabled (unlike
+       setLoading(sel,false), which force-enables).  Used where we want the
+       version select to stay disabled (no specific project). */
+    function hideSpinner(sel) {
+        var spinner = sel.parentNode.querySelector('.scope-spinner');
+        if (spinner) spinner.style.display = 'none';
+    }
+
     /* ── load versions for a project ─────────────────────────── */
+    /* Returns a Promise that resolves once the version select is populated +
+       the saved version restored (C2: so loadAll can fire onReady AFTER the
+       async version restore lands).  The synchronous-clear branches resolve
+       immediately. */
     function loadVersions(projectValue, restoreValue) {
         if (!projectValue) {
+            /* No specific project → version is not applicable: clear + disable
+               (mirrors syncVersionEnabled; version is project-specific). */
             versionSel.innerHTML = '<option value="">(all)</option>';
-            setLoading(versionSel, false);
-            return;
+            versionSel.value = '';
+            versionSel.disabled = true;
+            hideSpinner(versionSel);
+            return Promise.resolve();
         }
         // Find project by name to get its id (search folder-scoped list first, then all)
         var proj = folderProjects.find(function(p) {
@@ -203,10 +402,10 @@ function initScopeDropdowns(opts) {
         });
         if (!proj) {
             setLoading(versionSel, false);
-            return;
+            return Promise.resolve();
         }
         setLoading(versionSel, true);
-        apiFetch('public/v0/projects/' + proj.id + '/versions')
+        return apiFetch('public/v0/projects/' + proj.id + '/versions')
         .then(function(data) {
             var versions = data.items || data || [];
             versions.sort(function(a, b) {
@@ -224,35 +423,104 @@ function initScopeDropdowns(opts) {
         });
     }
 
-    /* ── events ──────────────────────────────────────────────── */
-    folderSel.addEventListener('change', function() {
-        filterProjects('');
-        versionSel.innerHTML = '<option value="">(all)</option>';
-    });
+    /* ── events (bound at most ONCE per element via a data-flag guard) ──
+       The Builder inspector re-calls initScopeDropdowns on the SAME persistent
+       #insp-project/#insp-version nodes whenever the user switches between
+       recipe steps. The guard prevents stacking duplicate change listeners
+       (→ redundant /fsapi/ fetches + repeated applyOverride calls) while
+       still allowing loadAll() above to re-seed that step's saved values on
+       every call.  Single-call callers (settings, card-config, comparison) are
+       unaffected — the flag is a no-op when the element is seen for the first
+       time. ──────────────────────────────────────────────────────────────── */
+    if (hasFolder && !folderSel.dataset.scopeListenersBound) {
+        folderSel.dataset.scopeListenersBound = '1';
+        folderSel.addEventListener('change', function() {
+            /* A folder change re-targets to the chosen folder (semantics §7):
+               the project must revert to "All projects" and the version clears.
+               Do BOTH SYNCHRONOUSLY here — BEFORE the async filterProjects()
+               refetch — so any code reading the live selects in the SAME tick
+               (the run bar's synchronous #rb-folder→__setScope listener, the Run
+               button, a gate) sees {project:'', version:'', folder:<new id>}.
+               Clearing project only inside the async callback below left a window
+               where __setScope read the STALE project and project-wins dropped the
+               just-picked folder on an immediate Run / card / R-key launch
+               (Finding 1, CRITICAL). Setting projectSel.value='' first also makes
+               populateSelect's value-restore in filterProjects('') a no-op, so the
+               refetch repopulates the folder-scoped options with "All projects"
+               selected. */
+            projectSel.value = '';
+            versionSel.value = '';
+            versionSel.innerHTML = '<option value="">(all)</option>';
+            versionSel.disabled = true;
+            filterProjects('').then(function() {
+                /* Project reset to "All projects" by the re-filter → version
+                   has nothing to scope on. */
+                syncVersionEnabled();
+                emitChange();
+            });
+        });
+    }
 
-    projectSel.addEventListener('change', function() {
-        loadVersions(projectSel.value, '');
-    });
+    if (!projectSel.dataset.scopeListenersBound) {
+        projectSel.dataset.scopeListenersBound = '1';
+        projectSel.addEventListener('change', function() {
+            /* Versions are project-specific: a project change invalidates any
+               selected version. Clear it SYNCHRONOUSLY (before the async version
+               reload) so a stale version can never ride along into a saved scope
+               or a run — this is the authoritative version↔project coupling.
+               Setting value='' first makes populateSelect's restore a no-op
+               (prevValue becomes '' instead of falling back to the old value). */
+            versionSel.value = '';
+            if (projectSel.value) {
+                loadVersions(projectSel.value, '');
+            } else {
+                /* Project = "All projects" → disable + clear version. */
+                syncVersionEnabled();
+            }
+            emitChange();
+        });
+    }
+
+    /* A version change is part of the effective scope too; surface it.  (The
+       version select has no other listener — this one only exists to drive
+       onChange and is guarded against double-binding like the others.) */
+    if (onChange && !versionSel.dataset.scopeOnChangeBound) {
+        versionSel.dataset.scopeOnChangeBound = '1';
+        versionSel.addEventListener('change', emitChange);
+    }
 
     /* ── kick off ────────────────────────────────────────────── */
     loadAll();
 
     /* ── CVO checkbox disables version dropdown ──────────────── */
     if (opts.cvoId) {
-        var cvoCheckbox = document.getElementById(opts.cvoId);
+        var cvoCheckbox = pick(opts.cvoId);
         if (cvoCheckbox) {
-            function syncCvo() { versionSel.disabled = cvoCheckbox.checked; }
-            cvoCheckbox.addEventListener('change', syncCvo);
+            /* CVO disables the version select; but version is also disabled when
+               no specific project is chosen (portfolio/folder-only).  Keep it
+               disabled in that case regardless of the CVO state. */
+            function syncCvo() { versionSel.disabled = cvoCheckbox.checked || !projectSel.value; }
+            if (!cvoCheckbox.dataset.scopeListenersBound) {
+                cvoCheckbox.dataset.scopeListenersBound = '1';
+                cvoCheckbox.addEventListener('change', syncCvo);
+            }
             syncCvo();
         }
     }
 }
 
-/* ── Version picker: project → version cascading selects ───── */
+/* ── Version picker: project → version cascading selects ─────
+   opts.root (optional): an Element to scope the id lookups to. Element
+   .querySelector matches DESCENDANTS by id, so passing a card's own .wf-back
+   binds THIS card's pickers even if another card back carries the same ids
+   (duplicate ids across coexisting backs are then functionally harmless). The
+   configure modal passes no root → document → identical behaviour to before. */
 function initVersionPicker(opts) {
-    var projectSel = document.getElementById(opts.projectSelId);
-    var versionSel = document.getElementById(opts.versionSelId);
-    var input = document.getElementById(opts.inputId);
+    var root = opts.root || document;
+    function pick(id) { return root.querySelector('#' + id); }
+    var projectSel = pick(opts.projectSelId);
+    var versionSel = pick(opts.versionSelId);
+    var input = pick(opts.inputId);
     if (!projectSel || !versionSel || !input) return;
 
     var nonce = window.NONCE || '';
@@ -272,7 +540,7 @@ function initVersionPicker(opts) {
         if (!spinner) {
             spinner = document.createElement('span');
             spinner.className = 'scope-spinner';
-            spinner.textContent = '\u23F3';
+            spinner.textContent = '⏳';
             sel.parentNode.appendChild(spinner);
         }
         spinner.style.display = loading ? 'inline' : 'none';
@@ -297,10 +565,34 @@ function initVersionPicker(opts) {
                 projectSel.appendChild(o);
             });
             setLoading(projectSel, false);
+            maybePreselect();
         })
         .catch(function() {
             setLoading(projectSel, false);
         });
+    }
+
+    /* Pre-select opts.presetProject (a project NAME or ID, e.g. the pinned
+       project) once the option list is built — so a version recipe opens with
+       the user's pinned project already chosen and its versions loaded. Only
+       when the input is still empty: never clobber a saved/typed version ID
+       (the dropdown can't reverse-map an arbitrary ID to its project). The
+       version is left unselected so leaving it blank yields auto-discovery
+       (compare all versions) while picking one forms an explicit pair. */
+    function maybePreselect() {
+        var preset = opts.presetProject;
+        if (!preset || (input.value && input.value.trim())) return;
+        var want = String(preset).trim().toLowerCase();
+        for (var i = 0; i < projectSel.options.length; i++) {
+            var o = projectSel.options[i];
+            if (!o.value) continue;
+            if (o.value.toLowerCase() === want ||
+                (o.textContent || '').trim().toLowerCase() === want) {
+                projectSel.value = o.value;
+                loadVersions(o.value);
+                break;
+            }
+        }
     }
 
     function loadVersions(projectId) {

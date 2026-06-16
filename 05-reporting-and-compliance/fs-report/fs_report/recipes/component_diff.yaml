@@ -1,0 +1,17 @@
+name: "Component Diff"
+category: comparison
+nav_category: Investigation
+chart_libraries: []
+template: "comparison/component_diff.html"
+description: "Components present in left scope vs right scope, with version skew on shared components."
+execution_order: 50
+auto_run: false
+query:
+  endpoint: "/public/v0/components"
+  params:
+    limit: 10000
+transform_function: component_diff_transform
+output:
+  formats: ["html"]
+  table: true
+  slide_title: "Component Comparison"

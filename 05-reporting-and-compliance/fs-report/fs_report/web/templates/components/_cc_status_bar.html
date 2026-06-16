@@ -1,0 +1,10 @@
+<!-- ===================== STATUS BAR ===================== -->
+<footer class="status-bar">
+  <div class="item accent"><span class="gdot"></span> Connected</div>
+  <div class="item"><i data-lucide="database"></i> cache <b>{{ cache_ttl or '—' }}</b></div>
+  <div class="item"><i data-lucide="folders"></i> <b><span data-cc="projects">—</span></b> projects</div>
+  <div class="spacer"></div>
+  <div class="item"><i data-lucide="radar"></i> <b><span data-cc="scanning">—</span></b> scanning</div>
+  <div class="item">last sync <b><span data-cc="sync">—</span></b></div>
+  <div class="item">fs-report <b>{{ version or '' }}</b></div>
+</footer>

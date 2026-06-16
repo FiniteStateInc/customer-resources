@@ -29,10 +29,16 @@ def serve_command(
         "-p",
         help="Port for the local HTTP server.",
     ),
+    reload: bool = typer.Option(
+        False,
+        "--reload",
+        help="Enable auto-reload on code changes (development only).",
+    ),
 ) -> None:
     """Start a local server with a landing page showing report history.
 
     Reuses an existing server if one is already running on the port.
+    Pass --reload to enable uvicorn's auto-reload for backend development.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -48,6 +54,16 @@ def serve_command(
     try:
         resp = httpx.get(f"http://127.0.0.1:{port}/fsapi/session", timeout=2)
         if resp.status_code == 200:
+            if reload:
+                # --reload was requested but an existing server is in the way.
+                # Reusing the existing server would silently ignore --reload, so
+                # warn the user rather than silently doing the wrong thing.
+                console.print(
+                    f"[yellow]Warning: --reload requested but a server is already "
+                    f"running on port {port}. Stop it first, then re-run with "
+                    f"--reload to start a reload-enabled server.[/yellow]"
+                )
+                return
             console.print(
                 f"[cyan]Server already running on http://localhost:{port}[/cyan]"
             )
@@ -70,4 +86,4 @@ def serve_command(
 
     from fs_report.web import run_web
 
-    run_web(port=port, open_browser=True)
+    run_web(port=port, open_browser=True, reload=reload)

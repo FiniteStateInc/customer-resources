@@ -1,6 +1,6 @@
 {# Base template extended by recipe templates that render charts
    alongside a tabular layout. Phase 1: token-driven styling, nav_category
-   accent rule, fragment-mode support, pdf_target chart-block switching.
+   accent rule, render_mode template gating.
 
    The legacy inline <style> block (now removed) duplicated rules already
    present in _design_system.html; tokens.css now provides the
@@ -188,7 +188,7 @@
     <div class="container">
         <div class="header">
             {% include "_default_logo.html" %}
-            <h1>{{ slide_title }}</h1>
+            <h1 data-fs-section-title>{{ slide_title }}</h1>
             <div class="subtitle">Finite State Security Report</div>
         </div>
 
@@ -198,7 +198,7 @@
             <strong>Generated:</strong> {{ generated_at }} |
             <strong>Records:</strong> {{ metadata.transformed_count }}
             {% if folder_path %} | <strong>Folder:</strong> {{ folder_path }}{% endif %}
-            {% if scan_metadata and scan_metadata.project_name %} | <strong>Project:</strong> {{ scan_metadata.project_name }}{% elif project_filter %} | <strong>Project:</strong> {{ project_filter }}{% endif %}
+            {% if scan_metadata and scan_metadata.project_name %} | <strong>Project:</strong> {{ scan_metadata.project_name }}{% elif project_label %} | <strong>Project:</strong> {{ project_label }}{% endif %}
         </div>
 
         {% block content %}{% endblock %}

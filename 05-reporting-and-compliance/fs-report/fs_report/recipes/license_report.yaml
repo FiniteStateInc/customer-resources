@@ -1,6 +1,8 @@
 name: "License Report"
 category: assessment
+card_description: "Component licenses grouped by risk category, with a distribution chart."
 nav_category: Compliance
+chart_libraries: ["echarts"]
 template: "license_report.html"
 description: >
   License risk analysis report showing component licenses grouped by risk
@@ -25,6 +27,6 @@ output:
     - xlsx
   charts:
     - name: risk_pie
-      chart: pie
+      chart: doughnut
       title: "License Risk Distribution"
       description: "Components grouped by license risk category"

@@ -1,6 +1,8 @@
 name: "Version Comparison"
 category: assessment
+card_description: "Track findings and component churn across version pairs."
 nav_category: Investigation
+chart_libraries: ["echarts"]
 template: "version_comparison.html"
 description: "Full version and component changelog: progression across versions with fixed/new findings and component churn per version pair. Scope with --project, --folder, or both (--project narrows to that project within --folder). Use --period to trim single-project runs to a [predecessor + in-window] slice (ignored for folder/portfolio and explicit-pair modes). Use --baseline-version and --current-version (ID or name) to limit to a single pair. Use --version-sort (created|name) and --version-sort-desc to control ordering. Per-version fetch failures are logged and reported as unavailable rather than aborting the run."
 execution_order: 50
@@ -19,8 +21,13 @@ output:
   formats: ["csv", "xlsx", "html", "md"]
   table: true
   slide_title: "Version Comparison"
-  charts:
-    - name: "external_changes"
-      chart: bar
-      title: "External CVE Changes This Window"
-      description: "CVEs present in both versions whose severity or exploit status changed due to platform intelligence updates (not developer action)"
+  has_inline_charts: true
+  # No top-level charts dispatched here. Per-project progression charts
+  # are rendered inline by the HTML template (one ECharts panel per
+  # project, not enumerable in YAML). The `external_changes` chart spec
+  # was declared but never consumed by the template; the renderer would
+  # render the SVG in fragment mode and drop it on the floor. Removed
+  # so the dispatch path doesn't pay rendering cost for an output that
+  # is never read. Surfacing external-CVE changes as a YAML-declared
+  # chart is product work, not chrome migration.
+  charts: []

@@ -1,213 +1,398 @@
-{% extends "base.html" %}
+{# Executive Summary — Phase 1a briefing-shell migration.
 
-{% block chart_libs %}{% include "_chartjs.html" %}{% endblock %}
+   Extends _briefing_shell.html (T0b deliverable). The shell owns
+   DOCTYPE/html/head/body, the render_mode chrome gate, the 880px
+   page frame, the design-system include, the readiness beacons,
+   and the Inter font load. This template fills the named blocks
+   only.
 
-{% block content %}
-<!-- Main Project Breakdown Chart -->
-<div class="chart-container">
-    <h2>{{ charts[0].title }}</h2>
-    <p>{{ charts[0].description }}</p>
-    <div class="chart-wrapper">
-        <canvas id="projectBreakdownChart"></canvas>
-    </div>
+   Chart story (per design spec § Per-recipe chart story):
+     - distribution → project breakdown bar (stacked by severity)
+     - sections     → open issues pie + scan frequency line + table
+     - stats        → 4 derived KPI cards (this plan's deviation from
+                      the spec table; see plan's Reconciliation note)
+
+   Chart blocks branch on render_mode (the canonical Option-Y pattern
+   from fs_report/templates/bar_chart.html):
+     - fragment mode → emit server_svgs.get('<chart_name>', '') | safe
+     - HTML/PDF mode → emit namespaced container <div> + ECharts <script>
+
+   Chart container IDs (HTML/PDF only) are namespaced with
+   {{ fragment_scope_class }} so two recipes bundled into one compound
+   document can't collide (compound-bundle precondition). fsEChartsInit()
+   registers with the readiness beacon so PDFRenderer waits before
+   snapshot. Initial chart.setOption is wrapped in try/release/throw
+   per the T0b ECharts contract (_echarts_ready.html lines 16–23). #}
+{% extends "_briefing_shell.html" %}
+
+{# Name-based chart spec lookup. Recipe authors can reorder output.charts
+   in YAML without silently mismatching H2 titles/descriptions against
+   the chart they label. Each variable resolves to the chart spec dict
+   (with .title and .description attrs) or None if the name isn't present. #}
+{% set project_breakdown_spec = (charts | selectattr('name', 'equalto', 'project_breakdown') | first) if charts else None %}
+{% set open_issues_spec = (charts | selectattr('name', 'equalto', 'open_issues_distribution') | first) if charts else None %}
+{% set scan_frequency_spec = (charts | selectattr('name', 'equalto', 'scan_frequency') | first) if charts else None %}
+{% set exploit_signals_spec = (charts | selectattr('name', 'equalto', 'exploit_signals') | first) if charts else None %}
+{% set exploits_over_time_spec = (charts | selectattr('name', 'equalto', 'exploits_over_time') | first) if charts else None %}
+
+{% block title %}{{ slide_title | default("Executive Summary") }} - Finite State Report{% endblock %}
+
+{% block head_extra %}
+    {# Briefing shell exposes head_extra inside the render_mode chrome gate.
+       Library loads here don't leak into fragment-mode renders. #}
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+{% endblock %}
+
+{# briefing_header inherits the shell's default chrome — logo + meta
+   band (recipe name, period, generated_at, record count, folder path,
+   project name). Override here only if executive_summary needs
+   different chrome; the default covers exec_summary's needs today. #}
+
+{% block hero %}
+{# Hero strip = eyebrow + section title + deck. In compound bundles
+   the assembler emits its own SECTION 0N divider with the same title
+   immediately above the fragment, so the entire hero is the chrome to
+   suppress (not just the H1). The wrapping <div> below carries the
+   suppress-marker so render_fragment(...,
+   suppress_section_title=True) removes the whole block. Single-recipe
+   fragment consumers (forge MCP renders) keep the hero. (B1.4
+   follow-up: fragment-mode visual parity.) #}
+<div class="hero" data-fs-section-title>
+    <div class="eyebrow">Executive Summary</div>
+    <h1>{{ slide_title | default("Executive Security Summary") }}</h1>
+    <p class="deck">{{ description | default("High-level security posture overview with key performance indicators, risk metrics, and project-level breakdowns.") }}</p>
 </div>
+{% endblock %}
 
-<!-- Side by Side Charts -->
-<div class="chart-row">
-    <!-- Open Issues Distribution -->
-    <div class="chart-half">
-        <h2>{{ charts[1].title }}</h2>
-        <p>{{ charts[1].description }}</p>
-        <div class="chart-wrapper">
-            <canvas id="openIssuesChart"></canvas>
-        </div>
-    </div>
-    
-    <!-- Scan Frequency -->
-    <div class="chart-half">
-        <h2>{{ charts[2].title }}</h2>
-        <p>{{ charts[2].description }}</p>
-        <div class="chart-wrapper">
-            <canvas id="scanFrequencyChart"></canvas>
-        </div>
-    </div>
-</div>
+{% block stats %}
+{# Derive 4 KPI cards from table_data totals. table_data.rows is a list
+   of per-project dicts with critical/high/medium/low integer columns
+   (post-pivot from the recipe's main transform).
 
-<!-- Pivoted Project Summary Table -->
+   Jinja namespace-mutation syntax: {% set ns.attr = ... %} after
+   {% set ns = namespace(attr=...) %}. NOT ns.update({...}) — Jinja
+   namespaces don't expose Python dict methods. Same pattern as
+   fs_report/templates/security_progress.html:199. #}
+{% set ns = namespace(c=0, h=0, m=0, l=0) %}
 {% if table_data and table_data.rows %}
-<div class="table-container">
-    <h2>Findings by Project</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Project</th>
-                <th class="num">Critical</th>
-                <th class="num">High</th>
-                <th class="num">Medium</th>
-                <th class="num">Low</th>
-                <th class="num">Total</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for row in table_data.rows %}
-            {% set crit = row.get('critical', 0) | default(0, true) | int %}
-            {% set high = row.get('high', 0) | default(0, true) | int %}
-            {% set med = row.get('medium', 0) | default(0, true) | int %}
-            {% set low = row.get('low', 0) | default(0, true) | int %}
-            <tr>
-                <td>{{ row.get('project.name', '') }}</td>
-                <td class="num">{% if crit > 0 %}<span style="color:#d32f2f;font-weight:600;">{{ crit }}</span>{% else %}0{% endif %}</td>
-                <td class="num">{% if high > 0 %}<span style="color:#f57c00;font-weight:600;">{{ high }}</span>{% else %}0{% endif %}</td>
-                <td class="num">{% if med > 0 %}<span style="color:#e6a800;font-weight:600;">{{ med }}</span>{% else %}0{% endif %}</td>
-                <td class="num">{{ low }}</td>
-                <td class="num"><strong>{{ crit + high + med + low }}</strong></td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
+{% for row in table_data.rows %}
+    {% set ns.c = ns.c + (row.get('critical', 0) or 0) | int %}
+    {% set ns.h = ns.h + (row.get('high', 0) or 0) | int %}
+    {% set ns.m = ns.m + (row.get('medium', 0) or 0) | int %}
+    {% set ns.l = ns.l + (row.get('low', 0) or 0) | int %}
+{% endfor %}
 {% endif %}
+{% set total_findings = ns.c + ns.h + ns.m + ns.l %}
+<div class="stats">
+    <div class="stat">
+        <div class="stat-label">Total Findings</div>
+        <div class="stat-value">{{ total_findings }}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Critical</div>
+        <div class="stat-value">{{ ns.c }}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">High</div>
+        <div class="stat-value">{{ ns.h }}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Medium + Low</div>
+        <div class="stat-value">{{ ns.m + ns.l }}</div>
+    </div>
+</div>
+{% endblock %}
 
-<script>
-// Severity order and colors (low=green, medium=yellow, high=orange, critical=red)
-const severityOrder = ['critical', 'high', 'medium', 'low'];
-const severityColors = {
-    'critical': '#d32f2f', // red
-    'high': '#f57c00',    // orange
-    'medium': '#fbc02d',  // yellow
-    'low': '#388e3c'      // green
-};
+{% block distribution %}
+<div class="distribution">
+    <h2>{{ project_breakdown_spec.title if project_breakdown_spec else "Security Findings by Project and Severity" }}</h2>
+    {% if project_breakdown_spec %}<p>{{ project_breakdown_spec.description }}</p>{% endif %}
+    {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+        <div class="chart-server-svg">{{ server_svgs.get('project_breakdown', '') | safe }}</div>
+    {% else %}
+        {# Container only — all five Exec Summary charts are initialized by the
+           consolidated themed script at the end of the sections block (it owns
+           token-driven text colors + re-theme on light/dark toggle, A3). #}
+        <div id="{{ fragment_scope_class }}-projectBreakdown" style="width:100%;height:320px"></div>
+    {% endif %}
+</div>
+{% endblock %}
 
-// Prepare stacked bar chart from pivoted table data
-(function() {
-    const tableRows = {{ table_data.rows | tojson if table_data else '[]' }};
-    const projects = tableRows.map(r => r['project.name'] || '');
-    const datasets = severityOrder.map(sev => ({
-        label: sev.charAt(0).toUpperCase() + sev.slice(1),
-        data: tableRows.map(r => r[sev] || 0),
-        backgroundColor: severityColors[sev],
-        stack: true
-    }));
-    const ctx = document.getElementById('projectBreakdownChart').getContext('2d');
-    new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: projects,
-            datasets: datasets
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            scales: {
-                x: {
-                    stacked: true,
-                    title: { display: true, text: 'Project' }
-                },
-                y: {
-                    stacked: true,
-                    beginAtZero: true,
-                    title: { display: true, text: 'Number of Findings' }
-                }
-            },
-            plugins: {
-                legend: { position: 'top' },
-                title: { display: false }
+{% block sections %}
+<div class="exec-summary-sections">
+    {# 2×2 chart grid.
+         Row 1: Open Issues by Severity (pie) + Exploit Signals (gauge, C1)
+         Row 2: Security Findings Over Time (line) + Exploits Over Time (line, C2)
+       Each cell branches on render_mode independently; fragment mode emits
+       a per-chart server SVG, HTML/PDF emits an ECharts container. All five
+       containers are initialized by the consolidated themed script below. #}
+    <div class="chart-row" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px;">
+        <div class="chart-half">
+            <h2>{{ open_issues_spec.title if open_issues_spec else "Open Issues by Severity" }}</h2>
+            {% if open_issues_spec %}<p>{{ open_issues_spec.description }}</p>{% endif %}
+            {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('open_issues_distribution', '') | safe }}</div>
+            {% else %}
+                <div id="{{ fragment_scope_class }}-openIssues" style="width:100%;height:240px"></div>
+            {% endif %}
+        </div>
+        <div class="chart-half">
+            <h2>{{ exploit_signals_spec.title if exploit_signals_spec else "Exploit Signals" }}</h2>
+            {% if exploit_signals_spec %}<p>{{ exploit_signals_spec.description }}</p>{% endif %}
+            {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('exploit_signals', '') | safe }}</div>
+            {% else %}
+                <div id="{{ fragment_scope_class }}-exploitSignals" style="width:100%;height:240px"></div>
+            {% endif %}
+        </div>
+    </div>
+    <div class="chart-row" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px;">
+        <div class="chart-half">
+            <h2>{{ scan_frequency_spec.title if scan_frequency_spec else "Security Findings Over Time" }}</h2>
+            {% if scan_frequency_spec %}<p>{{ scan_frequency_spec.description }}</p>{% endif %}
+            {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('scan_frequency', '') | safe }}</div>
+            {% else %}
+                <div id="{{ fragment_scope_class }}-scanFrequency" style="width:100%;height:240px"></div>
+            {% endif %}
+        </div>
+        <div class="chart-half">
+            <h2>{{ exploits_over_time_spec.title if exploits_over_time_spec else "Exploits Over Time" }}</h2>
+            {% if exploits_over_time_spec %}<p>{{ exploits_over_time_spec.description }}</p>{% endif %}
+            {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('exploits_over_time', '') | safe }}</div>
+            {% else %}
+                <div id="{{ fragment_scope_class }}-exploitsOverTime" style="width:100%;height:240px"></div>
+            {% endif %}
+        </div>
+    </div>
+    {% if render_mode != 'fragment' or fragment_scripts_enabled %}
+    <script>
+    // Consolidated init for all FIVE Executive Summary charts. Each chart's
+    // option is built by an optsFactory(t) that reads theme tokens (t.inkBody
+    // / t.inkMute) so legend/axis/label text stays legible in BOTH light and
+    // dark — and is re-applied on a light/dark toggle via a data-theme
+    // MutationObserver. Matches the established pattern in scan_analysis.html
+    // (_tokens + _initChart). Rainbow SERIES colors stay theme-independent.
+    (function () {
+        if (typeof echarts === 'undefined') {
+            if (typeof console !== 'undefined' && console.error) {
+                console.error('ECharts library not loaded — Executive Summary charts will be blank');
             }
+            return;
         }
-    });
-})();
+        var SCOPE = '{{ fragment_scope_class }}';
+        var sevColors = { critical: '#d32f2f', high: '#f57c00', medium: '#fbc02d', low: '#388e3c' };
+        // Distinct accents for the three INDEPENDENT exploit-signal bars
+        // (not a severity scale): CISA KEV / VulnCheck KEV / Real exploits.
+        var signalColors = ['#dc3545', '#7c3aed', '#0d9488'];
+        var exploitLineColor = '#7c3aed';
 
-// Open Issues Distribution Chart (Pie)
-(function() {
-    const openIssuesCtx = document.getElementById('openIssuesChart').getContext('2d');
-    const raw = {{ chart_data_json.open_issues_distribution | safe }};
-    // Severity color mapping
-    const severityOrder = ['critical', 'high', 'medium', 'low'];
-    const severityColors = {
-        'critical': '#d32f2f', // red
-        'high': '#f57c00',    // orange
-        'medium': '#fbc02d',  // yellow
-        'low': '#388e3c'      // green
-    };
-    // Filter out 'none' and build new data arrays
-    const filteredLabels = [];
-    const filteredData = [];
-    const filteredColors = [];
-    if (raw.labels && raw.datasets && raw.datasets.length > 0) {
-        // Map severity to value for sorting
-        const severityToValue = {};
-        raw.labels.forEach((label, i) => {
-            if (label === 'none') return;
-            severityToValue[label] = raw.datasets[0].data[i];
-        });
-        // Sort by severity order
-        severityOrder.forEach(sev => {
-            if (severityToValue[sev] !== undefined) {
-                filteredLabels.push(sev.charAt(0).toUpperCase() + sev.slice(1));
-                filteredData.push(severityToValue[sev]);
-                filteredColors.push(severityColors[sev]);
-            }
-        });
-    }
-    const pieData = {
-        labels: filteredLabels,
-        datasets: [{
-            data: filteredData,
-            backgroundColor: filteredColors
-        }]
-    };
-    new Chart(openIssuesCtx, {
-        type: 'pie',
-        data: pieData,
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    position: 'bottom',
-                },
-                title: {
-                    display: false
-                }
-            }
+        function _tokens() {
+            var cs = getComputedStyle(document.documentElement);
+            return {
+                inkBody: cs.getPropertyValue('--ink-body').trim() || '#374151',
+                inkMute: cs.getPropertyValue('--ink-mute').trim() || '#6c757d'
+            };
         }
-    });
-})();
 
-// Scan Frequency Chart (Line)
-const scanFrequencyCtx = document.getElementById('scanFrequencyChart').getContext('2d');
-const scanFrequencyData = {{ chart_data_json.scan_frequency | safe }};
-const scanFrequencyPeriodLabel = "{{ scan_frequency_period_label }}";
-new Chart(scanFrequencyCtx, {
-    type: 'line',
-    data: scanFrequencyData,
-    options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-            y: {
-                beginAtZero: true,
-                title: {
-                    display: true,
-                    text: 'Number of Findings'
-                }
-            },
-            x: {
-                title: {
-                    display: true,
-                    text: scanFrequencyPeriodLabel
-                }
+        // Init a chart from an optsFactory(tokens); wrap the FIRST setOption in
+        // the beacon try/release/throw contract; re-theme on data-theme change.
+        function _initChart(elId, optsFactory) {
+            var el = document.getElementById(elId);
+            if (!el) return null;
+            var inst = fsEChartsInit(el);
+            try {
+                inst.setOption(optsFactory(_tokens()));
+            } catch (e) {
+                window.fsBeaconRelease();
+                throw e;
             }
-        },
-        plugins: {
-            legend: {
-                position: 'top',
-            },
-            title: {
-                display: false
-            }
+            var obs = new MutationObserver(function (mutations) {
+                for (var i = 0; i < mutations.length; i++) {
+                    if (mutations[i].attributeName === 'data-theme') {
+                        inst.setOption(optsFactory(_tokens()));
+                        break;
+                    }
+                }
+            });
+            obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+            window.addEventListener('resize', function () { inst.resize(); });
+            return inst;
         }
-    }
-});
-</script>
-{% endblock %} 
+
+        // ---- Project Breakdown (stacked bar) ----
+        (function () {
+            var rows = {{ table_data.rows | tojson if table_data else '[]' }};
+            // Row order is authoritative from the recipe pipeline's
+            // severity-desc sort — table, chart, and server-SVG share it.
+            var projects = rows.map(function (r) { return r['project.name'] || ''; });
+            // Declare low->critical so Critical stacks visually on top; the
+            // legend lists Critical first independently.
+            var stackOrder = ['low', 'medium', 'high', 'critical'];
+            _initChart(SCOPE + '-projectBreakdown', function (t) {
+                return {
+                    textStyle: { color: t.inkBody },
+                    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+                    legend: { top: 0, data: ['Critical', 'High', 'Medium', 'Low'], textStyle: { color: t.inkBody } },
+                    grid: { left: 60, right: 16, top: 32, bottom: 86 },
+                    xAxis: {
+                        type: 'category',
+                        data: projects,
+                        axisLabel: { interval: 0, rotate: 45, fontSize: 10, width: 96, overflow: 'truncate', color: t.inkMute }
+                    },
+                    yAxis: { type: 'value', name: 'Findings', nameTextStyle: { color: t.inkMute }, axisLabel: { color: t.inkMute } },
+                    dataZoom: projects.length > 30 ? [
+                        { type: 'slider', startValue: 0, endValue: 29, bottom: 4, height: 16 },
+                        { type: 'inside' }
+                    ] : [],
+                    series: stackOrder.map(function (sev) {
+                        return {
+                            name: sev.charAt(0).toUpperCase() + sev.slice(1),
+                            type: 'bar', stack: 'sev',
+                            data: rows.map(function (r) { return r[sev] || 0; }),
+                            itemStyle: { color: sevColors[sev] }
+                        };
+                    })
+                };
+            });
+        })();
+
+        // ---- Open Issues (pie) ----
+        (function () {
+            var raw = {{ chart_data_json.open_issues_distribution | safe if chart_data_json else 'null' }};
+            var sevOrder = ['critical', 'high', 'medium', 'low'];
+            var data = [];
+            if (raw && raw.labels && raw.datasets && raw.datasets.length > 0) {
+                // _prepare_pie_chart_data preserves source case (usually
+                // uppercase) — lowercase before the sevColors/sevOrder lookup.
+                var sevToValue = {};
+                raw.labels.forEach(function (label, i) {
+                    var key = String(label || '').toLowerCase();
+                    if (key === 'none' || key === '') return;
+                    sevToValue[key] = raw.datasets[0].data[i];
+                });
+                sevOrder.forEach(function (sev) {
+                    if (sevToValue[sev] !== undefined) {
+                        data.push({ name: sev.charAt(0).toUpperCase() + sev.slice(1), value: sevToValue[sev], itemStyle: { color: sevColors[sev] } });
+                    }
+                });
+            }
+            _initChart(SCOPE + '-openIssues', function (t) {
+                return {
+                    textStyle: { color: t.inkBody },
+                    tooltip: { trigger: 'item' },
+                    legend: { bottom: 0, textStyle: { color: t.inkBody } },
+                    series: [{
+                        type: 'pie', radius: ['35%', '65%'], center: ['50%', '45%'],
+                        data: data, label: { show: true, formatter: '{b}: {c}', color: t.inkBody }
+                    }]
+                };
+            });
+        })();
+
+        // ---- Exploit Signals (horizontal bar, three independent counts) ----
+        (function () {
+            var raw = {{ chart_data_json.exploit_signals | safe if chart_data_json else 'null' }};
+            var labels = (raw && raw.labels) || [];
+            var values = (raw && raw.data) || [];
+            _initChart(SCOPE + '-exploitSignals', function (t) {
+                return {
+                    textStyle: { color: t.inkBody },
+                    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+                    grid: { left: 110, right: 28, top: 12, bottom: 24 },
+                    xAxis: { type: 'value', minInterval: 1, axisLabel: { color: t.inkMute } },
+                    yAxis: { type: 'category', data: labels, axisLabel: { color: t.inkBody } },
+                    series: [{
+                        type: 'bar', barWidth: '55%',
+                        data: values.map(function (v, i) { return { value: v, itemStyle: { color: signalColors[i % signalColors.length] } }; }),
+                        label: { show: true, position: 'right', color: t.inkBody }
+                    }]
+                };
+            });
+        })();
+
+        // ---- Scan Frequency (line) ----
+        (function () {
+            var raw = {{ chart_data_json.scan_frequency | safe if chart_data_json else 'null' }};
+            var labels = (raw && raw.labels) || [];
+            var series = (raw && raw.datasets) || [];
+            var periodLabel = {{ scan_frequency_period_label | default('Period') | tojson }};
+            _initChart(SCOPE + '-scanFrequency', function (t) {
+                return {
+                    textStyle: { color: t.inkBody },
+                    tooltip: { trigger: 'axis' },
+                    legend: { top: 0, textStyle: { color: t.inkBody } },
+                    grid: { left: 50, right: 16, top: 32, bottom: 40 },
+                    xAxis: { type: 'category', data: labels, name: periodLabel, nameLocation: 'middle', nameGap: 28, nameTextStyle: { color: t.inkMute }, axisLabel: { color: t.inkMute } },
+                    yAxis: { type: 'value', name: 'Findings', nameTextStyle: { color: t.inkMute }, axisLabel: { color: t.inkMute } },
+                    series: series.map(function (ds) { return { name: ds.label || 'Findings', type: 'line', data: ds.data, smooth: true }; })
+                };
+            });
+        })();
+
+        // ---- Exploits Over Time (line) ----
+        (function () {
+            var raw = {{ chart_data_json.exploits_over_time | safe if chart_data_json else 'null' }};
+            var labels = (raw && raw.labels) || [];
+            var series = (raw && raw.datasets) || [];
+            var periodLabel = {{ exploits_over_time_period_label | default('Period') | tojson }};
+            _initChart(SCOPE + '-exploitsOverTime', function (t) {
+                return {
+                    textStyle: { color: t.inkBody },
+                    tooltip: { trigger: 'axis' },
+                    legend: { top: 0, textStyle: { color: t.inkBody } },
+                    grid: { left: 50, right: 16, top: 32, bottom: 40 },
+                    xAxis: { type: 'category', data: labels, name: periodLabel, nameLocation: 'middle', nameGap: 28, nameTextStyle: { color: t.inkMute }, axisLabel: { color: t.inkMute } },
+                    yAxis: { type: 'value', name: 'Real exploits', nameTextStyle: { color: t.inkMute }, axisLabel: { color: t.inkMute } },
+                    series: series.map(function (ds) { return { name: ds.label || 'Real exploits', type: 'line', data: ds.data, smooth: true, itemStyle: { color: exploitLineColor }, lineStyle: { color: exploitLineColor } }; })
+                };
+            });
+        })();
+    })();
+    </script>
+    {% endif %}
+
+    {# Findings by Project table — preserves the legacy pivoted summary.
+       Renders in all modes; table HTML survives fragment extraction. #}
+    {% if table_data and table_data.rows %}
+    <div class="table-container" style="margin-top:24px;">
+        <h2>Findings by Project</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Project</th>
+                    <th class="num">Critical</th>
+                    <th class="num">High</th>
+                    <th class="num">Medium</th>
+                    <th class="num">Low</th>
+                    <th class="num">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in table_data.rows %}
+                {% set crit = row.get('critical', 0) | default(0, true) | int %}
+                {% set high = row.get('high', 0) | default(0, true) | int %}
+                {% set med = row.get('medium', 0) | default(0, true) | int %}
+                {% set low = row.get('low', 0) | default(0, true) | int %}
+                <tr>
+                    <td>{{ row.get('project.name', '') }}</td>
+                    <td class="num">{% if crit > 0 %}<span style="color:#d32f2f;font-weight:600;">{{ crit }}</span>{% else %}0{% endif %}</td>
+                    <td class="num">{% if high > 0 %}<span style="color:#f57c00;font-weight:600;">{{ high }}</span>{% else %}0{% endif %}</td>
+                    <td class="num">{% if med > 0 %}<span style="color:#e6a800;font-weight:600;">{{ med }}</span>{% else %}0{% endif %}</td>
+                    <td class="num">{{ low }}</td>
+                    <td class="num"><strong>{{ crit + high + med + low }}</strong></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block methodology %}
+<div class="methodology">
+    <p>This briefing summarizes the security findings across the portfolio for the reporting period. <strong>KPIs at the top</strong> reflect totals across <em>all</em> findings (open + resolved) aggregated from the main transform. <strong>The distribution chart</strong> breaks those totals down by project and severity. <strong>The open-issues pie</strong> counts <em>only unresolved</em> findings (status not in RESOLVED, RESOLVED_WITH_PEDIGREE, NOT_AFFECTED, FALSE_POSITIVE) — different population from the KPIs above. <strong>The scan-frequency line</strong> tracks the count of findings detected per period.</p>
+</div>
+{% endblock %}

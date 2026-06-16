@@ -1,6 +1,7 @@
 name: "Customer Brief"
 category: assessment
 nav_category: Executive
+chart_libraries: ["echarts"]
 description: "External-facing project security brief for customers and regulators."
 execution_order: 20
 auto_run: false
@@ -33,3 +34,18 @@ output:
     - md
     - pdf
   charts: []
+  has_inline_charts: true
+  pdf_header_template_id: pdf-header
+  # Footer migrates from CSS @page @bottom-center { content: ... } in
+  # customer_brief.html to here, because Chromium doesn't honor the CSS
+  # margin-box. Caveat: WeasyPrint suppressed this on the cover page via
+  # @page cover { @bottom-center { content: none; } }; Chromium has no
+  # per-page footer suppression in page.pdf(footer_template=...), so the
+  # legal footer now appears on the cover page too — a small visual
+  # regression vs the WeasyPrint baseline. The parity-test cover-page
+  # footer_band mask (synthesized via median y in extract_chart_regions.py)
+  # excludes this band from the layout comparison.
+  pdf_footer_template: |
+    <div style="font-size: 7.5pt; color: #999; width: 100%; text-align: center; padding: 0 0.75in;">
+      © 2026 Finite State, Inc. All rights reserved. | www.finitestate.io | support@finitestate.io
+    </div>

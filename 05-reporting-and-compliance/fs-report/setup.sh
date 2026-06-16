@@ -230,6 +230,7 @@ echo -e "  ${BOLD}Run reports:${RESET}      fs-report run --recipe \"Executive S
 echo -e "  ${BOLD}Interactive TUI:${RESET}  fs-report"
 echo -e "  ${BOLD}See all commands:${RESET} fs-report --help"
 echo ""
+echo -e "${DIM}For PDF output, install the rendering engine (~150MB): fs-report install-engine${RESET}"
 if [ -n "${SHELL_RC:-}" ]; then
     echo -e "${DIM}Remember to run: source $SHELL_RC${RESET}"
 fi

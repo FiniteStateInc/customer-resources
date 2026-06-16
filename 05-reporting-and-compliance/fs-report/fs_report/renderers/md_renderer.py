@@ -651,7 +651,9 @@ class MarkdownRenderer:
         portfolio_summary = tr.get("portfolio_summary", {})
         if not isinstance(portfolio_summary, dict):
             portfolio_summary = {}
-        gate_funnel = tr.get("gate_funnel", {})
+        factor_by_band = tr.get("factor_by_band", {})
+        if not isinstance(factor_by_band, dict):
+            factor_by_band = {}
         top_components = tr.get("top_components", pd.DataFrame())
         if not isinstance(top_components, pd.DataFrame):
             top_components = pd.DataFrame()
@@ -673,25 +675,41 @@ class MarkdownRenderer:
         parts.append(self._summary_table(metrics))
         parts.append("")
 
-        # Gate Funnel
-        if gate_funnel and isinstance(gate_funnel, dict):
-            parts.append("## Gate Funnel")
-            # gate_funnel may be a dict of gate_name → count or a chart-ready structure
-            if "labels" in gate_funnel and "values" in gate_funnel:
-                parts.append("| Gate | Count |")
-                parts.append("| --- | --- |")
-                labels = gate_funnel["labels"]
-                values = gate_funnel["values"]
-                for label, val in zip(labels, values, strict=False):
-                    parts.append(f"| {_escape_pipe(str(label))} | {val} |")
-            elif isinstance(gate_funnel, dict):
-                # Try as simple dict
-                parts.append("| Gate | Count |")
-                parts.append("| --- | --- |")
-                for gate, count in gate_funnel.items():
-                    if gate in ("labels", "values"):
-                        continue
-                    parts.append(f"| {_escape_pipe(str(gate))} | {count} |")
+        # Factor Drivers by Band — mirrors the HTML stacked-bar chart, but
+        # rendered as a per-band table of average per-finding factor points.
+        rows = factor_by_band.get("data") if isinstance(factor_by_band, dict) else None
+        if rows and any((r.get("finding_count") or 0) > 0 for r in rows):
+            parts.append("## Factor Drivers by Band")
+            parts.append(
+                "Average per-finding factor contributions (per-band). "
+                "Positive columns are drivers; *Unreachable* and *VEX* are "
+                "demoter penalties (rendered left of zero in the HTML chart)."
+            )
+            parts.append("")
+            parts.append(
+                "| Band | Findings | Reach | Exploit | KEV | Vector | EPSS | CVSS | Gate bonus | Unreachable | VEX |"
+            )
+            parts.append(
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+            )
+            for r in rows:
+                parts.append(
+                    "| {band} | {count} | {reach:.1f} | {exploit:.1f} | {kev:.1f} | "
+                    "{vector:.1f} | {epss:.1f} | {cvss:.1f} | {gate_bonus:.1f} | "
+                    "{unreachable:.1f} | {vex:.1f} |".format(
+                        band=_escape_pipe(str(r.get("band", ""))),
+                        count=int(r.get("finding_count") or 0),
+                        reach=float(r.get("reach") or 0.0),
+                        exploit=float(r.get("exploit") or 0.0),
+                        kev=float(r.get("kev") or 0.0),
+                        vector=float(r.get("vector") or 0.0),
+                        epss=float(r.get("epss") or 0.0),
+                        cvss=float(r.get("cvss") or 0.0),
+                        gate_bonus=float(r.get("gate_bonus") or 0.0),
+                        unreachable=float(r.get("unreachable") or 0.0),
+                        vex=float(r.get("vex") or 0.0),
+                    )
+                )
             parts.append("")
 
         # Top Components
@@ -2321,11 +2339,13 @@ class MarkdownRenderer:
     # Per-section callout texts (customer-facing action guidance).
     _CRA_SECTION_CALLOUTS: dict[str, str] = {
         "sla_breach": (
-            "These vulnerabilities are flagged as actively exploited by the FS "
-            "platform. The `KEV Source` column shows which platform signal "
-            "triggered: `CISA` means the platform marked the CVE as CISA-listed, "
-            "`VcKEV` means FS's verified-compromise signal (exploitation observed "
-            "in the wild beyond what CISA tracks), `CISA+VcKEV` means both. "
+            "These vulnerabilities carry platform exploitation signals and are "
+            "flagged as *potentially* actively exploited — investigate and "
+            "disposition each (confirm affected, or mark NOT_AFFECTED / VEX) "
+            "before treating the 24-hour clock as running. The `KEV Source` "
+            "column shows which platform signal triggered: `CISA` means the CVE "
+            "is in the public CISA KEV catalog, `VcKEV` means the CVE is in "
+            "VulnCheck's KEV catalog (broader than CISA's), `CISA+VcKEV` means both. "
             "The 24-hour CRA notification clock anchors on the later of CISA's "
             "`dateAdded` (when the CISA catalog join succeeds for this row) and "
             "the platform's `detected_date` (when FS first observed this finding). "
@@ -2630,9 +2650,11 @@ class MarkdownRenderer:
         elif sla_count > 0:
             _vuln_word = "vulnerability" if sla_count == 1 else "vulnerabilities"
             banner = (
-                f"⚠️ **{sla_count} actively-exploited {_vuln_word} detected** in your portfolio. "
-                "EU CRA Article 14 requires notification to ENISA within 24 hours "
-                "of becoming aware. The 🔥 SLA-Breach section lists deadlines."
+                f"⚠️ **{sla_count} potential actively-exploited {_vuln_word} detected** "
+                "in your portfolio. These are platform KEV / known-exploit signals — "
+                "investigate and disposition each (confirm affected, or mark "
+                "NOT_AFFECTED / VEX) before treating the EU CRA Article 14 24-hour "
+                "ENISA notification clock as running. The 🔥 SLA-Breach section lists deadlines."
             )
         else:
             banner = (
@@ -2678,7 +2700,9 @@ class MarkdownRenderer:
             "Under EU CRA Article 14, manufacturers must notify ENISA within 24 hours\n"
             "of becoming aware of an actively exploited vulnerability in a product\n"
             "with digital elements. The 🔥 SLA-Breach Risk section flags findings\n"
-            "where that clock applies."
+            "carrying platform exploitation signals — potential candidates to\n"
+            "investigate and disposition (confirm affected vs NOT_AFFECTED/VEX)\n"
+            "before that 24-hour clock is treated as running."
         )
 
         # ── Assemble parts ───────────────────────────────────────────────

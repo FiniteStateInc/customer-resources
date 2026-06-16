@@ -1,308 +1,305 @@
-{% extends "base.html" %}
-
-{% block title %}Dashboard — Finite State Report Kit{% endblock %}
+{% extends "components/_cc_shell.html" %}
 
 {% block content %}
-{% include "components/_status_bar.html" %}
-{% include "components/_dir_browser.html" %}
-{% include "components/_scope_dropdowns.html" %}
-
-<div class="dashboard-layout dashboard-3col">
-    <!-- Left column: Scan Queue (live) -->
-    <section class="queue-section">
-        <h2 class="section-heading">Scan Queue</h2>
-        <div id="scan-queue-container"
-             hx-get="/api/queue"
-             hx-trigger="load delay:500ms, every 30s"
-             hx-swap="innerHTML"
-             hx-on::response-error="this.innerHTML='<div class=queue-error><span class=queue-error-icon>⚠</span> Could not load queue</div>'">
-            <div class="queue-loading">Loading&hellip;</div>
-        </div>
-    </section>
-
-    <!-- Center column: Workflow cards -->
-    <section class="workflows-section">
-        <h2 class="section-heading">Workflows</h2>
-        <div class="workflow-grid">
-            {% for wf in workflows %}
-            <div class="workflow-card">
-                <div class="workflow-icon">{{ wf.icon }}</div>
-                <div class="workflow-info">
-                    <h3>{{ wf.title }}</h3>
-                    <p>{{ wf.description }}</p>
-                </div>
-                <form method="post" action="/api/run/prerun"
-                      hx-post="/api/run/prerun"
-                      hx-target="#prerun-container"
-                      hx-swap="innerHTML"
-                      hx-indicator="#prerun-spinner">
-                    <input type="hidden" name="recipes" value="{{ wf.recipes | join(',') }}">
-                    <input type="hidden" name="workflow_title" value="{{ wf.title }}">
-                    <input type="hidden" name="_csrf" value="{{ nonce }}">
-                    <button type="submit" class="btn btn-primary btn-sm">Configure &rarr;</button>
-                </form>
-            </div>
-            {% endfor %}
-        </div>
-    </section>
-
-    <!-- Right column: Recipe checkboxes -->
-    <section class="recipes-section">
-        <h2 class="section-heading">Recipes</h2>
-        <form id="recipe-form" x-data="recipeSelector()">
-            <div class="recipe-list">
-                {% for r in recipes %}
-                <label class="recipe-item">
-                    <input type="checkbox"
-                           name="recipe"
-                           value="{{ r.name }}"
-                           {% if saved_recipes %}{% if r.name in saved_recipes %}checked{% endif %}{% elif r.auto_run %}checked{% endif %}
-                           data-auto-run="{% if r.auto_run %}1{% endif %}"
-                           @change="updateSelection()">
-                    <div class="recipe-info">
-                        <span class="recipe-name">{{ r.name }}</span>
-                        <span class="recipe-category">{{ r.category }}</span>
-                        {% if r.description %}
-                        <span class="recipe-desc">{{ r.description }}</span>
-                        {% endif %}
-                    </div>
-                </label>
-                {% endfor %}
-            </div>
-
-            <div class="recipe-actions">
-                <button type="button" class="btn btn-primary" @click="runSelected()"
-                        :disabled="selectedCount === 0">
-                    Run Selected (<span x-text="selectedCount">0</span>)
-                </button>
-                <button type="button" class="btn btn-default" @click="runAll()">
-                    Run All
-                </button>
-            </div>
-        </form>
-    </section>
+<!-- ===================== PAGE HEAD ===================== -->
+<div class="page-head fade-up">
+  <div class="ptitle">
+    <h1>Command Center</h1>
+  </div>
+  <div class="head-actions">
+    <button class="btn btn-ghost" id="cc-refresh"><i data-lucide="refresh-cw"></i> Refresh</button>
+    <button class="btn btn-ghost" id="cc-apply-vex" title="Upload a vex_recommendations.json and apply VEX statuses to the platform"><i data-lucide="upload"></i> Apply VEX file</button>
+    <button class="btn btn-primary" id="cc-new"><i data-lucide="play"></i> New Report</button>
+  </div>
 </div>
 
-<!-- Pre-run form container (populated by htmx) -->
-<div id="prerun-container" class="prerun-overlay"></div>
-<div id="prerun-spinner" class="htmx-indicator">Loading...</div>
+<!-- ===================== RUN BAR ===================== -->
+<section class="runbar fade-up" style="animation-delay:.04s">
+  {# B9 #17: two-row layout — row 1 = Folder/Project/Version cascade, row 2 =
+     Report + Period + Run + Pin + pinned readout. Replaces the single flex-wrap
+     row that overflowed and re-flowed unpredictably. The cascade now reads
+     Folder / Project / Version (was Folder / Target / bare "@"). #}
+  <div class="rb-row rb-row-scope">
+    <div class="rb-group">
+      <span class="rb-lbl">Folder</span>
+      <select class="rb-sel" id="rb-folder" data-value="{{ pinned_folder or '' }}"><option value="">Any folder</option></select>
+      <span class="rb-lbl">Project</span>
+      <select class="rb-sel" id="rb-project" data-value="{{ pinned_project or '' }}"><option value="">All projects</option></select>
+      <span class="rb-lbl">Version</span>
+      <select class="rb-sel" id="rb-version" data-value="{{ pinned_version or '' }}" disabled><option value="">latest</option></select>
+    </div>
+  </div>
+  <div class="rb-row rb-row-actions">
+    <div class="rb-group">
+      <span class="rb-lbl">Report</span>
+      <select class="rb-sel rb-wide" id="rb-report">
+        {% for r in recipes %}
+        <option value="{{ r.name }}"{% if pinned_report and r.name == pinned_report %} selected{% endif %}>{{ r.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {# B9 #17: Period control — hidden until the selected report is a period
+       recipe (driven client-side by recipe.applicability.show_period, mirroring
+       PERIOD_RECIPES). Blank = recipe default; the value rides /api/run as the
+       already-supported `period` override. #}
+    <div class="rb-group rb-period-group" id="rb-period-group" hidden>
+      <span class="rb-lbl">Period</span>
+      <input class="rb-sel rb-period" id="rb-period" type="text"
+             placeholder="30d, 2m, 90d"
+             title="Reporting window for this period report (e.g. 30d, 2m, 90d). Leave blank for the recipe default.">
+    </div>
+    <button class="btn btn-primary" id="rb-run"><i data-lucide="play"></i> Run</button>
+    <button class="btn btn-ghost" id="rb-pin" title="Pin as default — press R to run it"><i data-lucide="pin"></i> Pin</button>
+    <div class="rb-pinned" id="rb-pinned">
+    {# Finding 7: also render a folder-only pin (pinned_folder, no project) on
+       initial server render — not only after a client pin/unpin. Project wins
+       over folder in the readout (mirrors the run-bar precedence); a folder-only
+       pin shows a folder icon + resolved name (pinned_folder_name), falling back
+       to the ID (pinned_folder) when the name couldn't be resolved. #}
+    {% if pinned_report or pinned_project or pinned_folder %}
+    <i data-lucide="pin"></i> Pinned: <b>{{ pinned_report or '—' }}</b>{% if pinned_project %} · {{ pinned_project }}{% if pinned_version %} @ {{ pinned_version }}{% endif %}{% elif pinned_folder %} · <i data-lucide="folder"></i> {{ pinned_folder_name or pinned_folder }}{% endif %}
+    <button type="button" class="rb-unpin" data-cc="unpin" title="Unpin" aria-label="Unpin"><i data-lucide="x"></i></button>
+    {% endif %}
+    </div>
+  </div>
+</section>
 
-<script>
-var NONCE = '{{ nonce }}';
+<!-- ===================== KPI HERO BAND ===================== -->
+<section class="kpi-band fade-up" style="animation-delay:.06s;grid-template-columns:repeat(4,1fr)">
+  <div class="kpi feature">
+    <div class="klabel"><span class="dot dot-low"></span> Platform</div>
+    <div class="kval" data-cc="platform" style="font-size:23px">—</div>
+    <div class="ksub" data-cc="platform-sub"></div>
+  </div>
+  <div class="kpi">
+    <div class="klabel"><span class="dot dot-info"></span> Scans / 30d</div>
+    <div class="kval" data-cc="scans" data-count="0">0</div>
+    <div class="kdelta" data-cc="scans-delta"></div>
+  </div>
+  <div class="kpi">
+    <div class="klabel"><span class="dot dot-accent"></span> Reports run / 30d</div>
+    <div class="kval" data-cc="reports" data-count="0">0</div>
+    <div class="kdelta" data-cc="reports-delta"></div>
+  </div>
+  <div class="kpi">
+    <div class="klabel"><span class="dot dot-medium"></span> Active users / 30d</div>
+    <div class="kval" data-cc="users" data-count="0">0</div>
+    <div class="ksub" data-cc="users-sub"></div>
+  </div>
+</section>
 
-/* ── Recipe selector (Alpine component) ────────────────────── */
-function recipeSelector() {
-    /* Restore saved recipe selections from sessionStorage */
-    var saved = sessionStorage.getItem('fs_recipes');
-    if (saved) {
-        try {
-            var savedList = JSON.parse(saved);
-            document.querySelectorAll('#recipe-form input[type=checkbox]').forEach(function(cb) {
-                cb.checked = savedList.indexOf(cb.value) !== -1;
-            });
-        } catch(e) { /* ignore bad data */ }
-    }
+<!-- ===================== MAIN GRID ===================== -->
+<section class="grid g-main fade-up" style="animation-delay:.1s">
 
-    return {
-        selectedCount: document.querySelectorAll('#recipe-form input[type=checkbox]:checked').length,
-        updateSelection() {
-            this.selectedCount = document.querySelectorAll('#recipe-form input[type=checkbox]:checked').length;
-            this._persist();
-        },
-        _persist() {
-            var sel = this.getSelected();
-            sessionStorage.setItem('fs_recipes', JSON.stringify(sel));
-        },
-        getSelected() {
-            return Array.from(document.querySelectorAll('#recipe-form input[type=checkbox]:checked'))
-                .map(function(cb) { return cb.value; });
-        },
-        runSelected() {
-            var recipes = this.getSelected();
-            if (recipes.length === 0) return;
-            loadPrerun(recipes);
-        },
-        runAll() {
-            var recipes = Array.from(document.querySelectorAll('#recipe-form input[type=checkbox]'))
-                .map(function(cb) { return cb.value; });
-            loadPrerun(recipes);
-        },
-    };
-}
+  <!-- Scan Health ring panel -->
+  <div class="panel posture">
+    <div class="phead" style="width:100%">
+      <h2>Scan Health</h2>
+      <span class="pmeta">30d</span>
+    </div>
+    <div class="ring-wrap">
+      <svg width="172" height="172" viewBox="0 0 172 172">
+        <circle cx="86" cy="86" r="74" fill="none" stroke="var(--surface-muted)" stroke-width="12"></circle>
+        <circle id="ring" cx="86" cy="86" r="74" fill="none" stroke="var(--accent)" stroke-width="12"
+          stroke-linecap="round" stroke-dasharray="465" stroke-dashoffset="465"
+          style="filter:drop-shadow(0 0 8px rgba(var(--accent-rgb),.6))"></circle>
+      </svg>
+      <div class="score">
+        <div class="grade" data-cc="grade">—</div>
+        <div class="num" data-cc="rate"></div>
+      </div>
+    </div>
+    <div class="ptags" data-cc="tags"></div>
+  </div>
 
-/* ── Form value persistence ────────────────────────────────── */
-function _saveFormValues() {
-    var form = document.getElementById('prerun-submit-form');
-    if (!form) return;
-    var data = {};
-    form.querySelectorAll('input, select').forEach(function(el) {
-        if (el.type === 'hidden') return;
-        if (el.type === 'checkbox') {
-            data[el.name] = el.checked;
-        } else {
-            data[el.name] = el.value;
-        }
-    });
-    sessionStorage.setItem('fs_prerun', JSON.stringify(data));
-}
+  <!-- Running Reports monitor — loaded via HTMX -->
+  <div id="running-container"
+       hx-get="/api/running"
+       hx-trigger="load delay:300ms"
+       hx-swap="innerHTML">
+    <div class="panel" id="running-reports">
+      <div class="phead"><h2>Running Reports</h2></div>
+    </div>
+  </div>
 
-function _restoreFormValues() {
-    var raw = sessionStorage.getItem('fs_prerun');
-    if (!raw) return;
-    try {
-        var data = JSON.parse(raw);
-    } catch(e) { return; }
-    var form = document.getElementById('prerun-submit-form');
-    if (!form) return;
-    Object.keys(data).forEach(function(name) {
-        var el = form.querySelector('[name="' + name + '"]');
-        if (!el || el.type === 'hidden') return;
-        if (el.type === 'checkbox') {
-            el.checked = !!data[name];
-        } else if (el.tagName === 'SELECT') {
-            el.value = data[name];
-        } else {
-            el.value = data[name];
-        }
-    });
-}
+  <!-- Live Scan Queue — loaded via HTMX -->
+  <div id="scan-queue-container"
+       hx-get="/api/queue"
+       hx-trigger="load delay:500ms"
+       hx-swap="innerHTML"
+       hx-on::response-error="this.innerHTML='<div class=panel id=scan-queue><div class=phead><h2>Live Scan Queue</h2></div><div style=padding:8px;color:var(--ink-mute);font-size:12px>Could not load queue</div></div>'">
+    <div class="panel" id="scan-queue">
+      <div class="phead"><h2>Live Scan Queue</h2></div>
+      <div style="color:var(--ink-mute);font-size:12px;padding:8px 0">Loading&hellip;</div>
+    </div>
+  </div>
 
-/* ── Load pre-run form into side panel ─────────────────────── */
-function loadPrerun(recipes) {
-    var container = document.getElementById('prerun-container');
-    container.innerHTML = '<div class="prerun-loading"><span class="spinner"></span> Loading...</div>';
-    container.classList.add('active');
-    var formData = new FormData();
-    formData.append('recipes', recipes.join(','));
-    formData.append('_csrf', NONCE);
-    fetch('/api/run/prerun', {
-        method: 'POST',
-        headers: { 'X-FS-Session': NONCE },
-        body: formData,
-    })
-    .then(function(r) { return r.text(); })
-    .then(function(html) {
-        container.innerHTML = html;
-        _restoreFormValues();
-        _initPrerunWidgets();
-    });
-}
+</section>
 
-/* ── Event delegation: handle Run / Cancel in prerun panel ── */
-document.addEventListener('click', function(e) {
-    /* Run button */
-    if (e.target && e.target.id === 'btn-run-submit') {
-        e.preventDefault();
-        var btn = e.target;
-        var form = document.getElementById('prerun-submit-form');
-        if (!form) return;
-        _hidePrerunError();
-        _syncFindingTypes();
-        _saveFormValues();
-        var formData = new FormData(form);
-        btn.disabled = true;
-        btn.textContent = 'Starting\u2026';
-        fetch('/api/run', {
-            method: 'POST',
-            headers: { 'X-FS-Session': NONCE },
-            body: formData,
-        })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (data.run_id) {
-                sessionStorage.removeItem('fs_prerun');
-                sessionStorage.removeItem('fs_recipes');
-                window.location.href = '/run/' + data.run_id;
-            } else {
-                _showPrerunError(data.error || 'Unknown error');
-                btn.disabled = false;
-                btn.textContent = btn.getAttribute('data-label') || 'Run';
-            }
-        })
-        .catch(function(err) {
-            _showPrerunError('Failed to start run: ' + err);
-            btn.disabled = false;
-            btn.textContent = btn.getAttribute('data-label') || 'Run';
-        });
-    }
+{# Recent Activity was removed — it duplicated Report History (/reports) and sat
+   below the fold; the Running Reports panel already surfaces recent completed
+   runs at the top. Browse past runs via Report History (sidebar / the panel's
+   "more →" link). #}
 
-    /* Cancel / close button */
-    if (e.target && e.target.classList.contains('prerun-close')) {
-        _hidePrerunError();
-        document.getElementById('prerun-container').classList.remove('active');
-        document.getElementById('prerun-container').innerHTML = '';
-    }
-});
+<!-- ===================== WORKFLOW LAUNCHER ===================== -->
+<div class="launcher-head fade-up" style="animation-delay:.32s" id="launcher">
+  <h2><i data-lucide="grid-2x2" style="width:17px;height:17px;color:var(--accent)"></i> Launch a Report</h2>
+  <div class="filters">
+    <span class="chip on" data-filter="all">All</span>
+    <span class="chip" data-filter="Executive"><span class="cdot" style="background:var(--nav-executive)"></span> Executive</span>
+    <span class="chip" data-filter="Investigation"><span class="cdot" style="background:var(--nav-investigation)"></span> Investigation</span>
+    <span class="chip" data-filter="Remediation"><span class="cdot" style="background:var(--nav-remediation)"></span> Remediation</span>
+    <span class="chip" data-filter="Compliance"><span class="cdot" style="background:var(--nav-compliance)"></span> Compliance</span>
+    <span class="rb-div" style="height:20px"></span>
+    <span class="sort" id="wf-sort">
+      <span class="sl">Sort</span>
+      <span class="sc on" data-sort="recent">Recent</span>
+      <span class="sc" data-sort="name">A–Z</span>
+    </span>
+  </div>
+</div>
 
-/* ── Inline error helpers ──────────────────────────────────── */
-function _showPrerunError(msg) {
-    var el = document.getElementById('prerun-error');
-    if (el) { el.textContent = msg; el.style.display = 'block'; }
-}
-function _hidePrerunError() {
-    var el = document.getElementById('prerun-error');
-    if (el) { el.style.display = 'none'; el.textContent = ''; }
-}
+<div class="wf-grid fade-up" id="wf-grid" style="animation-delay:.36s">
+  {% for r in recipes %}
+  <div class="wf-card" data-recipe="{{ r.name }}" data-cat="{{ r.nav_category }}"
+       data-kind="{{ r.kind or '' }}"
+       data-needs-setup="{{ 1 if r.needs_setup else 0 }}"
+       data-scope-req="{{ 'project' if r.requires_project else ('project_or_folder' if r.requires_project_or_folder else '') }}"
+       style="--cat:var(--nav-{{ r.nav_category | lower | replace(' ', '-') }}, var(--accent))">
+    <div class="wf-inner">
+      <div class="wf-front">
+        <div class="wf-top">
+          <div class="wf-ic">
+            <button class="wf-gear" type="button" aria-label="Configure {{ r.name }}"><i data-lucide="settings"></i></button>
+          </div>
+          <span class="wf-cat">{{ r.nav_category }}</span>
+        </div>
+        <h3>{{ r.name }}</h3>
+        {# B10 #23: card front shows the short card_description (falls back to the
+           full description); the full text rides as the title tooltip. #}
+        <p title="{{ r.description }}">{{ r.card_description or r.description }}</p>
+        <div class="wf-foot">
+          {% if r.kind %}<span class="rk-badge rk-{{ r.kind }}">{{ r.kind }}</span>{% endif %}
+          <span class="go">Run <i data-lucide="arrow-right"></i></span>
+        </div>
+      </div>
+      <div class="wf-back" data-cardback></div>
+    </div>
+  </div>
+  {% endfor %}
 
-/* ── Sync finding-type checkboxes to hidden field ─────────── */
-function _syncFindingTypes() {
-    var cbs = document.querySelectorAll('input[name="ft_cb"]:checked');
-    var hidden = document.getElementById('pre-ft');
-    if (!hidden || cbs.length === 0) return;
-    hidden.value = Array.from(cbs).map(function(cb) { return cb.value; }).join(',');
-}
+  {# Synthetic Comparison card — rendered only when comparison recipes exist.
+     Deep-links into the Builder comparison editor instead of flipping to a
+     back-face (the authoring back-face has been retired; the Builder owns
+     comparison authoring now).  Clicking anywhere on the card navigates to
+     /workflows/builder?kind=comparison&new=1.  No data-comparison attribute
+     (the retired flip path is removed from command-center.js). #}
+  {% if comparison_recipes %}
+  <a class="wf-card wf-card--link" data-cat="Investigation"
+     href="/workflows/builder?kind=comparison&new=1"
+     style="--cat:var(--nav-investigation, var(--accent))">
+    <div class="wf-body">
+      <div class="wf-top">
+        <div class="wf-ic">
+          <span aria-hidden="true"><i data-lucide="git-compare"></i></span>
+        </div>
+        <span class="wf-cat">Investigation</span>
+      </div>
+      <h3>Comparison</h3>
+      <p>Compare two scopes — pick the diffs and left/right targets.</p>
+      <div class="wf-foot">
+        <span class="go">Open in Builder <i data-lucide="arrow-right"></i></span>
+      </div>
+    </div>
+  </a>
+  {% endif %}
 
-/* ── Init dir browser + scope dropdowns in prerun panel ──── */
-function _initPrerunWidgets() {
-    var runBtn = document.getElementById('btn-run-submit');
-    if (runBtn) runBtn.setAttribute('data-label', runBtn.textContent);
-    initDirBrowser('pre-output', 'pre-output-browse');
-    initScopeDropdowns({
-        projectId: 'pre-project',
-        folderId:  'pre-folder',
-        versionId: 'pre-version',
-        cvoId:     'pre-cvo',
-    });
-    initVersionPicker({
-        projectSelId: 'pre-bv-project',
-        versionSelId: 'pre-bv-version',
-        inputId: 'pre-bv',
-    });
-    initVersionPicker({
-        projectSelId: 'pre-cv-project',
-        versionSelId: 'pre-cv-version',
-        inputId: 'pre-cv',
-    });
-    /* Character counter for deployment notes textarea */
-    var ta = document.getElementById('pre-deploy-notes');
-    var counter = document.getElementById('pre-deploy-notes-count');
-    if (ta && counter) {
-        ta.addEventListener('input', function() {
-            counter.textContent = ta.value.length;
-        });
-    }
-}
+  {# Synthetic Compound card — deep-links into the Builder compound editor.
+     Clicking anywhere on the card navigates to
+     /workflows/builder?kind=compound&new=1. Compound reports need no installed
+     recipes, so no gating condition. #}
+  <a class="wf-card wf-card--link" data-cat="Investigation"
+     href="/workflows/builder?kind=compound&new=1"
+     style="--cat:var(--nav-investigation, var(--accent))">
+    <div class="wf-body">
+      <div class="wf-top">
+        <div class="wf-ic">
+          <span aria-hidden="true"><i data-lucide="layers"></i></span>
+        </div>
+        <span class="wf-cat">Investigation</span>
+      </div>
+      <h3>Compound</h3>
+      <p>Combine multiple report sections into one deliverable. Open in Builder.</p>
+      <div class="wf-foot">
+        <span class="go">Open in Builder <i data-lucide="arrow-right"></i></span>
+      </div>
+    </div>
+  </a>
+</div>
 
-/* ── Sync side column heights to workflow column ───────────── */
-function _syncColumnHeights() {
-    var wf = document.querySelector('.workflows-section');
-    if (!wf) return;
-    var h = wf.offsetHeight;
-    var queue = document.querySelector('.queue-section');
-    var recipes = document.querySelector('.recipes-section');
-    if (queue) queue.style.maxHeight = h + 'px';
-    if (recipes) recipes.style.maxHeight = h + 'px';
-}
-window.addEventListener('load', _syncColumnHeights);
-window.addEventListener('resize', _syncColumnHeights);
+<!-- ===================== APPLY VEX FILE MODAL (SP3 §7) ===================== -->
+{# A standalone one-shot destructive apply (NOT a report-run input): upload a
+   vex_recommendations.json (kind=recs) → dry-run preview via
+   /api/vex/apply-file → "Apply for real" (confirm-gated). Reuses the shared
+   .fs-upload control + uploads.js. The endpoint canonicalizes + confines the
+   path to ~/.fs-report/uploads/recs/ and requires confirm for a real write
+   (server-enforced). Wired by command-center.js wireApplyVexFile(). #}
+<div class="cfg-ov" id="vexfile-ov"></div>
+<div id="vexfile-modal" role="dialog" aria-modal="true" aria-label="Apply VEX file">
+  <div class="prerun-panel">
+    <div class="prerun-header">
+      <div>
+        <h2><i data-lucide="upload"></i> Apply VEX file</h2>
+        <div class="prerun-recipes">Upload a <code>vex_recommendations.json</code>, preview, then write VEX statuses to the platform.</div>
+      </div>
+      <button type="button" class="btn-close" id="vexfile-close" aria-label="Close">&times;</button>
+    </div>
 
-/* ── Also activate panel after htmx swaps (workflow cards) ── */
-document.addEventListener('htmx:afterSwap', function(e) {
-    if (e.detail.target && e.detail.target.id === 'prerun-container') {
-        e.detail.target.classList.add('active');
-        _restoreFormValues();
-        _initPrerunWidgets();
-    }
-});
-</script>
+    <div class="wf-cfg-error" id="vexfile-error" style="display:none"></div>
+
+    <div class="form-group">
+      <label>Recommendations file (JSON)</label>
+      <div class="fs-upload" data-kind="recs" data-target="vexfile-path">
+        <input type="file" class="fs-upload-input" accept=".json">
+        <span class="fs-upload-name">none</span>
+        <button type="button" class="fs-upload-clear" aria-label="Clear">&times;</button>
+      </div>
+      <input type="hidden" id="vexfile-path" value="">
+      <small class="form-hint">A non-empty JSON array of recommendation objects (per-row validity is checked at preview).</small>
+    </div>
+
+    <div class="form-group form-row">
+      <label for="vexfile-vex-override">Override existing VEX</label>
+      <label class="toggle">
+        <input type="checkbox" id="vexfile-vex-override">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+
+    {# Dry-run preview summary (skipped_invalid surfaces malformed rows before
+       a real write). Populated by the preview response; cleared on re-upload. #}
+    <div class="vexfile-summary" id="vexfile-summary" style="display:none"></div>
+
+    <div class="prerun-actions">
+      <button type="button" class="btn btn-default" id="vexfile-preview" disabled>Preview (dry run)</button>
+      <button type="button" class="btn btn-primary" id="vexfile-apply" disabled>Apply for real</button>
+    </div>
+    <small class="form-hint form-hint-warning">Apply <b>writes VEX statuses to the platform</b> and cannot be undone — preview first; you'll confirm before the write.</small>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+{# Fix 1 (PR #117 review): the card-back Version Comparison pickers call
+   initVersionPicker, which (along with initScopeDropdowns) is defined in
+   _scope_dropdowns.html. The dashboard has no prerun-fragment loaded at page
+   load, so without this include the function is undefined and the card-back
+   baseline/current pickers stay inert. Include it once here (after
+   command-center.js is loaded by _cc_shell.html) so the definition exists when
+   a card back is wired. Both functions are plain hoisted `function`
+   declarations that only DEFINE on load (no side-effecting top-level calls), so
+   if the prerun modal fragment later injects this same template via HTMX the
+   re-declaration is harmless. #}
+{% include "components/_scope_dropdowns.html" %}
 {% endblock %}

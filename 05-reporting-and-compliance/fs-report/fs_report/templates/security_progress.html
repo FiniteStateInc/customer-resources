@@ -1,3 +1,23 @@
+{# Defensive defaults block — placed BEFORE the render-mode gate per the
+   E.1/E.2/E.3 + C.1/C.2/D pattern. Mirrors all prior Phase 1b/1c
+   migrations. Coerces non-mapping / non-iterable upstream values so the
+   template never crashes on data drift. #}
+{% set summary = summary | default({}) %}
+{% if summary is not mapping %}{% set summary = {} %}{% endif %}
+{% set portfolio_kpi = portfolio_kpi | default({}) %}
+{% if portfolio_kpi is not mapping %}{% set portfolio_kpi = {} %}{% endif %}
+{% set cve_update_summary = cve_update_summary | default({}) %}
+{% if cve_update_summary is not mapping %}{% set cve_update_summary = {} %}{% endif %}
+{% set cve_updates = cve_updates | default({}) %}
+{% if cve_updates is not mapping %}{% set cve_updates = {} %}{% endif %}
+{% set portfolio_progression = portfolio_progression | default([]) %}
+{% if portfolio_progression is mapping or portfolio_progression is string or portfolio_progression is not iterable %}{% set portfolio_progression = [] %}{% endif %}
+{% set projects = projects | default([]) %}
+{% if projects is mapping or projects is string or projects is not iterable %}{% set projects = [] %}{% endif %}
+
+{% import "_console_macros.html" as fs with context %}
+
+{% if render_mode != 'fragment' %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,171 +25,225 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
     <title>Security Progress Report - Finite State Report</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 
-        {% include "_standalone_shell.html" %}
+    {# ECharts library — replaces the pre-migration Chart.js stack
+       (umd build + datalabels plugin). #}
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+    {% include "_echarts_ready.html" %}
+{% endif %}
+
+{# Recipe-local styles — render in BOTH standalone and fragment modes so
+   fragment_extractor (_STYLE_RE) collects them, scopes under
+   .fs-section-security-progress, and re-emits at the top of the
+   fragment. All hex literals migrated to design tokens. #}
 <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            line-height: 1.6; color: #333; background-color: #f8f9fa;
-        }
-        .container { margin: 0 auto; padding: 20px; background-color: white; border: 1px solid #dee2e6; min-height: 100%; }
-        .header { text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid #e9ecef; }
-        .company-logo { max-height: 50px; width: auto; margin: 0 auto; display: block; }
-        .header h1 { color: #2c3e50; font-size: 2.5em; margin-bottom: 10px; }
-        .header .subtitle { color: #6c757d; font-size: 1.1em; }
-        .metadata { background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 30px; font-size: 0.9em; color: #6c757d; }
+    .sp-chart-wrapper {
+        width: 100%;
+        height: 400px;
+    }
 
-        /* KPI Cards */
-        .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 30px; }
-        .kpi-card {
-            background: white; border: 1px solid #dee2e6; border-radius: 8px;
-            padding: 20px; text-align: center;
-        }
-        .kpi-card .kpi-title { font-size: 0.85em; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-        .kpi-card .kpi-value { font-size: 2.2em; font-weight: 700; color: #2c3e50; line-height: 1; }
-        .kpi-card.border-green  { border-top: 4px solid #388e3c; }
-        .kpi-card.border-orange { border-top: 4px solid #f57c00; }
-        .kpi-card.border-blue   { border-top: 4px solid #1976d2; }
-        .kpi-card.border-red    { border-top: 4px solid #dc2626; }
+    .sp-chart-unavailable {
+        text-align: center;
+        color: var(--ink-mute);
+        font-style: italic;
+        padding: 40px;
+    }
 
-        /* Chart containers */
-        .chart-container { background-color: white; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #dee2e6; }
-        .chart-wrapper { position: relative; height: 400px; margin: 20px 0; }
-        .chart-title { color: #2c3e50; font-size: 1.5em; margin-bottom: 10px; }
-        .chart-description { color: #6c757d; font-size: 0.95em; margin-bottom: 20px; }
+    /* Net change coloring — preserved from pre-migration template,
+       prefixed .sp-* per the auto-scoping contract. */
+    .sp-net-improved  { color: var(--sev-low-text);      font-weight: 600; }
+    .sp-net-regressed { color: var(--sev-critical-text); font-weight: 600; }
+    .sp-net-neutral   { color: var(--ink-mute);          font-weight: 600; }
 
-        /* Tables */
-        .table-container { background-color: white; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #dee2e6; overflow-x: auto; }
-        .table-container h2 { color: #2c3e50; font-size: 1.5em; margin-bottom: 10px; }
-        .table-container p.description { color: #6c757d; font-size: 0.95em; margin-bottom: 15px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #dee2e6; }
-        th { background-color: #f8f9fa; font-weight: 600; color: #495057; position: sticky; top: 0; z-index: 10; }
-        tr:hover { background-color: #f8f9fa; }
-        td.num { text-align: right; font-variant-numeric: tabular-nums; }
-        th.num { text-align: right; }
+    /* Severity column accents in the per-project detail table. */
+    .sp-sev-critical { color: var(--sev-critical-text); font-weight: 600; }
+    .sp-sev-high     { color: var(--sev-high-text);     font-weight: 600; }
+    .sp-sev-medium   { color: var(--sev-medium-text);   font-weight: 600; }
+    .sp-sev-low      { color: var(--accent-blue);       font-weight: 600; }
 
-        /* Net change coloring */
-        .net-improved { color: #388e3c; font-weight: 600; }
-        .net-regressed { color: #dc2626; font-weight: 600; }
-        .net-neutral { color: #6c757d; font-weight: 600; }
+    /* Inline resolved/new accents in tables. */
+    .sp-cell-resolved { color: var(--sev-low-text); }
+    .sp-cell-new      { color: var(--sev-high-text); }
 
-        /* Severity badges */
-        .sev-critical { color: #dc2626; font-weight: 600; }
-        .sev-high { color: #ea580c; font-weight: 600; }
-        .sev-medium { color: #eab308; font-weight: 600; }
-        .sev-low { color: #2563eb; font-weight: 600; }
+    /* Flat-snapshot fallback notice — yellow chip via color-mix on
+       the medium-severity text token. Mirrors the warning-chip
+       pattern used elsewhere in Phase 1c. */
+    .sp-flat-notice {
+        background: color-mix(in srgb, var(--sev-medium-text) 12%, transparent);
+        border: 1px solid var(--sev-medium-text);
+        border-left: 4px solid var(--sev-medium-text);
+        border-radius: 6px;
+        padding: 14px 18px;
+        margin-bottom: 24px;
+        color: var(--sev-medium-text);
+        font-size: 1em;
+        line-height: 1.5;
+    }
+    .sp-flat-notice strong { display: block; margin-bottom: 6px; color: var(--ink-strong); }
 
-        /* Details / collapsible sections */
-        details { margin-bottom: 12px; }
-        details summary {
-            cursor: pointer; font-weight: 600; color: #2c3e50; font-size: 1.05em;
-            padding: 10px 0; border-bottom: 1px solid #e9ecef;
-        }
-        details summary:hover { color: #007bff; }
-        details[open] summary { margin-bottom: 10px; }
-        .detail-table { font-size: 0.9em; }
-        .detail-table th { font-size: 0.85em; }
+    /* Per-project collapsible detail. */
+    .sp-detail-block { margin-bottom: 12px; }
+    .sp-detail-block summary {
+        cursor: pointer;
+        font-weight: 600;
+        color: var(--ink-strong);
+        font-size: 1.05em;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--hairline);
+    }
+    .sp-detail-block summary:hover { color: var(--accent-blue); }
+    .sp-detail-block[open] summary { margin-bottom: 10px; }
+    .sp-detail-meta {
+        font-weight: 400;
+        font-size: 0.85em;
+        color: var(--ink-mute);
+        margin-left: 8px;
+    }
+    .sp-detail-table { font-size: 0.9em; }
+    .sp-detail-table th { font-size: 0.85em; }
 
-        /* Flat snapshot notice */
-        .flat-notice {
-            background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px;
-            padding: 20px; margin-bottom: 30px; color: #856404;
-        }
-        .flat-notice strong { display: block; margin-bottom: 6px; }
+    /* Sortable table header indicator — preserved from pre-migration. */
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable:hover { background: var(--surface-muted); }
+    th.sortable::after { content: ' \2195'; font-size: 0.7em; color: var(--ink-mute); }
 
-        .footer { text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e9ecef; color: #6c757d; font-size: 0.9em; }
-        .finite-state-logo { color: #007bff; font-weight: bold; }
+    /* "Hidden rows" trailing row in the project table. */
+    .sp-hidden-rows {
+        color: var(--ink-mute);
+        font-style: italic;
+    }
 
-        /* Sortable table header indicator */
-        th.sortable { cursor: pointer; user-select: none; }
-        th.sortable:hover { background-color: #e9ecef; }
-        th.sortable::after { content: ' \2195'; font-size: 0.7em; color: #adb5bd; }
+    /* Total row in the CVE Updates table. */
+    .sp-cve-updates-total td {
+        border-top: 2px solid var(--hairline);
+        font-weight: 600;
+    }
 
-        @media print {
-            body { background-color: white; }
-            .container { max-width: none; border: none; }
-            details { open: true; }
-            details[open] summary { page-break-after: avoid; }
-            .chart-container { break-inside: avoid; }
-            .table-container { break-inside: avoid; }
-        }
-    </style>
+    /* Description prose under section headings. */
+    .sp-description {
+        color: var(--ink-mute);
+        font-size: 0.95em;
+        margin-bottom: 15px;
+    }
+
+    @media print {
+        .sp-chart-wrapper { break-inside: avoid; }
+        details[open] summary { page-break-after: avoid; }
+        .sp-detail-table { page-break-inside: avoid; }
+        .sp-detail-block { break-inside: avoid; }
+        /* Force-expand collapsed <details> in print output — restores the
+           pre-migration intent (which used the malformed `details { open: true; }`
+           rule that browsers ignore). The standards-correct incantation is
+           to display all non-summary children regardless of [open]. */
+        details:not([open]) > *:not(summary) { display: block !important; }
+    }
+</style>
+
+{% if render_mode != 'fragment' %}
 </head>
-<body data-nav-category="{{ nav_category_slug }}">
-    <span id="fsConnectionBadge"></span>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            {% include "_default_logo.html" %}
-            <h1>Security Progress Report</h1>
-            <div class="subtitle">
-                {{ scope_label | default('All Projects') }} — Security Posture Over Time
-            </div>
-        </div>
+<body class="console" data-nav-category="{{ nav_category_slug | default('executive') }}">
+{% endif %}
 
-        <!-- Metadata -->
-        <div class="metadata">
-            <strong>Report:</strong> Security Progress |
-            <strong>Generated:</strong> {{ generated_at }} |
-            <strong>Scope:</strong> {{ scope_label | default('All Projects') }}
-            {% if summary is defined and summary.period_start %} | <strong>Period:</strong> {{ summary.period_start }} to {{ summary.period_end }}{% endif %}
-            {% if summary is defined and summary.mode == 'version_progression' %} | <strong>Mode:</strong> Version Progression{% endif %}
-        </div>
+{# Build topbar meta items. Period + Mode + Records emerge only when the
+   upstream data carries them — gated guards keep the topbar clean for
+   flat_snapshot mode and missing metadata. #}
+{% set sp_meta = [{"label": "Domain", "value": domain or "—"}] %}
+{% set _ = sp_meta.append({"label": "Scope", "value": scope_label | default('All Projects')}) %}
+{% if summary.get('period_start') and summary.get('period_end') %}
+    {% set _ = sp_meta.append({"label": "Period", "value": summary.get('period_start') ~ " → " ~ summary.get('period_end')}) %}
+{% endif %}
+{% if summary.get('mode') %}
+    {% set _sp_mode_raw = summary.get('mode') %}
+    {% set _sp_mode_label = 'Version Progression' if _sp_mode_raw == 'version_progression' else ('Flat Snapshot' if _sp_mode_raw == 'flat_snapshot' else _sp_mode_raw) %}
+    {% set _ = sp_meta.append({"label": "Mode", "value": _sp_mode_label}) %}
+{% endif %}
+{% if metadata is mapping and metadata.get('transformed_count') is not none %}
+    {% set _ = sp_meta.append({"label": "Records", "value": metadata.get('transformed_count') | string}) %}
+{% endif %}
+{% set _ = sp_meta.append({"label": "Generated", "value": generated_at or "—"}) %}
 
-        {% if summary is defined and summary.mode == 'flat_snapshot' %}
-        <!-- Flat snapshot fallback notice -->
-        <div class="flat-notice">
-            <strong>Version progression data is not available.</strong>
-            This report requires multiple firmware versions per project to show progress over time.
-            The data below reflects a point-in-time snapshot rather than version-to-version trends.
-        </div>
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "Security Progress"],
+    meta=sp_meta,
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>Security Progress Report</h1>
+        <p class="subtitle">{{ scope_label | default('All Projects') }} — Security Posture Over Time</p>
+    </div>
+
+    {# State-aware flat_snapshot banner — prose preserved verbatim from
+       pre-migration lines 124-131. Migrated to .sp-flat-notice (yellow
+       chip via color-mix on the medium-severity text token). #}
+    {% if summary.get('mode') == 'flat_snapshot' %}
+    <div class="sp-flat-notice">
+        <strong>Version progression data is not available.</strong>
+        This report requires multiple firmware versions per project to show progress over time.
+        The data below reflects a point-in-time snapshot rather than version-to-version trends.
+    </div>
+    {% endif %}
+
+    {# 4 KPI cells via fs.kpi_cell — only in version_progression mode
+       (portfolio_kpi is empty in flat_snapshot mode). #}
+    {% if portfolio_kpi %}
+    {% set sp_total_resolved = portfolio_kpi.get('total_resolved', 0) | int %}
+    {% set sp_total_new = portfolio_kpi.get('total_new', 0) | int %}
+    {% set sp_net_change = portfolio_kpi.get('net_change', 0) | int %}
+    {% set sp_projects_improved = portfolio_kpi.get('projects_improved', 0) | int %}
+    {% set sp_total_projects = portfolio_kpi.get('total_projects', 0) | int %}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell(
+            "Total Resolved",
+            sp_total_resolved,
+            dot=("low" if sp_total_resolved > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "Total New",
+            sp_total_new,
+            dot=("high" if sp_total_new > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "Net Change",
+            (("+" ~ (sp_net_change | string)) if sp_net_change > 0 else (sp_net_change | string)),
+        ) }}
+        {{ fs.kpi_cell(
+            "Projects Improved",
+            (sp_projects_improved | string) ~ " / " ~ (sp_total_projects | string),
+            dot=("low" if sp_projects_improved > 0 else None),
+        ) }}
+    </div>
+    {% endif %}
+
+    {# Open CVE Trend by Severity — stacked-severity line chart. The
+       container is gated on portfolio_progression having at least 2
+       points so a single-point series doesn't render an empty frame. #}
+    {% if portfolio_progression and (portfolio_progression | length) > 1 %}
+    <div class="panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Open CVE Trend", meta="total open CVEs over time, broken down by severity") }}
+        {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+            <div class="chart-server-svg"><div class="chart-unavailable sp-chart-unavailable">Chart unavailable in fragment view</div></div>
+        {% else %}
+            <div id="{{ fragment_scope_class }}-severityTrendChart" class="sp-chart-wrapper"></div>
         {% endif %}
+    </div>
+    {% endif %}
 
-        <!-- Portfolio KPI Cards -->
-        {% if portfolio_kpi %}
-        <div class="kpi-row">
-            <div class="kpi-card border-green">
-                <div class="kpi-title">Total Resolved</div>
-                <div class="kpi-value" style="color: #388e3c;">{{ portfolio_kpi.total_resolved | default(0) }}</div>
-            </div>
-            <div class="kpi-card border-orange">
-                <div class="kpi-title">Total New</div>
-                <div class="kpi-value" style="color: #f57c00;">{{ portfolio_kpi.total_new | default(0) }}</div>
-            </div>
-            <div class="kpi-card {% if portfolio_kpi.net_change | default(0) <= 0 %}border-green{% else %}border-red{% endif %}">
-                <div class="kpi-title">Net Change</div>
-                <div class="kpi-value {% if portfolio_kpi.net_change | default(0) < 0 %}net-improved{% elif portfolio_kpi.net_change | default(0) > 0 %}net-regressed{% else %}net-neutral{% endif %}">
-                    {% if portfolio_kpi.net_change | default(0) > 0 %}+{% endif %}{{ portfolio_kpi.net_change | default(0) }}
-                </div>
-            </div>
-            <div class="kpi-card border-blue">
-                <div class="kpi-title">Projects Improved</div>
-                <div class="kpi-value" style="color: #1976d2;">{{ portfolio_kpi.projects_improved | default(0) }} / {{ portfolio_kpi.total_projects | default(0) }}</div>
-            </div>
-        </div>
-        {% endif %}
-
-        <!-- Open CVE Trend by Severity -->
-        {% if portfolio_progression and portfolio_progression | length > 1 %}
-        <div class="chart-container">
-            <h2 class="chart-title">Open CVE Trend</h2>
-            <p class="chart-description">Total open CVEs over time, broken down by severity.</p>
-            <div class="chart-wrapper">
-                <canvas id="severityTrendChart"></canvas>
-            </div>
-        </div>
-        {% endif %}
-
-        <!-- Per-Project Progress Table -->
-        {% if projects and projects | length > 0 %}
-        <div class="table-container">
-            <h2>Project Progress</h2>
-            <p class="description">Per-project vulnerability change between baseline and current versions. Sorted by most improved.</p>
-            <table id="projectTable">
+    {# Per-project progress summary table. #}
+    {% if projects and (projects | length) > 0 %}
+    <div class="table-panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Project Progress", meta="per-project change between baseline and current versions") }}
+        <p class="sp-description" style="padding: 0 16px;">Per-project vulnerability change between baseline and current versions. Sorted by most improved.</p>
+        <div class="body" style="overflow-x: auto;">
+            <table id="projectTable" class="data-table">
                 <thead>
                     <tr>
                         <th class="sortable" data-col="0">Project</th>
@@ -182,16 +256,26 @@
                 </thead>
                 <tbody>
                     {% set ns = namespace(hidden=0) %}
-                    {% for p in projects | sort(attribute='net_change') %}
-                    {% if p.net_change | default(0) != 0 or p.baseline_open | default(0) > 0 or p.current_open | default(0) > 0 or p.total_resolved | default(0) > 0 or p.total_new | default(0) > 0 %}
+                    {# Pre-filter to mappings with a defined net_change BEFORE
+                       sorting — `| sort(attribute='net_change')` would crash
+                       on non-mapping rows or rows missing the key. #}
+                    {% set _sp_safe_projects = [] %}
+                    {% for _p in projects %}{% if _p is mapping and _p.get('net_change') is not none %}{% set _ = _sp_safe_projects.append(_p) %}{% endif %}{% endfor %}
+                    {% for p in _sp_safe_projects | sort(attribute='net_change') %}
+                    {% set p_net = p.get('net_change', 0) | int %}
+                    {% set p_baseline = p.get('baseline_open', 0) | int %}
+                    {% set p_current = p.get('current_open', 0) | int %}
+                    {% set p_resolved = p.get('total_resolved', 0) | int %}
+                    {% set p_new = p.get('total_new', 0) | int %}
+                    {% if p_net != 0 or p_baseline > 0 or p_current > 0 or p_resolved > 0 or p_new > 0 %}
                     <tr>
-                        <td>{{ p.project_name }}</td>
-                        <td class="num">{{ p.baseline_open | default(0) }}</td>
-                        <td class="num">{{ p.current_open | default(0) }}</td>
-                        <td class="num" style="color: #388e3c;">{{ p.total_resolved | default(0) }}</td>
-                        <td class="num" style="color: #f57c00;">{{ p.total_new | default(0) }}</td>
-                        <td class="num {% if p.net_change | default(0) < 0 %}net-improved{% elif p.net_change | default(0) > 0 %}net-regressed{% else %}net-neutral{% endif %}">
-                            {% if p.net_change | default(0) > 0 %}+{% endif %}{{ p.net_change | default(0) }}
+                        <td>{{ p.get('project_name', '—') }}</td>
+                        <td class="num">{{ p_baseline }}</td>
+                        <td class="num">{{ p_current }}</td>
+                        <td class="num sp-cell-resolved">{{ p_resolved }}</td>
+                        <td class="num sp-cell-new">{{ p_new }}</td>
+                        <td class="num {% if p_net < 0 %}sp-net-improved{% elif p_net > 0 %}sp-net-regressed{% else %}sp-net-neutral{% endif %}">
+                            {% if p_net > 0 %}+{% endif %}{{ p_net }}
                         </td>
                     </tr>
                     {% else %}
@@ -199,75 +283,126 @@
                     {% endif %}
                     {% endfor %}
                     {% if ns.hidden > 0 %}
-                    <tr style="color: #6c757d; font-style: italic;">
+                    <tr class="sp-hidden-rows">
                         <td colspan="6">{{ ns.hidden }} project{{ 's' if ns.hidden != 1 else '' }} with no findings or changes not shown</td>
                     </tr>
                     {% endif %}
                 </tbody>
             </table>
         </div>
-        {% endif %}
+    </div>
+    {% endif %}
 
-        <!-- CVE Updates Summary Table -->
-        {% if cve_update_summary and cve_update_summary.total | default(0) > 0 %}
-        <div class="table-container">
-            <h2>CVE Updates Summary</h2>
-            <p class="description">CVE database changes detected during the reporting window that affect open findings.</p>
-            <table>
+    {# CVE Updates breakdown table — gated on `cve_update_summary` being a
+       mapping with a positive `total` (defensive `is mapping` guard
+       mirrors C.2/D pattern). Per-row description prose added per the
+       1c.1 IN-band spec. #}
+    {% if cve_update_summary is mapping and cve_update_summary.get('total', 0) > 0 %}
+    <div class="table-panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("CVE Updates Summary", meta="CVE database changes during the reporting window") }}
+        <p class="sp-description" style="padding: 0 16px;">CVE database changes detected during the reporting window that affect open findings.</p>
+        <div class="body" style="overflow-x: auto;">
+            <table class="data-table">
                 <thead>
                     <tr>
                         <th>Category</th>
+                        <th>Description</th>
                         <th class="num">Count</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% if cve_update_summary.added | default(0) > 0 %}
-                    <tr><td>Newly Added CVEs</td><td class="num"><strong>{{ cve_update_summary.added }}</strong></td></tr>
+                    {% if cve_update_summary.get('added', 0) > 0 %}
+                    <tr>
+                        <td>Newly Added CVEs</td>
+                        <td>Newly added to NVD during this period.</td>
+                        <td class="num"><strong>{{ cve_update_summary.get('added', 0) }}</strong></td>
+                    </tr>
                     {% endif %}
-                    {% if cve_update_summary.retracted | default(0) > 0 %}
-                    <tr><td>Retracted CVEs</td><td class="num"><strong>{{ cve_update_summary.retracted }}</strong></td></tr>
+                    {% if cve_update_summary.get('retracted', 0) > 0 %}
+                    <tr>
+                        <td>Retracted CVEs</td>
+                        <td>Rejected or withdrawn by NVD during this period.</td>
+                        <td class="num"><strong>{{ cve_update_summary.get('retracted', 0) }}</strong></td>
+                    </tr>
                     {% endif %}
-                    {% if cve_update_summary.severity_escalated | default(0) > 0 %}
-                    <tr><td>Severity Escalated</td><td class="num"><strong>{{ cve_update_summary.severity_escalated }}</strong></td></tr>
+                    {% if cve_update_summary.get('severity_escalated', 0) > 0 %}
+                    <tr>
+                        <td>Severity Escalated</td>
+                        <td>CVSS score increased — re-prioritize remediation.</td>
+                        <td class="num"><strong>{{ cve_update_summary.get('severity_escalated', 0) }}</strong></td>
+                    </tr>
                     {% endif %}
-                    {% if cve_update_summary.severity_downgraded | default(0) > 0 %}
-                    <tr><td>Severity Downgraded</td><td class="num"><strong>{{ cve_update_summary.severity_downgraded }}</strong></td></tr>
+                    {% if cve_update_summary.get('severity_downgraded', 0) > 0 %}
+                    <tr>
+                        <td>Severity Downgraded</td>
+                        <td>CVSS score decreased — may relax priority.</td>
+                        <td class="num"><strong>{{ cve_update_summary.get('severity_downgraded', 0) }}</strong></td>
+                    </tr>
                     {% endif %}
-                    {% if cve_update_summary.exploit_gained | default(0) > 0 %}
-                    <tr><td>Exploit Gained</td><td class="num"><strong>{{ cve_update_summary.exploit_gained }}</strong></td></tr>
+                    {% if cve_update_summary.get('exploit_gained', 0) > 0 %}
+                    <tr>
+                        <td>Exploit Gained</td>
+                        <td>New exploit signal (KEV listing, weaponization, threat-actor attribution).</td>
+                        <td class="num"><strong>{{ cve_update_summary.get('exploit_gained', 0) }}</strong></td>
+                    </tr>
                     {% endif %}
-                    {% if cve_update_summary.exploit_subsided | default(0) > 0 %}
-                    <tr><td>Exploit Subsided</td><td class="num"><strong>{{ cve_update_summary.exploit_subsided }}</strong></td></tr>
+                    {% if cve_update_summary.get('exploit_subsided', 0) > 0 %}
+                    <tr>
+                        <td>Exploit Subsided</td>
+                        <td>Exploit signal retracted — pressure reduced.</td>
+                        <td class="num"><strong>{{ cve_update_summary.get('exploit_subsided', 0) }}</strong></td>
+                    </tr>
                     {% endif %}
-                    <tr style="border-top: 2px solid #dee2e6; font-weight: 600;">
+                    {% if cve_update_summary.get('other_updates', 0) > 0 %}
+                    <tr>
+                        <td>Other Updates</td>
+                        <td>Other NVD metadata changes (CWE, description, references, etc.).</td>
+                        <td class="num"><strong>{{ cve_update_summary.get('other_updates', 0) }}</strong></td>
+                    </tr>
+                    {% endif %}
+                    <tr class="sp-cve-updates-total">
                         <td>Total</td>
-                        <td class="num"><strong>{{ cve_update_summary.total }}</strong></td>
+                        <td></td>
+                        <td class="num"><strong>{{ cve_update_summary.get('total', 0) }}</strong></td>
                     </tr>
                 </tbody>
             </table>
         </div>
-        {% endif %}
+    </div>
+    {% endif %}
 
-        <!-- Per-Project Detail (collapsible) -->
-        {% if projects and projects | length > 0 and summary is defined and summary.mode == 'version_progression' %}
-        <div class="table-container">
-            <h2>Version-by-Version Detail</h2>
-            <p class="description">Expand a project to see how vulnerability counts changed across firmware versions.</p>
-
-            {% for p in projects | sort(attribute='net_change') %}
-            {% if p.progression and p.progression | length > 0 and (p.net_change | default(0) != 0 or p.baseline_open | default(0) > 0 or p.current_open | default(0) > 0 or p.total_resolved | default(0) > 0 or p.total_new | default(0) > 0) %}
-            <details>
+    {# Per-project collapsible detail — gated on summary.mode ==
+       'version_progression' (not shown in flat_snapshot mode). #}
+    {% if projects and (projects | length) > 0 and summary.get('mode') == 'version_progression' %}
+    <div class="table-panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Version-by-Version Detail", meta="expand a project to see per-version progression") }}
+        <p class="sp-description" style="padding: 0 16px;">Expand a project to see how vulnerability counts changed across firmware versions.</p>
+        <div class="body" style="padding: 0 16px 16px;">
+            {# Pre-filter to mappings with defined net_change BEFORE sorting
+               (same defensive ordering as the project summary table above). #}
+            {% set _sp_detail_safe_projects = [] %}
+            {% for _p in projects %}{% if _p is mapping and _p.get('net_change') is not none %}{% set _ = _sp_detail_safe_projects.append(_p) %}{% endif %}{% endfor %}
+            {% for p in _sp_detail_safe_projects | sort(attribute='net_change') %}
+            {% set p_net = p.get('net_change', 0) | int %}
+            {% set p_baseline = p.get('baseline_open', 0) | int %}
+            {% set p_current = p.get('current_open', 0) | int %}
+            {% set p_resolved = p.get('total_resolved', 0) | int %}
+            {% set p_new = p.get('total_new', 0) | int %}
+            {% set p_progression = p.get('progression', []) %}
+            {% if p_progression is mapping or p_progression is string or p_progression is not iterable %}{% set p_progression = [] %}{% endif %}
+            {% if (p_progression | length) > 0 and (p_net != 0 or p_baseline > 0 or p_current > 0 or p_resolved > 0 or p_new > 0) %}
+            <details class="sp-detail-block">
                 <summary>
-                    {{ p.project_name }}
-                    <span style="font-weight: 400; font-size: 0.85em; color: #6c757d; margin-left: 8px;">
-                        ({{ p.progression | length }} version{{ 's' if p.progression | length != 1 else '' }},
+                    {{ p.get('project_name', '—') }}
+                    <span class="sp-detail-meta">
+                        ({{ p_progression | length }} version{{ 's' if (p_progression | length) != 1 else '' }},
                         net
-                        <span class="{% if p.net_change | default(0) < 0 %}net-improved{% elif p.net_change | default(0) > 0 %}net-regressed{% else %}net-neutral{% endif %}">
-                            {% if p.net_change | default(0) > 0 %}+{% endif %}{{ p.net_change | default(0) }}
+                        <span class="{% if p_net < 0 %}sp-net-improved{% elif p_net > 0 %}sp-net-regressed{% else %}sp-net-neutral{% endif %}">
+                            {% if p_net > 0 %}+{% endif %}{{ p_net }}
                         </span>)
                     </span>
                 </summary>
-                <table class="detail-table">
+                <table class="data-table sp-detail-table">
                     <thead>
                         <tr>
                             <th>Version</th>
@@ -275,25 +410,27 @@
                             <th class="num">Open</th>
                             <th class="num">Resolved</th>
                             <th class="num">New</th>
-                            <th class="num sev-critical">Critical</th>
-                            <th class="num sev-high">High</th>
-                            <th class="num sev-medium">Medium</th>
-                            <th class="num sev-low">Low</th>
+                            <th class="num sp-sev-critical">Critical</th>
+                            <th class="num sp-sev-high">High</th>
+                            <th class="num sp-sev-medium">Medium</th>
+                            <th class="num sp-sev-low">Low</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {% for v in p.progression %}
+                        {% for v in p_progression %}
+                        {% if v is mapping %}
                         <tr>
-                            <td><strong>{{ v.version | default('--') }}</strong></td>
-                            <td>{{ v.date_display | default(v.date) | default('--') }}</td>
-                            <td class="num">{{ v.open_count | default(0) }}</td>
-                            <td class="num" style="color: #388e3c;">{{ v.resolved | default(0) }}</td>
-                            <td class="num" style="color: #f57c00;">{{ v.new | default(0) }}</td>
-                            <td class="num sev-critical">{{ v.critical | default(0) }}</td>
-                            <td class="num sev-high">{{ v.high | default(0) }}</td>
-                            <td class="num sev-medium">{{ v.medium | default(0) }}</td>
-                            <td class="num sev-low">{{ v.low | default(0) }}</td>
+                            <td><strong>{{ v.get('version', '--') }}</strong></td>
+                            <td>{{ v.get('date_display') or v.get('date') or '--' }}</td>
+                            <td class="num">{{ v.get('open_count', 0) }}</td>
+                            <td class="num sp-cell-resolved">{{ v.get('resolved', 0) }}</td>
+                            <td class="num sp-cell-new">{{ v.get('new', 0) }}</td>
+                            <td class="num sp-sev-critical">{{ v.get('critical', 0) }}</td>
+                            <td class="num sp-sev-high">{{ v.get('high', 0) }}</td>
+                            <td class="num sp-sev-medium">{{ v.get('medium', 0) }}</td>
+                            <td class="num sp-sev-low">{{ v.get('low', 0) }}</td>
                         </tr>
+                        {% endif %}
                         {% endfor %}
                     </tbody>
                 </table>
@@ -301,140 +438,191 @@
             {% endif %}
             {% endfor %}
         </div>
-        {% endif %}
-
-        {% include "_default_footer.html" %}
     </div>
+    {% endif %}
+</main>
 
-    <script>
-    function copyPrompt(btn) {
-        var pre = btn.parentElement.querySelector('pre');
-        navigator.clipboard.writeText(pre.textContent).then(function() {
-            btn.textContent = 'Copied!';
-            setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
-        });
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Security Progress",
+    "Net Change: " ~ ((portfolio_kpi.get('net_change', summary.get('net_change', 0))) | string),
+    "Projects: " ~ ((portfolio_kpi.get('total_projects', summary.get('total_projects', 0))) | string),
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+{% if render_mode != 'fragment' or fragment_scripts_enabled %}
+<script>
+(function() {
+    if (typeof echarts === 'undefined') {
+        if (typeof console !== 'undefined' && console.error) {
+            console.error('ECharts library not loaded — Security Progress charts will be blank');
+        }
+        return;
     }
 
-    document.addEventListener('DOMContentLoaded', function() {
+    function _tokens() {
+        var cs = getComputedStyle(document.documentElement);
+        return {
+            inkBody:     cs.getPropertyValue('--ink-body').trim() || '#374151',
+            inkMute:     cs.getPropertyValue('--ink-mute').trim() || '#6c757d',
+            inkStrong:   cs.getPropertyValue('--ink-strong').trim() || '#111827',
+            surfaceCard: cs.getPropertyValue('--surface-card').trim() || '#ffffff',
+            hairline:    cs.getPropertyValue('--hairline').trim() || '#dee2e6',
+            sevCritical: cs.getPropertyValue('--sev-critical-text').trim() || '#dc3545',
+            sevHigh:     cs.getPropertyValue('--sev-high-text').trim() || '#fd7e14',
+            sevMedium:   cs.getPropertyValue('--sev-medium-text').trim() || '#ffc107',
+            sevLow:      cs.getPropertyValue('--accent-blue').trim() || '#2563eb',
+        };
+    }
 
-        /* ── Open CVE Trend by Severity ── */
-        {% if portfolio_progression and portfolio_progression | length > 1 %}
-        (function() {
-            var ctx = document.getElementById('severityTrendChart');
-            if (!ctx) return;
+    function _initChart(elId, optsFactory) {
+        var el = document.getElementById(elId);
+        if (!el) return null;
+        var inst = fsEChartsInit(el, { renderer: 'canvas' });
+        try {
+            inst.setOption(optsFactory());
+        } catch (e) {
+            window.fsBeaconRelease();
+            throw e;
+        }
+        var obs = new MutationObserver(function(mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+                if (mutations[i].attributeName === 'data-theme') {
+                    inst.setOption(optsFactory());
+                    break;
+                }
+            }
+        });
+        obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+        window.addEventListener('resize', function() { inst.resize(); });
+        return inst;
+    }
 
-            var progression = {{ portfolio_progression | tojson }};
-            var labels = progression.map(function(d) { return d.date_display || d.date; });
-
+    {% if portfolio_progression and (portfolio_progression | length) > 1 %}
+    // Open CVE Trend by Severity — stacked-severity line chart.
+    // NOTE: Do NOT filter individual zero points — this is a stacked
+    // time-series, and per-point filtering would break x-axis alignment
+    // across series. ECharts handles zero values gracefully.
+    (function() {
+        var progression = {{ portfolio_progression | tojson }};
+        var labels = progression.map(function(d) { return d.date_display || d.date; });
+        _initChart('{{ fragment_scope_class }}-severityTrendChart', function() {
+            var t = _tokens();
             var sevDefs = [
-                { label: 'Critical', key: 'critical', color: '#dc2626' },
-                { label: 'High',     key: 'high',     color: '#ea580c' },
-                { label: 'Medium',   key: 'medium',   color: '#eab308' },
-                { label: 'Low',      key: 'low',      color: '#2563eb' },
-                { label: 'Unknown',  key: 'unknown',  color: '#9ca3af' }
+                { name: 'Critical', key: 'critical', color: t.sevCritical },
+                { name: 'High',     key: 'high',     color: t.sevHigh },
+                { name: 'Medium',   key: 'medium',   color: t.sevMedium },
+                { name: 'Low',      key: 'low',      color: t.sevLow },
+                { name: 'Unknown',  key: 'unknown',  color: t.inkMute }
             ];
-
-            var datasets = sevDefs.filter(function(ds) {
-                return progression.some(function(d) { return (d[ds.key] || 0) > 0; });
-            }).map(function(ds) {
+            var stackedSeries = sevDefs.map(function(ds) {
                 return {
-                    label: ds.label,
-                    data: progression.map(function(d) { return d[ds.key] || 0; }),
-                    borderColor: ds.color,
-                    backgroundColor: ds.color + '33',
-                    fill: true,
+                    name: ds.name,
+                    type: 'line',
                     stack: 'severity',
-                    tension: 0.3,
-                    pointRadius: 3,
-                    borderWidth: 2
+                    areaStyle: { opacity: 0.35 },
+                    smooth: true,
+                    symbol: 'circle',
+                    symbolSize: 6,
+                    lineStyle: { width: 2, color: ds.color },
+                    itemStyle: { color: ds.color },
+                    data: progression.map(function(d) { return d[ds.key] || 0; })
                 };
             });
-
-            datasets.push({
-                label: 'Total',
-                data: progression.map(function(d) { return d.open_count; }),
-                borderColor: '#333',
-                backgroundColor: 'transparent',
-                fill: false,
-                stack: 'total',
-                tension: 0.3,
-                pointRadius: 4,
-                pointBackgroundColor: '#333',
-                borderWidth: 2,
-                borderDash: [6, 3]
-            });
-
-            new Chart(ctx.getContext('2d'), {
+            var totalSeries = {
+                name: 'Total',
                 type: 'line',
-                data: { labels: labels, datasets: datasets },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { position: 'top' },
-                        datalabels: {
-                            display: function(context) {
-                                if (context.dataset.label !== 'Total') return false;
-                                var last = context.dataset.data.length - 1;
-                                return context.dataIndex === 0 || context.dataIndex === last;
-                            },
-                            anchor: 'end',
-                            align: 'top',
-                            color: '#333',
-                            font: { weight: 'bold', size: 11 },
-                            formatter: function(value) { return value.toLocaleString(); }
-                        }
-                    },
-                    scales: {
-                        x: {
-                            title: { display: true, text: 'Version', color: '#6c757d' },
-                            ticks: { maxRotation: 45, color: '#6c757d', autoSkip: true, maxTicksLimit: 20 }
-                        },
-                        y: {
-                            stacked: true,
-                            beginAtZero: true,
-                            title: { display: true, text: 'Open CVEs', color: '#6c757d' },
-                            ticks: { precision: 0, color: '#6c757d' }
-                        }
-                    }
+                smooth: true,
+                symbol: 'circle',
+                symbolSize: 6,
+                lineStyle: { width: 2, color: t.inkStrong, type: 'dashed' },
+                itemStyle: { color: t.inkStrong },
+                data: progression.map(function(d) { return d.open_count || 0; })
+            };
+            return {
+                tooltip: {
+                    trigger: 'axis',
+                    backgroundColor: t.surfaceCard,
+                    borderColor: t.hairline,
+                    borderWidth: 1,
+                    textStyle: { color: t.inkBody }
                 },
-                plugins: [ChartDataLabels]
-            });
-        })();
-        {% endif %}
+                legend: {
+                    // Top, not bottom: a bottom legend collided with the
+                    // rotated (rotate:30) date axis labels + the 'Version'
+                    // axis name. grid.top is bumped to clear the legend band.
+                    top: 0,
+                    textStyle: { color: t.inkBody, fontSize: 11 }
+                },
+                grid: { left: 60, right: 30, top: 52, bottom: 50 },
+                xAxis: {
+                    type: 'category',
+                    data: labels,
+                    axisLabel: { color: t.inkBody, fontSize: 10, rotate: 30 },
+                    name: 'Version',
+                    nameLocation: 'middle',
+                    nameGap: 35,
+                    nameTextStyle: { color: t.inkMute, fontSize: 11 }
+                },
+                yAxis: {
+                    type: 'value',
+                    name: 'Open CVEs',
+                    nameTextStyle: { color: t.inkMute, fontSize: 11 },
+                    axisLabel: { color: t.inkBody, fontSize: 10 },
+                    splitLine: { lineStyle: { color: t.hairline } },
+                    minInterval: 1
+                },
+                series: stackedSeries.concat([totalSeries])
+            };
+        });
+    })();
+    {% endif %}
 
-        /* ── Sortable Table ── */
-        (function() {
-            var table = document.getElementById('projectTable');
-            if (!table) return;
-            var headers = table.querySelectorAll('th.sortable');
-            var tbody = table.querySelector('tbody');
+    // Sortable project table — preserved verbatim inside the
+    // render-mode gate so fragment_extractor strips the entire <script>.
+    (function() {
+        var table = document.getElementById('projectTable');
+        if (!table) return;
+        var headers = table.querySelectorAll('th.sortable');
+        var tbody = table.querySelector('tbody');
 
-            headers.forEach(function(th) {
-                th.addEventListener('click', function() {
-                    var col = parseInt(th.getAttribute('data-col'));
-                    var rows = Array.from(tbody.querySelectorAll('tr'));
-                    var asc = th.getAttribute('data-sort') !== 'asc';
-                    th.setAttribute('data-sort', asc ? 'asc' : 'desc');
+        headers.forEach(function(th) {
+            th.addEventListener('click', function() {
+                var col = parseInt(th.getAttribute('data-col'));
+                // Exclude the .sp-hidden-rows footer row (single colspan=6 td)
+                // — sorting would crash on children[col] for col 1-5. Keep the
+                // footer pinned to the bottom of the tbody after re-append.
+                var rows = Array.from(tbody.querySelectorAll('tr'))
+                    .filter(function(row) { return !row.classList.contains('sp-hidden-rows'); });
+                var footer = tbody.querySelector('tr.sp-hidden-rows');
+                var asc = th.getAttribute('data-sort') !== 'asc';
+                th.setAttribute('data-sort', asc ? 'asc' : 'desc');
 
-                    rows.sort(function(a, b) {
-                        var aVal = a.children[col].textContent.trim();
-                        var bVal = b.children[col].textContent.trim();
-                        var aNum = parseFloat(aVal.replace('+', ''));
-                        var bNum = parseFloat(bVal.replace('+', ''));
-                        if (!isNaN(aNum) && !isNaN(bNum)) {
-                            return asc ? aNum - bNum : bNum - aNum;
-                        }
-                        return asc ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
-                    });
-
-                    rows.forEach(function(row) { tbody.appendChild(row); });
+                rows.sort(function(a, b) {
+                    var aVal = a.children[col].textContent.trim();
+                    var bVal = b.children[col].textContent.trim();
+                    var aNum = parseFloat(aVal.replace('+', ''));
+                    var bNum = parseFloat(bVal.replace('+', ''));
+                    if (!isNaN(aNum) && !isNaN(bNum)) {
+                        return asc ? aNum - bNum : bNum - aNum;
+                    }
+                    return asc ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
                 });
-            });
-        })();
-    });
-    </script>
 
-    {% include '_action_buttons.html' %}
+                rows.forEach(function(row) { tbody.appendChild(row); });
+                // Re-append the footer last so the "N projects … not shown"
+                // line stays at the bottom of the table regardless of sort order.
+                if (footer) tbody.appendChild(footer);
+            });
+        });
+    })();
+})();
+</script>
+
+{% include '_action_buttons.html' %}
 </body>
 </html>
+{% endif %}

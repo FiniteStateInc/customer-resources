@@ -2,6 +2,7 @@ name: "Security Progress"
 template: "security_progress.html"
 category: operational
 nav_category: Executive
+chart_libraries: ["echarts"]
 description: "Version-over-version progress report — CVEs resolved, new CVEs introduced, net change per project and portfolio-wide. Shows what teams accomplished during the period."
 execution_order: 30
 auto_run: false
@@ -20,6 +21,7 @@ output:
     - xlsx
     - html
     - md
+  has_inline_charts: true
   charts:
     - name: "portfolio_trend"
       chart: line

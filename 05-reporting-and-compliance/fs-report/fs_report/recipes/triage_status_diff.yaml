@@ -1,0 +1,17 @@
+name: "Triage Status Diff"
+category: comparison
+nav_category: Investigation
+chart_libraries: []
+template: "comparison/triage_status_diff.html"
+description: "Triage decisions differing between scopes — findings where VEX status diverges or triage has been applied on one side but not the other."
+execution_order: 50
+auto_run: false
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+transform_function: triage_status_diff_transform
+output:
+  formats: ["html"]
+  table: true
+  slide_title: "Triage Status Comparison"

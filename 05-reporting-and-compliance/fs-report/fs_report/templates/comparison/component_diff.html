@@ -1,0 +1,395 @@
+{% if render_mode != 'fragment' %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>Component Diff - Finite State Report</title>
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+{% endif %}
+
+<style>
+    /* ============================================================
+       META-COMPARE — component diff (ported from meta-compare.css,
+       this section's classes only). Scoped to .fs-section-component-diff
+       by the fragment extractor; selectors stay unprefixed here.
+       ============================================================ */
+
+    /* Inlined Lucide icon defaults (offline-safe; no shared sprite in
+       fragment mode, so icon paths are inlined directly per <svg class="ic">) */
+    svg.ic {
+        fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round;
+        flex-shrink: 0; vertical-align: middle;
+    }
+
+    /* section intro line + lede */
+    .mc-section-intro {
+        display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
+        justify-content: space-between; margin: 0 0 18px;
+    }
+    .mc-section-lede { font-size: 14px; line-height: 1.55; color: var(--ink-body); max-width: 70ch; }
+    .mc-section-lede strong { color: var(--ink); font-weight: 600; }
+    .mc-scope-tag {
+        font-family: var(--font-mono); font-size: 11px; color: var(--ink-mute);
+        display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+        padding: 6px 10px; border: 1px solid var(--hairline); border-radius: var(--r-sm);
+        background: var(--surface-card);
+    }
+    .mc-scope-tag .l { color: var(--accent-teal); font-weight: 600; }
+    .mc-scope-tag .r { color: var(--ink-body); font-weight: 600; }
+
+    /* shared / left-only / right-only proportion bar */
+    .mc-propbar-wrap { margin: 4px 0 8px; }
+    .mc-propbar {
+        display: flex; height: 30px; border-radius: var(--r-sm); overflow: hidden;
+        border: 1px solid var(--hairline); background: var(--surface-muted);
+    }
+    .mc-propbar > div {
+        display: flex; align-items: center; justify-content: center; min-width: 0;
+        transition: flex-basis var(--dur-med);
+    }
+    .mc-propbar .seg-shared { background: rgba(var(--accent-rgb),0.22); color: var(--ink); }
+    .mc-propbar .seg-left   { background: var(--accent-teal); color: var(--surface-card); }
+    .mc-propbar .seg-right  { background: var(--ink-mute); color: var(--surface-card); }
+    .mc-propbar .lab {
+        font-family: var(--font-mono); font-size: 11px; font-weight: 600; padding: 0 8px;
+        white-space: nowrap; overflow: hidden;
+    }
+    .mc-prop-legend {
+        display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--ink-body);
+    }
+    .mc-prop-legend span { display: inline-flex; align-items: center; gap: 7px; }
+    .mc-prop-legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+    .mc-prop-legend b { font-family: var(--font-mono); color: var(--ink); }
+
+    /* version skew highlight card */
+    .mc-skew {
+        display: grid; grid-template-columns: 1fr auto 1fr; gap: 18px; align-items: center;
+        padding: 18px 22px; border: 1px solid var(--sev-medium); border-radius: var(--r-md);
+        background: var(--sev-medium-bg); margin: 0 16px 16px;
+    }
+    .mc-skew-side { text-align: center; }
+    .mc-skew-side .who {
+        font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+        color: var(--ink-mute); margin-bottom: 4px; display: flex; align-items: center;
+        justify-content: center; gap: 6px;
+    }
+    .mc-skew-side .who .dotid { width: 8px; height: 8px; border-radius: 50%; }
+    .mc-skew-side.left .dotid { background: var(--accent-teal); }
+    .mc-skew-side.right .dotid { background: var(--attention, var(--ink-mute)); }
+    .mc-skew-side .ver {
+        font-family: var(--font-mono); font-size: 24px; font-weight: 600; color: var(--ink);
+        font-variant-numeric: tabular-nums;
+    }
+    /* per-side owner variants (left_project_names / right_project_names) —
+       never a merged set */
+    .mc-skew-side .skew-owners {
+        font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-mute);
+        margin-top: 5px; line-height: 1.35;
+    }
+    .mc-skew-mid {
+        color: var(--sev-medium-text); display: flex; flex-direction: column; align-items: center; gap: 2px;
+    }
+    .mc-skew-mid .ic { width: 22px; height: 22px; }
+    .mc-skew-mid .comp { font-family: var(--font-mono); font-size: 11px; color: var(--ink-body); }
+    .mc-skew-foot {
+        grid-column: 1 / -1; font-size: 12.5px; color: var(--sev-medium-text); text-align: center;
+        line-height: 1.45; padding-top: 4px; border-top: 1px solid rgba(180,83,9,0.2); margin-top: 2px;
+    }
+    .mc-skew-foot strong { color: var(--ink); }
+
+    /* "show all / collapse tail" row */
+    .mc-more {
+        padding: 11px 16px; text-align: center; border-top: 1px solid var(--hairline-soft); background: var(--surface-card);
+    }
+    .mc-more button {
+        background: var(--surface-subtle); border: 1px solid var(--hairline); color: var(--ink-body);
+        padding: 7px 16px; border-radius: var(--radius-full, 999px); font-size: 12px; font-weight: 500; cursor: pointer;
+        font-family: var(--font-body); display: inline-flex; align-items: center; gap: 7px;
+        transition: border-color var(--dur-fast), color var(--dur-fast);
+    }
+    .mc-more button:hover { border-color: var(--accent-teal); color: var(--accent-teal); }
+    .mc-more button .ic { width: 14px; height: 14px; stroke-width: 2; }
+    .mc-row-hidden { display: none; }
+    .mc-wtable.expanded .mc-row-hidden { display: table-row; }
+
+    /* "no divergence on this side" confident strip */
+    .mc-noconflict {
+        display: flex; align-items: center; gap: 13px; padding: 14px 18px;
+        border: 1px solid var(--hairline); border-radius: var(--r-md);
+        background: var(--surface-subtle); margin-bottom: 18px;
+    }
+    .mc-noconflict .ic {
+        color: var(--ink-mute); width: 22px; height: 22px; stroke-width: 2; flex-shrink: 0;
+    }
+    .mc-noconflict .txt { font-size: 13px; color: var(--ink-body); line-height: 1.45; }
+    .mc-noconflict .txt strong { color: var(--ink); font-weight: 700; }
+</style>
+
+{% if render_mode != 'fragment' %}
+</head>
+<body class="console">
+{% endif %}
+
+{% import "_console_macros.html" as fs with context %}
+
+{# Defensive defaults #}
+{% set summary = summary | default({}) %}
+{% if summary is not mapping %}{% set summary = {} %}{% endif %}
+{% set version_skew = version_skew | default([]) %}
+{% set left_only = left_only | default([]) %}
+{% set right_only = right_only | default([]) %}
+{% set empty_side = empty_side | default(None) %}
+
+{% set left_label = summary.get('left_label', 'Left') if summary is mapping else 'Left' %}
+{% set right_label = summary.get('right_label', 'Right') if summary is mapping else 'Right' %}
+{% set shared_count = summary.get('shared_count', 0) if summary is mapping else 0 %}
+{% set left_only_count = summary.get('left_only_count', 0) if summary is mapping else 0 %}
+{% set right_only_count = summary.get('right_only_count', 0) if summary is mapping else 0 %}
+{% set version_skew_count = summary.get('version_skew_count', 0) if summary is mapping else 0 %}
+{% set union_count = shared_count + left_only_count + right_only_count %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "Component Diff"],
+    meta=[
+        {"label": "Left", "value": left_label},
+        {"label": "Right", "value": right_label},
+        {"label": "Generated", "value": generated_at or "—"},
+    ],
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>Component Comparison</h1>
+        <p class="subtitle">{{ left_label }} vs {{ right_label }}</p>
+    </div>
+
+    {% if empty_side %}
+    <div class="mc-noconflict">
+        <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+        <div class="txt">
+            {% if empty_side == 'both' %}
+            <strong>No data.</strong> Both scopes had no component data — nothing to compare.
+            {% elif empty_side == 'left' %}
+            <strong>{{ left_label }}: no data.</strong> The {{ left_label }} scope had no component data — nothing to compare.
+            {% elif empty_side == 'right' %}
+            <strong>{{ right_label }}: no data.</strong> The {{ right_label }} scope had no component data — nothing to compare.
+            {% endif %}
+        </div>
+    </div>
+    {% else %}
+
+    {# Lede stat-line + scope tag #}
+    <div class="mc-section-intro">
+        <div>
+            <p class="mc-section-lede">
+                <strong>{{ shared_count }}</strong> shared ·
+                <strong>{{ left_only_count }}</strong> only in {{ left_label }} ·
+                <strong>{{ right_only_count }}</strong> only in {{ right_label }} ·
+                <strong>{{ version_skew_count }}</strong> shared component{{ 's' if version_skew_count != 1 }} at a different version.
+            </p>
+        </div>
+        <span class="mc-scope-tag"><span class="l">● {{ left_label }}</span> vs <span class="r">{{ right_label }} ●</span></span>
+    </div>
+
+    {# KPI summary row #}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell("Shared", shared_count, delta="on both sides") }}
+        {{ fs.kpi_cell(left_label ~ " only", left_only_count, delta=("added attack surface" if left_only_count > 0 else "no unique surface"), dot=("high" if left_only_count > 0 else None)) }}
+        {{ fs.kpi_cell(right_label ~ " only", right_only_count, delta=("added attack surface" if right_only_count > 0 else "no unique surface"), dot=("high" if right_only_count > 0 else None)) }}
+        {{ fs.kpi_cell("Version skew", version_skew_count, delta="shared, differing version", dot=("medium" if version_skew_count > 0 else None)) }}
+    </div>
+
+    {# Proportion bar — segment widths straight from the counts, no chart lib #}
+    <div class="panel" style="margin-bottom:20px">
+        {{ fs.panel_head("Shared vs. divergent surface", meta=(union_count | string) ~ " component" ~ ("s" if union_count != 1 else "") ~ " in union") }}
+        <div class="body" style="padding:16px">
+            <div class="mc-propbar-wrap">
+                <div class="mc-propbar">
+                    {% if shared_count > 0 %}
+                    <div class="seg-shared" style="flex:{{ shared_count }}" title="{{ shared_count }} shared"><span class="lab">{{ shared_count }}</span></div>
+                    {% endif %}
+                    {% if left_only_count > 0 %}
+                    <div class="seg-left" style="flex:{{ left_only_count }}" title="{{ left_only_count }} {{ left_label }}-only"><span class="lab">← {{ left_only_count }} in {{ left_label }} only</span></div>
+                    {% endif %}
+                    {% if right_only_count > 0 %}
+                    <div class="seg-right" style="flex:{{ right_only_count }}" title="{{ right_only_count }} {{ right_label }}-only"><span class="lab">{{ right_only_count }} in {{ right_label }} only →</span></div>
+                    {% endif %}
+                </div>
+                <div class="mc-prop-legend">
+                    <span><i style="background:rgba(var(--accent-rgb),0.5)"></i>Shared <b>{{ shared_count }}</b></span>
+                    <span><i style="background:var(--accent-teal)"></i>{{ left_label }} only <b>{{ left_only_count }}</b></span>
+                    <span><i style="background:var(--ink-mute)"></i>{{ right_label }} only <b>{{ right_only_count }}</b></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {# Version skew cards — both versions side by side; NO newer/older ordering #}
+    {% if version_skew and version_skew | length > 0 %}
+    <div class="panel" style="margin-bottom:20px">
+        {{ fs.panel_head("Version skew", meta=(version_skew | length | string) ~ " shared component" ~ ("s" if version_skew | length != 1 else "")) }}
+        <div class="body" style="padding:16px 0">
+            {% for row in version_skew %}
+            <div class="mc-skew">
+                <div class="mc-skew-side left">
+                    <div class="who"><span class="dotid"></span>{{ left_label | short_scope }}</div>
+                    <div class="ver">{{ row.left_version or '—' }}</div>
+                    {# Owners per side — which variants carry the left version.
+                       NEVER merged with the right side. #}
+                    {% if row.left_project_names %}<div class="skew-owners">{{ row.left_project_names | join(', ') }}</div>{% endif %}
+                </div>
+                <div class="mc-skew-mid">
+                    <svg class="ic" viewBox="0 0 24 24"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>
+                    <div class="comp">{{ row.name or '—' }}{% if row.type %} · {{ row.type }}{% endif %}</div>
+                </div>
+                <div class="mc-skew-side right">
+                    <div class="who"><span class="dotid"></span>{{ right_label | short_scope }}</div>
+                    <div class="ver">{{ row.right_version or '—' }}</div>
+                    {% if row.right_project_names %}<div class="skew-owners">{{ row.right_project_names | join(', ') }}</div>{% endif %}
+                </div>
+                {% if loop.last %}
+                <div class="mc-skew-foot">Shared components carried at differing versions. Aligning the version closes the version-specific findings on the lower side.</div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    {# Right-only inventory table (reuses .data-table). Project column binds to
+       row.right_project_names (the variants carrying the component). When the
+       whole table shares a single owner, the panel-head names it. #}
+    {% if right_only and right_only | length > 0 %}
+    {% set rcount = right_only | length %}
+    {% set rcollapse = rcount > 12 %}
+    {% set r_owner_ns = namespace(items=[]) %}
+    {% for row in right_only %}{% for p in (row.right_project_names or []) %}{% if p and p not in r_owner_ns.items %}{% set _ = r_owner_ns.items.append(p) %}{% endif %}{% endfor %}{% endfor %}
+    {% set r_all_in = (r_owner_ns.items | first) if (r_owner_ns.items | length) == 1 else None %}
+    <div class="table-panel" style="margin-bottom:20px">
+        {{ fs.panel_head(
+            (right_label | short_scope) ~ "-only components",
+            meta=(rcount | string) ~ " component" ~ ("s" if rcount != 1 else "") ~ (" · all in " ~ r_all_in if r_all_in else "")) }}
+        <div class="body">
+            <table class="data-table mc-wtable" id="tblComponentRightOnly">
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>Type</th>
+                        <th>Version</th>
+                        <th>Project</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in right_only %}
+                    <tr{% if rcollapse and loop.index > 12 %} class="mc-row-hidden"{% endif %}>
+                        <td>{{ row.name or '—' }}</td>
+                        <td>{% if row.type %}<span class="type-library">{{ row.type }}</span>{% else %}—{% endif %}</td>
+                        <td class="mono">{{ row.version or '—' }}</td>
+                        <td class="mono">{{ (row.right_project_names | join(', ')) if row.right_project_names else '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if rcollapse %}
+            <div class="mc-more">
+                <button data-more="tblComponentRightOnly" data-expand="Show all {{ rcount }} components" data-collapse="Show fewer">
+                    <span class="more-lbl">Show all {{ rcount }} components</span>
+                    <svg class="ic" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    {# Left-only inventory table (reuses .data-table). Project column binds to
+       row.left_project_names (mirror of right-only). #}
+    {% if left_only and left_only | length > 0 %}
+    {% set lcount = left_only | length %}
+    {% set lcollapse = lcount > 12 %}
+    {% set l_owner_ns = namespace(items=[]) %}
+    {% for row in left_only %}{% for p in (row.left_project_names or []) %}{% if p and p not in l_owner_ns.items %}{% set _ = l_owner_ns.items.append(p) %}{% endif %}{% endfor %}{% endfor %}
+    {% set l_all_in = (l_owner_ns.items | first) if (l_owner_ns.items | length) == 1 else None %}
+    <div class="table-panel" style="margin-bottom:20px">
+        {{ fs.panel_head(
+            (left_label | short_scope) ~ "-only components",
+            meta=(lcount | string) ~ " component" ~ ("s" if lcount != 1 else "") ~ (" · all in " ~ l_all_in if l_all_in else "")) }}
+        <div class="body">
+            <table class="data-table mc-wtable" id="tblComponentLeftOnly">
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>Type</th>
+                        <th>Version</th>
+                        <th>Project</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in left_only %}
+                    <tr{% if lcollapse and loop.index > 12 %} class="mc-row-hidden"{% endif %}>
+                        <td>{{ row.name or '—' }}</td>
+                        <td>{% if row.type %}<span class="type-library">{{ row.type }}</span>{% else %}—{% endif %}</td>
+                        <td class="mono">{{ row.version or '—' }}</td>
+                        <td class="mono">{{ (row.left_project_names | join(', ')) if row.left_project_names else '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if lcollapse %}
+            <div class="mc-more">
+                <button data-more="tblComponentLeftOnly" data-expand="Show all {{ lcount }} components" data-collapse="Show fewer">
+                    <span class="more-lbl">Show all {{ lcount }} components</span>
+                    <svg class="ic" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    {# Empty-side confident strip — conditional on *_only_count == 0 #}
+    {% if right_only_count == 0 %}
+    <div class="mc-noconflict">
+        <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+        <div class="txt"><strong>{{ right_label }} only: 0.</strong> {{ right_label }} introduces no components {{ left_label }} lacks.</div>
+    </div>
+    {% endif %}
+    {% if left_only_count == 0 %}
+    <div class="mc-noconflict">
+        <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+        <div class="txt"><strong>{{ left_label }} only: 0.</strong> {{ left_label }} introduces no components {{ right_label }} lacks.</div>
+    </div>
+    {% endif %}
+
+    {% if not version_skew and not left_only and not right_only %}
+    <div class="mc-noconflict">
+        <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+        <div class="txt"><strong>Component inventories match.</strong> No component differences between {{ left_label }} and {{ right_label }}.</div>
+    </div>
+    {% endif %}
+
+    {% endif %}{# end empty_side else #}
+</main>
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Component Diff",
+    "Left: " ~ left_label,
+    "Right: " ~ right_label,
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% include '_action_buttons.html' %}
+</body>
+</html>
+{% endif %}

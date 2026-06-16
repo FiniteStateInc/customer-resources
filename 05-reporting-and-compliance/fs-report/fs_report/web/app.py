@@ -60,23 +60,45 @@ def create_app(*, port: int = 8321) -> FastAPI:
     # ── Templates ─────────────────────────────────────────────────
     templates_dir = Path(str(web_package.joinpath("templates")))
     templates = Jinja2Templates(directory=str(templates_dir))
+
+    # Cache-busting helper: append the file's mtime so a changed asset always
+    # gets a fresh URL on the next normal reload (StaticFiles sends no
+    # Cache-Control, so browsers would otherwise serve stale JS/CSS heuristically).
+    def _static_v(path: str) -> str:
+        try:
+            mtime = int((static_dir / path).stat().st_mtime)
+            return f"/static/{path}?v={mtime}"
+        except OSError:
+            return f"/static/{path}"
+
+    templates.env.globals["static_v"] = _static_v
     app.state.templates = templates
 
     # ── Routers ───────────────────────────────────────────────────
+    from fs_report.web.routers.builder_recipes import router as builder_recipes_router
+    from fs_report.web.routers.command_center import router as command_center_router
     from fs_report.web.routers.dashboard import router as dashboard_router
     from fs_report.web.routers.proxy import router as proxy_router
+    from fs_report.web.routers.queue import page_router as queue_page_router
     from fs_report.web.routers.queue import router as queue_router
     from fs_report.web.routers.recipes import router as recipes_router
     from fs_report.web.routers.reports import router as reports_router
     from fs_report.web.routers.run import router as run_router
     from fs_report.web.routers.settings import router as settings_router
+    from fs_report.web.routers.uploads import router as uploads_router
+    from fs_report.web.routers.workflows import router as workflows_router
 
+    app.include_router(builder_recipes_router)
+    app.include_router(command_center_router)
     app.include_router(dashboard_router)
     app.include_router(queue_router)
+    app.include_router(queue_page_router)
     app.include_router(recipes_router)
     app.include_router(run_router)
     app.include_router(settings_router)
     app.include_router(reports_router)
     app.include_router(proxy_router)
+    app.include_router(workflows_router)
+    app.include_router(uploads_router)
 
     return app

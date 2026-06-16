@@ -3,11 +3,13 @@
 # ==============================================================================
 # 
 # Usage:
-#   1. Copy this file: cp recipes/_TEMPLATE.yaml recipes/my_report.yaml
+#   1. Copy this template into your own recipes directory and rename it, e.g.:
+#        mkdir -p my-recipes && cp _TEMPLATE.yaml my-recipes/my_report.yaml
+#      (Installed via pipx? This file lives in the bundled fs_report/recipes/ directory.)
 #   2. Edit the sections below
-#   3. Test: poetry run fs-report --recipe "My Report" --verbose
+#   3. Run it: fs-report run --recipes ./my-recipes --recipe "My Custom Report" --verbose
 #
-# For more details, see: recipes/CUSTOM_REPORT_GUIDE.md
+# For more examples, see the bundled recipe YAML files alongside this template.
 # ==============================================================================
 
 # Required: Display name for the report
@@ -71,21 +73,25 @@ query:
 # DATA TRANSFORMATION
 # ==============================================================================
 
-# Option A: Use built-in transforms (simple recipes)
-# Each transform step should be a single operation
+# Option A: Use declarative transforms (simple recipes)
+# Each transform step is a single operation, applied in order.
 transform:
-  # Group data by one or more fields
+  # Group rows by one or more fields. A bare group_by automatically adds a
+  # `finding_count` column (the number of rows in each group).
   - group_by: [severity]
-  
-  # Calculate aggregate metrics
-  - calc:
-      name: finding_count
-      expr: "count(*)"
-  
-  # Sort results
+
+  # Sort by the resulting count, highest first
   - sort:
       sort: [finding_count]
       ascending: false
+
+# To compute custom aggregates, use the group_by `aggs` form
+# (output_column: "FUNC:source_column"); a bare group_by still adds finding_count:
+#   - group_by:
+#       keys: ["project.name", severity]
+#       aggs:
+#         finding_count: "COUNT:id"
+#         total_risk:    "SUM:risk"
 
 # Option B: Use custom Python transform function (complex recipes)
 # Comment out 'transform' above and uncomment this:
@@ -158,11 +164,12 @@ output:
 #   "detected>=${start}"                - Date variable
 #   "component=like=spring*"            - Pattern match
 #
-# Transform expressions:
-#   count(*)                - Count all records
-#   count(field='value')    - Count specific values
-#   avg(field)              - Average
-#   sum(field)              - Sum
-#   min(field) / max(field) - Min/Max
+# Aggregations — use the group_by `aggs` form, "FUNC:column":
+#   COUNT:col           - Count non-null values
+#   COUNT_DISTINCT:col  - Count distinct values
+#   SUM:col / AVG:col   - Sum / average
+#   MIN:col / MAX:col   - Min / max
+#   LIST_DISTINCT:col   - Distinct values as a list
+#   (A bare `group_by: [field]` with no aggs adds a `finding_count` column.)
 #
 # ==============================================================================

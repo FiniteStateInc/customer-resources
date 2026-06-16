@@ -5,45 +5,85 @@ groups them by project version, and renders a live queue panel.
 """
 
 import logging
-import time
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, Depends, Request
+from starlette.responses import RedirectResponse
 
-from fs_report.web.dependencies import get_state
+from fs_report.web.dependencies import get_nonce, get_state
+from fs_report.web.routers._scans_client import (
+    TERMINAL_STATUSES,
+    _parse_iso,
+    fetch_scans,
+)
+from fs_report.web.shell_context import build_shell_context
 from fs_report.web.state import WebAppState
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["queue"])
+# Unprefixed router for the standalone /queue PAGE. Kept in this module so a
+# single `fetch_scans` mock covers both the page and the refresh fragment.
+page_router = APIRouter(tags=["pages"])
 
-_TERMINAL_STATUSES = frozenset({"COMPLETED", "ERROR", "NOT_APPLICABLE"})
-_MAX_PAGES = 6  # safety cap; typically stops earlier via all-terminal detection
-_PAGE_SIZE = 100
+# Degraded-state copy, shared across the three queue routes so the wording
+# stays in sync.
+_ERR_RATE_LIMITED = "Rate-limited — retrying shortly"
+_ERR_UNREACHABLE = "Could not reach API"
 
-# Circuit breaker: skip API calls for a cooldown period after a 429.
-_last_429_time: float = 0.0
-_BACKOFF_SECONDS = 120
+# Active-window fetch depth. When the fetch exhausts this many FULL pages it
+# sets ScanFetchResult.capped, meaning the queue is the "recent active window"
+# (not the full history) — surfaced so the page shows a subtle affordance
+# instead of implying completeness. (Use result.capped, not a page-count
+# heuristic: a partial or early-stopped final page is complete, not capped.)
+_MAX_QUEUE_PAGES = 6
+
+
+def _total_scans(queue: dict[str, Any] | None) -> int:
+    """Total scan count across all groups (for the panel meta line)."""
+    if not queue:
+        return 0
+    return sum(len(g["scans"]) for g in queue.get("groups", []))
+
+
+def _force_requested(request: Request) -> bool:
+    """True if the request asks to bypass the fetch memo (manual Refresh).
+
+    Accepts the common truthy query encodings so a hand-typed or bookmarked
+    ``?force=true`` behaves the same as the HTMX button's ``?force=1``.
+    """
+    return request.query_params.get("force", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
 
 _TYPE_DISPLAY = {"VULNERABILITY_ANALYSIS": "REACHABILITY"}
+# Left-to-right completion priority (B8 #2): binary SCA → config → reachability
+# → binary SAST → bandit (SOURCE_SCA) → SBOM import. SBOM_IMPORT gets an explicit
+# slot rather than the unknown-type 99 fallback so it orders predictably.
 _TYPE_ORDER = {
     "SCA": 0,
-    "SOURCE_SCA": 0,
-    "SAST": 1,
-    "CONFIG": 2,
-    "VULNERABILITY_ANALYSIS": 3,
+    "CONFIG": 1,
+    "VULNERABILITY_ANALYSIS": 2,
+    "SAST": 3,
+    "SOURCE_SCA": 4,
+    "SBOM_IMPORT": 5,
 }
-
-
-def _parse_iso(ts: str | None) -> datetime | None:
-    if not ts:
-        return None
-    try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
+# Scan-type → CSS slug (B8 #2 color-by-type). Drives the `qt-<slug>` class on
+# queue dots/chips; the `--scan-<slug>` token supplies the hue (see tokens.css).
+# Unknown types fall back to the neutral `other` hue.
+_TYPE_SLUG = {
+    "SCA": "sca",
+    "CONFIG": "config",
+    "VULNERABILITY_ANALYSIS": "vuln",
+    "SAST": "sast",
+    "SOURCE_SCA": "source-sca",
+    "SBOM_IMPORT": "sbom",
+}
 
 
 def _format_wait(minutes: float) -> str:
@@ -84,15 +124,17 @@ def _build_scan_entry(scan: dict[str, Any], now: datetime) -> dict[str, Any]:
     likely_stuck = (
         status == "STARTED" and scan_type in ("SCA", "SOURCE_SCA") and wait_minutes > 60
     )
-    is_done = status in _TERMINAL_STATUSES
+    is_done = status in TERMINAL_STATUSES
     is_error = status == "ERROR"
     display_type = _TYPE_DISPLAY.get(scan_type, scan_type)
     type_order = _TYPE_ORDER.get(scan_type, 99)
+    type_slug = _TYPE_SLUG.get(scan_type, "other")
 
     return {
         "id": scan.get("id", ""),
         "type": display_type,
         "type_order": type_order,
+        "type_slug": type_slug,
         "status": status,
         "wait_minutes": wait_minutes,
         "wait_display": _format_wait(wait_minutes),
@@ -174,11 +216,33 @@ def _group_scans(
             if not (s["likely_stuck"] and s["wait_minutes"] > two_weeks)
         ]
         group["has_stuck"] = any(s["likely_stuck"] for s in group["scans"])
+        group["has_error"] = any(s["is_error"] for s in group["scans"])
         group["all_done"] = (
             all(s["is_done"] for s in group["scans"]) if group["scans"] else True
         )
-        group["scans"].sort(key=lambda s: (s["is_done"], s["type_order"]))
+        # A group is "running" only when it has a non-stuck, non-terminal
+        # STARTED scan — the same population total_processing counts below, so
+        # the Processing KPI and the Processing filter chip never disagree.
+        group["has_running"] = any(
+            s["status"] == "STARTED" and not s["likely_stuck"] and not s["is_done"]
+            for s in group["scans"]
+        )
+        # Order by completion priority alone (B8 #2) — NOT (is_done, type_order):
+        # keying on is_done made a scan jump to the end the moment it finished,
+        # so the row reshuffled on every poll. type_order-only keeps each scan in
+        # its lane; Python's stable sort preserves arrival order within a type.
+        group["scans"].sort(key=lambda s: s["type_order"])
         group["created_by"] = sorted(group["created_by"])
+
+        # Recompute the displayed wait from the scans that REMAIN after the
+        # two-week filter, so the wait shown always belongs to a rendered scan.
+        if group["scans"]:
+            group_oldest = max(s["wait_minutes"] for s in group["scans"])
+            group["oldest_wait_minutes"] = group_oldest
+            group["oldest_wait_display"] = _format_wait(group_oldest)
+        else:
+            group["oldest_wait_minutes"] = 0.0
+            group["oldest_wait_display"] = ""
 
         if not group["all_done"]:
             non_stuck = [
@@ -186,11 +250,13 @@ def _group_scans(
             ]
             if non_stuck:
                 groups_queued += 1
-                if any(s["status"] == "STARTED" for s in non_stuck):
-                    groups_processing += 1
-                group_oldest = max(s["wait_minutes"] for s in non_stuck)
-                if group_oldest > oldest_active_wait:
-                    oldest_active_wait = group_oldest
+            if group["has_running"]:
+                groups_processing += 1
+            # "Oldest" reflects the worst wait across ALL active groups,
+            # including stuck ones — otherwise an all-stuck backlog would show
+            # "—" while the rows below still display long waits.
+            if group["oldest_wait_minutes"] > oldest_active_wait:
+                oldest_active_wait = group["oldest_wait_minutes"]
 
     groups = sorted(
         (g for g in version_groups.values() if g["scans"]),
@@ -201,20 +267,17 @@ def _group_scans(
         _format_wait(oldest_active_wait) if oldest_active_wait > 0 else ""
     )
 
+    total_stuck = sum(
+        1 for g in version_groups.values() if g["scans"] and g["has_stuck"]
+    )
+
     return {
         "groups": groups,
         "total_queued": groups_queued,
         "total_processing": groups_processing,
         "oldest_wait": oldest_wait_display,
+        "total_stuck": total_stuck,
     }
-
-
-def _parse_scan_list(data: Any) -> list[dict[str, Any]]:
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        return data.get("items") or data.get("scans") or []
-    return []
 
 
 @router.get("/queue")
@@ -223,122 +286,155 @@ async def scan_queue(
     state: WebAppState = Depends(get_state),
 ) -> object:
     """Return an HTML fragment with the current scan queue status."""
-    state.reload()
     templates = request.app.state.templates
     now = datetime.now(UTC)
 
-    if not state.token or not state.domain:
+    # A manual Refresh (?force=1) bypasses the fetch memo for live data;
+    # the auto-poll omits it to stay within the idle request budget.
+    force = _force_requested(request)
+    result = await fetch_scans(
+        state,
+        since=None,
+        early_stop_terminal=True,
+        max_pages=_MAX_QUEUE_PAGES,
+        force=force,
+    )
+
+    if result.status == "unconfigured":
         return templates.TemplateResponse(
             request,
             "components/_scan_queue.html",
+            {"connected": False, "error": None, "queue": None},
+        )
+    if result.status == "rate_limited":
+        return templates.TemplateResponse(
+            request,
+            "components/_scan_queue.html",
+            {"connected": True, "error": _ERR_RATE_LIMITED, "queue": None},
+        )
+    if result.status == "unreachable":
+        return templates.TemplateResponse(
+            request,
+            "components/_scan_queue.html",
+            {"connected": True, "error": _ERR_UNREACHABLE, "queue": None},
+        )
+
+    queue = _group_scans(result.scans, now)
+    return templates.TemplateResponse(
+        request,
+        "components/_scan_queue.html",
+        {
+            "connected": True,
+            "error": None,
+            "queue": queue,
+            "platform_domain": state.domain,
+        },
+    )
+
+
+@router.get("/queue/full")
+async def scan_queue_full(
+    request: Request,
+    state: WebAppState = Depends(get_state),
+) -> object:
+    """Return the full Scan-Queue body fragment (all groups), for HTMX swaps."""
+    templates = request.app.state.templates
+    now = datetime.now(UTC)
+
+    # A manual Refresh (?force=1) bypasses the fetch memo for live data;
+    # the 180 s auto-poll omits it to stay within the idle request budget.
+    force = _force_requested(request)
+    result = await fetch_scans(
+        state,
+        since=None,
+        early_stop_terminal=True,
+        max_pages=_MAX_QUEUE_PAGES,
+        force=force,
+    )
+
+    def _render(
+        connected: bool, error: str | None, queue: dict[str, Any] | None
+    ) -> object:
+        return templates.TemplateResponse(
+            request,
+            "components/_scan_queue_full.html",
             {
-                "connected": False,
-                "error": None,
-                "queue": None,
+                "connected": connected,
+                "error": error,
+                "queue": queue,
+                "total_scans": _total_scans(queue),
+                "capped": result.capped and queue is not None,
             },
         )
 
-    global _last_429_time  # noqa: PLW0603
+    if result.status == "unconfigured":
+        return _render(connected=False, error=None, queue=None)
+    if result.status == "rate_limited":
+        return _render(connected=True, error=_ERR_RATE_LIMITED, queue=None)
+    if result.status == "unreachable":
+        return _render(connected=True, error=_ERR_UNREACHABLE, queue=None)
 
-    base_url = f"https://{state.domain}/api/public/v0/scans"
-    headers = {"X-Authorization": state.token}
+    queue = _group_scans(result.scans, now)
+    return _render(connected=True, error=None, queue=queue)
 
-    # Circuit breaker: if we hit a 429 recently, skip the API call entirely.
-    since_429 = time.monotonic() - _last_429_time
-    if since_429 < _BACKOFF_SECONDS:
-        remaining = int(_BACKOFF_SECONDS - since_429)
-        logger.debug("Queue fetch: backing off for %ds after 429", remaining)
-        return templates.TemplateResponse(
-            request,
-            "components/_scan_queue.html",
+
+@page_router.get("/queue")
+async def queue_page(
+    request: Request,
+    state: WebAppState = Depends(get_state),
+    nonce: str = Depends(get_nonce),
+) -> object:
+    """Render the standalone Scan Queue page (rides on the shared shell)."""
+    if not state.has_config:
+        return RedirectResponse(url="/setup")
+
+    templates = request.app.state.templates
+    now = datetime.now(UTC)
+
+    result = await fetch_scans(
+        state, since=None, early_stop_terminal=True, max_pages=_MAX_QUEUE_PAGES
+    )
+
+    if result.status == "unconfigured":
+        # Defensive: should be caught by the has_config guard above. Redirect
+        # before building the shell context so the failure path skips the
+        # bundled-recipe load.
+        return RedirectResponse(url="/setup")
+
+    # Shared shell contract + page-specific extras (state mirrors the dashboard
+    # route so any future shell template can read it on /queue too).
+    ctx = build_shell_context(state, nonce, crumb="Scan Queue", active_view="queue")
+    ctx["state"] = state
+    ctx["capped"] = False
+
+    if result.status == "rate_limited":
+        ctx.update(
             {
                 "connected": True,
-                "error": f"Rate-limited — retrying in {remaining}s",
+                "error": _ERR_RATE_LIMITED,
                 "queue": None,
-            },
+                "total_scans": 0,
+            }
         )
-
-    try:
-        all_scans: list[dict[str, Any]] = []
-        any_success = False
-        last_error = ""
-
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            for i in range(_MAX_PAGES):
-                try:
-                    resp = await client.get(
-                        base_url,
-                        headers=headers,
-                        params={
-                            "sort": "created:desc",
-                            "limit": str(_PAGE_SIZE),
-                            "offset": str(i * _PAGE_SIZE),
-                        },
-                    )
-                except Exception as exc:
-                    last_error = str(exc)
-                    break
-
-                if resp.status_code == 429:
-                    _last_429_time = time.monotonic()
-                    last_error = "API returned 429"
-                    logger.warning(
-                        "Queue fetch: 429 rate-limit, backing off %ds", _BACKOFF_SECONDS
-                    )
-                    break
-
-                if resp.status_code != 200:
-                    last_error = f"API returned {resp.status_code}"
-                    break
-
-                any_success = True
-                page_scans = _parse_scan_list(resp.json())
-                all_scans.extend(page_scans)
-
-                # No more pages available.
-                if len(page_scans) < _PAGE_SIZE:
-                    break
-
-                # All scans on this page are terminal — we've passed the
-                # active queue, no point fetching older pages.
-                if page_scans and all(
-                    s.get("status") in _TERMINAL_STATUSES for s in page_scans
-                ):
-                    logger.debug("Queue fetch: page %d all terminal, stopping early", i)
-                    break
-
-        if not any_success:
-            logger.warning("Queue fetch: all pages failed, last: %s", last_error)
-            return templates.TemplateResponse(
-                request,
-                "components/_scan_queue.html",
-                {
-                    "connected": True,
-                    "error": last_error or "API error",
-                    "queue": None,
-                },
-            )
-
-        queue = _group_scans(all_scans, now)
-
-        return templates.TemplateResponse(
-            request,
-            "components/_scan_queue.html",
+    elif result.status == "unreachable":
+        ctx.update(
+            {
+                "connected": True,
+                "error": _ERR_UNREACHABLE,
+                "queue": None,
+                "total_scans": 0,
+            }
+        )
+    else:
+        queue = _group_scans(result.scans, now)
+        ctx.update(
             {
                 "connected": True,
                 "error": None,
                 "queue": queue,
-                "platform_domain": state.domain,
-            },
+                "total_scans": _total_scans(queue),
+                "capped": result.capped,
+            }
         )
-    except Exception as e:
-        logger.warning("Queue fetch error: %s", e)
-        return templates.TemplateResponse(
-            request,
-            "components/_scan_queue.html",
-            {
-                "connected": True,
-                "error": "Could not reach API",
-                "queue": None,
-            },
-        )
+
+    return templates.TemplateResponse(request, "pages/queue.html", ctx)

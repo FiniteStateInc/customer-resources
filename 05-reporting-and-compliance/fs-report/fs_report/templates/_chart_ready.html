@@ -1,0 +1,46 @@
+{# Chart-readiness wrapper for Chart.js. Templates that emit
+   <canvas> + new Chart() use fsReportNewChart(ctx, config)
+   instead of new Chart(ctx, config). The wrapper:
+
+   - calls fsBeaconAcquire() before constructing the chart
+   - enforces options.animation = false per chart (load-order
+     independent)
+   - calls fsBeaconRelease() after two requestAnimationFrame
+     ticks (layout + paint guaranteed complete)
+
+   fsBeaconAcquire/Release are provided by _ready_beacon.html,
+   the shared coordinator that owns window.fsReportReady AND the
+   empty-data safety net. This wrapper does NOT own that flag and
+   does NOT need its own safety net — the beacon's safety net
+   covers the case where no chart ever constructs. ECharts uses
+   the same beacon via _echarts_ready.html. #}
+{% include "_ready_beacon.html" %}
+<script>
+(function () {
+    if (typeof window.fsReportNewChart === 'function') {
+        return;  // Already defined; another include path beat us to it.
+    }
+    window.fsReportNewChart = function (ctx, config) {
+        window.fsBeaconAcquire();
+        config = config || {};
+        config.options = config.options || {};
+        config.options.animation = false;
+        var instance;
+        try {
+            instance = new Chart(ctx, config);
+        } catch (e) {
+            // Fail-closed: release the acquire so the beacon doesn't
+            // hang. The PDF will capture without this chart, which is
+            // better than a 30s timeout on the whole render.
+            window.fsBeaconRelease();
+            throw e;
+        }
+        requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+                window.fsBeaconRelease();
+            });
+        });
+        return instance;
+    };
+})();
+</script>

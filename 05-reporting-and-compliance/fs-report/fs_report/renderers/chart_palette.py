@@ -17,14 +17,14 @@ identical.
 from __future__ import annotations
 
 # ── Surface (light theme; dark theme is browser-only in Phase 2) ──────────
-FS_SURFACE_PAGE = "#f5f7fa"
+FS_SURFACE_PAGE = "#f8f9fa"
 FS_SURFACE_CARD = "#ffffff"
-FS_HAIRLINE = "#e2e8f0"
+FS_HAIRLINE = "#dee2e6"
 
 # ── Ink ramp ──────────────────────────────────────────────────────────────
-FS_INK = "#0f172a"
-FS_INK_DIM = "#475569"
-FS_INK_FAINT = "#94a3b8"
+FS_INK = "#0b1020"
+FS_INK_DIM = "#4b5563"
+FS_INK_FAINT = "#9ca3af"
 
 # ── Accent palette ────────────────────────────────────────────────────────
 FS_ACCENT_TEAL = "#0d9488"
@@ -43,13 +43,14 @@ FS_NAV_PALETTE: dict[str, str] = {
     "compliance": FS_ACCENT_AMBER,
 }
 
-# ── Severity (colorblind-friendly; Tol-derived hues) ──────────────────────
+# ── Severity (Strategy-B reconciliation: the v2.0 design pass's brighter
+#    palette wins over the original Tol-derived hues.) ────────
 FS_SEV_PALETTE: dict[str, str] = {
-    "critical": "#9f1239",
-    "high": "#c2410c",
-    "medium": "#b45309",
-    "low": "#15803d",
-    "info": "#0369a1",
+    "critical": "#dc3545",
+    "high": "#fd7e14",
+    "medium": "#ffc107",
+    "low": "#28a745",
+    "info": "#1565c0",
 }
 
 # ── Chart palette (8-hue Tol-derived, colorblind-friendly) ────────────────
@@ -140,6 +141,6 @@ FS_MOTION_EASINGS: dict[str, str] = {
 # Shadows (mirrors --shadow-* tokens, light theme)
 FS_SHADOWS: dict[str, str] = {
     "soft": "0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06)",
-    "card": "0 2px 6px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.05)",
+    "card": "0 1px 3px rgba(0, 0, 0, 0.08)",
     "elev": "0 8px 24px rgba(15, 23, 42, 0.10), 0 4px 8px rgba(15, 23, 42, 0.04)",
 }

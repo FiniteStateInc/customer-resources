@@ -1,0 +1,148 @@
+/* ============================================================
+   fs-report Phase 2 — design tokens
+   Vendored fonts + Precision Noir token set.
+   Consumed by --serve (offline-safe, no CDN deps).
+   ============================================================ */
+
+/* ---- Manrope ---- */
+@font-face {
+  font-family: 'Manrope';
+  font-weight: 400;
+  font-display: swap;
+  src: url('/static/fonts/manrope-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Manrope';
+  font-weight: 500;
+  font-display: swap;
+  src: url('/static/fonts/manrope-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Manrope';
+  font-weight: 600;
+  font-display: swap;
+  src: url('/static/fonts/manrope-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Manrope';
+  font-weight: 700;
+  font-display: swap;
+  src: url('/static/fonts/manrope-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Manrope';
+  font-weight: 800;
+  font-display: swap;
+  src: url('/static/fonts/manrope-800.woff2') format('woff2');
+}
+
+/* ---- Inter ---- */
+@font-face {
+  font-family: 'Inter';
+  font-weight: 400;
+  font-display: swap;
+  src: url('/static/fonts/inter-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-weight: 500;
+  font-display: swap;
+  src: url('/static/fonts/inter-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-weight: 600;
+  font-display: swap;
+  src: url('/static/fonts/inter-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-weight: 700;
+  font-display: swap;
+  src: url('/static/fonts/inter-700.woff2') format('woff2');
+}
+
+/* ---- JetBrains Mono ---- */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-weight: 400;
+  font-display: swap;
+  src: url('/static/fonts/jetbrains-mono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-weight: 500;
+  font-display: swap;
+  src: url('/static/fonts/jetbrains-mono-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-weight: 600;
+  font-display: swap;
+  src: url('/static/fonts/jetbrains-mono-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-weight: 700;
+  font-display: swap;
+  src: url('/static/fonts/jetbrains-mono-700.woff2') format('woff2');
+}
+
+/* ============================================================
+   Precision Noir design tokens — dark theme (default)
+   Verbatim from docs/design/phase2/Phase 2 Command Center.html
+   lines 16–37.
+   ============================================================ */
+:root{
+  --surface-page:#0A0E1A; --surface-card:#11151F; --surface-subtle:#161B29;
+  --surface-muted:#1E2436; --surface-hover:#1E2436;
+  --hairline:#1F2740; --hairline-soft:#1A2034;
+  --ink:#FFFFFF; --ink-strong:#E5E7EB; --ink-body:#B5BCC8;
+  --ink-dim:#B5BCC8; --ink-mute:#8893A8; --ink-faint:#5A6580;
+  --accent:#5EEAD4; --accent-grad-end:#2DD4BF; --accent-rgb:94,234,212;
+  --sev-critical:#F87171; --sev-critical-bg:rgba(248,113,113,.12); --sev-critical-strong:#F87171;
+  --sev-high:#FB923C; --sev-high-bg:rgba(251,146,60,.12);
+  --sev-medium:#FBBF24; --sev-medium-bg:rgba(251,191,36,.12);
+  --sev-low:#4ADE80; --sev-low-bg:rgba(74,222,128,.12);
+  --sev-info:#60A5FA; --sev-info-bg:rgba(96,165,250,.12);
+  --nav-executive:#5EEAD4; --nav-investigation:#22D3EE;
+  --nav-remediation:#A78BFA; --nav-compliance:#FBBF24;
+  --link-cve:#A78BFA;
+  /* Scan-type hues (B8 #2) — queue dots/chips. Type = hue; status conveyed by
+     motion/opacity/border. err/stuck still override with their status colors. */
+  --scan-sca:#60A5FA; --scan-config:#FBBF24; --scan-vuln:#2DD4BF;
+  --scan-sast:#A78BFA; --scan-source-sca:#F472B6; --scan-sbom:#94A3B8;
+  --scan-other:#8893A8;
+  --font-display:'Manrope',-apple-system,BlinkMacSystemFont,sans-serif;
+  --font-body:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  --r-sm:4px; --r-md:8px; --r-lg:12px; --r-xl:16px;
+  --ease-out:cubic-bezier(0.16,1,0.3,1);
+  --topbar-h:48px; --status-h:26px; --sidebar-w:236px;
+}
+
+/* ============================================================
+   Scrollbar + mono utility
+   Verbatim from docs/design/phase2/Phase 2 Command Center.html
+   lines 49–53.
+   ============================================================ */
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--surface-muted);border-radius:6px}
+::-webkit-scrollbar-thumb:hover{background:var(--hairline)}
+
+/* ============================================================
+   Light theme overrides
+   Verbatim from docs/design/phase2/tweaks.css lines 63–68.
+   ============================================================ */
+body.light{
+  --surface-page:#EEF1F7;--surface-card:#FFFFFF;--surface-subtle:#F4F6FA;--surface-muted:#E4E9F1;--surface-hover:#EDF1F7;
+  --hairline:#D6DCE7;--hairline-soft:#E6EAF1;
+  --ink:#0B1020;--ink-strong:#1F2937;--ink-body:#3A4658;--ink-mute:#647088;--ink-faint:#9AA4B5;
+  --accent:#0D9488;--accent-rgb:13,148,136;--accent-grad-end:#14B8A6;
+  /* Scan-type hues — deeper variants for contrast on the light surfaces. */
+  --scan-sca:#2563EB; --scan-config:#D97706; --scan-vuln:#0D9488;
+  --scan-sast:#7C3AED; --scan-source-sca:#DB2777; --scan-sbom:#64748B;
+  --scan-other:#647088;
+}

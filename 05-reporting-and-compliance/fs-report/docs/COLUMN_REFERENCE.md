@@ -46,12 +46,13 @@ The sidecar JSON shape is:
 | 16 | `# in-the-wild exploitation signals` | int | Count of in-the-wild exploitation signals (botnet / ransomware / threat-actor reports). Renamed from `# of known weaponization` 2026-05-26 — the old name implied this counted the weaponized maturity tier, which it does not. |
 | 17 | `CWE` | string | Primary CWE identifier. |
 | 18 | `Description` | string | CVE description from NVD (English). |
-| 19 | `CVSS v2 Vector` | string | CVSS v2 vector string when available. |
-| 20 | `CVSS v3 Vector` | string | CVSS v3.1 vector string (fallback v3.0) when available. |
-| 21 | `NVD URL` | string | Link to NVD detail page. |
-| 22 | `FS Link` | string | Direct link to finding in Finite State platform. |
-| 23 | `dependency_path` | string | *Conditional* — project dependency chain (e.g., `ProjectA -> ProjectB`). Only present when the target project has dependencies. |
-| 24 | `component_dependency_path` | string | *Conditional* — full path including component. Only present when the target project has dependencies. |
+| 19 | `CVSS v3 Vector` | string | CVSS v3.1 vector string (fallback v3.0) when available. |
+| 20 | `NVD URL` | string | Link to NVD detail page. |
+| 21 | `FS Link` | string | Direct link to finding in Finite State platform. |
+| 22 | `dependency_path` | string | *Conditional* — project dependency chain (e.g., `ProjectA -> ProjectB`). Only present when the target project has dependencies. |
+| 23 | `component_dependency_path` | string | *Conditional* — full path including component. Only present when the target project has dependencies. |
+
+> **Removed 2026-06-14:** the `CVSS v2 Vector` column was dropped — NVD stopped assigning CVSS v2 (~2016+), so it was ~always empty for modern data.
 
 ---
 
@@ -138,13 +139,42 @@ The sidecar JSON shape is:
 | `additive_low` | int | Additive scoring -> LOW |
 | `additive_info` | int | Additive scoring -> INFO |
 
+### factor_by_band Dict
+
+Per-band average per-finding factor contributions, used by the HTML report's
+stacked-bar "Factor drivers by band" chart and the Markdown export's factor
+table.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `bands` | list | Priority bands in canonical `CRITICAL → INFO` order. All bands are present even if empty. |
+| `factors` | list | Factor identifiers: `unreachable` + `vex` (negative penalties), `reach`, `exploit`, `kev`, `vector`, `epss`, `cvss`, `gate_bonus` (positive drivers) |
+| `normalize` | string | Always `"per_finding"` — `data[*]` factor values are averaged across the band's finding count |
+| `data` | list | One entry per band (see below) |
+
+Each `data[*]` row:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `band` | string | One of CRITICAL/HIGH/MEDIUM/LOW/INFO |
+| `finding_count` | int | Findings in the band (0 for empty bands) |
+| `reach` | float | Avg positive reachability points per finding |
+| `unreachable` | float | Avg unreachable-penalty per finding (≤ 0) |
+| `vex` | float | Avg VEX-resolved demotion per finding (≤ 0); attributed to findings whose `status` ∈ `{NOT_AFFECTED, RESOLVED, RESOLVED_WITH_PEDIGREE}` using `weights['vex_resolved']` |
+| `exploit` | float | Avg exploit points per finding (where `has_exploit=True`) |
+| `kev` | float | Avg KEV-only points per finding (`has_exploit=False AND in_kev=True`) |
+| `vector` | float | Avg attack-vector points per finding |
+| `epss` | float | Avg EPSS points per finding |
+| `cvss` | float | Avg CVSS points per finding |
+| `gate_bonus` | float | Avg gate-assignment score per finding (averaged across all band findings) |
+
 ### cvss_band_matrix Dict
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `rows` | list | CVSS severity labels |
-| `cols` | list | Priority band labels |
-| `data` | list | Objects with `x`, `y`, `v`, `severity`, `band` |
+| `rows` | list | Priority band labels in canonical `CRITICAL → INFO` order (legend + stack-series order for the HTML stacked-bar chart) |
+| `cols` | list | CVSS severity labels (`CRITICAL → NONE`) |
+| `data` | list | Objects with `x` (severity index), `y` (band row index, inverted so CRITICAL=top), `v` (count), `severity`, `band` |
 
 ### factor_radar Dict
 
@@ -307,7 +337,7 @@ The sidecar JSON shape is:
 | 8 | `completion_date` | string | End timestamp or '-' |
 | 9 | `duration_minutes` | float | Time to complete |
 | 10 | `current_status_time_minutes` | float | Time in current status |
-| 11 | `errorMessage` | string | Error details or '-' (helix v2 sends as `bssMessage`; fs-report normalizes both) |
+| 11 | `errorMessage` | string | Error details or '-'. **Note (2.0):** on the helix v2 backend this column is empty — helix renames the field to `bssMessage` and fs-report no longer normalizes it. A helix-side rename back to `errorMessage` will restore the column. |
 
 ### failure_types List
 

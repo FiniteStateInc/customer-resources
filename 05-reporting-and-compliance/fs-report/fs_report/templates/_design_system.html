@@ -1,7 +1,11 @@
-{# Finite State Report Design System v1.0
-     Shared CSS for all report templates.
-     Usage: include '_design_system.html' inside <head>
-     See dev/AI_HINTS.md for class reference and migration guide. #}
+{# Finite State design system v2.0 — class library (severity badges,
+   KPI cards, etc.). Tokens come from fs_report/static/css/tokens.css
+   via _tokens_inline.html, which this file includes once at the top.
+   Do NOT declare :root tokens here. #}
+
+{% include "_tokens_inline.html" %}
+{% include "_theme_init.html" %}
+
 <style>
     /* =================================================================
        RESET & BASE
@@ -9,10 +13,10 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-        line-height: 1.6;
-        color: #333;
-        background-color: #f8f9fa;
+        font-family: var(--font-body);
+        line-height: var(--line-height-body);
+        color: var(--ink-strong);
+        background-color: var(--surface-page);
     }
 
     /* =================================================================
@@ -21,8 +25,8 @@
     .container {
         margin: 0 auto;
         padding: 20px;
-        background-color: white;
-        border: 1px solid #dee2e6;
+        background-color: var(--surface-card);
+        border: 1px solid var(--hairline);
         min-height: 100%;
     }
 
@@ -30,36 +34,43 @@
         text-align: center;
         margin-bottom: 30px;
         padding-bottom: 20px;
-        border-bottom: 2px solid #e9ecef;
+        border-bottom: 2px solid var(--hairline-soft);
     }
 
     .logo-container { margin-bottom: 20px; }
     .company-logo { max-height: 50px; width: auto; margin: 0 auto; display: block; }
-    .header h1 { color: #2c3e50; font-size: 2.2em; margin-bottom: 10px; }
-    .header .subtitle { color: #6c757d; font-size: 1.1em; }
+    /* Dark-mode treatment for the BUNDLED default FS logo only (the navy
+       "FINITE STATE" wordmark is illegible on a dark surface). invert+
+       hue-rotate flips lightness while preserving hue, so the wordmark
+       lightens and the orange hex mark stays roughly on-brand. Scoped to
+       .company-logo--default so arbitrary customer logo_path marks
+       (already-light / transparent / multicolor) are NEVER touched. */
+    :root[data-theme="dark"] .company-logo--default { filter: invert(1) hue-rotate(180deg); }
+    .header h1 { color: var(--ink); font-size: 2.2em; margin-bottom: 10px; }
+    .header .subtitle { color: var(--ink-mute); font-size: 1.1em; }
 
     .metadata {
-        background-color: #f8f9fa;
+        background-color: var(--surface-subtle);
         padding: 15px;
-        border-radius: 8px;
+        border-radius: var(--r-md);
         margin-bottom: 30px;
         font-size: 0.9em;
-        color: #6c757d;
+        color: var(--ink-mute);
     }
 
     .footer {
         text-align: center;
         padding: 20px 0;
         margin-top: 30px;
-        border-top: 1px solid #e9ecef;
-        color: #adb5bd;
+        border-top: 1px solid var(--hairline-soft);
+        color: var(--ink-faint);
         font-size: 0.85em;
     }
 
-    .finite-state-logo { color: #007bff; font-weight: bold; }
+    .finite-state-logo { color: var(--link-default); font-weight: bold; }
 
     /* =================================================================
-       KPI CARDS  (Version Comparison style — white bg, border, shadow)
+       KPI CARDS  (Version Comparison style — surface bg, border, shadow)
        ================================================================= */
     .kpi-row {
         display: grid;
@@ -69,17 +80,17 @@
     }
 
     .kpi-card {
-        background-color: #fff;
-        border: 1px solid #dee2e6;
-        border-radius: 10px;
+        background-color: var(--surface-card);
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius-lg);
         padding: 20px;
         text-align: center;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        box-shadow: var(--shadow-card);
     }
 
     .kpi-card .kpi-title {
         font-size: 0.85em;
-        color: #6c757d;
+        color: var(--ink-mute);
         text-transform: uppercase;
         letter-spacing: 0.5px;
         margin-bottom: 8px;
@@ -88,7 +99,7 @@
     .kpi-card .kpi-value {
         font-size: 1.8em;
         font-weight: 700;
-        color: #2c3e50;
+        color: var(--ink);
     }
 
     .kpi-card .kpi-values {
@@ -98,26 +109,30 @@
         gap: 8px;
         font-size: 1.6em;
         font-weight: 700;
-        color: #2c3e50;
+        color: var(--ink);
     }
 
-    .kpi-card .kpi-arrow { font-size: 0.7em; color: #6c757d; }
+    .kpi-card .kpi-arrow { font-size: 0.7em; color: var(--ink-mute); }
 
     .kpi-card .kpi-delta {
         font-size: 0.55em;
         font-weight: 600;
         padding: 3px 8px;
-        border-radius: 12px;
+        border-radius: var(--r-lg);
         margin-top: 8px;
         display: inline-block;
     }
 
-    .kpi-delta.improved { background-color: #e8f5e9; color: #2e7d32; }
-    .kpi-delta.regressed { background-color: #ffebee; color: #c62828; }
-    .kpi-delta.neutral { background-color: #f5f5f5; color: #757575; }
+    .kpi-delta.improved  { background-color: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .kpi-delta.regressed { background-color: var(--sev-critical-bg); color: var(--sev-critical-strong); }
+    .kpi-delta.neutral   { background-color: var(--surface-muted);   color: var(--ink-mute); }
 
     /* =================================================================
-       SUMMARY CARDS  (Triage style — colored bg, white text)
+       SUMMARY CARDS  (Triage style — tinted bg, dark accent text)
+       Strategy-B reconciliation moved off saturated-fill + white text
+       because the brighter v2.0 sev palette drops white-text contrast
+       below WCAG AA 4.5:1. Use the -bg tint + -text accent pairing so the
+       severity hue still carries meaning while text stays AA-compliant.
        ================================================================= */
     .summary-cards {
         display: grid;
@@ -128,7 +143,7 @@
 
     .summary-card {
         padding: 20px;
-        border-radius: 8px;
+        border-radius: var(--r-md);
         text-align: center;
         color: white;
         font-weight: bold;
@@ -137,12 +152,16 @@
     .summary-card .count { font-size: 2.5em; line-height: 1; }
     .summary-card .label { font-size: 0.9em; margin-top: 5px; opacity: 0.9; }
 
-    .card-critical { background-color: #dc3545; }
-    .card-high { background-color: #fd7e14; }
-    .card-medium { background-color: #ffc107; color: #333; }
-    .card-low { background-color: #28a745; }
-    .card-info { background-color: #6c757d; }
-    .card-total { background-color: #2c3e50; }
+    /* sev-{critical,high,medium,low} cards: tinted bg + dark accent text
+       (bright fills + white text fail WCAG AA after Strategy-B palette). */
+    .card-critical { background-color: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .card-high     { background-color: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .card-medium   { background-color: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .card-low      { background-color: var(--sev-low-bg);      color: var(--sev-low-text); }
+    /* info + total cards keep the saturated-fill + white-text idiom
+       (their dark fills already clear AA against white). */
+    .card-info     { background-color: var(--ink-mute); }
+    .card-total    { background-color: var(--total-bg); }
 
     /* =================================================================
        MINI KPIs  (inside project sections or sub-panels)
@@ -157,30 +176,30 @@
     .mini-kpi {
         text-align: center;
         padding: 10px;
-        border-radius: 8px;
-        background-color: #f8f9fa;
+        border-radius: var(--r-md);
+        background-color: var(--surface-subtle);
     }
 
-    .mini-kpi .label { font-size: 0.75em; color: #6c757d; text-transform: uppercase; }
-    .mini-kpi .value { font-size: 1.4em; font-weight: 700; color: #2c3e50; }
+    .mini-kpi .label { font-size: 0.75em; color: var(--ink-mute); text-transform: uppercase; }
+    .mini-kpi .value { font-size: 1.4em; font-weight: 700; color: var(--ink); }
 
     /* =================================================================
        CHARTS
        ================================================================= */
     .chart-container {
-        background-color: white;
-        border-radius: 8px;
+        background-color: var(--surface-card);
+        border-radius: var(--r-md);
         padding: 20px;
         margin-bottom: 20px;
-        border: 1px solid #dee2e6;
+        border: 1px solid var(--hairline);
     }
 
     .chart-wrapper { position: relative; height: 300px; }
     .chart-wrapper-tall { position: relative; height: 400px; margin: 20px 0; }
     .chart-wrapper-xtall { position: relative; height: 500px; margin: 20px 0; }
 
-    .chart-title { color: #2c3e50; font-size: 1.5em; margin-bottom: 10px; }
-    .chart-description { color: #6c757d; font-size: 0.95em; margin-bottom: 20px; }
+    .chart-title { color: var(--ink); font-size: 1.5em; margin-bottom: 10px; }
+    .chart-description { color: var(--ink-mute); font-size: 0.95em; margin-bottom: 20px; }
 
     /* =================================================================
        GRID LAYOUTS
@@ -199,9 +218,9 @@
 
     .changes-col { min-width: 0; }
     .changes-col-title {
-        font-size: 1em; color: #2c3e50;
+        font-size: 1em; color: var(--ink);
         margin-bottom: 10px; padding-bottom: 6px;
-        border-bottom: 1px solid #e9ecef;
+        border-bottom: 1px solid var(--hairline-soft);
     }
 
     /* =================================================================
@@ -214,12 +233,12 @@
     }
 
     .data-table thead th {
-        background-color: #f8f9fa;
-        border-bottom: 2px solid #dee2e6;
+        background-color: var(--surface-subtle);
+        border-bottom: 2px solid var(--hairline);
         padding: 10px 12px;
         text-align: left;
         font-weight: 600;
-        color: #495057;
+        color: var(--ink-body);
         position: sticky;
         top: 0;
         z-index: 10;
@@ -227,28 +246,28 @@
 
     .data-table tbody td {
         padding: 8px 12px;
-        border-bottom: 1px solid #e9ecef;
+        border-bottom: 1px solid var(--hairline-soft);
     }
 
-    .data-table tbody tr:hover { background-color: #f8f9fa; }
+    .data-table tbody tr:hover { background-color: var(--surface-subtle); }
     .data-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 
     /* Table container for overflow scrolling */
     .table-container {
-        background-color: white;
-        border-radius: 8px;
+        background-color: var(--surface-card);
+        border-radius: var(--r-md);
         padding: 20px;
         margin-bottom: 30px;
-        border: 1px solid #dee2e6;
+        border: 1px solid var(--hairline);
         overflow-x: auto;
     }
 
-    .table-container h2 { color: #2c3e50; font-size: 1.3em; margin-bottom: 5px; }
-    .table-container p { color: #6c757d; font-size: 0.95em; margin-bottom: 15px; }
+    .table-container h2 { color: var(--ink); font-size: 1.3em; margin-bottom: 5px; }
+    .table-container p { color: var(--ink-mute); font-size: 0.95em; margin-bottom: 15px; }
 
     /* Project group row (for tables grouped by project) */
     .project-group-row {
-        background-color: #f8f9fa;
+        background-color: var(--surface-subtle);
         font-weight: bold;
     }
 
@@ -258,36 +277,39 @@
     .severity-badge {
         display: inline-block;
         padding: 2px 8px;
-        border-radius: 4px;
+        border-radius: var(--r-sm);
         font-size: 0.8em;
         font-weight: 600;
         text-transform: uppercase;
     }
 
-    .severity-CRITICAL { background-color: #ffebee; color: #b71c1c; }
-    .severity-HIGH { background-color: #fff3e0; color: #e65100; }
-    .severity-MEDIUM { background-color: #fff8e1; color: #f57f17; }
-    .severity-LOW { background-color: #e8f5e9; color: #2e7d32; }
-    .severity-INFO { background-color: #e3f2fd; color: #1565c0; }
-    .severity-UNSPECIFIED { background-color: #f5f5f5; color: #757575; }
+    .severity-CRITICAL    { background-color: var(--sev-critical-bg);    color: var(--sev-critical-text); }
+    .severity-HIGH        { background-color: var(--sev-high-bg);        color: var(--sev-high-text); }
+    .severity-MEDIUM      { background-color: var(--sev-medium-bg);      color: var(--sev-medium-text); }
+    .severity-LOW         { background-color: var(--sev-low-bg);         color: var(--sev-low-text); }
+    .severity-INFO        { background-color: var(--sev-info-bg);        color: var(--sev-info); }
+    .severity-UNSPECIFIED { background-color: var(--sev-unspecified-bg); color: var(--sev-unspecified-text); }
 
     /* =================================================================
-       BADGES — Priority Band (pill, colored bg, white text)
+       BADGES — Priority Band (pill, tinted bg + dark accent text)
+       Aligned with .severity-* and _console_shell.html .band-* — the
+       brighter Strategy-B sev palette doesn't pass WCAG AA 4.5:1 against
+       white text, so all band pills use the -bg + -text pairing. INFO
+       keeps the slate-on-white pairing (passes AA).
        ================================================================= */
     .band-badge {
         display: inline-block;
         padding: 2px 10px;
-        border-radius: 12px;
+        border-radius: var(--r-lg);
         font-size: 0.8em;
         font-weight: 600;
-        color: white;
     }
 
-    .band-CRITICAL { background-color: #dc3545; }
-    .band-HIGH { background-color: #fd7e14; }
-    .band-MEDIUM { background-color: #ffc107; color: #333; }
-    .band-LOW { background-color: #28a745; }
-    .band-INFO { background-color: #6c757d; }
+    .band-CRITICAL { background-color: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .band-HIGH     { background-color: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .band-MEDIUM   { background-color: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .band-LOW      { background-color: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .band-INFO     { background-color: var(--ink-mute);        color: white; }
 
     /* =================================================================
        BADGES — Change Type (added, removed, updated)
@@ -295,14 +317,14 @@
     .change-badge {
         display: inline-block;
         padding: 2px 8px;
-        border-radius: 4px;
+        border-radius: var(--r-sm);
         font-size: 0.8em;
         font-weight: 600;
     }
 
-    .change-added { background-color: #e8f5e9; color: #2e7d32; }
-    .change-removed { background-color: #ffebee; color: #c62828; }
-    .change-updated { background-color: #e3f2fd; color: #1565c0; }
+    .change-added   { background-color: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .change-removed { background-color: var(--sev-critical-bg); color: var(--sev-critical-strong); }
+    .change-updated { background-color: var(--sev-info-bg);     color: var(--sev-info); }
 
     /* =================================================================
        BADGES — Status (component status, policy status, copyleft)
@@ -310,48 +332,48 @@
     .status-badge {
         display: inline-block;
         padding: 2px 8px;
-        border-radius: 4px;
+        border-radius: var(--r-sm);
         font-size: 0.85em;
         font-weight: 500;
     }
 
     /* Component status */
-    .status-CONFIRMED { background-color: #e8f5e9; color: #2e7d32; }
-    .status-NEEDS_REVIEW { background-color: #fff3e0; color: #ef6c00; }
-    .status-IN_REVIEW { background-color: #e3f2fd; color: #1565c0; }
-    .status-FALSE_POSITIVE { background-color: #f5f5f5; color: #616161; }
-    .status-UNKNOWN { background-color: #fafafa; color: #757575; }
+    .status-CONFIRMED      { background-color: var(--sev-low-bg);    color: var(--sev-low-text); }
+    .status-NEEDS_REVIEW   { background-color: var(--sev-high-bg);   color: var(--sev-high-strong); }
+    .status-IN_REVIEW      { background-color: var(--sev-info-bg);   color: var(--sev-info); }
+    .status-FALSE_POSITIVE { background-color: var(--surface-muted); color: var(--ink-dim); }
+    .status-UNKNOWN        { background-color: var(--surface-faint); color: var(--ink-mute); }
 
     /* Policy status */
-    .policy-PERMITTED { background-color: #e8f5e9; color: #2e7d32; }
-    .policy-WARNING { background-color: #fff3e0; color: #ef6c00; }
-    .policy-VIOLATION { background-color: #ffebee; color: #c62828; }
+    .policy-PERMITTED { background-color: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .policy-WARNING   { background-color: var(--sev-high-bg);     color: var(--sev-high-strong); }
+    .policy-VIOLATION { background-color: var(--sev-critical-bg); color: var(--sev-critical-strong); }
 
     /* Copyleft classification */
-    .copyleft-PERMISSIVE { background-color: #e8f5e9; color: #2e7d32; }
-    .copyleft-WEAK_COPYLEFT { background-color: #fff3e0; color: #ef6c00; }
-    .copyleft-STRONG_COPYLEFT { background-color: #ffebee; color: #c62828; }
-    .copyleft-UNKNOWN { background-color: #f5f5f5; color: #757575; }
+    .copyleft-PERMISSIVE      { background-color: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .copyleft-WEAK_COPYLEFT   { background-color: var(--sev-high-bg);     color: var(--sev-high-strong); }
+    .copyleft-STRONG_COPYLEFT { background-color: var(--sev-critical-bg); color: var(--sev-critical-strong); }
+    .copyleft-UNKNOWN         { background-color: var(--surface-muted);   color: var(--ink-mute); }
 
     /* Component type */
-    .type-library { background-color: #e3f2fd; color: #1565c0; }
-    .type-application { background-color: #f3e5f5; color: #7b1fa2; }
-    .type-firmware { background-color: #fff3e0; color: #ef6c00; }
-    .type-file { background-color: #e8f5e9; color: #2e7d32; }
-    .type-operating-system { background-color: #fce4ec; color: #c2185b; }
-    .type-default { background-color: #f5f5f5; color: #616161; }
+    .type-library          { background-color: var(--sev-info-bg);   color: var(--sev-info); }
+    .type-application      { background-color: var(--type-app-bg);   color: var(--type-app-text); }
+    .type-firmware         { background-color: var(--sev-high-bg);   color: var(--sev-high-strong); }
+    .type-file             { background-color: var(--sev-low-bg);    color: var(--sev-low-text); }
+    .type-operating-system { background-color: var(--type-os-bg);    color: var(--type-os-text); }
+    .type-default          { background-color: var(--surface-muted); color: var(--ink-dim); }
 
     /* Generic badge (pill) */
     .badge {
         font-size: 0.8em;
         padding: 3px 10px;
-        border-radius: 12px;
+        border-radius: var(--r-lg);
         font-weight: 600;
     }
 
-    .badge-fixed { background-color: #e8f5e9; color: #2e7d32; }
-    .badge-new { background-color: #ffebee; color: #c62828; }
-    .badge-churn { background-color: #e3f2fd; color: #1565c0; }
+    .badge-fixed { background-color: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .badge-new   { background-color: var(--sev-critical-bg); color: var(--sev-critical-strong); }
+    .badge-churn { background-color: var(--sev-info-bg);     color: var(--sev-info); }
 
     /* =================================================================
        SECTIONS & COLLAPSIBLE
@@ -364,45 +386,45 @@
         gap: 10px;
         margin-bottom: 12px;
         padding-bottom: 8px;
-        border-bottom: 1px solid #e9ecef;
+        border-bottom: 1px solid var(--hairline-soft);
     }
 
-    .section-header h3 { font-size: 1.1em; color: #2c3e50; }
+    .section-header h3 { font-size: 1.1em; color: var(--ink); }
 
     /* Project sections (collapsible project panels) */
     .project-section {
         margin-bottom: 40px;
-        border: 1px solid #dee2e6;
-        border-radius: 10px;
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius-lg);
         overflow: hidden;
     }
 
     .project-header {
-        background-color: #f8f9fa;
+        background-color: var(--surface-subtle);
         padding: 16px 20px;
-        border-bottom: 1px solid #dee2e6;
+        border-bottom: 1px solid var(--hairline);
         display: flex;
         justify-content: space-between;
         align-items: center;
         cursor: pointer;
     }
 
-    .project-header h2 { font-size: 1.3em; color: #2c3e50; }
-    .project-header .project-meta { font-size: 0.85em; color: #6c757d; }
+    .project-header h2 { font-size: 1.3em; color: var(--ink); }
+    .project-header .project-meta { font-size: 0.85em; color: var(--ink-mute); }
     .project-body { padding: 20px; }
 
     /* Changelog entries (expand/collapse) */
     .changelog-section { margin-top: 24px; }
     .changelog-section h3 { margin-bottom: 12px; }
-    .changelog-entry { border: 1px solid #e9ecef; border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
+    .changelog-entry { border: 1px solid var(--hairline-soft); border-radius: var(--r-md); margin-bottom: 12px; overflow: hidden; }
     .changelog-entry-header {
         display: flex; align-items: center; gap: 12px;
-        padding: 12px 16px; background: #f8f9fa;
+        padding: 12px 16px; background: var(--surface-subtle);
         cursor: pointer; font-weight: 500;
     }
-    .changelog-entry-header:hover { background: #e9ecef; }
-    .changelog-entry-header .changelog-version { color: #2c3e50; }
-    .changelog-entry-body { padding: 16px; display: none; border-top: 1px solid #e9ecef; }
+    .changelog-entry-header:hover { background: var(--hairline-soft); }
+    .changelog-entry-header .changelog-version { color: var(--ink); }
+    .changelog-entry-body { padding: 16px; display: none; border-top: 1px solid var(--hairline-soft); }
     .changelog-entry.expanded .changelog-entry-body { display: block; }
 
     /* =================================================================
@@ -411,43 +433,43 @@
     .show-more-row td { text-align: center; padding: 10px; }
     .show-more-btn {
         background: none;
-        border: 1px solid #dee2e6;
+        border: 1px solid var(--hairline);
         border-radius: 6px;
         padding: 6px 16px;
-        color: #495057;
+        color: var(--ink-body);
         cursor: pointer;
         font-size: 0.9em;
     }
-    .show-more-btn:hover { background-color: #f8f9fa; }
+    .show-more-btn:hover { background-color: var(--surface-subtle); }
     .hidden-row { display: none; }
 
     /* =================================================================
        NARRATIVE / TEXT SECTIONS
        ================================================================= */
     .narrative-section {
-        background-color: white;
-        border-radius: 8px;
+        background-color: var(--surface-card);
+        border-radius: var(--r-md);
         padding: 20px;
         margin-bottom: 30px;
-        border: 1px solid #dee2e6;
+        border: 1px solid var(--hairline);
     }
 
-    .narrative-section h3 { color: #2c3e50; margin-bottom: 15px; }
-    .narrative-section h4 { color: #495057; margin: 20px 0 10px 0; }
+    .narrative-section h3 { color: var(--ink); margin-bottom: 15px; }
+    .narrative-section h4 { color: var(--ink-body); margin: 20px 0 10px 0; }
     .narrative-section ul { margin-left: 20px; margin-bottom: 15px; }
     .narrative-section li { margin-bottom: 8px; }
 
     /* =================================================================
        ENTITY LINKS
        ================================================================= */
-    a.entity-link { color: #007bff; text-decoration: none; font-weight: 500; }
-    a.entity-link:hover { text-decoration: underline; color: #0056b3; }
-    a.entity-link-cve { color: #6f42c1; }
-    a.entity-link-cve:hover { color: #533399; }
-    a.entity-link-component { color: #0d6efd; }
-    a.entity-link-component:hover { color: #0a58ca; }
-    a.entity-link-folder { color: #198754; }
-    a.entity-link-folder:hover { color: #146c43; }
+    a.entity-link { color: var(--link-default); text-decoration: none; font-weight: 500; }
+    a.entity-link:hover { text-decoration: underline; color: var(--link-default-hover); }
+    a.entity-link-cve { color: var(--link-cve); }
+    a.entity-link-cve:hover { color: var(--link-cve-hover); }
+    a.entity-link-component { color: var(--link-component); }
+    a.entity-link-component:hover { color: var(--link-component-hover); }
+    a.entity-link-folder { color: var(--link-folder); }
+    a.entity-link-folder:hover { color: var(--link-folder-hover); }
 
     /* =================================================================
        EMPTY STATE
@@ -455,30 +477,30 @@
     .empty-state {
         text-align: center;
         padding: 40px 20px;
-        color: #6c757d;
+        color: var(--ink-mute);
     }
     .empty-state p { font-size: 1.1em; margin-bottom: 8px; }
-    .empty-state-inline { color: #6c757d; font-style: italic; padding: 12px 0; margin: 0; }
+    .empty-state-inline { color: var(--ink-mute); font-style: italic; padding: 12px 0; margin: 0; }
 
     /* =================================================================
        DELTA COLORS (for progression tables)
        ================================================================= */
-    .delta-positive { color: #c62828; }   /* Increase = bad (more findings) */
-    .delta-negative { color: #2e7d32; }   /* Decrease = good (fewer findings) */
-    .delta-zero { color: #757575; }
+    .delta-positive { color: var(--sev-critical-strong); }   /* Increase = bad (more findings) */
+    .delta-negative { color: var(--sev-low-text); }          /* Decrease = good (fewer findings) */
+    .delta-zero     { color: var(--ink-mute); }
 
-    .changes-summary { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 16px; font-size: 0.9em; color: #495057; }
-    .changes-summary-fixed { color: #2e7d32; font-weight: 500; }
-    .changes-summary-new { color: #c62828; font-weight: 500; }
+    .changes-summary { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 16px; font-size: 0.9em; color: var(--ink-body); }
+    .changes-summary-fixed { color: var(--sev-low-text); font-weight: 500; }
+    .changes-summary-new   { color: var(--sev-critical-strong); font-weight: 500; }
 
     /* =================================================================
        ICONS (contextual emoji-based indicators)
        ================================================================= */
-    .icon-exploit { color: #6f42c1; }
-    .icon-kev { color: #dc3545; }
-    .icon-reachable { color: #28a745; }
-    .icon-unreachable { color: #6c757d; }
-    .icon-unknown { color: #ffc107; }
+    .icon-exploit     { color: var(--icon-exploit); }
+    .icon-kev         { color: var(--icon-kev); }
+    .icon-reachable   { color: var(--icon-reachable); }
+    .icon-unreachable { color: var(--icon-unreachable); }
+    .icon-unknown     { color: var(--icon-unknown); }
 
     /* =================================================================
        UTILITY: TRUNCATED TEXT
@@ -491,13 +513,47 @@
     }
 
     /* =================================================================
-       PRINT STYLES
+       THEME TOGGLE BUTTON (paired with _theme_toggle.html)
+       Icon shown reflects the OTHER theme — sun in dark mode means "click
+       to switch to light"; moon in light mode means "click to switch to
+       dark". Defaults to moon for theme-less HTML (renders as light).
+       ================================================================= */
+    .fs-theme-toggle {
+        width: 28px;
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--surface-subtle);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-sm);
+        color: var(--ink-strong);
+        cursor: pointer;
+        padding: 0;
+        font: inherit;
+        transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .fs-theme-toggle:hover {
+        border-color: var(--link-default);
+        color: var(--link-default);
+    }
+    .fs-theme-toggle .fs-t-sun  { display: none; }
+    .fs-theme-toggle .fs-t-moon { display: block; }
+    :root[data-theme="dark"] .fs-theme-toggle .fs-t-sun  { display: block; }
+    :root[data-theme="dark"] .fs-theme-toggle .fs-t-moon { display: none; }
+
+    /* =================================================================
+       PRINT — collapse to single column, drop chrome. Token values for
+       @media print are forced light in tokens.css; this block only
+       handles structural print rules (page-breaks, hide chrome).
        ================================================================= */
     @media print {
+        * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         body { background-color: white; }
         .container { max-width: none; }
-        .chart-container, .narrative-section, .table-container { border: 1px solid #dee2e6; }
+        .chart-container, .narrative-section, .table-container { border: 1px solid var(--hairline); }
         .show-more-btn, .show-more-row { display: none; }
         .hidden-row { display: table-row !important; }
+        .fs-theme-toggle { display: none !important; }
     }
 </style>

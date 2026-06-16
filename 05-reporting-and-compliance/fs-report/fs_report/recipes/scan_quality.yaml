@@ -2,6 +2,7 @@ name: "Scan Quality"
 template: "scan_quality.html"
 category: assessment
 nav_category: Investigation
+chart_libraries: ["echarts"]
 description: "Per-project scan quality assessment — coverage gaps, staleness, reachability status, unpack quality, and severity context."
 execution_order: 35
 auto_run: false

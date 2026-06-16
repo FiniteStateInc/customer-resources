@@ -1,233 +1,378 @@
-{% extends "base.html" %}
+{# Defensive defaults — placed BEFORE the render-mode gate.
+   Console-shell pattern from C.1 round-2 M1-2 / C.2 round-2 M1-2 /
+   D round-1 M1-2 (3/3 critical). #}
+{% set summary = summary | default({}) %}
+{% if summary is string or summary is not mapping %}{% set summary = {} %}{% endif %}
+{% set candidates = candidates | default([]) %}
+{% if candidates is mapping or candidates is string or candidates is not iterable %}{% set candidates = [] %}{% endif %}
+{% set identity_assertions = identity_assertions | default([]) %}
+{% if identity_assertions is mapping or identity_assertions is string or identity_assertions is not iterable %}{% set identity_assertions = [] %}{% endif %}
+{% set ai_component_prompts = ai_component_prompts | default([]) %}
+{% if ai_component_prompts is mapping or ai_component_prompts is string or ai_component_prompts is not iterable %}{% set ai_component_prompts = [] %}{% endif %}
 
-{% block title %}False Positive Analysis — {{ project_filter or folder_name or recipe_name }}{% endblock %}
+{% import "_console_macros.html" as fs with context %}
 
-{% block content %}
+{% if render_mode != 'fragment' %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>False Positive Analysis — {{ project_label or folder_name or recipe_name }}</title>
+
+    {# Recipe is chart-free (server-side chart specs via output.charts;
+       no inline <canvas> emission). #}
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+{% endif %}
+
+{# Recipe-local styles — render in BOTH standalone and fragment modes
+   so fragment_extractor (_STYLE_RE) auto-scopes under
+   .fs-section-false-positive-analysis. All hex literals migrated to
+   design tokens. #}
 <style>
-  .kpi-row { display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
-  .kpi-card {
-    flex: 1; min-width: 140px; background: #fff; border: 1px solid #dee2e6;
-    border-radius: 8px; padding: 18px 16px; text-align: center;
-  }
-  .kpi-card.border-blue   { border-top: 4px solid #1976d2; }
-  .kpi-card.border-green  { border-top: 4px solid #388e3c; }
-  .kpi-card.border-orange { border-top: 4px solid #f57c00; }
-  .kpi-card.border-purple { border-top: 4px solid #6a1b9a; }
-  .kpi-value { font-size: 2em; font-weight: 700; line-height: 1.2; }
-  .kpi-label { font-size: 0.8em; color: #666; margin-top: 4px; }
+    .fp-badge-CRITICAL { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .fp-badge-HIGH     { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .fp-badge-MEDIUM   { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .fp-badge-LOW      { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .fp-badge-INFO     { background: color-mix(in srgb, var(--accent-blue) 15%, transparent); color: var(--accent-blue); }
+    .fp-badge-UNKNOWN  { background: var(--surface-muted); color: var(--ink-mute); }
+    .fp-badge-CRITICAL,
+    .fp-badge-HIGH,
+    .fp-badge-MEDIUM,
+    .fp-badge-LOW,
+    .fp-badge-INFO,
+    .fp-badge-UNKNOWN {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.75em;
+        font-weight: 600;
+    }
 
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }
-  .badge-HIGH   { background: #d32f2f; color: #fff; }
-  .badge-MEDIUM { background: #f57c00; color: #fff; }
-  .badge-LOW    { background: #fbc02d; color: #333; }
+    .fp-verdict-mismatched {
+        display: inline-block; padding: 2px 8px; border-radius: 4px;
+        font-size: 0.75em; font-weight: 600;
+        background: var(--sev-critical-bg); color: var(--sev-critical-text);
+    }
+    .fp-verdict-does_not_apply {
+        display: inline-block; padding: 2px 8px; border-radius: 4px;
+        font-size: 0.75em; font-weight: 600;
+        background: var(--sev-critical-bg); color: var(--sev-critical-text);
+    }
+    .fp-verdict-might_still_apply {
+        display: inline-block; padding: 2px 8px; border-radius: 4px;
+        font-size: 0.75em; font-weight: 600;
+        background: var(--sev-medium-bg); color: var(--sev-medium-text);
+    }
 
-  .badge-sev-CRITICAL { background: #d32f2f; color: #fff; }
-  .badge-sev-HIGH     { background: #f57c00; color: #fff; }
-  .badge-sev-MEDIUM   { background: #fbc02d; color: #333; }
-  .badge-sev-LOW      { background: #388e3c; color: #fff; }
-  .badge-sev-INFO     { background: #0288d1; color: #fff; }
+    .fp-signal-chip {
+        display: inline-block; padding: 2px 7px; border-radius: 10px;
+        font-size: 0.7em; font-weight: 600;
+        background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+        color: var(--accent-blue);
+        margin-right: 4px;
+    }
 
-  .pill { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 0.7em; font-weight: 600; }
-  .pill-signal { background: #e3f2fd; color: #1565c0; margin-right: 4px; }
+    .fp-section { margin-bottom: 32px; }
+    .fp-section h2 {
+        font-size: 1.15em; color: var(--ink-strong);
+        border-bottom: 2px solid var(--hairline);
+        padding-bottom: 6px; margin-bottom: 14px;
+    }
 
-  section.report-section { margin-bottom: 32px; }
-  section.report-section h2 { font-size: 1.15em; color: #2c3e50; border-bottom: 2px solid #e9ecef; padding-bottom: 6px; margin-bottom: 14px; }
+    .fp-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+    .fp-table th {
+        background: var(--surface-muted);
+        border-bottom: 2px solid var(--hairline);
+        padding: 8px 10px; text-align: left; font-weight: 600;
+        color: var(--ink-body);
+    }
+    .fp-table td {
+        border-bottom: 1px solid var(--hairline);
+        padding: 7px 10px; vertical-align: top;
+    }
+    .fp-table tr:hover { background: var(--surface-muted); }
 
-  table.review-queue { width: 100%; border-collapse: collapse; font-size: 0.85em; }
-  table.review-queue th { background: #f8f9fa; border-bottom: 2px solid #dee2e6; padding: 8px 10px; text-align: left; font-weight: 600; }
-  table.review-queue td { border-bottom: 1px solid #eee; padding: 7px 10px; vertical-align: top; }
-  table.review-queue tr:hover { background: #f5f5f5; }
-  .reason-cell { max-width: 350px; font-size: 0.9em; color: #555; }
+    .fp-reason-cell {
+        max-width: 350px; font-size: 0.9em; color: var(--ink-body);
+    }
+
+    .fp-prompt-block details { margin-bottom: 10px; }
+    .fp-prompt-block summary { cursor: pointer; font-weight: 600; }
+    .fp-prompt-block pre {
+        background: var(--surface-muted);
+        border: 1px solid var(--hairline);
+        border-radius: 4px;
+        padding: 10px;
+        font-size: 0.82em;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        max-height: 400px;
+        overflow-y: auto;
+        word-wrap: break-word;
+    }
+    .fp-prompt-block button {
+        margin-top: 6px; padding: 4px 10px;
+        border: 1px solid var(--hairline);
+        background: var(--surface-card);
+        border-radius: 4px; cursor: pointer;
+        font-size: 0.8em;
+    }
 </style>
 
+{% if render_mode != 'fragment' %}
+</head>
+<body class="console" data-nav-category="{{ nav_category_slug | default('investigation') }}">
+{% endif %}
+
+{# Build topbar meta items. #}
+{% set fp_meta = [{"label": "Domain", "value": domain or "—"}] %}
+{% if project_label %}{% set _ = fp_meta.append({"label": "Project", "value": project_label}) %}{% endif %}
+{% if folder_name %}{% set _ = fp_meta.append({"label": "Folder", "value": folder_name}) %}{% endif %}
+{% set _ = fp_meta.append({"label": "Generated", "value": generated_at or "—"}) %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "False Positive Analysis"],
+    meta=fp_meta,
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>False Positive Analysis</h1>
+        <p class="subtitle">Component identity + finding-level FP detection</p>
+    </div>
+
+    {# 4 KPI cells via fs.kpi_cell. #}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell("Open Findings", summary.get('total_open_findings', 0) if summary is mapping else 0) }}
+        {{ fs.kpi_cell(
+            "FP Candidates",
+            summary.get('fp_candidates_found', 0) if summary is mapping else 0,
+            dot=("low" if (summary is mapping and summary.get('fp_candidates_found', 0) > 0) else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "Mechanical Detections",
+            summary.get('mechanical_detections', 0) if summary is mapping else 0,
+            dot=("high" if (summary is mapping and summary.get('mechanical_detections', 0) > 0) else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "AI Detections",
+            summary.get('ai_detections', 0) if summary is mapping else 0,
+            dot=("info" if (summary is mapping and summary.get('ai_detections', 0) > 0) else None),
+        ) }}
+    </div>
+
+    {# Component Identity Assertions section. Field names come from
+       the transform return at false_positive_analysis.py:806-816 —
+       likely_product, nvd_product, evidence, confidence (NOT
+       verdict/rationale). #}
+    {% if identity_assertions and identity_assertions | length > 0 %}
+    <section class="fp-section">
+        <h2>Component Identity Assertions</h2>
+        <p style="color: var(--ink-mute);">
+            {{ identity_assertions | length }} component(s) detected as misidentified relative to NVD. Each block summarises the scanned vs. expected product and lists the per-CVE verdicts.
+        </p>
+        {% for a in identity_assertions %}
+            {% if a is mapping %}
+            <details open style="margin-bottom: 18px; border: 1px solid var(--hairline); border-radius: 6px; padding: 12px;">
+                <summary style="font-weight: 600; cursor: pointer;">
+                    {{ a.component_name }} {{ a.component_version }} —
+                    scanned as <code>{{ a.likely_product or '?' }}</code>, NVD expected
+                    <code>{{ a.nvd_product or '?' }}</code>
+                    <span class="fp-verdict-mismatched" style="margin-left: 8px;">MISMATCHED</span>
+                    <span class="fp-signal-chip" style="margin-left: 6px;">confidence: {{ a.confidence or 'medium' }}</span>
+                </summary>
+                <div style="margin-top: 10px;">
+                    <p><strong>Evidence:</strong> {{ a.evidence or '—' }}</p>
+                    {% if a.cve_verdicts and a.cve_verdicts | length > 0 %}
+                    <table class="fp-table">
+                        <thead>
+                            <tr>
+                                <th>CVE</th>
+                                <th>Verdict</th>
+                                <th>Rationale</th>
+                                <th>Recommended VEX</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for cv in a.cve_verdicts %}
+                            {% if cv is mapping %}
+                            <tr>
+                                <td><strong>{{ cv.cve_id }}</strong></td>
+                                <td>
+                                    {% if cv.verdict == 'does_not_apply' %}
+                                        <span class="fp-verdict-does_not_apply">does_not_apply</span>
+                                    {% else %}
+                                        <span class="fp-verdict-might_still_apply">might_still_apply</span>
+                                    {% endif %}
+                                </td>
+                                <td class="fp-reason-cell">{{ cv.rationale or '—' }}</td>
+                                <td>
+                                    {% if cv.verdict == 'does_not_apply' %}
+                                        NOT_AFFECTED / CODE_NOT_PRESENT
+                                    {% else %}
+                                        Review individually
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endif %}
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% endif %}
+                </div>
+            </details>
+            {% endif %}
+        {% endfor %}
+    </section>
+    {% endif %}
+
+    {# Residual FP Candidates section. #}
+    <section class="fp-section">
+        <h2>Residual FP Candidates</h2>
+        <p style="color: var(--ink-mute);">
+            Findings on components whose identity was confirmed or ambiguous, flagged as likely FP by finding-level applicability analysis.
+        </p>
+        {% if candidates and candidates | length > 0 %}
+        <table class="fp-table">
+            <thead>
+                <tr>
+                    <th>CVE</th>
+                    <th>Component</th>
+                    <th>Severity</th>
+                    <th>Confidence</th>
+                    <th>Signals</th>
+                    <th>Reason / AI Rationale</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in candidates %}
+                {% if row is mapping %}
+                <tr>
+                    <td><strong>{{ row.cve_id or row.finding_id or '—' }}</strong></td>
+                    <td>{{ row.component_name or '—' }} {{ row.component_version or '' }}</td>
+                    <td><span class="fp-badge-{{ row.severity or 'UNKNOWN' }}">{{ row.severity or 'UNKNOWN' }}</span></td>
+                    <td>{{ row.fp_confidence or '—' }}</td>
+                    <td>
+                        {# fp_signals can be string (transform's default — comma-joined
+                           at false_positive_analysis.py:895) OR list (defensive — the
+                           pre-migration template handles both). Preserve both branches. #}
+                        {% if row.fp_signals %}
+                            {% if row.fp_signals is string %}
+                                {% for sig in row.fp_signals.split(',') %}
+                                    <span class="fp-signal-chip">{{ sig | trim }}</span>
+                                {% endfor %}
+                            {% else %}
+                                {% for sig in row.fp_signals %}
+                                    <span class="fp-signal-chip">{{ sig }}</span>
+                                {% endfor %}
+                            {% endif %}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+                    <td class="fp-reason-cell">
+                        {# primary_reason visible by default; AI verdict + rationale
+                           collapsible via <details> (pre-migration two-tier pattern). #}
+                        {{ row.primary_reason or '—' }}
+                        {% if row.ai_rationale %}
+                        <details style="margin-top: 4px;">
+                            <summary style="cursor: pointer; color: var(--accent-blue); font-size: 0.85em;">AI details</summary>
+                            <div style="margin-top: 4px; padding: 8px; background: var(--surface-muted); border-radius: 4px; font-size: 0.85em;">
+                                <strong>Verdict:</strong> {{ row.ai_verdict or '—' }}<br>
+                                {{ row.ai_rationale }}
+                            </div>
+                        </details>
+                        {% endif %}
+                    </td>
+                    <td>{{ row.recommended_action or 'Review' }}</td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="color: var(--ink-mute);">No residual FP candidates.</p>
+        {% endif %}
+    </section>
+
+    {# Component Identity Prompts section (air-gapped --ai-prompts
+       workflow). Iterates `ai_component_prompts` (NOT
+       ai_triage_prompts) — false_positive_analysis.py builds
+       per-component identity prompts as the user-facing copy-paste
+       workflow. Each entry has `component` + `prompt` fields. #}
+    {% if ai_component_prompts and ai_component_prompts | length > 0 %}
+    <section class="fp-section fp-prompt-block">
+        <h2>Component Identity Prompts</h2>
+        <p style="color: var(--ink-mute);">
+            {{ ai_component_prompts | length }} prompt(s) for offline LLM review. Paste each into an external model; if the answer is <code>IDENTITY: mismatched</code>, run the per-CVE applicability fan-out using the <code>LIKELY_PRODUCT</code> and <code>NVD_PRODUCT</code> values. These prompts are also written to <code>False Positive Analysis_prompts.md</code> alongside this report.
+        </p>
+        {% for p in ai_component_prompts %}
+            {% if p is mapping %}
+            <details>
+                <summary>{{ p.component }}</summary>
+                <pre>{{ p.prompt }}</pre>
+                {% if render_mode != 'fragment' %}
+                <button onclick="copyPrompt(this)">Copy</button>
+                {% endif %}
+            </details>
+            {% endif %}
+        {% endfor %}
+    </section>
+    {% endif %}
+
+    {# Detection by Signal Type section. #}
+    {% if summary is mapping and summary.get('by_signal_type') is mapping %}
+    <section class="fp-section">
+        <h2>Detection by Signal Type</h2>
+        <table class="fp-table" style="max-width: 480px;">
+            <thead>
+                <tr><th>Signal</th><th>Count</th></tr>
+            </thead>
+            <tbody>
+                {% for signal, count in summary.by_signal_type.items() %}
+                <tr>
+                    <td>{{ signal }}</td>
+                    <td>{{ count }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+    {% endif %}
+</main>
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: False Positive Analysis",
+    "Open: " ~ ((summary.get('total_open_findings', 0) if summary is mapping else 0) | string),
+    "FP Candidates: " ~ ((summary.get('fp_candidates_found', 0) if summary is mapping else 0) | string),
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+{% if render_mode != 'fragment' %}
 <script>
 function copyPrompt(btn) {
-  var pre = btn.parentElement.querySelector('pre');
-  navigator.clipboard.writeText(pre.textContent).then(function() {
-    btn.textContent = 'Copied!';
-    setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
-  });
+    var pre = btn.parentElement.querySelector('pre');
+    navigator.clipboard.writeText(pre.textContent).then(function() {
+        btn.textContent = 'Copied!';
+        setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+    });
 }
 </script>
-
-<!-- Summary Cards -->
-<section class="report-section">
-  <div class="kpi-row">
-    <div class="kpi-card border-blue">
-      <div class="kpi-value">{{ summary.total_open_findings if summary else 0 }}</div>
-      <div class="kpi-label">Open Findings</div>
-    </div>
-    <div class="kpi-card border-green">
-      <div class="kpi-value">{{ summary.fp_candidates_found if summary else 0 }}</div>
-      <div class="kpi-label">FP Candidates</div>
-    </div>
-    <div class="kpi-card border-orange">
-      <div class="kpi-value">{{ summary.mechanical_detections if summary else 0 }}</div>
-      <div class="kpi-label">Mechanical Detections</div>
-    </div>
-    <div class="kpi-card border-purple">
-      <div class="kpi-value">{{ summary.ai_detections if summary else 0 }}</div>
-      <div class="kpi-label">AI Detections</div>
-    </div>
-  </div>
-</section>
-
-<!-- Component Identity Assertions -->
-{% if identity_assertions and identity_assertions|length > 0 %}
-<section class="report-section">
-  <h2>Component Identity Assertions</h2>
-  <p style="color: #6c757d;">
-    {{ identity_assertions|length }} component(s) detected as misidentified relative
-    to NVD. Each assertion groups the CVEs attributed to the scanned component and
-    classifies whether they apply to the actual product.
-  </p>
-  {% for a in identity_assertions %}
-  <details open style="margin-bottom: 18px; border: 1px solid #dee2e6; border-radius: 6px; padding: 12px;">
-    <summary style="cursor:pointer; font-weight: 600;">
-      {{ a.component_name }} {{ a.component_version }} —
-      scanned as <code>{{ a.likely_product or '?' }}</code>, NVD expected
-      <code>{{ a.nvd_product or '?' }}</code>
-      <span class="badge badge-HIGH" style="margin-left: 8px;">MISMATCHED</span>
-      <span class="pill pill-signal" style="margin-left: 6px;">confidence: {{ a.confidence or 'medium' }}</span>
-    </summary>
-    <div style="margin-top: 10px;">
-      <p><strong>Evidence:</strong> {{ a.evidence or '—' }}</p>
-      <table class="review-queue">
-        <thead>
-          <tr>
-            <th>CVE</th>
-            <th>Verdict</th>
-            <th>Rationale</th>
-            <th>Recommended VEX</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for cv in a.cve_verdicts %}
-          <tr>
-            <td><strong>{{ cv.cve_id }}</strong></td>
-            <td>
-              {% if cv.verdict == 'does_not_apply' %}
-                <span class="badge badge-HIGH">does_not_apply</span>
-              {% else %}
-                <span class="badge badge-MEDIUM">might_still_apply</span>
-              {% endif %}
-            </td>
-            <td class="reason-cell">{{ cv.rationale or '—' }}</td>
-            <td>
-              {% if cv.verdict == 'does_not_apply' %}
-                NOT_AFFECTED / CODE_NOT_PRESENT
-              {% else %}
-                Review individually
-              {% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </details>
-  {% endfor %}
-</section>
+{% include '_action_buttons.html' %}
+</body>
+</html>
 {% endif %}
-
-<!-- Residual FP Candidates (finding-level fallback) -->
-<section class="report-section">
-  <h2>Residual FP Candidates</h2>
-  <p style="color: #6c757d;">
-    Findings on components whose identity was confirmed or ambiguous, flagged as
-    likely FP by finding-level applicability analysis.
-  </p>
-  {% if candidates and candidates|length > 0 %}
-  <table class="review-queue">
-    <thead>
-      <tr>
-        <th>CVE</th>
-        <th>Component</th>
-        <th>Severity</th>
-        <th>Confidence</th>
-        <th>Signals</th>
-        <th>Reason / AI Rationale</th>
-        <th>Action</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in candidates %}
-      <tr>
-        <td><strong>{{ row.cve_id or row.finding_id or '—' }}</strong></td>
-        <td>{{ row.component_name or '—' }} {{ row.component_version or '' }}</td>
-        <td><span class="badge badge-sev-{{ row.severity or 'INFO' }}">{{ row.severity or 'UNKNOWN' }}</span></td>
-        <td>{{ row.fp_confidence or '—' }}</td>
-        <td>
-          {% if row.fp_signals %}
-            {% if row.fp_signals is string %}
-              {% for sig in row.fp_signals.split(',') %}
-                <span class="pill pill-signal">{{ sig.strip() }}</span>
-              {% endfor %}
-            {% else %}
-              {% for sig in row.fp_signals %}
-                <span class="pill pill-signal">{{ sig }}</span>
-              {% endfor %}
-            {% endif %}
-          {% endif %}
-        </td>
-        <td class="reason-cell">
-          {{ row.primary_reason or '—' }}
-          {% if row.ai_rationale %}
-          <details style="margin-top: 4px;">
-            <summary style="cursor:pointer;color:#007bff;font-size:0.85em;">AI details</summary>
-            <div style="margin-top:4px;padding:8px;background:#f8f9fa;border-radius:4px;font-size:0.85em;">
-              <strong>Verdict:</strong> {{ row.ai_verdict }}<br>
-              {{ row.ai_rationale }}
-            </div>
-          </details>
-          {% endif %}
-        </td>
-        <td>{{ row.recommended_action or 'Review' }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p style="color: #888;">No residual FP candidates.</p>
-  {% endif %}
-</section>
-
-<!-- Component Identity Prompts (air-gapped --ai-prompts workflow) -->
-{% if ai_component_prompts and ai_component_prompts|length > 0 %}
-<section class="report-section">
-  <h2>Component Identity Prompts</h2>
-  <p style="color: #6c757d;">
-    {{ ai_component_prompts|length }} prompt(s) for offline LLM review. Paste each
-    into an external model; if the answer is <code>IDENTITY: mismatched</code>,
-    run the per-CVE applicability fan-out using the <code>LIKELY_PRODUCT</code>
-    and <code>NVD_PRODUCT</code> values. These prompts are also written to
-    <code>False Positive Analysis_prompts.md</code> alongside this report.
-  </p>
-  {% for p in ai_component_prompts %}
-  <details style="margin-bottom: 8px;">
-    <summary style="cursor:pointer;color:#007bff;font-weight:600;font-size:0.9em;">{{ p.component }}</summary>
-    <div style="position:relative;margin-top:6px;">
-      <button onclick="copyPrompt(this)" style="position:absolute;top:5px;right:5px;padding:4px 10px;font-size:0.8em;cursor:pointer;border:1px solid #dee2e6;border-radius:4px;background:#f8f9fa;">Copy</button>
-      <pre style="background:#f8f9fa;padding:15px;border-radius:6px;font-size:0.8em;white-space:pre-wrap;word-wrap:break-word;max-height:400px;overflow-y:auto;">{{ p.prompt }}</pre>
-    </div>
-  </details>
-  {% endfor %}
-</section>
-{% endif %}
-
-<!-- Signal Distribution -->
-{% if summary and summary.by_signal_type %}
-<section class="report-section">
-  <h2>Detection by Signal Type</h2>
-  <table class="review-queue" style="max-width: 500px;">
-    <thead><tr><th>Signal</th><th>Count</th></tr></thead>
-    <tbody>
-      {% for sig, count in summary.by_signal_type.items() %}
-      <tr><td>{{ sig }}</td><td>{{ count }}</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
-{% endif %}
-
-{% endblock %}

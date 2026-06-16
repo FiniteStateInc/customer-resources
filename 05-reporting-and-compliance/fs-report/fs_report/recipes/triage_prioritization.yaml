@@ -1,6 +1,8 @@
 name: "Triage Prioritization"
 category: assessment  # Current state: shows today's triage priorities regardless of time period
+card_description: "Rank findings by reachability, exploitability, EPSS, and CVSS."
 nav_category: Remediation
+chart_libraries: ["echarts", "marked", "dompurify"]
 template: "triage_prioritization.html"
 description: >
   Per-project vulnerability triage prioritization using a tiered-gates scoring model.
@@ -82,6 +84,7 @@ output:
     - html
     - json
     - md
+    - pdf
   charts:
     - name: band_distribution
       chart: bar
@@ -89,12 +92,12 @@ output:
       description: "Distribution of findings across risk priority bands (CRITICAL through INFO)."
       x_column: priority_band
       y_column: count
-    - name: gate_funnel
+    - name: factor_by_band
       chart: bar
-      title: "Gate Classification Funnel"
-      description: "How findings flow through Gate 1 (Reachable+Exploit/KEV), Gate 2 (Not unreachable+NETWORK+EPSS>90%), and additive scoring."
-      x_column: gate
-      y_column: count
+      title: "Factor Drivers by Priority Band"
+      description: "One stacked horizontal bar per priority band; segments show the average per-finding point contribution from each factor (reachability, exploit, KEV-only, attack vector, EPSS, CVSS, gate bonus, unreachable penalty). Answers: what's pushing the typical finding into this tier?"
+      x_column: factor
+      y_column: avg_points_per_finding
     - name: cvss_vs_band_heatmap
       chart: heatmap
       title: "CVSS Severity vs Priority Band"

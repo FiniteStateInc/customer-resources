@@ -126,13 +126,6 @@ def cve_component_evidence_pandas_transform(
             "The report engine injects this for opted-in recipes."
         )
     pvid = getattr(config, "version_filter", None)
-    if not pvid:
-        raise ValueError(
-            "component_evidence requires --version <project_version_id> "
-            "(or --version <version_name> with --project <project_name_or_id>). "
-            "This report is scoped to a single project version."
-        )
-    pvid = str(pvid)
 
     if isinstance(data, pd.DataFrame):
         df = data.copy()
@@ -142,6 +135,9 @@ def cve_component_evidence_pandas_transform(
         df = pd.DataFrame(data)
 
     if df.empty:
+        # An empty fetch is just an empty report — nothing to scope, whether or
+        # not a --version was supplied. (A project-only launch must never crash
+        # here; pre-release crash report 2026-06-14.)
         logger.warning("No component data — returning empty report")
         return {
             "main": pd.DataFrame(columns=_OUTPUT_COLUMNS),
@@ -149,6 +145,45 @@ def cve_component_evidence_pandas_transform(
         }
 
     df = flatten_component_data(df)
+
+    # Resolve the project version. Prefer an explicit --version; otherwise fall
+    # back to the engine-resolved current version carried in the fetched
+    # components. This is the natural project-only + --current-version-only path
+    # (web launcher / CLI without --version): the engine has already scoped the
+    # fetch to one version, so requiring --version a second time just crashed a
+    # valid launch (pre-release crash report 2026-06-14).
+    if not pvid:
+        resolved_versions = []
+        if "projectVersion.id" in df.columns:
+            # flatten_component_data fills a missing version id with the literal
+            # "Unknown" sentinel — exclude it; a real scope can't be inferred
+            # from it (would fetch findings with projectVersion==Unknown).
+            resolved_versions = sorted(
+                v
+                for v in df["projectVersion.id"].dropna().astype(str).unique()
+                if v and v != "Unknown"
+            )
+        if len(resolved_versions) == 1:
+            pvid = resolved_versions[0]
+            logger.info(
+                "No --version provided; using current version %s resolved from "
+                "the fetched components.",
+                pvid,
+            )
+        else:
+            raise ValueError(
+                "component_evidence requires --version <project_version_id> "
+                "(or --version <version_name> with --project <project_name_or_id>). "
+                "This report is scoped to a single project version"
+                + (
+                    f"; the fetched components span {len(resolved_versions)} "
+                    "versions, so a version must be specified."
+                    if len(resolved_versions) > 1
+                    else " and one could not be inferred from the fetched "
+                    "components."
+                )
+            )
+    pvid = str(pvid)
     if "projectVersion.id" in df.columns:
         df = df[df["projectVersion.id"].astype(str) == pvid]
     if df.empty:

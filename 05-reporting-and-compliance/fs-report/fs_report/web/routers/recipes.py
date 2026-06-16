@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api", tags=["recipes"])
 @router.get("/recipes")
 async def list_recipes() -> JSONResponse:
     """Return all available recipes as JSON."""
-    loader = RecipeLoader(use_bundled=True)
+    loader = RecipeLoader(use_bundled=True, scan_user_recipes=True)
     try:
         recipe_list = loader.load_recipes()
     except Exception:

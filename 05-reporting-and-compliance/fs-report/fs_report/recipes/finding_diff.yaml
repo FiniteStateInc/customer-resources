@@ -1,0 +1,18 @@
+name: "Finding Diff"
+category: comparison
+nav_category: Investigation
+chart_libraries: []
+template: "comparison/finding_diff.html"
+description: "CVEs fixed in one scope still open in the other — fix-sync view showing portable fix candidates."
+execution_order: 50
+auto_run: false
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    limit: 10000
+transform_function: finding_diff_transform
+needs_component_inventory: true
+output:
+  formats: ["html"]
+  table: true
+  slide_title: "Finding Comparison"

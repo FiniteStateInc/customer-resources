@@ -1,5 +1,65 @@
 # Release Notes
 
+## Version 2.0.0 (June 2026)
+
+2.0.0 is the first major release since the 1.9 line. It pairs a new PDF
+engine and the removal of the Helix (v2)
+compatibility layer with a fully redesigned web UI and three new ways to build
+reports — compound bundles, scope comparisons, and a visual Builder. See
+`fs_report/changelog.yaml` for the full per-recipe diff.
+
+### Breaking changes
+
+- **PDF rendering switched from WeasyPrint to Playwright + Chromium** (rip-and-replace; no engine toggle, no fallback). Chart.js charts that previously rendered as blank regions in WeasyPrint PDFs now render live. The public `PDFRenderer().render(...)` API is unchanged. New `fs-report install-engine` subcommand pre-stages the Chromium binary (use `--with-deps` on bare-metal Linux); otherwise it downloads (~150 MB) on first render. **Air-gapped caveat:** until 2.0.1 bundles the chart libraries, chart-bearing PDFs need network access to `cdn.jsdelivr.net`; chart-free PDFs render fully offline. Customers needing offline chart-in-PDF should stay on `release/1.9`.
+- **Helix (v2) backend auto-detection and all v2-specific branches removed.** fs-report now talks the alloy wire contract to every backend. Notably **reversing** what 1.9.9 shipped (see below): Scan Analysis's `bssMessage`→`errorMessage` normalization is gone, so failed-scan error columns are empty on helix until the platform renames the field back. The `APIClient(is_v2=...)` kwarg is also removed (direct callers get `TypeError`). Helix-backed customers should pin to `release/1.9` until helix reaches contract parity with alloy.
+- **Permanent HTTP errors now fail fast.** A permanent 4xx during a paginated fetch (other than the documented 404 end-of-pagination signal) now raises with the wire error attached, instead of silently returning an empty/partial result and producing a blank report.
+- **CLI: bare `fs-report --recipe ...` is no longer supported.** Report generation now runs under the `run` subcommand — use `fs-report run --recipe ...`. The old hyphenated `list-recipes` / `list-projects` / `list-versions` commands still work but emit a deprecation warning (canonical: `fs-report list recipes`, etc.). Update any scripts or CI pipelines accordingly.
+
+### New: redesigned web UI ("Command Center")
+
+`fs-report serve` (or bare `fs-report`) now opens a fully redesigned web app:
+
+- **Command Center home** with pinnable reports and a live **Running-Reports monitor**.
+- **Per-report card configuration** — a gear/flip card lets you set each report's scope, filters, triage, and AI options and save them as per-report overrides, without touching the CLI. Field visibility is gated per recipe (you only see the inputs a report consumes), with a dedicated AI settings tab.
+- **Live Run canvas** at `/run/{id}` that visualizes a run as it executes, a navigable **run history** (`/runs`), and **saved configurations** (`/saved`).
+- **Scan Queue** page (`/queue`), and redesigned **Report History** and **Settings** pages.
+- **Folder** is now a first-class run target across the UI.
+
+### New: Builder
+
+A visual authoring surface (formerly "Workflow Builder") for multi-step **workflows**, **compound reports**, and **comparison reports**. Build a report definition in the browser, run it, and export it to multiple targets.
+
+### New: Compound Reports
+
+Bundle several recipes into one combined deliverable. Author them in the Builder or from the CLI with the new **`fs-report bundle`** command; they appear in a **Compound** group under `fs-report list recipes`.
+
+### New: Comparison Reports
+
+The new **`fs-report compare`** command diffs two scopes — two project versions, two projects, or two folders — passed as `--left` / `--right` references. Four comparison recipes ship: **Component Diff, Finding Diff, License Diff, Triage Status Diff**. See `REPORT_GUIDE.md` for usage.
+
+### Web report-configuration parity
+
+The web UI now exposes report-config controls that were previously CLI-only:
+
+- Triage tab, universal Filters, and custom date ranges.
+- **Destructive VEX-write apply** (autotriage) from the web, gated by a server-enforced confirm with a dry-run preview → apply-for-real flow (interactive surfaces only; not in the Builder).
+- File uploads for scoring weights, deployment context, and apply-VEX-file.
+
+### Rendering
+
+All bundled report templates were migrated to a unified "console shell" for consistent chrome and styling; several charts moved from Chart.js to ECharts.
+
+### Licensing
+
+The project license changed from **MIT** to **FSL-1.1-MIT** (Functional Source License).
+
+### Other fixes
+
+- **Executive Dashboard**: the summary-mode components fetch now contains platform "poison-row" 400s (a single malformed row) instead of aborting the whole fetch.
+- **Version Comparison (web)**: a stale global scope no longer poisons the config; version selection is now coupled to the chosen project, and an "All versions" toggle was added.
+- The output directory is now created before the first fetch-progress write (avoids a first-run error).
+- Light-mode accent picker, and assorted Command Center / Builder polish.
+
 ## Version 1.9.9 (May 2026)
 
 ### CRA Compliance — morning-queue redesign
@@ -16,19 +76,19 @@ The CRA Compliance recipe has been rewritten as a structured 5-section morning-q
 | Still in Triage | ⏰ | `IN_TRIAGE` findings sorted oldest-first. Section always populates; `--with-triage-age` opts into a per-finding `/activity` fan-out that computes `triage_age_days` from real first-triage timestamps |
 | Full Snapshot | 📋 | Full A∪B inventory — audit appendix |
 
-The four queue sections (🔥/🆕/🔁/⏰) are *mutually exclusive* per-row: a finding that qualifies for several appears only in the highest-priority one. 📋 Full Snapshot is *separate from the queue dedup chain* and contains every above-threshold finding — queue rows ALSO appear there, providing the "queue highlight + complete audit-appendix inventory" model the daily briefing delivers (spec §6 line 674).
+The four queue sections (🔥/🆕/🔁/⏰) are *mutually exclusive* per-row: a finding that qualifies for several appears only in the highest-priority one. 📋 Full Snapshot is *separate from the queue dedup chain* and contains every above-threshold finding — queue rows ALSO appear there, providing the "queue highlight + complete audit-appendix inventory" model the daily briefing delivers.
 
 **New capabilities:**
 
 - **`--since` delta detection** — the `--since` flag (default `24h`) drives the 🆕 and 🔁 sections. Set `--since last-run` to use the previous run's timestamp from snapshot state, ensuring no gap between consecutive automation runs.
 - **CISA KEV catalog integration** — KEV findings are joined against the public CISA KEV catalog to derive a `cra_notification_deadline` column (dateAdded + 24 h). Controlled by `--kev-due-date-source` (`cisa` default).
-- **EPSS / CVSS prioritization** — each section is sorted by severity then CVSS then EPSS so the highest-urgency rows surface to the top. Implemented as intra-section ordering, not a separate bucket column (per spec capability #6).
+- **EPSS / CVSS prioritization** — each section is sorted by severity then CVSS then EPSS so the highest-urgency rows surface to the top. Implemented as intra-section ordering, not a separate bucket column.
 - **Per-finding /exploits and /activity fan-outs (opt-in)** — `--with-triage-age` enables a per-finding call to `/activity` to compute `triage_age_days` for the ⏰ section. Off by default to avoid per-finding API cost.
 - **Snapshot-diff state persistence** — `--snapshot-diff on` (default) reads and writes a run-state file so `--since last-run` can reference the previous run's exact timestamp. `read-only` or `off` for environments that don't persist local state.
 - **Exploit-maturity tier control** — `--exploit-maturity` overrides the active tiers (`kev,weaponized,poc,ransomware,threat_actor`); `--unfilterable-tier-strategy` controls how tiers the /findings API cannot filter directly are handled (`wide-fetch` default, `drop-tier`, `require-rsql`).
 - **VEX status filtering** — `--include-status` / `--exclude-status` control which VEX statuses enter Fetch A; `--reachable-only` restricts output to `reachability_label==REACHABLE`.
 
-**Output formats:** CSV, XLSX, HTML, MD. The Markdown output is the canonical artifact for forge Workflow 13 (EU CRA Exploit Monitor), which emails it to compliance teams.
+**Output formats:** CSV, XLSX, HTML, MD. The Markdown output is the emailable artifact for compliance teams.
 
 **New CLI flags (CRA Compliance only):** `--since`, `--exploit-maturity`, `--include-status`, `--exclude-status`, `--reachable-only`, `--with-triage-age`, `--kev-due-date-source` (`cisa` default; `none` disables the 🔥 section), `--unfilterable-tier-strategy`, `--snapshot-diff`.
 
@@ -41,7 +101,7 @@ If you're upgrading from 1.9.8, expect these visible differences in the CRA Comp
 - **`KEV Source` column on 🔥** — `CISA`, `VcKEV`, or `CISA+VcKEV`. Makes it obvious why some rows have blank notification deadlines (VcKEV-only rows aren't in the public CISA catalog).
 - **`Threat Actors` column on 🔥 / 🆕 / 🔁** — populated from VulnCheck data per finding (rate-limited and retried, so high-volume reports surface evidence reliably). Trails the breach-clock columns because actor lists can be long. Ransomware-family and botnet-name data is fetched into the underlying row but not surfaced as separate columns in the current renderer; available in the raw row data for downstream consumers.
 - **Reachability hidden on source-code projects.** The Reachable KPI card and the Reachability column only appear when the platform has reachability data for the project (binary scans). Source-code-scanned projects no longer show empty cells.
-- **`🔥 OVERDUE` counts will be higher.** Previously, findings flagged as exploited via FS's Verified-Compromise KEV signal (rather than CISA's catalog) often showed `Unknown Clock`. They now get a computable CRA Article 14 deadline anchored on the platform's detection time. On real customer data this commonly shifts most KEV findings from `Unknown` to `OVERDUE`.
+- **`🔥 OVERDUE` counts will be higher.** Previously, findings flagged via VulnCheck's KEV catalog (`VcKEV`, rather than CISA's catalog) often showed `Unknown Clock`. They now get a computable CRA Article 14 deadline anchored on the platform's detection time. On real customer data this commonly shifts most KEV findings from `Unknown` to `OVERDUE`.
 
 ### Removed
 
@@ -50,21 +110,9 @@ If you're upgrading from 1.9.8, expect these visible differences in the CRA Comp
 
 Prioritization within each section is still preserved via the existing severity → CVSS → EPSS sort. If you were keying on the `priority` column from CSV/XLSX output, sort by those three fields instead.
 
-### API wishlist additions
-
-The CRA work surfaced concrete platform asks. The following numbered entries are present in `docs/api/API_wishlist.md` on this tag (added across PRs #60-#62):
-
-- **#14** CISA KEV catalog fields (`kevDateAdded`, `kevDueDate`) + `vcKevVerifiedAt` on `/findings` — so fs-report doesn't have to fetch the cisa.gov catalog directly.
-- **#15** `inKev`/`inVcKev` delta tracking on `/cves/updates`.
-- **#16** `exploitInfo` token delta tracking on `/cves/updates`.
-- **#17** Event timestamp on `/cves/updates` records (for `--since=last-run` precision).
-- **#18** `triageStartedAt` on `/findings` so the ⏰ section doesn't need a per-finding `/activity` fan-out.
-- **#19** `fields=` response projection on `/findings` (Fetch C bandwidth).
-- **#20** RSQL filtering on `exploitInfo` tokens (`ransomware`, `threatActors`) — completes CRA threshold-scoping so the recipe doesn't default to `wide-fetch`.
-
 ### Compound Reports Phase 1 — foundations for multi-recipe bundles
 
-Foundations for the multi-recipe compound-bundle workflow (e.g. the Marelli monthly bundle: Executive Summary + CRA Compliance + …). Chart-in-PDF wiring is explicitly deferred to a follow-on project after two failed planning iterations surfaced too much per-recipe variance to enumerate upfront.
+Foundations for the multi-recipe compound-bundle workflow (e.g. a monthly bundle: Executive Summary + CRA Compliance + …). Chart-in-PDF wiring is deferred to a follow-on release.
 
 - **Design tokens (Python ↔ CSS single source of truth)** — `chart_palette.py` + `tokens.css` + `tokens.sha256` for chart/severity/nav colors, typography, plus non-color tokens (spacing, radii, motion, shadows) with explicit Python mirrors and parity tests. `scripts/check-token-drift.sh` guards the two sources from diverging.
 - **Server-side chart SVG primitives** — `ChartRenderer.render_chart_svg()` dispatcher + 8 per-type SVG methods (doughnut + radar new; bar/line/pie/pareto/bubble/heatmap reuse existing PNG code paths). `HTMLRenderer._prepare_template_data()` builds `server_svgs: dict[str, str]` keyed by `recipe.output.charts[].name` when `pdf_target` or `fragment_mode` is true. Empty-data charts emit a `chart-unavailable` placeholder (no silent skipping).
@@ -75,7 +123,7 @@ Foundations for the multi-recipe compound-bundle workflow (e.g. the Marelli mont
 - **Empty CSV fix** — Executive Dashboard's CSV output was being written as a single newline (24 bytes) on portfolio-wide, warm-cache, and `--folder` runs because the CSV branch in `report_renderer.py` rendered `report_data.data` (empty for this recipe) while the XLSX branch correctly read per-project rows from `additional_data["transform_result"]["project_table"]`. HTML and XLSX rendered full data; CSV was a near-empty file. Both renderers now share a single helper `_executive_dashboard_tables()` so they can't drift apart again.
 - **New secondary CSV** — `<output>/Executive Dashboard/Executive Dashboard_Top_Risk_Products.csv` is now emitted alongside the main CSV, carrying the ranked top-risk list with risk scores. Pairs with the existing `Top Risk Products` XLSX sheet so CSV consumers have the same surface area as XLSX consumers.
 - **Forward-compat WARNING** — `_build_charts` and the new helper log a clear WARNING when `transform_result["project_table"]` is missing or empty, so the empty-CSV symptom can no longer reappear silently.
-- Caught by an fs-qabot full-run pass (failed steps 05b, 78, 80 — all three were the same bug surfaced through different scopes).
+- Caught by a QA pass that surfaced the same bug through three different scopes (portfolio-wide, warm-cache, and `--folder` runs).
 
 ### CVE Component Evidence — new recipe + README
 
@@ -88,7 +136,7 @@ The platform's helix v2 backend renames the `/scans` endpoint's `errorMessage` f
 
 ### HTML Reports — unified brand chrome
 
-A fresh fs-qabot pass surfaced three independent rendering bugs across every recipe that extends `base.html` (Executive Summary, Assessment Overview, User Activity, Findings by Project, False Positive Analysis, Workflow Summary):
+A QA pass surfaced three independent rendering bugs across every recipe that extends `base.html` (Executive Summary, Assessment Overview, User Activity, Findings by Project, False Positive Analysis, Workflow Summary):
 
 - **Broken logo.** The embedded Finite State fallback in `base.html` had invalid base64 padding (3693 data chars + 1 `=` — not divisible by 4) so no browser could decode it and the header showed a broken-image icon. Replaced with the canonical valid blob and centralized in a new `_default_logo.html` partial used by every human-audience template.
 - **Blank chart canvases.** `base.html` never loaded Chart.js, so `new Chart(...)` calls were swallowed by defensive `typeof Chart !== 'undefined'` guards. Chart.js is now loaded via a new `chart_libs` block (in a new `_chartjs.html` partial) that fires *before* the design-token defaults block, so the token-driven font/color/border settings actually apply. Chart-less recipes (Findings by Project, FPA, Workflow Summary) skip the ~80 kB CDN fetch.
@@ -96,11 +144,11 @@ A fresh fs-qabot pass surfaced three independent rendering bugs across every rec
 
 Footer copy is now sourced from a single `_default_footer.html` partial across all 17 standalone templates plus the base-extending ones. Two outlier attribution strings ("Reporting Kit", "Reporting System") are gone. The copyright year is derived from `generated_at` so reports generated next year won't show a stale year.
 
-A new `tests/test_default_logo.py` guards against the base64-padding regression coming back.
+A regression test guards against the base64-padding bug coming back.
 
 ### Findings by Project — Exploit Maturity column, clearer exploit-column names, self-documenting output
 
-Prompted by a customer (Netgear) field question about reconciling the platform GUI's CSV export against the script-generated `Findings by Project` report. Three related changes:
+Prompted by a customer field question about reconciling the platform GUI's CSV export against the script-generated `Findings by Project` report. Three related changes:
 
 - **New `Exploit Maturity` column.** A single tier string — `poc`, `weaponized`, or empty — read straight from the API, mirroring the platform GUI's `columns.exploitMaturity`. You can now filter by exploit maturity tier directly from the script-generated CSV/XLSX instead of falling back to the GUI export.
 - **Two exploit columns renamed to match what they actually contain:**
@@ -124,11 +172,11 @@ When the platform reports an unpacking score of `-1` (unpacking doesn't apply to
 
 ### Web UI
 
-- **`WebAppState.save()` no longer drops resets-back-to-default on the floor** (#48) — keys whose value matched `DEFAULTS` were skipped during serialization and then merged on top of the existing on-disk config, so resetting a previously-customised setting (e.g. selecting `(default Finite State logo)`, or toggling a boolean back off) silently left the stale non-default value behind. Default-valued keys are now explicitly dropped from the merged dict before write so resets stick. New regression tests in `tests/test_web_state.py` cover both string and boolean defaults.
+- **`WebAppState.save()` no longer drops resets-back-to-default on the floor** — keys whose value matched `DEFAULTS` were skipped during serialization and then merged on top of the existing on-disk config, so resetting a previously-customised setting (e.g. selecting `(default Finite State logo)`, or toggling a boolean back off) silently left the stale non-default value behind. Default-valued keys are now explicitly dropped from the merged dict before write so resets stick. New regression tests cover both string and boolean defaults.
 
 ### Docs
 
-- **README — Windows PowerShell install instructions** (#50) — README now includes a Windows PowerShell `irm | iex` one-liner alongside the existing bash one-liner, plus local-clone usage of `setup.ps1 -FromSource`, current-session and persistent (`[Environment]::SetEnvironmentVariable`) env-var setup, and the `Set-ExecutionPolicy -Scope Process` workaround for execution-policy errors.
+- **README — Windows PowerShell install instructions** — README now includes a Windows PowerShell `irm | iex` one-liner alongside the existing bash one-liner, plus local-clone usage of `setup.ps1 -FromSource`, current-session and persistent (`[Environment]::SetEnvironmentVariable`) env-var setup, and the `Set-ExecutionPolicy -Scope Process` workaround for execution-policy errors.
 
 ---
 
@@ -143,7 +191,7 @@ Two customer-facing changes:
 
 ### False Positive Analysis — identity-first pipeline + correctness fixes
 
-- **Component-identity pipeline + narrative→VEX propagation** (#46) — FPA now fronts an identity-first verdict (`not_affected` / `affected` / `ambiguous`) ahead of the residual-candidate list, with a per-CVE applicability fan-out for ambiguous components. Triage Prioritization picks up the structured component verdicts at both `--ai-depth=summary` and `--ai-depth=full` so the VEX override loop can flip `IN_TRIAGE` → `NOT_AFFECTED` consistently. A summary-depth banner makes it explicit that per-finding narrative is non-authoritative when AI runs in summary mode. The TP narrative-fallback matcher now includes a hedge-word guard so phrases like "most versions" don't trigger blanket `NOT_AFFECTED`.
+- **Component-identity pipeline + narrative→VEX propagation** — FPA now fronts an identity-first verdict (`not_affected` / `affected` / `ambiguous`) ahead of the residual-candidate list, with a per-CVE applicability fan-out for ambiguous components. Triage Prioritization picks up the structured component verdicts at both `--ai-depth=summary` and `--ai-depth=full` so the VEX override loop can flip `IN_TRIAGE` → `NOT_AFFECTED` consistently. A summary-depth banner makes it explicit that per-finding narrative is non-authoritative when AI runs in summary mode. The TP narrative-fallback matcher now includes a hedge-word guard so phrases like "most versions" don't trigger blanket `NOT_AFFECTED`.
 - **Context-window safety on huge components** — components with thousands of attributed CVEs (e.g. Linux kernel) blew past the LLM context window, the exception was swallowed, and the entire AI tier silently produced `ai_detections=0` / `identity_assertions=[]`. The identity prompt's NVD snippet is now scoped to the same 15-CVE sample shown in the prompt, the per-CVE applicability fan-out is chunked into batches of 50, and each component is wrapped in its own `try`/`except` so one bad component no longer aborts the whole tier.
 - **Cross-project propagation downgraded HIGH → MEDIUM** — the same CVE+component pair can legitimately be FP in one project and exploitable in another, so cross-project hits are now a hint that needs corroboration before producing a VEX recommendation (which is gated to HIGH confidence).
 - **Finding-level fallback removed** — FPA was carved out of Triage Prioritization to be the focused FP-detection action, but the AI tier was re-running the full triage prompt on top-200 findings for confirmed/ambiguous components and discarding everything except the APPLICABILITY field. Per-finding triage belongs in TP, not here.
@@ -176,7 +224,7 @@ Two customer-facing changes:
   - The tz-naive `NaT` fallback in `_parse_detected_at` raised `Invalid comparison between dtype=datetime64[ns] and Timestamp` against the tz-aware `start_date` cutoff. Fallback is now initialised as tz-aware UTC so the comparison returns an all-False mask instead of raising.
 - **Component Remediation Package** — HTML renderer no longer crashes with `'summary' is undefined` when the component search returns zero matching versions. Template now defaults missing keys so empty-result runs produce a valid page.
 - **Component List / License Report** — `--folder <empty-folder>` no longer silently processes the entire portfolio. The empty-set fall-through case now short-circuits to an empty report in seconds (observed going from 10+ minutes on a 155-project env to <10 seconds).
-- **Customer Brief (forge)** — five PDF rendering issues in the Security Overview / cover / tables, all fixed in this release after end-to-end visual review on a real project (Candy Crush Soda Saga, which exercises the Reachability column):
+- **Customer Brief (forge)** — five PDF rendering issues in the Security Overview / cover / tables, all fixed in this release after end-to-end visual review on a real project (one that exercises the Reachability column):
   - **KPI cards**: flex layout overflowed the right margin, then `grid auto-fit minmax(140px, 1fr)` collapsed to one card per row in WeasyPrint print output (auto-fit keyword has limited support). Switched to an explicit `repeat(5, 1fr)` grid that lays the cards out as 2 rows of 5 and renders identically in browser and PDF.
   - **KPI ordering**: cards are now ordered as size → severity (descending) → exposure → posture (Total Open, Critical, High, Medium, Low, KEV Listed, With Exploits, Components, % Triaged). Prior order interleaved % Triaged and KEV between Critical and Medium.
   - **Cover page footer overlap**: the global `@bottom-center` page footer rendered underneath the cover image and overlapped the "CONFIDENTIAL — ..." banner. Cover now uses a named `@page cover` rule with no `@bottom-center` and runs full-bleed (margin: 0).
@@ -189,7 +237,7 @@ Two customer-facing changes:
 - **`--scoring-file`** — missing, unreadable, malformed, empty, or non-dict YAML now fails fast with a red error at CLI startup. Previously these all silently fell back to default scoring weights, leaving users unaware their custom profile wasn't being applied.
 - **`--ai-export`** — no longer a silent no-op when used without `--ai-prompts`. The export block lives inside the `--ai-prompts` path; the CLI now implies `--ai-prompts=True` when `--ai-export` is set so the airgap workflow ("export prompts, process offline, import responses") works as documented.
 - **`--finding-types` multi-type filter** — requests like `--finding-types cve,sast,thirdparty,binary_sca,source_sca` previously fetched all findings then post-filtered them to zero rows (silent failure: empty report, no error). Three stacked defects: the post-filter matched on a `category` field that the API always returns null; `binary_sca` / `source_sca` were never functional finding-type filters (they're scan types — the API has no equivalent); and the `type` post-filter expected underscored values (`binary_sca`) when the API returns dashed (`binary-sast`). Fixed by stripping `binary_sca` / `source_sca` at the CLI with a deprecation warning, dropping the broken post-filter entirely, and resolving every multi-type request to a single API-level `category=in=(...)` query. `thirdparty` cannot be combined with category-mappable types in one query; mixed requests log a warning and drop `thirdparty` (use `--finding-types thirdparty` alone or `--finding-types all` to include thirdparty findings).
-- **Negative int64 project/version IDs** (#44) — every project-scoped recipe (`Findings by Project`, `Triage Prioritization`, `Remediation Package`, `Version Comparison`, `Configuration Analysis Triage`, `Component Vulnerability Analysis`, `Scan Quality`, `CRA Compliance`, `Customer Brief`, `Assessment Overview`, `Component Remediation Package`) failed on tenants whose project IDs are negative int64s (e.g. `-3483615751038881210`). Root cause: `_is_id_like` used `value.isdigit()` which returns False for any string starting with `-`, so the version-resolution step rejected freshly-resolved IDs with `project filter '-...' is not an ID.` Fixed by relaxing the validator to `re.fullmatch(r"-?\d+", value)`.
+- **Negative int64 project/version IDs** — every project-scoped recipe (`Findings by Project`, `Triage Prioritization`, `Remediation Package`, `Version Comparison`, `Configuration Analysis Triage`, `Component Vulnerability Analysis`, `Scan Quality`, `CRA Compliance`, `Customer Brief`, `Assessment Overview`, `Component Remediation Package`) failed on tenants whose project IDs are negative int64s (e.g. `-3483615751038881210`). Root cause: `_is_id_like` used `value.isdigit()` which returns False for any string starting with `-`, so the version-resolution step rejected freshly-resolved IDs with `project filter '-...' is not an ID.` Fixed by relaxing the validator to `re.fullmatch(r"-?\d+", value)`.
 
 ### AI Cache Correctness
 
@@ -201,7 +249,7 @@ Two customer-facing changes:
 
 - **SQLite cache preserves `defaultBranch.latestVersion.created`** — projects table schema now stores the latest-version scan timestamp, needed by the Executive Dashboard period filter to survive warm-cache rebuilds.
 - **Dependency security updates** — bumped `pillow` 12.1.0 → 12.2.0 (CVE-2026-25990, GHSA-cfh3-3jmp-rvhc), `requests` 2.32.5 → 2.33.1 (CVE-2026-25645), `python-multipart` 0.0.22 → 0.0.26 (CVE-2026-40347). WeasyPrint came along for the ride (60.2 → 68.1); Customer Brief PDF rendering verified against the new version.
-- **Windows CI** (#45) — tests that read rendered HTML/MD output (or the UTF-8 `customer_brief.html` template) now pass `encoding="utf-8"` to `Path.read_text()`. The `windows-latest` runner defaults to cp1252, so the em-dash and `⚠` glyphs in rendered output mojibaked or failed to decode, surfacing as spurious assertion failures on Windows.
+- **Windows CI** — tests that read rendered HTML/MD output (or the UTF-8 `customer_brief.html` template) now pass `encoding="utf-8"` to `Path.read_text()`. The `windows-latest` runner defaults to cp1252, so the em-dash and `⚠` glyphs in rendered output mojibaked or failed to decode, surfacing as spurious assertion failures on Windows.
 
 ### Version Comparison (from earlier in the 1.9.6 cycle)
 

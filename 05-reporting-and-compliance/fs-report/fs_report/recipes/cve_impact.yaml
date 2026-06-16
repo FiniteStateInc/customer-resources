@@ -1,6 +1,7 @@
 name: "CVE Impact"
 category: assessment
 nav_category: Investigation
+chart_libraries: ["echarts"]
 template: "cve_impact.html"
 description: "CVE-centric dossier showing affected projects, reachability, exploits, and risk details per CVE"
 execution_order: 20
@@ -21,3 +22,4 @@ output:
     - html
     - md
   charts: []
+  has_inline_charts: true

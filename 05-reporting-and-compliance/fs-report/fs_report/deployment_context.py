@@ -238,10 +238,72 @@ def load_context_file(path: str | Path) -> DeploymentContext:
     if not path.exists():
         raise FileNotFoundError(f"Deployment context file not found: {path}")
 
-    with open(path) as f:
-        data: dict[str, Any] = yaml.safe_load(f) or {}
+    try:
+        with open(path) as f:
+            data: dict[str, Any] = yaml.safe_load(f) or {}
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+        # Malformed YAML / unreadable / non-UTF text → a clean ValueError the
+        # callers (CLI exit, web 400) handle, never an uncaught 500.
+        raise ValueError(f"Invalid deployment context file {path}: {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Invalid deployment context file {path}: expected a YAML mapping, "
+            f"got {type(data).__name__}"
+        )
 
     try:
         return DeploymentContext(**data)
     except Exception as e:
         raise ValueError(f"Invalid deployment context file {path}: {e}") from e
+
+
+def build_deployment_context(config: Any) -> DeploymentContext | None:
+    """Build a ``DeploymentContext`` from a run ``Config`` (CLI + web share this).
+
+    Mirrors the CLI block: returns ``None`` when the config carries no deployment
+    inputs (``context_file`` or any of ``product_type`` / ``network_exposure`` /
+    ``regulatory`` / ``deployment_notes``); otherwise loads the context file (if
+    set) and applies the four scalar fields as overrides.
+
+    Extracted so the serve web run path can build the same context the CLI does —
+    without it, ``context_file`` (and the four fields) never reach AI prompts on
+    the web.
+
+    Raises:
+        FileNotFoundError / ValueError: missing or invalid context file, or an
+        invalid field value. Callers (CLI / web) handle.
+    """
+    context_file = getattr(config, "context_file", None)
+    product_type = getattr(config, "product_type", None)
+    network_exposure = getattr(config, "network_exposure", None)
+    regulatory = getattr(config, "regulatory", None)
+    deployment_notes = getattr(config, "deployment_notes", None)
+
+    if not (
+        context_file
+        or product_type
+        or network_exposure
+        or regulatory
+        or deployment_notes
+    ):
+        return None
+
+    if context_file:
+        ctx = load_context_file(context_file)
+    else:
+        ctx = DeploymentContext()
+
+    from pydantic import ValidationError
+
+    try:
+        if product_type:
+            ctx.product_type = product_type
+        if network_exposure:
+            ctx.network_exposure = network_exposure
+        if regulatory:
+            ctx.regulatory = regulatory
+        if deployment_notes:
+            ctx.deployment_notes = deployment_notes
+    except (ValueError, ValidationError) as e:
+        raise ValueError(f"Invalid deployment context: {e}") from e
+    return ctx

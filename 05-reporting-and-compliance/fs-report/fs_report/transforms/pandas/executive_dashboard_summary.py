@@ -36,6 +36,7 @@ def _build_sca_summary_from_rollups(
     projects: list[dict],
     start_date: Any,
     end_date: Any,
+    degraded_names: set[str] | None = None,
 ) -> dict[str, Any]:
     """SCA Summary KPIs derived from the per-project data we already fetched.
 
@@ -69,7 +70,16 @@ def _build_sca_summary_from_rollups(
             total_findings += int(lv.get("findings") or 0)
 
         # Components / violations / warnings: prefer fetched list; fall back.
+        # Degraded projects (poisoned-row salvage, possibly partial) use
+        # the rollup numbers — a salvaged subset would silently
+        # under-report (round-4 review M-2).
         comps = proj.get("components")
+        # Key mirrors the engine's degraded-list entries: name when
+        # present, else str(id) (round-5 review 2/3: a nameless project
+        # failed to match and its partial salvage drove the sums).
+        _degraded_key = proj.get("name") or str(proj.get("id"))
+        if degraded_names and _degraded_key in degraded_names:
+            comps = None
         if comps:
             total_components += len(comps)
             for c in comps:
@@ -587,7 +597,12 @@ def executive_dashboard_summary_transform(
     license_kpis = _build_license_kpis(all_components, set())
 
     # Summary-specific builders
-    sca_summary = _build_sca_summary_from_rollups(projects, start_date, end_date)
+    sca_summary = _build_sca_summary_from_rollups(
+        projects,
+        start_date,
+        end_date,
+        degraded_names=set(ad.get("degraded_components_projects") or []),
+    )
     findings_by_folder = _build_findings_by_folder_from_summaries(projects)
     # Recipe parameter: limit number of projects in the findings-by-project chart
     recipe_params = ad.get("recipe_parameters") or {}
@@ -610,6 +625,9 @@ def executive_dashboard_summary_transform(
         "mode": "summary",
         "partial_report": bool(ad.get("partial_report")),
         "failed_projects": list(ad.get("failed_projects") or []),
+        "degraded_components_projects": list(
+            ad.get("degraded_components_projects") or []
+        ),
         "sca_summary": sca_summary,
         "policy_health": policy_health,
         "license_bar": license_bar,

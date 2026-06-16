@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}fs-report · Command Center{% endblock %}</title>
+  <link rel="icon" href="/static/img/favicon.webp" type="image/webp">
+  <meta name="fs-csrf" content="{{ nonce }}">
+  <script>(function(){try{var t=localStorage.getItem('fs-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})()</script>
+  <link rel="stylesheet" href="{{ static_v('css/tokens.css') }}">
+  <link rel="stylesheet" href="{{ static_v('css/shell.css') }}">
+  <link rel="stylesheet" href="{{ static_v('css/tweaks.css') }}">
+  <link rel="stylesheet" href="{{ static_v('css/command-center.css') }}">
+  {% block head %}{% endblock %}
+  <script src="/static/vendor/htmx.min.js"></script>
+  <script src="/static/vendor/alpine.min.js" defer></script>
+  <script src="/static/vendor/lucide.min.js"></script>
+</head>
+<body hx-headers='{"X-FS-Session": "{{ nonce }}"}'>
+  {% include "components/_cc_top_bar.html" %}
+  <div class="shell">
+    {% include "components/_cc_side_bar.html" %}
+    <main class="main">{% block content %}{% endblock %}</main>
+  </div>
+  {% include "components/_cc_status_bar.html" %}
+  {% include "components/_cc_overlays.html" %}
+  <!-- ===================== window.__CC bootstrap ===================== -->
+  <script>
+  /* Shell pages only expose the nonce via the fs-csrf meta; the shared
+     dir-browser / scope-cascade / version-picker helpers (reused by the card
+     back) read window.NONCE for the X-FS-Session header. Bootstrap it here,
+     exactly as settings.html does, BEFORE any helper runs. */
+  (function () {
+    var m = document.querySelector('meta[name="fs-csrf"]');
+    window.NONCE = m ? m.content : '';
+  })();
+  window.__CC = {
+    recipes: {{ recipes | tojson }},
+    projects: {{ projects | tojson }},
+    pinned: {
+      report: {{ pinned_report | tojson }},
+      project: {{ pinned_project | tojson }},
+      version: {{ pinned_version | tojson }},
+      /* Folder-targeting (§4): the resolved folder ID (seeds SCOPE.folder for
+         the R-key / palette / cross-page launches via fast-run.js). "" when
+         unpinned or invalidated server-side. folderName is the display label. */
+      folder: {{ pinned_folder | tojson }},
+      folderName: {{ pinned_folder_name | tojson }}
+    },
+    /* Off-card launch-path gates (fast-run.js / palette plain-Enter):
+         needsSetup — a Set of lowercase recipe names currently needing setup.
+         scopeReq   — lowercase recipe name -> "project" | "project_or_folder" | "".
+       Saved/Reset card-config calls mutate the Set in place so every launch
+       path immediately honors the change with no reload. */
+    needsSetup: (function () {
+      var s = {{ needs_setup_recipes | tojson }};
+      return new Set(Array.isArray(s) ? s : []);
+    })(),
+    scopeReq: {{ scope_req | tojson }}{% if configure %},
+    configure: {{ configure | tojson }}{% endif %}
+  };
+  </script>
+  <script src="{{ static_v('js/tweaks.js') }}"></script>
+  <script src="{{ static_v('js/palette.js') }}"></script>
+  <script src="{{ static_v('js/fast-run.js') }}"></script>
+  <script src="{{ static_v('js/command-center.js') }}"></script>
+  <script src="{{ static_v('js/uploads.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

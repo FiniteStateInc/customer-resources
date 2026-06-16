@@ -1,0 +1,493 @@
+{% if render_mode != 'fragment' %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>Triage Status Diff - Finite State Report</title>
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+{% endif %}
+
+<style>
+    /* ---- section intro: lede + scope tag (ported from meta-compare.css) ---- */
+    .mc-section-intro {
+        display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
+        justify-content: space-between; margin: 0 0 18px;
+    }
+    .mc-section-lede { font-size: 14px; line-height: 1.55; color: var(--ink-body); max-width: 70ch; }
+    .mc-section-lede strong { color: var(--ink); font-weight: 600; }
+    .mc-scope-tag {
+        font-family: var(--font-mono); font-size: 11px; color: var(--ink-mute);
+        display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+        padding: 6px 10px; border: 1px solid var(--hairline); border-radius: var(--r-sm);
+        background: var(--surface-card);
+    }
+    .mc-scope-tag .l { color: var(--accent-teal); font-weight: 600; }
+    .mc-scope-tag .r { color: var(--ink-body); font-weight: 600; }
+
+    .mc-muted-note { font-size: 12.5px; color: var(--ink-mute); line-height: 1.5; }
+    .mc-muted-note strong { color: var(--ink-body); }
+
+    /* ---- "no conflicts" confident strip (status divergence = 0) ---- */
+    .mc-noconflict {
+        display: flex; align-items: center; gap: 13px; padding: 14px 18px;
+        border: 1px solid var(--border-green, var(--sev-low)); border-radius: var(--r-md);
+        background: var(--sev-low-bg); margin-bottom: 18px;
+    }
+    .mc-noconflict .ic { color: var(--sev-low); width: 22px; height: 22px; stroke-width: 2; flex-shrink: 0; }
+    .mc-noconflict .txt { font-size: 13px; color: var(--ink-body); line-height: 1.45; }
+    .mc-noconflict .txt strong { color: var(--sev-low-text); font-weight: 700; }
+
+    /* ---- severity proportion bar ---- */
+    .mc-sevbar { display: flex; height: 9px; border-radius: 3px; overflow: hidden; width: 280px; max-width: 100%; }
+    .mc-sevbar > span { height: 100%; }
+    .mc-sevbar .s-crit { background: var(--sev-critical); }
+    .mc-sevbar .s-high { background: var(--sev-high); }
+    .mc-sevbar .s-med  { background: var(--sev-medium); }
+    .mc-sevbar .s-low  { background: var(--sev-low); }
+
+    /* ---- triage worklist — severity-weighted, grouped by component ---- */
+    .mc-worklist { display: flex; flex-direction: column; gap: 12px; }
+    .mc-wgroup { border: 1px solid var(--hairline); border-radius: var(--r-md); overflow: hidden; background: var(--surface-card); }
+    .mc-wgroup-head {
+        display: grid; grid-template-columns: auto 1fr auto auto; gap: 14px; align-items: center;
+        padding: 14px 18px; cursor: pointer; background: var(--surface-subtle);
+        border-bottom: 1px solid transparent; transition: background var(--dur-fast);
+        width: 100%; text-align: left; font-family: inherit; color: inherit;
+    }
+    .mc-wgroup-head:hover { background: var(--surface-hover); }
+    .mc-wgroup[open] .mc-wgroup-head { border-bottom-color: var(--hairline); }
+    .mc-wgroup-ic { width: 36px; height: 36px; border-radius: var(--r-sm); background: var(--surface-card); border: 1px solid var(--hairline); display: flex; align-items: center; justify-content: center; color: var(--ink-body); }
+    .mc-wgroup-title { min-width: 0; }
+    .mc-wgroup-title .name { font-size: 14px; font-weight: 600; color: var(--ink); display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+    .mc-wgroup-title .fixpath { font-size: 12px; color: var(--ink-mute); margin-top: 4px; line-height: 1.4; }
+    .mc-wgroup-title .fixpath strong { color: var(--ink-body); }
+    .mc-wgroup-count { text-align: right; }
+    .mc-wgroup-count .n { font-family: var(--font-mono); font-size: 22px; font-weight: 500; color: var(--ink); line-height: 1; font-variant-numeric: tabular-nums; }
+    .mc-wgroup-count .lbl { font-size: 10px; color: var(--ink-mute); text-transform: uppercase; letter-spacing: 0.06em; }
+    .mc-wgroup-sev { width: 96px; }
+    .mc-wgroup-sev .mc-sevbar { width: 96px; height: 7px; }
+    .mc-wgroup-sev .mc-mini-legend { font-family: var(--font-mono); font-size: 10px; color: var(--ink-mute); margin-top: 5px; text-align: right; white-space: nowrap; }
+    .mc-chev { color: var(--ink-mute); transition: transform var(--dur-fast); }
+    .mc-wgroup[open] .mc-chev { transform: rotate(180deg); }
+    @media (max-width: 700px) {
+        .mc-wgroup-head { grid-template-columns: auto 1fr auto; }
+        .mc-wgroup-sev { display: none; }
+    }
+
+    /* worklist table */
+    .mc-wbody { padding: 0; overflow-x: auto; }
+    .mc-wtable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .mc-wtable thead th {
+        text-align: left; font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+        text-transform: uppercase; color: var(--ink-mute); padding: 9px 16px;
+        border-bottom: 1px solid var(--hairline); white-space: nowrap; background: var(--surface-card);
+    }
+    .mc-wtable thead th.num { text-align: right; }
+    .mc-wtable tbody td { padding: 9px 16px; border-bottom: 1px solid var(--hairline-soft); color: var(--ink-strong); vertical-align: middle; }
+    .mc-wtable tbody tr:last-child td { border-bottom: none; }
+    .mc-wtable tbody tr:hover { background: var(--surface-subtle); }
+    .mc-wtable .cve { font-family: var(--font-mono); font-size: 12px; color: var(--link-cve); font-weight: 500; white-space: nowrap; }
+    .mc-wtable .proj { font-family: var(--font-mono); font-size: 11px; color: var(--ink-mute); white-space: nowrap; }
+
+    /* leader-status → laggard-untriaged pair, labels + glyphs (not color alone) */
+    .mc-pair { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; font-family: var(--font-mono); white-space: nowrap; }
+    .mc-pair .arrow { color: var(--ink-faint); }
+    .tsd-status-badge {
+        display: inline-block; padding: 2px 8px; border-radius: var(--radius-pill, 10px);
+        font-size: 11px; font-weight: 600; background: var(--surface-muted); color: var(--ink-strong);
+    }
+    .tsd-status-badge.RESOLVED,
+    .tsd-status-badge.RESOLVED_WITH_PEDIGREE { background: var(--sev-low-bg); color: var(--sev-low-text); }
+    .tsd-status-badge.NOT_AFFECTED,
+    .tsd-status-badge.FALSE_POSITIVE { background: var(--sev-info-bg); color: var(--sev-info); }
+    .tsd-status-badge.EXPLOITABLE { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .tsd-band-untriaged {
+        display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+        border-radius: var(--radius-pill, 10px); font-size: 11px; font-weight: 600;
+        background: var(--surface-muted); color: var(--ink-mute);
+    }
+    .tsd-band-untriaged .ic { width: 12px; height: 12px; }
+
+    /* "show all / collapse tail" row */
+    .mc-more { padding: 11px 16px; text-align: center; border-top: 1px solid var(--hairline-soft); background: var(--surface-card); }
+    .mc-more button {
+        background: var(--surface-subtle); border: 1px solid var(--hairline); color: var(--ink-body);
+        padding: 7px 16px; border-radius: var(--radius-full, 999px); font-size: 12px; font-weight: 500; cursor: pointer;
+        font-family: var(--font-body); display: inline-flex; align-items: center; gap: 7px;
+        transition: border-color var(--dur-fast), color var(--dur-fast);
+    }
+    .mc-more button:hover { border-color: var(--accent-teal); color: var(--accent-teal); }
+    .mc-row-hidden { display: none; }
+    .mc-wtable.expanded .mc-row-hidden { display: table-row; }
+
+    /* footnote under a worklist table */
+    .mc-wnote { padding: 9px 16px; font-size: 11px; font-style: italic; color: var(--ink-mute); border-top: 1px dashed var(--hairline); }
+
+    .tsd-empty-callout {
+        background: var(--surface-muted); border: 1px solid var(--hairline); border-radius: 8px;
+        padding: 24px; text-align: center; color: var(--ink-mute); margin-bottom: 20px;
+    }
+
+    @media print {
+        .mc-noconflict, .mc-wgroup, .kpi-bar { page-break-inside: avoid; }
+        details { display: block; }
+        details > summary { list-style: none; }
+        details:not([open]) > *:not(summary) { display: block !important; }
+        .mc-chev, .mc-more { display: none !important; }
+        .mc-row-hidden { display: table-row !important; }
+    }
+</style>
+
+{% if render_mode != 'fragment' %}
+</head>
+<body class="console">
+{% endif %}
+
+{% import "_console_macros.html" as fs with context %}
+
+{# Defensive defaults #}
+{% set summary = summary | default({}) %}
+{% if summary is not mapping %}{% set summary = {} %}{% endif %}
+{% set status_divergence = status_divergence | default([]) %}
+{% set triaged_left_untriaged_right = triaged_left_untriaged_right | default([]) %}
+{% set triaged_right_untriaged_left = triaged_right_untriaged_left | default([]) %}
+{% set empty_side = empty_side | default(None) %}
+
+{% set left_label = summary.get('left_label', 'Left') if summary is mapping else 'Left' %}
+{% set right_label = summary.get('right_label', 'Right') if summary is mapping else 'Right' %}
+{% set status_divergence_count = summary.get('status_divergence_count', 0) if summary is mapping else 0 %}
+{% set triaged_left_untriaged_right_count = summary.get('triaged_left_untriaged_right_count', 0) if summary is mapping else 0 %}
+{% set triaged_right_untriaged_left_count = summary.get('triaged_right_untriaged_left_count', 0) if summary is mapping else 0 %}
+
+{# Leader direction — injected by the two-pass engine (§5.0). The PRIMARY
+   propagation is leader→laggard; the reverse is surfaced compactly. Defaults
+   keep the standalone path (no compound) rendering left→right. #}
+{% set left_leads = left_leads | default(True) %}
+{% set leader_label = leader_label | default(left_label) %}
+{% set laggard_label = laggard_label | default(right_label) %}
+{% set primary_triage = triaged_left_untriaged_right if left_leads else triaged_right_untriaged_left %}
+{% set reverse_triage = triaged_right_untriaged_left if left_leads else triaged_left_untriaged_right %}
+{% set primary_triage_count = (triaged_left_untriaged_right_count if left_leads else triaged_right_untriaged_left_count) %}
+{% set reverse_triage_count = (triaged_right_untriaged_left_count if left_leads else triaged_left_untriaged_right_count) %}
+{# The leader-direction status field on a primary row: left_status when the
+   left leads, right_status otherwise (mirror for the reverse worklist). #}
+{% set primary_status_attr = 'left_status' if left_leads else 'right_status' %}
+{% set reverse_status_attr = 'right_status' if left_leads else 'left_status' %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "Triage Status Diff"],
+    meta=[
+        {"label": "Left", "value": left_label},
+        {"label": "Right", "value": right_label},
+        {"label": "Generated", "value": generated_at or "—"},
+    ],
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>Triage Status Comparison</h1>
+        <p class="subtitle">{{ left_label }} vs {{ right_label }}</p>
+    </div>
+
+    {% if empty_side %}
+    <div class="tsd-empty-callout">
+        {% if empty_side == 'both' %}
+        <p>Both scopes had no findings data.</p>
+        {% elif empty_side == 'left' %}
+        <p><strong>{{ left_label }}</strong> scope had no data — nothing to compare.</p>
+        {% elif empty_side == 'right' %}
+        <p><strong>{{ right_label }}</strong> scope had no data — nothing to compare.</p>
+        {% endif %}
+    </div>
+    {% else %}
+
+    {# Section intro: lede + scope tag #}
+    <div class="mc-section-intro">
+        <div>
+            <p class="mc-section-lede">
+                <strong>{{ status_divergence_count }}</strong> status conflicts ·
+                <strong>{{ triaged_left_untriaged_right_count }}</strong> triaged in {{ left_label }}, untriaged in {{ right_label }} ·
+                <strong>{{ triaged_right_untriaged_left_count }}</strong> the reverse.
+            </p>
+        </div>
+        <span class="mc-scope-tag">
+            <span class="l">● {{ left_label }}</span>
+            <svg class="ic" viewBox="0 0 24 24" style="width:13px;height:13px;color:var(--ink-mute)"><use href="#i-arrow-right"/></svg>
+            <span class="r">{{ right_label }} ●</span>
+        </span>
+    </div>
+
+    {# KPI summary row — leader-direction "removable" figure leads. #}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell("Syncable to " ~ (laggard_label | short_scope) ~ "'s queue", primary_triage_count, delta="no engineering", dot=("high" if primary_triage_count > 0 else None)) }}
+        {{ fs.kpi_cell("Status conflicts", status_divergence_count, delta=("decisions agree" if status_divergence_count == 0 else "review first"), dot=("high" if status_divergence_count > 0 else None)) }}
+        {{ fs.kpi_cell((laggard_label | short_scope) ~ " triaged, " ~ (leader_label | short_scope) ~ " not", reverse_triage_count, delta="one-way flow", dot=("medium" if reverse_triage_count > 0 else None)) }}
+    </div>
+
+    {# "Safe to apply in bulk" strip when there are zero status conflicts; else
+       the conflict table FIRST (now with project_names owners). #}
+    {% if status_divergence_count == 0 %}
+    <div class="mc-noconflict">
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-check-circle"/></svg>
+        <div class="txt"><strong>Safe to apply in bulk.</strong> {{ status_divergence_count }} status conflicts — wherever both sides triaged the same finding, their VEX decisions already agree, so copying {{ leader_label | short_scope }}'s dispositions can't overwrite a contradicting call.</div>
+    </div>
+    {% else %}
+    <div class="panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Resolve these conflicts first", meta=(status_divergence | length | string) ~ " finding" ~ ("s" if status_divergence | length != 1 else "")) }}
+        <p class="subtitle" style="padding: 0 16px;">Findings both sides triaged, but with different VEX statuses (including suppressed-vs-fixed divergence). Reconcile before bulk-applying.</p>
+        <div class="body" style="overflow-x: auto;">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Finding ID</th>
+                        <th>Component</th>
+                        <th>Severity</th>
+                        <th>{{ left_label | short_scope }} Status</th>
+                        <th>{{ right_label | short_scope }} Status</th>
+                        <th>Project</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in status_divergence %}
+                    {% set sev_upper = (row.severity or '') | upper %}
+                    {% set lstatus = (row.left_status or '') | upper %}
+                    {% set rstatus = (row.right_status or '') | upper %}
+                    <tr>
+                        <td>{{ row.display_id or '—' }}</td>
+                        <td>{{ row.component_name or '—' }}</td>
+                        <td><span class="severity-{{ sev_upper }}">{{ row.severity or '—' }}</span></td>
+                        <td><span class="tsd-status-badge {{ lstatus }}">{{ row.left_status or '—' }}</span></td>
+                        <td><span class="tsd-status-badge {{ rstatus }}">{{ row.right_status or '—' }}</span></td>
+                        <td class="proj">{{ (row.project_names | join(', ')) if row.project_names else '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    {# PRIMARY propagation — "Sync N triage decisions to {laggard} — no
+       engineering". The WHOLE set is no-engineering (VEX, not code), so the
+       headline is framed as a SYNC, not a removal. But a propagation row's
+       leader status can be EXPLOITABLE (triaged but still actionable) — copying
+       that decision does NOT clear the finding from the laggard's queue. So the
+       "removable" claim is scoped to the removable subset only (Fix H / M2-4),
+       computed via selectattr over a FIXED removable status set. Distinct from
+       §02's code remediations: this ports triage DECISIONS from this transform's
+       own rows, so the two never double-count. #}
+    {% if primary_triage and primary_triage | length > 0 %}
+    {% set removable_statuses = ['RESOLVED', 'RESOLVED_WITH_PEDIGREE', 'NOT_AFFECTED', 'FALSE_POSITIVE'] %}
+    {% set removable_count = primary_triage | selectattr(primary_status_attr, 'in', removable_statuses) | list | length %}
+    <h3 style="font-family:var(--font-display);font-size:16px;font-weight:700;letter-spacing:-0.01em;color:var(--ink);margin:0 0 4px;display:flex;align-items:center;gap:9px">
+        <svg class="ic ic-20" viewBox="0 0 24 24" style="color:var(--accent-teal)"><use href="#i-list-checks"/></svg>
+        Sync {{ primary_triage | length }} triage decision{{ '' if primary_triage | length == 1 else 's' }} to {{ laggard_label | short_scope }} — no engineering
+    </h3>
+    <p class="mc-muted-note" style="margin:0 0 14px">Findings {{ leader_label | short_scope }} already assessed that {{ laggard_label | short_scope }} has not yet recorded — copy the decision, no re-analysis.{% if removable_count > 0 %} <strong>{{ removable_count }}</strong> of them clear the finding from {{ laggard_label | short_scope }}'s queue (a resolved or not-affected decision); the rest sync the assessment without closing it.{% endif %}</p>
+
+    <div class="mc-worklist">
+        {% for component, rows in primary_triage | groupby('component_name') %}
+        {% set group_name = component or 'Unspecified component' %}
+        {% set crit = rows | selectattr('severity', 'eq', 'CRITICAL') | list | length %}
+        {% set high = rows | selectattr('severity', 'eq', 'HIGH') | list | length %}
+        {% set med = rows | selectattr('severity', 'eq', 'MEDIUM') | list | length %}
+        {% set low = rows | selectattr('severity', 'eq', 'LOW') | list | length %}
+        {# Group header counts ALL propagation decisions, not exact RESOLVED only
+           (Fix 4 / M2-3 / M2-4): a group of NOT_AFFECTED / FALSE_POSITIVE /
+           EXPLOITABLE / RESOLVED_WITH_PEDIGREE showed a misleading "Apply 0
+           RESOLVED". These are all DECISIONS to sync (a synced status can be
+           EXPLOITABLE — assessed but still actionable), so frame as a sync of
+           N decisions; the removable subset is surfaced in the worklist lede. #}
+        {% set tbl_id = 'tblTriage' ~ loop.index %}
+        {% set head_limit = 10 %}
+        <details class="mc-wgroup"{% if loop.first %} open{% endif %}>
+            <summary class="mc-wgroup-head">
+                <span class="mc-wgroup-ic"><svg class="ic ic-20" viewBox="0 0 24 24"><use href="#i-package"/></svg></span>
+                <span class="mc-wgroup-title">
+                    <span class="name">{{ group_name }}</span>
+                    <span class="fixpath"><strong>Sync {{ rows | length }} decision{{ '' if rows | length == 1 else 's' }}</strong> &rarr; {{ laggard_label | short_scope }}</span>
+                </span>
+                <span class="mc-wgroup-sev">
+                    <span class="mc-sevbar">
+                        {% if crit %}<span class="s-crit" style="flex:{{ crit }}"></span>{% endif %}
+                        {% if high %}<span class="s-high" style="flex:{{ high }}"></span>{% endif %}
+                        {% if med %}<span class="s-med" style="flex:{{ med }}"></span>{% endif %}
+                        {% if low %}<span class="s-low" style="flex:{{ low }}"></span>{% endif %}
+                    </span>
+                    <span class="mc-mini-legend">
+                        {%- set parts = [] -%}
+                        {%- if crit %}{% set _ = parts.append(crit ~ 'C') %}{% endif -%}
+                        {%- if high %}{% set _ = parts.append(high ~ 'H') %}{% endif -%}
+                        {%- if med %}{% set _ = parts.append(med ~ 'M') %}{% endif -%}
+                        {%- if low %}{% set _ = parts.append(low ~ 'L') %}{% endif -%}
+                        {{ parts | join(' · ') }}
+                    </span>
+                </span>
+                <span class="mc-wgroup-count">
+                    <span class="n">{{ rows | length }}</span>
+                    <span class="lbl">decisions</span>
+                </span>
+                <svg class="ic mc-chev ic-20" viewBox="0 0 24 24"><use href="#i-chevron-down"/></svg>
+            </summary>
+            <div class="mc-wbody">
+                <table class="mc-wtable" id="{{ tbl_id }}">
+                    <thead><tr>
+                        <th>Finding ID</th>
+                        <th>Severity</th>
+                        <th>{{ leader_label | short_scope }}</th>
+                        <th>{{ laggard_label | short_scope }}</th>
+                        <th>Project</th>
+                    </tr></thead>
+                    <tbody>
+                        {% for row in rows %}
+                        {% set sev_upper = (row.severity or '') | upper %}
+                        {% set lead_status = (row[primary_status_attr] or '') | upper %}
+                        <tr{% if loop.index > head_limit %} class="mc-row-hidden"{% endif %}>
+                            <td class="cve">{{ row.display_id or '—' }}</td>
+                            <td><span class="severity-{{ sev_upper }}">{{ row.severity or '—' }}</span></td>
+                            <td><span class="tsd-status-badge {{ lead_status }}">{{ row[primary_status_attr] or '—' }}</span></td>
+                            <td><span class="tsd-band-untriaged"><svg class="ic" viewBox="0 0 24 24"><use href="#i-circle"/></svg>Untriaged</span></td>
+                            <td class="proj">{{ (row.project_names | join(', ')) if row.project_names else '—' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% set hidden_count = (rows | length) - head_limit %}
+                {% if hidden_count > 0 %}
+                <div class="mc-more">
+                    <button data-more="{{ tbl_id }}" data-expand="Show {{ hidden_count }} more (of {{ rows | length }})" data-collapse="Show fewer">
+                        <span class="more-lbl">Show {{ hidden_count }} more (of {{ rows | length }})</span>
+                        <svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#i-chevron-down"/></svg>
+                    </button>
+                </div>
+                {% endif %}
+                <div class="mc-wnote">Severity-ranked. Each carries a triage decision in {{ leader_label | short_scope }} that {{ laggard_label | short_scope }} has not yet recorded.</div>
+            </div>
+        </details>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {# Reverse direction — surfaced compactly (collapsed if none). #}
+    {% if reverse_triage and reverse_triage | length > 0 %}
+    <h3 style="font-family:var(--font-display);font-size:16px;font-weight:700;letter-spacing:-0.01em;color:var(--ink);margin:24px 0 4px;display:flex;align-items:center;gap:9px">
+        <svg class="ic ic-20" viewBox="0 0 24 24" style="color:var(--accent-teal)"><use href="#i-list-checks"/></svg>
+        Reverse — {{ laggard_label | short_scope }} triaged, {{ leader_label | short_scope }} not
+    </h3>
+    <p class="mc-muted-note" style="margin:0 0 14px">Findings {{ laggard_label | short_scope }} has assessed that {{ leader_label | short_scope }} has not yet recorded.</p>
+
+    <div class="mc-worklist">
+        {% for component, rows in reverse_triage | groupby('component_name') %}
+        {% set group_name = component or 'Unspecified component' %}
+        {% set crit = rows | selectattr('severity', 'eq', 'CRITICAL') | list | length %}
+        {% set high = rows | selectattr('severity', 'eq', 'HIGH') | list | length %}
+        {% set med = rows | selectattr('severity', 'eq', 'MEDIUM') | list | length %}
+        {% set low = rows | selectattr('severity', 'eq', 'LOW') | list | length %}
+        {# Count ALL propagation decisions, not exact RESOLVED only (Fix 4 /
+           M2-3 / M2-4) — see the primary worklist above. #}
+        {% set tbl_id = 'tblTriageRev' ~ loop.index %}
+        {% set head_limit = 10 %}
+        <details class="mc-wgroup"{% if loop.first %} open{% endif %}>
+            <summary class="mc-wgroup-head">
+                <span class="mc-wgroup-ic"><svg class="ic ic-20" viewBox="0 0 24 24"><use href="#i-package"/></svg></span>
+                <span class="mc-wgroup-title">
+                    <span class="name">{{ group_name }}</span>
+                    <span class="fixpath"><strong>Sync {{ rows | length }} decision{{ '' if rows | length == 1 else 's' }}</strong> &rarr; {{ leader_label | short_scope }}</span>
+                </span>
+                <span class="mc-wgroup-sev">
+                    <span class="mc-sevbar">
+                        {% if crit %}<span class="s-crit" style="flex:{{ crit }}"></span>{% endif %}
+                        {% if high %}<span class="s-high" style="flex:{{ high }}"></span>{% endif %}
+                        {% if med %}<span class="s-med" style="flex:{{ med }}"></span>{% endif %}
+                        {% if low %}<span class="s-low" style="flex:{{ low }}"></span>{% endif %}
+                    </span>
+                    <span class="mc-mini-legend">
+                        {%- set parts = [] -%}
+                        {%- if crit %}{% set _ = parts.append(crit ~ 'C') %}{% endif -%}
+                        {%- if high %}{% set _ = parts.append(high ~ 'H') %}{% endif -%}
+                        {%- if med %}{% set _ = parts.append(med ~ 'M') %}{% endif -%}
+                        {%- if low %}{% set _ = parts.append(low ~ 'L') %}{% endif -%}
+                        {{ parts | join(' · ') }}
+                    </span>
+                </span>
+                <span class="mc-wgroup-count">
+                    <span class="n">{{ rows | length }}</span>
+                    <span class="lbl">decisions</span>
+                </span>
+                <svg class="ic mc-chev ic-20" viewBox="0 0 24 24"><use href="#i-chevron-down"/></svg>
+            </summary>
+            <div class="mc-wbody">
+                <table class="mc-wtable" id="{{ tbl_id }}">
+                    <thead><tr>
+                        <th>Finding ID</th>
+                        <th>Severity</th>
+                        <th>{{ laggard_label | short_scope }}</th>
+                        <th>{{ leader_label | short_scope }}</th>
+                        <th>Project</th>
+                    </tr></thead>
+                    <tbody>
+                        {% for row in rows %}
+                        {% set sev_upper = (row.severity or '') | upper %}
+                        {% set rev_status = (row[reverse_status_attr] or '') | upper %}
+                        <tr{% if loop.index > head_limit %} class="mc-row-hidden"{% endif %}>
+                            <td class="cve">{{ row.display_id or '—' }}</td>
+                            <td><span class="severity-{{ sev_upper }}">{{ row.severity or '—' }}</span></td>
+                            <td><span class="tsd-status-badge {{ rev_status }}">{{ row[reverse_status_attr] or '—' }}</span></td>
+                            <td><span class="tsd-band-untriaged"><svg class="ic" viewBox="0 0 24 24"><use href="#i-circle"/></svg>Untriaged</span></td>
+                            <td class="proj">{{ (row.project_names | join(', ')) if row.project_names else '—' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% set hidden_count = (rows | length) - head_limit %}
+                {% if hidden_count > 0 %}
+                <div class="mc-more">
+                    <button data-more="{{ tbl_id }}" data-expand="Show {{ hidden_count }} more (of {{ rows | length }})" data-collapse="Show fewer">
+                        <span class="more-lbl">Show {{ hidden_count }} more (of {{ rows | length }})</span>
+                        <svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#i-chevron-down"/></svg>
+                    </button>
+                </div>
+                {% endif %}
+                <div class="mc-wnote">Severity-ranked. Each carries a triage decision in {{ laggard_label | short_scope }} that {{ leader_label | short_scope }} has not yet recorded.</div>
+            </div>
+        </details>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="mc-noconflict" style="margin-top:18px;background:var(--surface-subtle);border-color:var(--hairline)">
+        <svg class="ic" viewBox="0 0 24 24" style="color:var(--ink-mute)"><use href="#i-arrow-right"/></svg>
+        <div class="txt"><strong style="color:var(--ink)">{{ laggard_label | short_scope }} triaged, {{ leader_label | short_scope }} not: {{ reverse_triage_count }}.</strong> The triage flow is one-directional.</div>
+    </div>
+    {% endif %}
+
+    {% if status_divergence_count == 0 and not triaged_left_untriaged_right and not triaged_right_untriaged_left %}
+    <div class="tsd-empty-callout">
+        <p>No triage status differences found between {{ left_label }} and {{ right_label }}.</p>
+    </div>
+    {% endif %}
+
+    {% endif %}{# end empty_side else #}
+</main>
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Triage Status Diff",
+    "Left: " ~ left_label,
+    "Right: " ~ right_label,
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% include '_action_buttons.html' %}
+</body>
+</html>
+{% endif %}

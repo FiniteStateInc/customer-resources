@@ -1,396 +1,322 @@
-{% extends "base.html" %}
+{% extends "components/_cc_shell.html" %}
 
-{% block title %}Settings — Finite State Report Kit{% endblock %}
+{% block title %}fs-report · Settings{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="{{ static_v('css/settings-page.css') }}">
+{% endblock %}
 
 {% block content %}
-{% include "components/_dir_browser.html" %}
-{% include "components/_scope_dropdowns.html" %}
-
-<div class="settings-page" x-data="settingsForm()">
-    <h2>Settings</h2>
-
-    <form id="settings-form" @submit.prevent="saveSettings()">
-        <input type="hidden" name="_csrf" value="{{ nonce }}">
-
-        <!-- Connection (read-only) -->
-        <details open class="form-section">
-            <summary class="form-section-title">Connection</summary>
-            <div class="form-group">
-                <label>Domain</label>
-                <div class="form-static">{{ state.domain or '(not set)' }} <span class="form-hint">(from env)</span></div>
-            </div>
-            <div class="form-group">
-                <label>Token</label>
-                <div class="form-static">{{ token_display }} <span class="form-hint">(from env)</span></div>
-            </div>
-        </details>
-
-        <!-- Operational Defaults -->
-        <details open class="form-section">
-            <summary class="form-section-title">Operational Defaults</summary>
-            <div class="form-group">
-                <label for="cfg-output">Default output directory</label>
-                <div class="input-with-btn">
-                    <input type="text" id="cfg-output" name="output_dir"
-                           value="{{ state.get('output_dir', './output') }}">
-                    <button type="button" id="cfg-output-browse" class="btn btn-sm btn-default">Browse</button>
-                </div>
-            </div>
-            <div class="form-group">
-                <label for="cfg-period">Default period</label>
-                <input type="text" id="cfg-period" name="period"
-                       value="{{ state.get('period', '30d') }}">
-            </div>
-            <div class="form-group form-row">
-                <label for="cfg-overwrite">Default overwrite</label>
-                <label class="toggle">
-                    <input type="checkbox" id="cfg-overwrite" name="overwrite"
-                           {% if state.get('overwrite') %}checked{% endif %}>
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-            <div class="form-group">
-                <label for="cfg-cache-ttl">Cache TTL (0=off)</label>
-                <input type="text" id="cfg-cache-ttl" name="cache_ttl"
-                       value="{{ state.get('cache_ttl', '4') }}">
-                <small class="form-hint">Examples: 4h, 2d, 30m, 1h30m, or bare number (hours)</small>
-            </div>
-            <div class="form-group form-row">
-                <label for="cfg-verbose">Verbose logging</label>
-                <label class="toggle">
-                    <input type="checkbox" id="cfg-verbose" name="verbose"
-                           {% if state.get('verbose') %}checked{% endif %}>
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-            <div class="form-group">
-                <label for="cfg-logo-select">Report logo</label>
-                <div class="input-with-btn">
-                    <select id="cfg-logo-select" style="flex:1;min-width:0;padding:8px 12px;border:1px solid #dee2e6;border-radius:6px;font-size:0.9em;">
-                        <option value="">(default Finite State logo)</option>
-                    </select>
-                    <label class="btn btn-sm btn-default" style="margin:0;cursor:pointer;">
-                        Upload
-                        <input type="file" id="cfg-logo-upload" accept=".png,.jpg,.jpeg,.svg,.webp" style="display:none;">
-                    </label>
-                </div>
-                <input type="hidden" id="cfg-logo" name="logo" value="{{ state.get('logo', '') }}">
-                <small class="form-hint">PNG, SVG, JPG, or WebP. Max 500KB. Leave empty for default logo.</small>
-            </div>
-        </details>
-
-        <!-- Cache Management -->
-        <details open class="form-section">
-            <summary class="form-section-title">Cache Management</summary>
-            <div class="cache-info" id="cache-info-display">
-                <div class="cache-stat">
-                    <span class="cache-label">Location</span>
-                    <span class="cache-value">{{ cache_info.location }}</span>
-                </div>
-                <div class="cache-stat">
-                    <span class="cache-label">API Cache</span>
-                    <span class="cache-value">{{ cache_info.api_size_mb }} MB, {{ cache_info.api_entries }} entries{% if cache_info.domain_dbs %} ({{ cache_info.domain_dbs | length }} domain{{ 's' if cache_info.domain_dbs | length != 1 }}){% endif %}</span>
-                </div>
-                <div class="cache-stat">
-                    <span class="cache-label">NVD Cache</span>
-                    <span class="cache-value">{{ cache_info.nvd_size_mb }} MB, {{ cache_info.nvd_entries }} entries</span>
-                </div>
-                <div class="cache-stat">
-                    <span class="cache-label">AI Remediation Cache</span>
-                    <span class="cache-value">{{ cache_info.ai_size_mb }} MB, {{ cache_info.ai_entries }} entries</span>
-                </div>
-            </div>
-            <div class="form-actions-row">
-                <button type="button" class="btn btn-warning btn-sm"
-                        hx-delete="/api/settings/cache/api"
-                        hx-swap="none"
-                        @htmx:after-request="handleCacheClear($event, 'API cache')">
-                    Clear API Cache
-                </button>
-                <button type="button" class="btn btn-warning btn-sm"
-                        hx-delete="/api/settings/cache/nvd"
-                        hx-swap="none"
-                        @htmx:after-request="handleCacheClear($event, 'NVD cache')">
-                    Clear NVD Cache
-                </button>
-                <button type="button" class="btn btn-warning btn-sm"
-                        hx-delete="/api/settings/cache/ai"
-                        hx-swap="none"
-                        @htmx:after-request="handleCacheClear($event, 'AI cache')">
-                    Clear AI Cache
-                </button>
-            </div>
-        </details>
-
-        <!-- Assessment Defaults -->
-        <details open class="form-section">
-            <summary class="form-section-title">Assessment Defaults</summary>
-            <div class="form-group">
-                <label for="cfg-folder">&#128193; Default folder filter</label>
-                <select id="cfg-folder" name="folder_filter"
-                        data-value="{{ state.get('folder_filter', '') }}">
-                    <option value="">(all folders)</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="cfg-project">&#128196; Default project filter</label>
-                <select id="cfg-project" name="project_filter"
-                        data-value="{{ state.get('project_filter', '') }}">
-                    <option value="">(all projects)</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="cfg-version">&#127991; Default version filter</label>
-                <select id="cfg-version" name="version_filter"
-                        data-value="{{ state.get('version_filter', '') }}">
-                    <option value="">(all versions)</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>Default finding types</label>
-                {% set cfg_ft = state.get('finding_types', 'cve') %}
-                <div class="finding-type-checkboxes">
-                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="cve" {% if 'cve' in cfg_ft %}checked{% endif %}> CVE</label>
-                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="sast" {% if 'sast' in cfg_ft %}checked{% endif %}> SAST</label>
-                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="thirdparty" {% if 'thirdparty' in cfg_ft %}checked{% endif %}> 3rd Party</label>
-                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="credentials" {% if 'credentials' in cfg_ft %}checked{% endif %}> Credentials</label>
-                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="config_issues" {% if 'config_issues' in cfg_ft %}checked{% endif %}> Config</label>
-                    <label class="finding-type-cb"><input type="checkbox" name="cfg_ft_cb" value="crypto_material" {% if 'crypto_material' in cfg_ft %}checked{% endif %}> Crypto</label>
-                </div>
-                <input type="hidden" id="cfg-ft" name="finding_types" value="{{ cfg_ft }}">
-            </div>
-            <div class="form-group form-row">
-                <label for="cfg-cvo">Current version only</label>
-                <label class="toggle">
-                    <input type="checkbox" id="cfg-cvo" name="current_version_only"
-                           {% if state.get('current_version_only', True) %}checked{% endif %}>
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-            <div class="form-group form-row">
-                <label for="cfg-ai">Enable AI</label>
-                <label class="toggle">
-                    <input type="checkbox" id="cfg-ai" name="ai"
-                           {% if state.get('ai') %}checked{% endif %}>
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-            <div class="form-group">
-                <label for="cfg-ai-depth">AI depth</label>
-                <select id="cfg-ai-depth" name="ai_depth">
-                    <option value="summary" {% if state.get('ai_depth', 'summary') == 'summary' %}selected{% endif %}>Summary</option>
-                    <option value="full" {% if state.get('ai_depth') == 'full' %}selected{% endif %}>Full</option>
-                </select>
-            </div>
-            <div class="form-group form-row">
-                <label for="cfg-ai-prompts">Export AI prompts</label>
-                <label class="toggle">
-                    <input type="checkbox" id="cfg-ai-prompts" name="ai_prompts"
-                           {% if state.get('ai_prompts') %}checked{% endif %}>
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-        </details>
-
-        <!-- Deployment Context -->
-        <details class="form-section">
-            <summary class="form-section-title">Deployment Context</summary>
-            <div class="form-group">
-                <label for="cfg-product-type">Product type</label>
-                <select id="cfg-product-type" name="product_type">
-                    <option value="generic" {% if state.get('product_type', 'generic') == 'generic' %}selected{% endif %}>Generic</option>
-                    <option value="firmware" {% if state.get('product_type') == 'firmware' %}selected{% endif %}>Firmware</option>
-                    <option value="web_app" {% if state.get('product_type') == 'web_app' %}selected{% endif %}>Web App</option>
-                    <option value="mobile_app" {% if state.get('product_type') == 'mobile_app' %}selected{% endif %}>Mobile App</option>
-                    <option value="library" {% if state.get('product_type') == 'library' %}selected{% endif %}>Library</option>
-                    <option value="device_driver" {% if state.get('product_type') == 'device_driver' %}selected{% endif %}>Device Driver</option>
-                    <option value="container" {% if state.get('product_type') == 'container' %}selected{% endif %}>Container</option>
-                    <option value="desktop_app" {% if state.get('product_type') == 'desktop_app' %}selected{% endif %}>Desktop App</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="cfg-network-exposure">Network exposure</label>
-                <select id="cfg-network-exposure" name="network_exposure">
-                    <option value="unknown" {% if state.get('network_exposure', 'unknown') == 'unknown' %}selected{% endif %}>Unknown</option>
-                    <option value="air_gapped" {% if state.get('network_exposure') == 'air_gapped' %}selected{% endif %}>Air-gapped</option>
-                    <option value="internal_only" {% if state.get('network_exposure') == 'internal_only' %}selected{% endif %}>Internal Only</option>
-                    <option value="internet_facing" {% if state.get('network_exposure') == 'internet_facing' %}selected{% endif %}>Internet-facing</option>
-                    <option value="mixed" {% if state.get('network_exposure') == 'mixed' %}selected{% endif %}>Mixed</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="cfg-regulatory">Regulatory frameworks</label>
-                <input type="text" id="cfg-regulatory" name="regulatory"
-                       value="{{ state.get('regulatory', '') }}"
-                       placeholder="e.g. IEC-62443, FDA, NIST 800-53">
-            </div>
-            <div class="form-group">
-                <label for="cfg-deploy-notes">Deployment notes</label>
-                <textarea id="cfg-deploy-notes" name="deployment_notes"
-                          maxlength="500" rows="3"
-                          placeholder="Additional context about the deployment environment...">{{ state.get('deployment_notes', '') }}</textarea>
-                <small class="form-hint char-counter">
-                    <span id="cfg-deploy-notes-count">{{ state.get('deployment_notes', '') | length }}</span>/500
-                </small>
-            </div>
-        </details>
-
-        <div class="form-actions">
-            <button type="submit" class="btn btn-primary">Save Settings</button>
-            <a href="/" class="btn btn-default">Cancel</a>
-        </div>
-    </form>
+{% set cfg_ft = state.get('finding_types', 'cve') %}
+{# Normalize tokens so a hand-edited "cve, sast" (with spaces) still matches
+   the checkboxes and persists cleanly. #}
+{% set cfg_ft_set = cfg_ft.split(',') | map('trim') | reject('equalto', '') | list %}
+<div class="page-head fade-up">
+  <div class="ptitle">
+    <span class="eyebrow">~/.fs-report/config.yaml</span>
+    <h1>Settings</h1>
+    <span class="sub">Connection, report defaults, AI providers, and cache.</span>
+  </div>
+  <div class="head-actions">
+    <button type="button" class="btn btn-primary" id="settings-save">
+      <i data-lucide="save"></i> Save
+    </button>
+  </div>
 </div>
+
+<form id="settings-form">
+  <div class="set-grid">
+
+    <!-- 1 · Connection (read-only) -->
+    <div class="set-card">
+      <h3><i data-lucide="plug"></i> Connection</h3>
+      <div class="desc">Finite State platform API credentials (from environment / setup).</div>
+      <div class="field">
+        <label>Domain</label>
+        <input class="inp mono" value="{{ state.domain or '(not set)' }}" disabled>
+      </div>
+      <div class="field">
+        <label>Auth token</label>
+        <input class="inp mono" value="{{ token_display }}" disabled>
+      </div>
+      {% if state.has_config %}
+      <div class="key-status"><span class="d"></span> Configured</div>
+      {% else %}
+      <div class="key-status off"><span class="d"></span> Not configured</div>
+      {% endif %}
+    </div>
+
+    <!-- 2 · Report defaults -->
+    <div class="set-card">
+      <h3><i data-lucide="file-sliders"></i> Report defaults</h3>
+      <div class="desc">Applied to every run unless overridden.</div>
+      <div class="field">
+        <label for="cfg-output">Output folder</label>
+        <div class="with-btn">
+          <input class="inp mono" type="text" id="cfg-output" name="output_dir"
+                 value="{{ state.get('output_dir', './output') }}">
+          <button type="button" class="btn" id="cfg-output-browse">Browse</button>
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label for="cfg-period">Period</label>
+          <input class="inp" type="text" id="cfg-period" name="period"
+                 value="{{ state.get('period', '30d') }}"
+                 placeholder="e.g. 30d, 2m, 1y">
+        </div>
+        <div class="field">
+          <label for="cfg-cache-ttl">Cache TTL</label>
+          <input class="inp" type="text" id="cfg-cache-ttl" name="cache_ttl"
+                 value="{{ state.get('cache_ttl', '4') }}"
+                 placeholder="0=off · 4h, 2d, 1h30m">
+        </div>
+      </div>
+      <div class="toggle">
+        <span><span class="tl">Overwrite existing</span><div class="td">Replace output files with the same name.</div></span>
+        <input type="checkbox" id="cfg-overwrite" name="overwrite" hidden
+               {% if state.get('overwrite') %}checked{% endif %}>
+        <div class="sw{% if state.get('overwrite') %} on{% endif %}" data-sw="cfg-overwrite"></div>
+      </div>
+      <div class="toggle">
+        <span><span class="tl">Verbose logging</span><div class="td">Stream per-recipe progress + API trace.</div></span>
+        <input type="checkbox" id="cfg-verbose" name="verbose" hidden
+               {% if state.get('verbose') %}checked{% endif %}>
+        <div class="sw{% if state.get('verbose') %} on{% endif %}" data-sw="cfg-verbose"></div>
+      </div>
+      <div class="field">
+        <label for="cfg-logo-select">Report logo</label>
+        <div class="with-btn">
+          <select class="sel" id="cfg-logo-select">
+            <option value="">(default Finite State logo)</option>
+          </select>
+          <label class="btn" style="margin:0;cursor:pointer;">
+            Upload
+            <input type="file" id="cfg-logo-upload" accept=".png,.jpg,.jpeg,.svg,.webp" hidden>
+          </label>
+        </div>
+        <input type="hidden" id="cfg-logo" name="logo" value="{{ state.get('logo', '') }}">
+      </div>
+    </div>
+
+    <!-- 3 · AI enrichment -->
+    <div class="set-card span2">
+      <h3><i data-lucide="sparkles"></i> AI enrichment</h3>
+      <div class="desc">Provider auto-detected from environment. Deep analysis runs when AI depth is <span class="mono">full</span>.</div>
+      <div class="row2">
+        <div class="toggle">
+          <span><span class="tl">Enable AI</span><div class="td">AI enrichment on findings — guidance + summaries.</div></span>
+          <input type="checkbox" id="cfg-ai" name="ai" hidden
+                 {% if state.get('ai') %}checked{% endif %}>
+          <div class="sw{% if state.get('ai') %} on{% endif %}" data-sw="cfg-ai"></div>
+        </div>
+        <div class="field">
+          <label for="cfg-ai-depth">AI depth</label>
+          <select class="sel" id="cfg-ai-depth" name="ai_depth">
+            <option value="summary" {% if state.get('ai_depth', 'summary') == 'summary' %}selected{% endif %}>Summary</option>
+            <option value="full" {% if state.get('ai_depth') == 'full' %}selected{% endif %}>Full (deep analysis)</option>
+          </select>
+        </div>
+      </div>
+      <div class="row2">
+        <div class="toggle">
+          <span><span class="tl">Export AI prompts</span><div class="td">Write the prompts used to disk alongside results.</div></span>
+          <input type="checkbox" id="cfg-ai-prompts" name="ai_prompts" hidden
+                 {% if state.get('ai_prompts') %}checked{% endif %}>
+          <div class="sw{% if state.get('ai_prompts') %} on{% endif %}" data-sw="cfg-ai-prompts"></div>
+        </div>
+        <div class="field">
+          <label>Provider / key</label>
+          {% if ai_detected.detected %}
+          <div class="key-status" style="padding-top:8px">
+            <span class="d"></span>
+            Provider: {{ ai_detected.provider_label }} · {{ ai_detected.env_var }} detected
+          </div>
+          {% else %}
+          <div class="key-status off" style="padding-top:8px">
+            <span class="d"></span>
+            {{ ai_detected.hint }}
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      {% if ai_detected.detected %}
+      <div class="row2">
+        <div class="field">
+          <label>High model{% if ai_detected.high_overridden %} <span class="ov">config override</span>{% endif %}</label>
+          <input class="inp mono" value="{{ ai_detected.high_model }}" disabled>
+        </div>
+        <div class="field">
+          <label>Low model{% if ai_detected.low_overridden %} <span class="ov">config override</span>{% endif %}</label>
+          <input class="inp mono" value="{{ ai_detected.low_model }}" disabled>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- 4 · Assessment defaults -->
+    <div class="set-card span2">
+      <h3><i data-lucide="target"></i> Assessment defaults</h3>
+      <div class="desc">Default scope + finding types applied to assessments.</div>
+      <div class="row2">
+        <div class="field">
+          <label for="cfg-folder">Folder filter</label>
+          {% set sf = state.get('folder_filter', '') %}
+          <select class="sel" id="cfg-folder" name="folder_filter" data-value="{{ sf }}">
+            <option value="">(all folders)</option>
+            {% if sf %}<option value="{{ sf }}" selected>{{ sf }}</option>{% endif %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="cfg-project">Project filter</label>
+          {% set sp = state.get('project_filter', '') %}
+          <select class="sel" id="cfg-project" name="project_filter" data-value="{{ sp }}">
+            <option value="">(all projects)</option>
+            {% if sp %}<option value="{{ sp }}" selected>{{ sp }}</option>{% endif %}
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="cfg-version">Version filter</label>
+        {% set sv = state.get('version_filter', '') %}
+        <select class="sel" id="cfg-version" name="version_filter" data-value="{{ sv }}">
+          <option value="">(all versions)</option>
+          {% if sv %}<option value="{{ sv }}" selected>{{ sv }}</option>{% endif %}
+        </select>
+      </div>
+      <div class="field">
+        <label>Finding types</label>
+        <div class="ft-grid">
+          <label class="ft-cb"><input type="checkbox" name="cfg_ft_cb" value="cve" {% if 'cve' in cfg_ft_set %}checked{% endif %}> CVE</label>
+          <label class="ft-cb"><input type="checkbox" name="cfg_ft_cb" value="sast" {% if 'sast' in cfg_ft_set %}checked{% endif %}> SAST</label>
+          <label class="ft-cb"><input type="checkbox" name="cfg_ft_cb" value="thirdparty" {% if 'thirdparty' in cfg_ft_set %}checked{% endif %}> 3rd Party</label>
+          <label class="ft-cb"><input type="checkbox" name="cfg_ft_cb" value="credentials" {% if 'credentials' in cfg_ft_set %}checked{% endif %}> Credentials</label>
+          <label class="ft-cb"><input type="checkbox" name="cfg_ft_cb" value="config_issues" {% if 'config_issues' in cfg_ft_set %}checked{% endif %}> Config</label>
+          <label class="ft-cb"><input type="checkbox" name="cfg_ft_cb" value="crypto_material" {% if 'crypto_material' in cfg_ft_set %}checked{% endif %}> Crypto</label>
+        </div>
+        <input type="hidden" id="cfg-ft" name="finding_types" value="{{ cfg_ft_set | join(',') }}">
+      </div>
+      <div class="toggle">
+        <span><span class="tl">Current version only</span><div class="td">Assess the latest version of each project (disables version filter).</div></span>
+        <input type="checkbox" id="cfg-cvo" name="current_version_only" hidden
+               {% if state.get('current_version_only', True) %}checked{% endif %}>
+        <div class="sw{% if state.get('current_version_only', True) %} on{% endif %}" data-sw="cfg-cvo"></div>
+      </div>
+    </div>
+
+    <!-- 5 · Deployment context -->
+    <div class="set-card span2">
+      <h3><i data-lucide="server"></i> Deployment context</h3>
+      <div class="desc">Operating context that shapes AI risk guidance.</div>
+      <div class="row2">
+        <div class="field">
+          <label for="cfg-product-type">Product type</label>
+          <select class="sel" id="cfg-product-type" name="product_type">
+            <option value="generic" {% if state.get('product_type', 'generic') == 'generic' %}selected{% endif %}>Generic</option>
+            <option value="firmware" {% if state.get('product_type') == 'firmware' %}selected{% endif %}>Firmware</option>
+            <option value="web_app" {% if state.get('product_type') == 'web_app' %}selected{% endif %}>Web App</option>
+            <option value="mobile_app" {% if state.get('product_type') == 'mobile_app' %}selected{% endif %}>Mobile App</option>
+            <option value="library" {% if state.get('product_type') == 'library' %}selected{% endif %}>Library</option>
+            <option value="device_driver" {% if state.get('product_type') == 'device_driver' %}selected{% endif %}>Device Driver</option>
+            <option value="container" {% if state.get('product_type') == 'container' %}selected{% endif %}>Container</option>
+            <option value="desktop_app" {% if state.get('product_type') == 'desktop_app' %}selected{% endif %}>Desktop App</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="cfg-network-exposure">Network exposure</label>
+          <select class="sel" id="cfg-network-exposure" name="network_exposure">
+            <option value="unknown" {% if state.get('network_exposure', 'unknown') == 'unknown' %}selected{% endif %}>Unknown</option>
+            <option value="air_gapped" {% if state.get('network_exposure') == 'air_gapped' %}selected{% endif %}>Air-gapped</option>
+            <option value="internal_only" {% if state.get('network_exposure') == 'internal_only' %}selected{% endif %}>Internal Only</option>
+            <option value="internet_facing" {% if state.get('network_exposure') == 'internet_facing' %}selected{% endif %}>Internet-facing</option>
+            <option value="mixed" {% if state.get('network_exposure') == 'mixed' %}selected{% endif %}>Mixed</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="cfg-regulatory">Regulatory frameworks</label>
+        <input class="inp" type="text" id="cfg-regulatory" name="regulatory"
+               value="{{ state.get('regulatory', '') }}"
+               placeholder="e.g. IEC-62443, FDA, NIST 800-53">
+      </div>
+      <div class="field">
+        <label for="cfg-deploy-notes">Deployment notes</label>
+        <textarea class="inp" id="cfg-deploy-notes" name="deployment_notes"
+                  maxlength="500" rows="3"
+                  placeholder="Additional context about the deployment environment…">{{ state.get('deployment_notes', '') }}</textarea>
+        <div class="char-counter"><span id="cfg-deploy-notes-count">{{ state.get('deployment_notes', '') | length }}</span>/500</div>
+      </div>
+      {# SP3: global default uploaded files (apply to every run unless overridden) #}
+      <div class="field">
+        <label>AI deployment context (YAML)</label>
+        <div class="fs-upload" data-kind="context" data-target="cfg-context-file">
+          <input type="file" class="fs-upload-input" accept=".yaml,.yml">
+          <span class="fs-upload-name">{{ state.get('context_file','').rsplit('/', 1)[-1] or 'none' }}</span>
+          <button type="button" class="fs-upload-clear" aria-label="Clear">&times;</button>
+        </div>
+        <input type="hidden" id="cfg-context-file" name="context_file" value="{{ state.get('context_file', '') }}">
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <label>Custom scoring file (YAML)</label>
+        <div class="fs-upload" data-kind="scoring" data-target="cfg-scoring-file">
+          <input type="file" class="fs-upload-input" accept=".yaml,.yml">
+          <span class="fs-upload-name">{{ state.get('scoring_file','').rsplit('/', 1)[-1] or 'none' }}</span>
+          <button type="button" class="fs-upload-clear" aria-label="Clear">&times;</button>
+        </div>
+        <input type="hidden" id="cfg-scoring-file" name="scoring_file" value="{{ state.get('scoring_file', '') }}">
+      </div>
+    </div>
+
+    <!-- 6 · Cache -->
+    <div class="set-card span2">
+      <h3><i data-lucide="database"></i> Cache</h3>
+      <div class="desc">Persistent SQLite cache — crash recovery + faster reruns.</div>
+      <div class="field">
+        <label>Location</label>
+        <input class="inp mono" value="{{ cache_info.location }}" disabled>
+      </div>
+      {% if not cache_info.get('available', True) %}
+      <div class="cache-unavailable">Cache stats unavailable — directory not readable. Clear still works.</div>
+      {% endif %}
+      {# #cache-rows always present so the delegated Clear handler is wired and
+         the maintenance action stays reachable even when stats can't be read. #}
+      <div id="cache-rows">
+        {% if cache_info.get('available', True) %}
+          {% include "components/_cache_rows.html" %}
+        {% else %}
+          {% for c in [('api', 'API'), ('nvd', 'NVD'), ('ai', 'AI')] %}
+          <div class="cache-row">
+            <div class="cache-meta">
+              <span class="cache-name">{{ c[1] }}</span>
+              <span class="cache-stat">stats unavailable</span>
+            </div>
+            <button type="button" class="btn btn-ghost btn-clear" data-cache="{{ c[0] }}">
+              <i data-lucide="trash-2"></i> Clear
+            </button>
+          </div>
+          {% endfor %}
+        {% endif %}
+      </div>
+      <div class="cache-mirror">
+        {% if nvd_mirror %}NVD mirror: <span class="mono">{{ nvd_mirror }}</span>{% else %}NVD source: default{% endif %}
+      </div>
+    </div>
+
+  </div>
+</form>
 {% endblock %}
 
 {% block scripts %}
-<script>
-var NONCE = '{{ nonce }}';
-
-function settingsForm() {
-    return {
-        handleCacheClear($event, label) {
-            if ($event.detail.successful) {
-                this.$dispatch('toast', {message: label + ' cleared', type: 'success'});
-                refreshCacheStats();
-            } else {
-                this.$dispatch('toast', {message: 'Failed to clear ' + label, type: 'error'});
-            }
-        },
-        saveSettings() {
-            _syncSettingsFindingTypes();
-            const form = document.getElementById('settings-form');
-            const formData = new FormData(form);
-            fetch('/api/settings', {
-                method: 'POST',
-                headers: { 'X-FS-Session': '{{ nonce }}' },
-                body: formData,
-            })
-            .then(r => r.json())
-            .then(data => {
-                window.dispatchEvent(new CustomEvent('toast', {
-                    detail: { message: 'Settings saved', type: 'success' }
-                }));
-            })
-            .catch(() => {
-                window.dispatchEvent(new CustomEvent('toast', {
-                    detail: { message: 'Failed to save settings', type: 'error' }
-                }));
-            });
-        },
-    };
-}
-
-function refreshCacheStats() {
-    fetch('/api/settings/cache', { headers: { 'X-FS-Session': NONCE } })
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-        var el = document.getElementById('cache-info-display');
-        if (!el) return;
-        var domainNote = d.domain_dbs && d.domain_dbs.length
-            ? ' (' + d.domain_dbs.length + ' domain' + (d.domain_dbs.length !== 1 ? 's' : '') + ')'
-            : '';
-        el.innerHTML =
-            '<div class="cache-stat"><span class="cache-label">Location</span><span class="cache-value">' + d.location + '</span></div>' +
-            '<div class="cache-stat"><span class="cache-label">API Cache</span><span class="cache-value">' + d.api_size_mb + ' MB, ' + d.api_entries + ' entries' + domainNote + '</span></div>' +
-            '<div class="cache-stat"><span class="cache-label">NVD Cache</span><span class="cache-value">' + d.nvd_size_mb + ' MB, ' + d.nvd_entries + ' entries</span></div>' +
-            '<div class="cache-stat"><span class="cache-label">AI Remediation Cache</span><span class="cache-value">' + d.ai_size_mb + ' MB, ' + d.ai_entries + ' entries</span></div>';
-    });
-}
-
-/* Sync finding-type checkboxes to hidden field */
-function _syncSettingsFindingTypes() {
-    var cbs = document.querySelectorAll('input[name="cfg_ft_cb"]:checked');
-    var hidden = document.getElementById('cfg-ft');
-    if (!hidden || cbs.length === 0) return;
-    hidden.value = Array.from(cbs).map(function(cb) { return cb.value; }).join(',');
-}
-
-/* Init directory browser + scope dropdowns */
-initDirBrowser('cfg-output', 'cfg-output-browse');
-initScopeDropdowns({
-    projectId: 'cfg-project',
-    folderId: 'cfg-folder',
-    versionId: 'cfg-version',
-    cvoId: 'cfg-cvo',
-});
-
-/* Deployment notes character counter */
-(function() {
-    var ta = document.getElementById('cfg-deploy-notes');
-    var counter = document.getElementById('cfg-deploy-notes-count');
-    if (ta && counter) {
-        ta.addEventListener('input', function() {
-            counter.textContent = ta.value.length;
-        });
-    }
-})();
-
-/* Logo picker */
-(function() {
-    var logoSelect = document.getElementById('cfg-logo-select');
-    var logoHidden = document.getElementById('cfg-logo');
-    var logoUpload = document.getElementById('cfg-logo-upload');
-    var currentLogo = logoHidden ? logoHidden.value : '';
-
-    function loadLogos(selectValue) {
-        fetch('/api/logos', { headers: { 'X-FS-Session': NONCE } })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            logoSelect.innerHTML = '<option value="">(default Finite State logo)</option>';
-            (data.logos || []).forEach(function(name) {
-                var o = document.createElement('option');
-                o.value = name;
-                o.textContent = name;
-                if (name === (selectValue || currentLogo)) o.selected = true;
-                logoSelect.appendChild(o);
-            });
-        });
-    }
-
-    logoSelect.addEventListener('change', function() {
-        logoHidden.value = logoSelect.value;
-    });
-
-    logoUpload.addEventListener('change', function() {
-        var file = logoUpload.files[0];
-        if (!file) return;
-        if (file.size > 512000) {
-            window.dispatchEvent(new CustomEvent('toast', {
-                detail: { message: 'File too large (max 500KB)', type: 'error' }
-            }));
-            return;
-        }
-        var formData = new FormData();
-        formData.append('file', file);
-        fetch('/api/logos/upload', {
-            method: 'POST',
-            headers: { 'X-FS-Session': NONCE },
-            body: formData,
-        })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (data.error) {
-                window.dispatchEvent(new CustomEvent('toast', {
-                    detail: { message: data.error, type: 'error' }
-                }));
-            } else {
-                window.dispatchEvent(new CustomEvent('toast', {
-                    detail: { message: 'Logo uploaded', type: 'success' }
-                }));
-                loadLogos(data.filename);
-                logoHidden.value = data.filename;
-            }
-        })
-        .catch(function() {
-            window.dispatchEvent(new CustomEvent('toast', {
-                detail: { message: 'Upload failed', type: 'error' }
-            }));
-        });
-        logoUpload.value = '';
-    });
-
-    loadLogos();
-})();
-</script>
+  {% include "components/_dir_browser.html" %}
+  {% include "components/_scope_dropdowns.html" %}
+  <script>
+    /* §4.9 — shell pages only expose the nonce via the fs-csrf meta; the shared
+       dir-browser / scope-cascade helpers read window.NONCE. Bootstrap it BEFORE
+       settings-page.js runs initDirBrowser / initScopeDropdowns. */
+    (function () {
+      var m = document.querySelector('meta[name="fs-csrf"]');
+      window.NONCE = m ? m.content : '';
+    })();
+  </script>
+  <script src="{{ static_v('js/settings-page.js') }}"></script>
 {% endblock %}

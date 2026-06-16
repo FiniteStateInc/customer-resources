@@ -1,0 +1,34 @@
+{% extends "components/_cc_shell.html" %}
+
+{% block title %}fs-report · Runs{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="{{ static_v('css/runs-page.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="page-head fade-up">
+  <div class="ptitle">
+    <span class="eyebrow" id="runs-count">{{ runs | length }} run{{ "" if runs | length == 1 else "s" }}</span>
+    <h1>Runs</h1>
+  </div>
+  <div class="head-actions">
+    <a class="btn btn-primary" href="/#launcher"><i data-lucide="play"></i> New run</a>
+    <button class="btn btn-ghost" id="runs-refresh"
+            hx-get="/api/runs/list"
+            hx-target="#runs-body"
+            hx-swap="innerHTML"
+            onclick="this.classList.add('spin');setTimeout(()=>this.classList.remove('spin'),900)">
+      <i data-lucide="refresh-cw"></i> Refresh
+    </button>
+  </div>
+</div>
+
+<div id="runs-body">
+  {% include "components/_runs_list.html" %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ static_v('js/runs-page.js') }}"></script>
+{% endblock %}

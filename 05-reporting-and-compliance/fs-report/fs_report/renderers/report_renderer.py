@@ -47,6 +47,12 @@ class ReportRenderer:
         self.logger = logging.getLogger(__name__)
         self.config = config
         self.overwrite = overwrite
+        # Server-side theme default for HTML output. PDF rendering ignores
+        # this and forces light internally (see pdf_renderer.py). The
+        # fallback mirrors Config.theme's default of 'auto' so embedders
+        # that hand-roll a Config without setting theme still defer to
+        # viewer preference rather than forcing light.
+        self.theme: str = getattr(config, "theme", None) or "auto"
 
         # Initialize individual renderers
         self.csv_renderer = CSVRenderer()
@@ -705,7 +711,7 @@ class ReportRenderer:
         try:
             # HTML output
             html_path = output_dir / f"{self._sanitize_filename(recipe.name)}.html"
-            self.html_renderer.render(recipe, report_data, html_path)
+            self.html_renderer.render(recipe, report_data, html_path, theme=self.theme)
             self.logger.debug(f"Generated HTML: {html_path}")
             generated_files.append(str(html_path))
         except Exception as e:
@@ -797,7 +803,7 @@ class ReportRenderer:
         report_data: ReportData,
         output_dir: Path,
     ) -> list[str]:
-        """Render PDF output via weasyprint. Returns list of generated file paths."""
+        """Render PDF output via Playwright. Returns list of generated file paths."""
         generated_files = []
         try:
             from fs_report.renderers.pdf_renderer import PDFRenderer

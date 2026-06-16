@@ -1,7 +1,9 @@
 name: "CVE Component Evidence"
 category: assessment
+card_description: "CVE-bearing components and the firmware paths where each was found."
 nav_category: Investigation
-description: "For a project version, lists CVE-bearing components with their associated CVE IDs and the firmware file paths where the component was detected. Components with no CVEs are excluded (no triage needed). Uses the affected==<componentId> findings filter (same join the platform UI uses). Requires --version <project_version_id>."
+chart_libraries: []
+description: "For a project version, lists CVE-bearing components with their associated CVE IDs and the firmware file paths where the component was detected. Components with no CVEs are excluded (no triage needed). Uses the affected==<componentId> findings filter (same join the platform UI uses). Scoped to a single project version: pass --version <project_version_id>, or omit it to use the project's current version."
 execution_order: 31
 auto_run: false
 requires_project: true

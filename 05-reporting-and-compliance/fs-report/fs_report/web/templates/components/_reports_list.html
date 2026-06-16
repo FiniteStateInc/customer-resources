@@ -1,0 +1,50 @@
+{# Report History body — swappable via HTMX (/api/reports/list).
+   Renders a date-grouped list of one row per generated report (per recipe).
+   `reports` is already flattened newest-run-first; each row carries its
+   run-level fields (date_group, when, bundle_href, log_href, …). #}
+{% if not reports %}
+<div class="rep-empty">
+  <i data-lucide="folder-open"></i>
+  No reports yet — run one from the Command Center.
+</div>
+{% else %}
+{% set ns = namespace(group=None) %}
+{% for r in reports %}
+  {% if r.date_group != ns.group %}
+  {% set ns.group = r.date_group %}
+  <div class="rep-date">{{ r.date_group }}</div>
+  {% endif %}
+  <div class="rep" data-rf="{{ r.cat_slug }}" style="--cat:var(--nav-{{ r.cat_slug }}, var(--ink-faint))">
+    <div class="rep-ic"><i data-lucide="{{ r.icon }}"></i></div>
+    <div class="rep-tx">
+      <div class="rt">{{ r.recipe }} <span class="rep-cat">{{ r.category }}</span></div>
+      <div class="rm">
+        {%- set parts = [] -%}
+        {%- if r.scope_str %}{% set _ = parts.append(r.scope_str) %}{% endif -%}
+        {%- if r.size_display %}{% set _ = parts.append(r.size_display ~ ' KB') %}{% endif -%}
+        {%- if r.domain %}{% set _ = parts.append(r.domain) %}{% endif -%}
+        {{ parts | join(' · ') }}
+      </div>
+    </div>
+    <div class="fmts">
+      {% for f in r.formats %}
+      <a class="fmt {{ f.slug }}" href="{{ f.href }}" title="{{ f.name }}"{% if f.is_html %} target="_blank"{% else %} download{% endif %}>{{ f.label }}</a>
+      {% endfor %}
+    </div>
+    <span class="when">{{ r.when }}</span>
+    <div class="rep-act">
+      {% if r.view_href %}
+      <a class="view-btn" href="{{ r.view_href }}" target="_blank">View <i data-lucide="external-link"></i></a>
+      {% elif not r.has_files %}
+      <span class="rep-gone">files removed</span>
+      {% endif %}
+      {% if r.bundle_href %}
+      <a class="rep-icon-btn" href="{{ r.bundle_href }}" download title="Download bundle (.zip)" aria-label="Download bundle"><i data-lucide="archive"></i></a>
+      {% endif %}
+      {% if r.log_href %}
+      <a class="rep-icon-btn" href="{{ r.log_href }}" target="_blank" title="View log" aria-label="View log"><i data-lucide="scroll-text"></i></a>
+      {% endif %}
+    </div>
+  </div>
+{% endfor %}
+{% endif %}

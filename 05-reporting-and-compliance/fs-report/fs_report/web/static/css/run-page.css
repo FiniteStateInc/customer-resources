@@ -1,0 +1,417 @@
+/* ===================================================================
+   Run canvas page (Pass 4 · Task 5) — the unified run stage.
+
+   Tokens (colors / spacing / type / radii / motion) are lifted from the
+   prototype `Phase 2 Run.html` + the repo `tokens.css`. The prototype was a
+   fixed full-viewport layout with its own topbar / status-bar; here the
+   canvas fills the shell's `.main` content area instead (the shared topbar /
+   sidebar / status-bar come from `_cc_shell.html`).
+
+   Surfaces use the repo token vars so they flip with the light theme; the
+   surgical accent GLOWS (cyan running / green done / rose error / gold
+   deliverable / purple AI) are page-local vars — tokens.css has no equivalents.
+
+   DROPPED from the prototype (spec §2/§3): the Compound⇄Sequential toggle
+   (`.modes`), the Pause button, and the "Render & Validate" gate (`.gate`),
+   plus the prototype's own topbar / status-bar / backdrop (the shell owns
+   those). Their styles are intentionally NOT ported.
+   =================================================================== */
+
+[x-cloak] { display: none !important; }
+
+/* Page-local accent hues — the state glows the prototype hard-coded and that
+   tokens.css doesn't expose. Scoped to .run-canvas (+ the expired panel root).
+   Mapping: running→cyan, done→green, error→rose, deliverable→gold, AI→purple. */
+.run-canvas,
+.run-expired {
+  --rc-cyan:   #22d3ee;   /* running */
+  --rc-green:  #4ade80;   /* done */
+  --rc-rose:   #fb7185;   /* error */
+  --rc-gold:   #fbbf24;   /* deliverable */
+  --rc-purple: #a78bfa;   /* AI chip */
+  --rc-teal:   #2dd4bf;
+  --rc-amber:  #fbbf24;
+}
+
+/* The canvas fills the main content area edge-to-edge: kill the default
+   .main padding/scroll so the toolbar / stage own their own scroll (mirrors
+   builder-page.css's `.main:has(.wfb)`). */
+.main:has(.run-canvas) { padding: 0; overflow: hidden; }
+
+.run-canvas {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ─────────────────────────── Run toolbar ─────────────────────────── */
+.run-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 22px;
+  border-bottom: 1px solid var(--hairline);
+  background: rgba(var(--accent-rgb), .02);
+  backdrop-filter: blur(14px);
+  flex-wrap: wrap;
+}
+.tb-spacer { flex: 1 1 auto; }
+
+/* Brand orb — recolors via [data-state]; the ring spins. */
+.run-toolbar .brand-mark {
+  width: 30px; height: 30px; flex: 0 0 30px;
+  color: var(--rc-cyan);
+  filter: drop-shadow(0 0 10px rgba(34, 211, 238, .5));
+  transition: color .5s, filter .5s;
+}
+.run-toolbar .brand-mark svg { width: 100%; height: 100%; overflow: visible; display: block; }
+.run-toolbar .brand-mark .ring {
+  transform-origin: 12px 12px; transform-box: view-box;
+  animation: rc-spin 30s linear infinite;
+}
+.run-toolbar .brand-mark[data-state="idle"] {
+  color: #60a5fa; filter: drop-shadow(0 0 10px rgba(96, 165, 250, .5));
+}
+.run-toolbar .brand-mark[data-state="running"] {
+  color: var(--rc-cyan); filter: drop-shadow(0 0 12px rgba(34, 211, 238, .7));
+}
+.run-toolbar .brand-mark[data-state="running"] .ring { animation-duration: 4s; }
+.run-toolbar .brand-mark[data-state="complete"] {
+  color: var(--rc-green); filter: drop-shadow(0 0 12px rgba(74, 222, 128, .6));
+}
+.run-toolbar .brand-mark[data-state="error"] {
+  color: var(--rc-rose); filter: drop-shadow(0 0 12px rgba(251, 113, 133, .6));
+}
+@keyframes rc-spin { to { transform: rotate(360deg); } }
+
+/* Kind eyebrow (static, server-rendered) — ported from the prototype eng-pill. */
+.run-canvas .eng-pill {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 5px 14px; border-radius: var(--r-md); white-space: nowrap;
+  border: 1px solid rgba(var(--accent-rgb), .22);
+  background: linear-gradient(135deg, rgba(var(--accent-rgb), .06), transparent 40%), var(--surface-subtle);
+}
+.run-canvas .eng-pill .eb {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: .26em;
+  color: var(--accent); font-weight: 700;
+}
+.run-canvas .eng-pill .nm { color: var(--ink); font-weight: 600; font-size: 13px; }
+
+/* Run-state chip — state word + elapsed. */
+.run-chip {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 5px 13px; border-radius: var(--r-md);
+  border: 1px solid var(--hairline); background: var(--surface-subtle); font-size: 12px;
+}
+.run-chip .rs { color: var(--ink-mute); }
+.run-chip .re { font-family: var(--font-mono); color: var(--rc-cyan); font-variant-numeric: tabular-nums; }
+
+/* Legend pills. */
+.run-canvas .legend { display: flex; gap: 7px; flex-wrap: wrap; }
+.run-canvas .lg {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 4px 11px; font-size: 11px; color: var(--ink-body);
+  border: 1px solid var(--hairline); border-radius: 999px;
+  background: rgba(var(--accent-rgb), .02);
+}
+.run-canvas .lg .rng {
+  width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid currentColor; display: inline-block;
+}
+.run-canvas .lg.l-run { color: var(--rc-cyan); }
+.run-canvas .lg.l-run .rng { box-shadow: 0 0 8px currentColor; }
+.run-canvas .lg.l-done { color: var(--rc-green); }
+.run-canvas .lg.l-done .rng { background: currentColor; }
+.run-canvas .lg.l-queue { color: var(--ink-faint); }
+.run-canvas .lg.l-cache { color: var(--ink-mute); }
+.run-canvas .lg.l-cache .rng { border-style: dashed; }
+
+/* Transport — Stop + Replay only. */
+.run-canvas .transport { display: flex; gap: 6px; }
+.run-canvas .tbtn {
+  width: 40px; height: 40px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-md); border: 1px solid var(--hairline);
+  background: var(--surface-subtle); color: var(--ink-body);
+  cursor: pointer; transition: .15s var(--ease-out);
+}
+.run-canvas .tbtn:hover { border-color: var(--accent); color: var(--accent); }
+.run-canvas .tbtn svg { width: 16px; height: 16px; }
+.run-canvas .tbtn:disabled { opacity: .4; cursor: not-allowed; }
+.run-canvas .tbtn:disabled:hover { border-color: var(--hairline); color: var(--ink-body); }
+.run-canvas .tbtn.primary {
+  background: linear-gradient(135deg, rgba(var(--accent-rgb), .32), rgba(167, 139, 250, .32));
+  border-color: rgba(var(--accent-rgb), .55); color: #fff;
+}
+.run-canvas .tbtn.danger:hover { border-color: var(--rc-rose); color: var(--rc-rose); }
+
+/* Stats readout. */
+.run-canvas .tb-stats {
+  font-family: var(--font-mono); font-size: 12px; color: var(--ink);
+  padding: 6px 14px; border-radius: 999px;
+  border: 1px solid var(--hairline); background: rgba(var(--accent-rgb), .03);
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.run-canvas .tb-stats b { color: var(--accent); }
+
+/* Context line. */
+.run-canvas .ctx {
+  flex: 0 0 auto; text-align: center;
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-mute);
+  margin: 14px auto 0;
+}
+.run-canvas .ctx b { color: var(--ink-strong); }
+
+/* ─────────────────────────── Stage ─────────────────────────── */
+.run-viewport { flex: 1 1 auto; overflow: auto; position: relative; min-height: 0; }
+.stage { position: relative; width: 1120px; height: 600px; margin: 6px auto 0; }
+
+svg.edges {
+  position: absolute; top: 0; left: 0;
+  width: 1120px; height: 600px; z-index: 1; pointer-events: none;
+}
+svg.edges path { fill: none; }
+#e-dorm path { stroke: rgba(148, 168, 220, .16); stroke-width: 1.3; marker-end: url(#ar); }
+#e-done path {
+  stroke: url(#g-done); stroke-width: 1.8; opacity: .6;
+  filter: drop-shadow(0 0 3px rgba(45, 212, 191, .2)); marker-end: url(#ar-d);
+}
+#e-live path {
+  stroke: var(--rc-cyan); stroke-width: 2.6; stroke-linecap: round;
+  stroke-dasharray: 14 28; animation: rc-feed 2.2s linear infinite;
+  filter: drop-shadow(0 0 3px var(--rc-cyan))
+          drop-shadow(0 0 11px rgba(34, 211, 238, .9))
+          drop-shadow(0 0 26px rgba(34, 211, 238, .55));
+}
+@keyframes rc-feed { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -294; } }
+
+/* ─────────────────────────── Nodes ─────────────────────────── */
+.nodes { position: absolute; inset: 0; z-index: 3; }
+.node {
+  position: absolute; border-radius: 13px;
+  padding: 11px 13px 11px 17px;
+  display: flex; flex-direction: column; gap: 6px;
+  background: linear-gradient(180deg, var(--surface-card), var(--surface-subtle));
+  border: 1px solid var(--hairline);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .42);
+  overflow: hidden;
+  transition: left .5s var(--ease-out), top .5s var(--ease-out),
+              border-color .24s, box-shadow .28s, opacity .24s;
+}
+.node::before {
+  content: ''; position: absolute; top: 9px; bottom: 9px; left: 6px;
+  width: 3px; border-radius: 999px;
+  background: var(--c, var(--ink-faint));
+  box-shadow: 0 0 8px var(--c, transparent); opacity: .85;
+}
+.node:hover {
+  border-color: rgba(var(--accent-rgb), .42);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, .5),
+              0 0 26px color-mix(in srgb, var(--c, var(--accent)) 30%, transparent);
+}
+.node .nhead { display: flex; align-items: center; gap: 8px; }
+.node .ntag {
+  font-size: 8.5px; font-weight: 700; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--c, var(--ink-faint));
+}
+.node .nbadge {
+  font-family: var(--font-mono); font-size: 8.5px; font-weight: 700; letter-spacing: .08em;
+  padding: 2px 7px; border-radius: 999px;
+  background: rgba(0, 0, 0, .3); color: var(--ink-mute);
+  border: 1px solid var(--hairline); text-transform: uppercase; margin-left: auto;
+}
+.node .nbadge:empty { display: none; }
+.node .ntitle {
+  font-family: var(--font-display); font-size: 13px; font-weight: 700;
+  color: var(--ink); line-height: 1.18; letter-spacing: -.01em; overflow-wrap: break-word;
+}
+
+/* Format chips. */
+.node .chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: auto; }
+.node .chip {
+  font-family: var(--font-mono); font-size: 8px; font-weight: 700; letter-spacing: .06em;
+  padding: 1px 5px; border-radius: 4px;
+  border: 1px solid var(--hairline); background: rgba(0, 0, 0, .3); color: var(--ink-faint);
+}
+.node .chip.pdf  { color: var(--rc-rose); }
+.node .chip.html { color: var(--rc-amber); }
+.node .chip.csv  { color: var(--rc-green); }
+.node .chip.xlsx { color: var(--rc-teal); }
+.node .chip.md   { color: var(--rc-cyan); }
+.node .chip.ai   { color: var(--rc-purple); }
+
+/* Source-node scope meta — the REAL scope string, never a fabricated count. */
+.node .src-meta {
+  font-size: 11px; color: var(--ink-body);
+  display: flex; flex-direction: column; gap: 3px; margin-top: 6px;
+}
+.node .src-meta .scope {
+  color: var(--ink); font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  overflow-wrap: break-word; word-break: break-word;
+}
+.node .src-meta .c { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-faint); }
+
+/* Live (running) block. */
+.node .live { display: none; flex-direction: column; gap: 6px; margin-top: 2px; }
+.node .live .lmsg {
+  font-size: 10.5px; font-style: italic; color: #d6f7ff; line-height: 1.35;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.node .track {
+  position: relative; height: 5px; border-radius: 999px;
+  background: rgba(148, 168, 220, .16); overflow: hidden;
+}
+.node .fill {
+  position: absolute; inset: 0 auto 0 0; width: 0%; border-radius: 999px;
+  transition: width .6s var(--ease-out);
+  background: linear-gradient(90deg, rgba(45, 212, 191, .95), var(--rc-cyan) 70%, #bef0ff);
+  box-shadow: 0 0 8px rgba(34, 211, 238, .8);
+}
+
+/* Done-state check. */
+.node .check {
+  display: none; position: absolute; right: 11px; top: 10px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--rc-green); align-items: center; justify-content: center;
+  box-shadow: 0 0 10px rgba(74, 222, 128, .6);
+}
+.node .check svg { width: 12px; height: 12px; color: #06231f; }
+
+/* ── Node states ───────────────────────────────────────────────────
+   queued / running / done are ported from the prototype; error + skipped
+   are new (the canvas needs them — the prototype only had the first three). */
+.node.s-queued { opacity: .62; }
+
+.node.s-running {
+  border-color: rgba(34, 211, 238, .5);
+  box-shadow: 0 0 30px rgba(34, 211, 238, .32), 0 0 80px rgba(34, 211, 238, .12);
+}
+.node.s-running .live { display: flex; }
+.node.s-running .chips { display: none; }
+.node.s-running .nbadge { color: var(--rc-cyan); border-color: rgba(34, 211, 238, .4); }
+
+.node.s-done .nbadge { display: none; }
+.node.s-done .check { display: flex; }
+.node.s-done { cursor: pointer; }   /* a done node may open its report (JS decides) */
+
+/* Error — rose tint / border, modeled on s-running. */
+.node.s-error {
+  border-color: rgba(251, 113, 133, .55);
+  box-shadow: 0 0 26px rgba(251, 113, 133, .28), 0 0 70px rgba(251, 113, 133, .1);
+}
+.node.s-error .nbadge { color: var(--rc-rose); border-color: rgba(251, 113, 133, .45); }
+.node.s-error .live { display: flex; }
+.node.s-error .chips { display: none; }
+.node.s-error .live .lmsg { color: #ffd9df; font-style: normal; }
+.node.s-error .fill {
+  background: linear-gradient(90deg, rgba(190, 40, 60, .9), var(--rc-rose) 70%, #ffd9df);
+  box-shadow: 0 0 8px rgba(251, 113, 133, .8); width: 100%;
+}
+
+/* Skipped — faded + a reason note (the live lmsg carries the reason). */
+.node.s-skipped { opacity: .5; border-style: dashed; }
+.node.s-skipped .nbadge { color: var(--ink-faint); }
+.node.s-skipped .live { display: flex; }
+.node.s-skipped .chips { display: none; }
+.node.s-skipped .track { display: none; }
+.node.s-skipped .live .lmsg { color: var(--ink-mute); font-style: italic; white-space: normal; }
+
+/* Deliverable — gold. */
+.node.t-deliverable { --c: var(--rc-gold); }
+.node.t-deliverable.s-running {
+  border-color: rgba(251, 191, 36, .5);
+  box-shadow: 0 0 32px rgba(251, 191, 36, .4), 0 0 96px rgba(251, 191, 36, .16);
+}
+.node.t-deliverable.s-running .nbadge { color: var(--rc-gold); border-color: rgba(251, 191, 36, .4); }
+.node.t-deliverable.s-running .fill {
+  background: linear-gradient(90deg, rgba(217, 119, 6, .95), rgba(251, 191, 36, 1) 70%, rgba(255, 250, 220, 1));
+  box-shadow: 0 0 8px rgba(251, 191, 36, .8);
+}
+.node.t-deliverable .check { background: var(--rc-gold); }
+/* T4: deliverable "arrival" dwell — when the fan-in completes, the combined
+   deliverable gets a single soft gold pulse so the convergence reads as
+   finished and lingers a beat, instead of snapping to a static state. One-shot
+   (`1`), and suppressed under no-motion (below). */
+.node.t-deliverable.s-done { animation: rc-deliver-arrive 1.1s var(--ease-out) 1; }
+/* Start from the running gold glow (matches .t-deliverable.s-running) so the
+   pulse continues smoothly from the live fan-in instead of snapping to a
+   transparent shadow first (M1-6); peak, then settle to the static state. */
+@keyframes rc-deliver-arrive {
+  0%   { box-shadow: 0 0 32px rgba(251, 191, 36, .4), 0 0 96px rgba(251, 191, 36, .16); }
+  35%  { box-shadow: 0 0 0 5px rgba(251, 191, 36, .3), 0 0 30px rgba(251, 191, 36, .5), 0 0 96px rgba(251, 191, 36, .2); }
+  100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+}
+
+/* ── Expired-run panel (spec §7) ───────────────────────────────────── */
+.run-expired {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 60vh; padding: 40px 26px;
+}
+.re-card {
+  max-width: 460px; width: 100%; text-align: center;
+  padding: 32px 28px; border-radius: var(--r-lg);
+  background: var(--surface-card); border: 1px solid var(--hairline);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .3);
+}
+.re-ic {
+  width: 48px; height: 48px; margin: 0 auto 16px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: rgba(var(--accent-rgb), .12); color: var(--accent);
+}
+.re-ic svg { width: 24px; height: 24px; }
+.re-title {
+  font-family: var(--font-display); font-size: 18px; font-weight: 700;
+  color: var(--ink); margin-bottom: 8px; letter-spacing: -.01em;
+}
+.re-body { font-size: 13px; color: var(--ink-body); line-height: 1.5; margin-bottom: 20px; }
+.re-body .mono { font-family: var(--font-mono); color: var(--ink-strong); }
+.re-links { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.re-link {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 9px 16px; border-radius: var(--r-md); text-decoration: none;
+  font-size: 13px; font-weight: 600; color: var(--ink-body);
+  border: 1px solid var(--hairline); background: var(--surface-subtle);
+  transition: .15s var(--ease-out);
+}
+.re-link:hover { border-color: var(--accent); color: var(--accent); }
+.re-link svg { width: 15px; height: 15px; }
+.re-link.primary {
+  background: linear-gradient(135deg, rgba(var(--accent-rgb), .32), rgba(167, 139, 250, .32));
+  border-color: rgba(var(--accent-rgb), .55); color: #fff;
+}
+.re-link.primary:hover { color: #fff; }
+
+/* ── Tweaks hooks ──────────────────────────────────────────────────── */
+/* Motion off — kill the spin / feed / fill-transition (mirrors builder-page.css). */
+body.no-motion .run-canvas .brand-mark .ring { animation: none; }
+body.no-motion #e-live path { animation: none; }
+body.no-motion .node { transition: none; }
+body.no-motion .node .fill { transition: none; }
+body.no-motion .node.t-deliverable.s-done { animation: none; } /* T4 dwell off */
+
+/* Glow intensity (ported from the prototype's two body.glow-* overrides). */
+body.glow-flat .node.s-running {
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), .4) !important;
+}
+body.glow-flat #e-live path { filter: none !important; }
+body.glow-cinematic .node.s-running {
+  box-shadow: 0 0 44px rgba(34, 211, 238, .5), 0 0 110px rgba(34, 211, 238, .18) !important;
+}
+
+/* ── Light theme legibility (tokens.css flips under body.light) ─────────
+   The prototype was dark-only; ensure node surfaces / chip backdrops / edges
+   read on a light background. Surfaces already flip via the token vars; here
+   we only fix the few hard-coded rgba()/hex backdrops + the running message. */
+body.light .run-toolbar { background: rgba(0, 0, 0, .02); }
+body.light .node { box-shadow: 0 6px 18px rgba(15, 23, 42, .12); }
+body.light .node .nbadge,
+body.light .node .chip { background: rgba(15, 23, 42, .05); }
+body.light .node .live .lmsg { color: #0e5b6e; }      /* dark teal — reads on white */
+body.light .node.s-error .live .lmsg { color: #9a2330; }
+body.light .node .track { background: rgba(15, 23, 42, .12); }
+body.light #e-dorm path { stroke: rgba(80, 100, 150, .3); }
+body.light .lg,
+body.light .tb-stats { background: rgba(0, 0, 0, .03); }

@@ -1,0 +1,559 @@
+{# Command Center per-report card-back fragment (spec §5).
+
+   Injected into `.wf-back` by command-center.js (Task 4) — NOT a full page.
+   A tabbed back: a `.wf-tabs` segmented control switches the "Report" /
+   "Triage" / "AI" / "Advanced" field groups. Tab-switch / Save / Save&Run /
+   Reset wiring is in command-center.js; this template provides stable hooks
+   (data-tab / data-tabpanel, cardcfg-* ids/classes).
+
+   Context provided by the GET /api/cc/card-config route:
+     recipe        — display name (e.g. "CVE Impact")
+     nonce         — CSRF nonce
+     show_*        — field-visibility flags from compute_prerun_fields([recipe])
+     eff           — effective values (override merged over global state)  [.get]
+     is_ov(key)    — callable: True if `key` is currently a per-card override
+     glob_val(key) — callable: the global value (for the "Settings: <value>" hint)
+
+   `is_ov(key)` / `glob_val(key)` are callables so each overridable field can mark
+   whether it is currently an override (data-override="1") or inheriting from
+   Settings (data-override="0" + a muted hint).
+
+   Field-visibility (report-config-card-gating): every field is gated on the
+   `show_*` flag for the recipe(s) that actually consume it. The Advanced tab
+   always carries the universal cache_ttl + overwrite, so it is never empty; the
+   Report tab CAN be empty (e.g. CRA / Workflow Summary) — its button is hidden
+   via `show_report_tab` and command-center.js activates the first visible tab on
+   render (the hardcoded Report `aria-selected` below is the no-gating default).
+
+   HANDOFF (Task-4 JS) — back-face a11y: this fragment is injected into the
+   `.wf-back` overlay, which (when the card is NOT flipped) is only visually
+   hidden via backface-visibility — its inputs/buttons remain in the a11y tree
+   and tab order. Task-4 JS MUST mark the back `inert` (or `aria-hidden` +
+   remove it from the tab order) while the front is showing, and move focus
+   into the back on flip. Do NOT implement that here; just don't lose the note. #}
+{# Report tab is non-empty iff at least one of its gated fields shows. #}
+{% set show_report_tab = show_finding_types or show_period or show_current_version_only
+   or show_license or show_open_only or show_baseline_date or show_detailed
+   or show_component or show_cve or show_version_fields %}
+<div class="wf-cfg" data-recipe="{{ recipe }}">
+  <div class="wf-cfg-head">
+    <span class="wf-cfg-title">{{ recipe }}</span>
+    <button type="button" class="wf-cfg-close cardcfg-close" aria-label="Close">&times;</button>
+  </div>
+
+  {# Inline error banner (validation: requires_cve with empty cve_filter). #}
+  <div class="wf-cfg-error cardcfg-error" style="display:none;"></div>
+
+  {# Segmented tab control — command-center.js wires the switching AND, on
+     render, activates the first tab whose panel has fields (the Report tab can
+     be gated away entirely). Switching tabs toggles BOTH the
+     `.wf-tab[aria-selected]` on the buttons AND the matching `.wf-cfg-panel`
+     `.active` / `[hidden]` on the panels below. #}
+  <div class="wf-tabs" role="tablist">
+    {% if show_report_tab %}<button type="button" class="wf-tab cardcfg-tab" data-tab="report" role="tab" aria-selected="true">Report</button>{% endif %}
+    {% if show_triage %}<button type="button" class="wf-tab cardcfg-tab" data-tab="triage" role="tab" aria-selected="false">Triage</button>{% endif %}
+    {% if show_ai %}<button type="button" class="wf-tab cardcfg-tab" data-tab="ai" role="tab" aria-selected="false">AI</button>{% endif %}
+    <button type="button" class="wf-tab cardcfg-tab" data-tab="advanced" role="tab" aria-selected="{{ 'true' if not show_report_tab else 'false' }}">Advanced</button>
+  </div>
+
+  <form class="wf-cfg-form cardcfg-form" onsubmit="return false;">
+    <input type="hidden" name="recipe" value="{{ recipe }}">
+    <input type="hidden" name="_csrf" value="{{ nonce }}">
+
+    {# ── Report tab ─────────────────────────────────────────────── #}
+    <div class="wf-cfg-panel" data-tabpanel="report"{% if not show_report_tab %} hidden{% endif %}>
+
+      {% if show_finding_types %}
+      {# finding types — ft_cb checkbox group + hidden finding_types. #}
+      {% set current_ft = eff.get('finding_types', 'cve') %}
+      <div class="form-group">
+        <label>Finding types</label>
+        <div class="finding-type-checkboxes">
+          <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="cve" {% if 'cve' in current_ft %}checked{% endif %}> CVE</label>
+          <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="sast" {% if 'sast' in current_ft %}checked{% endif %}> SAST</label>
+          <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="thirdparty" {% if 'thirdparty' in current_ft %}checked{% endif %}> 3rd Party</label>
+          <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="credentials" {% if 'credentials' in current_ft %}checked{% endif %}> Credentials</label>
+          <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="config_issues" {% if 'config_issues' in current_ft %}checked{% endif %}> Config</label>
+          <label class="finding-type-cb"><input type="checkbox" name="ft_cb" value="crypto_material" {% if 'crypto_material' in current_ft %}checked{% endif %}> Crypto</label>
+        </div>
+        <input type="hidden" id="cardcfg-ft" name="finding_types" value="{{ current_ft }}"
+               data-override="{{ '1' if is_ov('finding_types') else '0' }}">
+      </div>
+      {% endif %}
+
+      {% if show_period %}
+      <div class="form-group">
+        <label for="cardcfg-period">Period</label>
+        <input type="text" id="cardcfg-period" name="period"
+               value="{{ eff.get('period', '30d') }}" placeholder="30d, 2m, 90d"
+               data-override="{{ '1' if is_ov('period') else '0' }}">
+        {% if not is_ov('period') %}<small class="wf-cfg-inherit">Settings: {{ glob_val('period') }}</small>{% endif %}
+      </div>
+
+      <div class="form-group">
+        <label>Custom date range</label>
+        <div class="wf-cfg-range">
+          <input type="date" id="cardcfg-start" name="start" value="{{ eff.get('start', '') }}" data-override="{{ '1' if is_ov('start') else '0' }}">
+          <span class="wf-cfg-range-sep">to</span>
+          <input type="date" id="cardcfg-end" name="end" value="{{ eff.get('end', '') }}" data-override="{{ '1' if is_ov('end') else '0' }}">
+        </div>
+        <small class="form-hint">Set both to use a custom range (overrides Period).</small>
+      </div>
+      {% endif %}
+
+      {% if show_current_version_only %}
+      <div class="form-group form-row">
+        <label for="cardcfg-cvo">Current version only</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-cvo" name="current_version_only"
+                 {% if eff.get('current_version_only', True) %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('current_version_only') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      {% endif %}
+
+      {% if show_license %}
+      <div class="form-group">
+        <label for="cardcfg-license">License filter</label>
+        <input type="text" id="cardcfg-license" name="license_filter"
+               value="{{ eff.get('license_filter', '') }}"
+               placeholder="GPL, MIT, Apache-2.0"
+               data-override="{{ '1' if is_ov('license_filter') else '0' }}">
+      </div>
+      {% endif %}
+
+      {% if show_open_only %}
+      <div class="form-group form-row">
+        <label for="cardcfg-open-only">Open findings only</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-open-only" name="open_only"
+                 {% if eff.get('open_only') %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('open_only') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      {% endif %}
+
+      {% if show_baseline_date %}
+      <div class="form-group">
+        <label for="cardcfg-baseline-date">Baseline date</label>
+        <input type="date" id="cardcfg-baseline-date" name="baseline_date"
+               value="{{ eff.get('baseline_date','') }}"
+               data-override="{{ '1' if is_ov('baseline_date') else '0' }}">
+      </div>
+      {% endif %}
+
+      {% if show_detailed %}
+      <div class="form-group form-row">
+        <label for="cardcfg-detailed">Detailed output</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-detailed" name="detailed"
+                 {% if eff.get('detailed') %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('detailed') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      {% endif %}
+
+      {% if show_component %}
+      <div class="form-group">
+        <label for="cardcfg-component">&#128230; Component name</label>
+        <input type="text" id="cardcfg-component" name="component_filter"
+               value="{{ eff.get('component_filter', '') }}"
+               placeholder="e.g. openssl, busybox">
+        <small class="form-hint">Contains match — partial names work</small>
+        {# B11 #24: dropped the redundant "Recommended for Component Impact /
+           Component Remediation" hint — those recipes set requires_component
+           (B4), so the field is already marked Required below; recommending the
+           primary input on its own card read as circular. #}
+        {% if requires_component %}
+        <small class="form-hint-warning">Required to run this report</small>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {% if show_cve %}
+      <div class="form-group">
+        <label for="cardcfg-cve">CVE ID(s)</label>
+        <input type="text" id="cardcfg-cve" name="cve_filter"
+               value="{{ eff.get('cve_filter', '') }}"
+               placeholder="CVE-2024-1234, CVE-2024-5678">
+        {% if requires_cve %}<small class="form-hint-warning">Required to run this report</small>{% endif %}
+      </div>
+      {% endif %}
+
+      {% if show_version_fields %}
+      {# Comparison mode toggle: "All versions" (discovery — both pair inputs
+         empty) vs "Specific pair" (baseline+current set). A UX layer over the
+         engine's empty-vs-set-pair semantics; its initial state derives from
+         whether a saved pair exists, so it round-trips through override storage
+         with NO extra persisted field (the toggle has no name=). command-center
+         .js wires the show/hide + clear via #cardcfg-vc-all. #}
+      {% set _vc_pair = eff.get('baseline_version') and eff.get('current_version') %}
+      <div class="form-group form-row">
+        <label for="cardcfg-vc-all">All versions</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-vc-all" {% if not _vc_pair %}checked{% endif %}>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <small class="form-hint">On: compare <b>every</b> version of the scoped project (latest vs previous) — the pickers below stay inactive. Off: pick a specific baseline + current pair (works across projects too).</small>
+
+      {# B11 #19a: the pair pickers stay VISIBLE (dimmed + inert) when All-versions
+         is on, so they're discoverable; the JS toggle flips vc-pair-inert + inert.
+         Server renders the initial inert state (was `hidden`). #}
+      <div class="cardcfg-vc-pair{% if not _vc_pair %} vc-pair-inert{% endif %}"{% if not _vc_pair %} inert{% endif %}>
+        <div class="form-group">
+          <label for="cardcfg-bv">Baseline version</label>
+          <div class="version-picker-row">
+            <select id="cardcfg-bv-project" class="version-picker-select">
+              <option value="">(pick a project)</option>
+            </select>
+            <select id="cardcfg-bv-version" class="version-picker-select" disabled>
+              <option value="">(select project first)</option>
+            </select>
+          </div>
+          <input type="text" id="cardcfg-bv" name="baseline_version"
+                 value="{{ eff.get('baseline_version', '') }}"
+                 placeholder="Or paste version ID directly">
+        </div>
+        <div class="form-group">
+          <label for="cardcfg-cv">Current version</label>
+          <div class="version-picker-row">
+            <select id="cardcfg-cv-project" class="version-picker-select">
+              <option value="">(pick a project)</option>
+            </select>
+            <select id="cardcfg-cv-version" class="version-picker-select" disabled>
+              <option value="">(select project first)</option>
+            </select>
+          </div>
+          <input type="text" id="cardcfg-cv" name="current_version"
+                 value="{{ eff.get('current_version', '') }}"
+                 placeholder="Or paste version ID directly">
+        </div>
+      </div>
+      {% endif %}
+
+      {% if not show_report_tab %}
+      <p class="wf-cfg-empty form-hint">No report-specific options for this report — see the Advanced tab.</p>
+      {% endif %}
+    </div>
+
+    {# ── Triage tab ─────────────────────────────────────────────── #}
+    {% if show_triage %}
+    <div class="wf-cfg-panel" data-tabpanel="triage" hidden>
+      {# tp_gate / vex_override are Triage-Prioritization-only (show_tp_gate);
+         top / triage are shared with Config Analysis Triage (show_triage). #}
+      {% if show_tp_gate %}
+      <div class="form-group">
+        <label for="cardcfg-tp-gate">Gate tier</label>
+        <select id="cardcfg-tp-gate" name="tp_gate" data-override="{{ '1' if is_ov('tp_gate') else '0' }}">
+          <option value="" {% if not eff.get('tp_gate') %}selected{% endif %}>— (none)</option>
+          <option value="GATE_1" {% if eff.get('tp_gate') == 'GATE_1' %}selected{% endif %}>GATE_1</option>
+          <option value="GATE_2" {% if eff.get('tp_gate') == 'GATE_2' %}selected{% endif %}>GATE_2</option>
+          <option value="NONE" {% if eff.get('tp_gate') == 'NONE' %}selected{% endif %}>NONE</option>
+        </select>
+      </div>
+      {% endif %}
+      {# Top N / Triage N — consumed by TP and Config Analysis Triage. #}
+      <div class="form-group">
+        <label for="cardcfg-top">Top N findings</label>
+        <input type="number" id="cardcfg-top" name="top" min="0" step="1"
+               value="{{ eff.get('top', '') }}" placeholder="0 = show all"
+               data-override="{{ '1' if is_ov('top') else '0' }}">
+      </div>
+      <div class="form-group">
+        <label for="cardcfg-triage">Triage N findings</label>
+        <input type="number" id="cardcfg-triage" name="triage" min="0" step="1"
+               value="{{ eff.get('triage', '') }}" placeholder="0 = all eligible"
+               data-override="{{ '1' if is_ov('triage') else '0' }}">
+      </div>
+      {% if show_tp_gate %}
+      <div class="form-group form-row">
+        <label for="cardcfg-vex-override">Override existing VEX</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-vex-override" name="vex_override" {% if eff.get('vex_override') %}checked{% endif %} data-override="{{ '1' if is_ov('vex_override') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      {% endif %}
+
+      {# ── SP2/B7: destructive VEX-write apply (autotriage) — TP or FP ────
+         Shown for any autotriage-capable recipe (Triage Prioritization or False
+         Positive Analysis — gated by show_vex_apply / AUTOTRIAGE_RECIPES).
+         Auto-apply WRITES VEX statuses to the platform after the report runs.
+         Dry run is a transient per-launch preview (not a saved override). #}
+      {% if show_vex_apply %}
+      <div class="form-group form-row">
+        <label for="cardcfg-autotriage">Auto-apply VEX to platform</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-autotriage" name="autotriage" {% if eff.get('autotriage') %}checked{% endif %} data-override="{{ '1' if is_ov('autotriage') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="form-group">
+        <label>Limit to VEX statuses (optional)</label>
+        {% set cur_as = eff.get('autotriage_status','') %}
+        <div class="finding-type-checkboxes">
+          <label class="finding-type-cb"><input type="checkbox" name="as_cb" value="EXPLOITABLE" {% if 'EXPLOITABLE' in cur_as.split(',') %}checked{% endif %}> EXPLOITABLE</label>
+          <label class="finding-type-cb"><input type="checkbox" name="as_cb" value="IN_TRIAGE" {% if 'IN_TRIAGE' in cur_as.split(',') %}checked{% endif %}> IN_TRIAGE</label>
+          <label class="finding-type-cb"><input type="checkbox" name="as_cb" value="NOT_AFFECTED" {% if 'NOT_AFFECTED' in cur_as.split(',') %}checked{% endif %}> NOT_AFFECTED</label>
+          <label class="finding-type-cb"><input type="checkbox" name="as_cb" value="FALSE_POSITIVE" {% if 'FALSE_POSITIVE' in cur_as.split(',') %}checked{% endif %}> FALSE_POSITIVE</label>
+          <label class="finding-type-cb"><input type="checkbox" name="as_cb" value="RESOLVED" {% if 'RESOLVED' in cur_as.split(',') %}checked{% endif %}> RESOLVED</label>
+          <label class="finding-type-cb"><input type="checkbox" name="as_cb" value="RESOLVED_WITH_PEDIGREE" {% if 'RESOLVED_WITH_PEDIGREE' in cur_as.split(',') %}checked{% endif %}> RESOLVED_WITH_PEDIGREE</label>
+        </div>
+        <input type="hidden" id="cardcfg-autotriage-status" name="autotriage_status"
+               value="{{ eff.get('autotriage_status','') }}"
+               data-override="{{ '1' if is_ov('autotriage_status') else '0' }}">
+        <small class="form-hint">Empty = apply all recommended statuses.</small>
+      </div>
+      <div class="form-group form-row">
+        <label for="cardcfg-dry-run">Dry run (preview only)</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-dry-run" name="dry_run">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <small class="form-hint form-hint-warning">Auto-apply <b>writes VEX statuses to the platform</b> when this report runs. Use Dry run first to preview; you'll confirm before any real write. (Override existing VEX, above, only affects in-report recommendations.)</small>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# ── AI tab ─────────────────────────────────────────────────── #}
+    {% if show_ai %}
+    <div class="wf-cfg-panel" data-tabpanel="ai" hidden>
+      <div class="form-group form-row">
+        <label for="cardcfg-ai">Enable AI</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-ai" name="ai"
+                 {% if eff.get('ai') %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('ai') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="form-group">
+        <label for="cardcfg-ai-depth">AI depth</label>
+        <select id="cardcfg-ai-depth" name="ai_depth"
+                data-override="{{ '1' if is_ov('ai_depth') else '0' }}">
+          <option value="summary" {% if eff.get('ai_depth', 'summary') == 'summary' %}selected{% endif %}>Summary</option>
+          <option value="full" {% if eff.get('ai_depth') == 'full' %}selected{% endif %}>Full</option>
+        </select>
+        {% if not is_ov('ai_depth') %}<small class="wf-cfg-inherit">Settings: {{ glob_val('ai_depth') }}</small>{% endif %}
+      </div>
+      <div class="form-group form-row">
+        <label for="cardcfg-ai-prompts">Export AI prompts</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-ai-prompts" name="ai_prompts"
+                 {% if eff.get('ai_prompts') %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('ai_prompts') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      {# Deployment context reaches the LLM for 4 of the 5 AI recipes (not CRP). #}
+      {% if show_deployment_context %}
+      <div class="form-group">
+        <label for="cardcfg-product-type">Product type</label>
+        <select id="cardcfg-product-type" name="product_type"
+                data-override="{{ '1' if is_ov('product_type') else '0' }}">
+          <option value="generic" {% if eff.get('product_type', 'generic') == 'generic' %}selected{% endif %}>Generic</option>
+          <option value="firmware" {% if eff.get('product_type') == 'firmware' %}selected{% endif %}>Firmware</option>
+          <option value="web_app" {% if eff.get('product_type') == 'web_app' %}selected{% endif %}>Web App</option>
+          <option value="mobile_app" {% if eff.get('product_type') == 'mobile_app' %}selected{% endif %}>Mobile App</option>
+          <option value="library" {% if eff.get('product_type') == 'library' %}selected{% endif %}>Library</option>
+          <option value="device_driver" {% if eff.get('product_type') == 'device_driver' %}selected{% endif %}>Device Driver</option>
+          <option value="container" {% if eff.get('product_type') == 'container' %}selected{% endif %}>Container</option>
+          <option value="desktop_app" {% if eff.get('product_type') == 'desktop_app' %}selected{% endif %}>Desktop App</option>
+        </select>
+        {% if not is_ov('product_type') %}<small class="wf-cfg-inherit">Settings: {{ glob_val('product_type') }}</small>{% endif %}
+      </div>
+
+      <div class="form-group">
+        <label for="cardcfg-network-exposure">Network exposure</label>
+        <select id="cardcfg-network-exposure" name="network_exposure"
+                data-override="{{ '1' if is_ov('network_exposure') else '0' }}">
+          <option value="unknown" {% if eff.get('network_exposure', 'unknown') == 'unknown' %}selected{% endif %}>Unknown</option>
+          <option value="air_gapped" {% if eff.get('network_exposure') == 'air_gapped' %}selected{% endif %}>Air-gapped</option>
+          <option value="internal_only" {% if eff.get('network_exposure') == 'internal_only' %}selected{% endif %}>Internal Only</option>
+          <option value="internet_facing" {% if eff.get('network_exposure') == 'internet_facing' %}selected{% endif %}>Internet-facing</option>
+          <option value="mixed" {% if eff.get('network_exposure') == 'mixed' %}selected{% endif %}>Mixed</option>
+        </select>
+        {% if not is_ov('network_exposure') %}<small class="wf-cfg-inherit">Settings: {{ glob_val('network_exposure') }}</small>{% endif %}
+      </div>
+
+      <div class="form-group">
+        <label for="cardcfg-regulatory">Regulatory frameworks</label>
+        <input type="text" id="cardcfg-regulatory" name="regulatory"
+               value="{{ eff.get('regulatory', '') }}"
+               placeholder="e.g. IEC-62443, FDA, NIST 800-53"
+               data-override="{{ '1' if is_ov('regulatory') else '0' }}">
+        {% if not is_ov('regulatory') and glob_val('regulatory') %}<small class="wf-cfg-inherit">Settings: {{ glob_val('regulatory') }}</small>{% endif %}
+      </div>
+
+      <div class="form-group">
+        <label for="cardcfg-deploy-notes">Deployment notes</label>
+        <textarea id="cardcfg-deploy-notes" name="deployment_notes"
+                  maxlength="500" rows="3"
+                  data-override="{{ '1' if is_ov('deployment_notes') else '0' }}"
+                  placeholder="Additional context about the deployment environment…">{{ eff.get('deployment_notes', '') }}</textarea>
+        <small class="form-hint char-counter">
+          <span id="cardcfg-deploy-notes-count">{{ eff.get('deployment_notes', '') | length }}</span>/500
+        </small>
+      </div>
+
+      <div class="form-group">
+        <label>AI deployment context (YAML)</label>
+        <div class="fs-upload" data-kind="context" data-target="cardcfg-context-file">
+          <input type="file" class="fs-upload-input" accept=".yaml,.yml">
+          <span class="fs-upload-name">{{ eff.get('context_file','').rsplit('/', 1)[-1] or 'none' }}</span>
+          <button type="button" class="fs-upload-clear" aria-label="Clear">&times;</button>
+        </div>
+        <input type="hidden" id="cardcfg-context-file" name="context_file"
+               value="{{ eff.get('context_file','') }}"
+               data-override="{{ '1' if is_ov('context_file') else '0' }}">
+        <small class="form-hint">Overrides AI prompt context (product type, exposure, notes).</small>
+      </div>
+      {% endif %}
+
+      {% if show_threat_context %}
+      <div class="form-group">
+        <label for="cardcfg-threat-context">Threat context</label>
+        <textarea id="cardcfg-threat-context" name="threat_context" rows="3"
+                  data-override="{{ '1' if is_ov('threat_context') else '0' }}"
+                  placeholder="Additional remediation / threat context for AI analysis…">{{ eff.get('threat_context','') }}</textarea>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# ── Advanced tab (never empty — cache_ttl + overwrite are universal) ── #}
+    <div class="wf-cfg-panel" data-tabpanel="advanced" hidden>
+
+      {# ── SP3: uploaded scoring file (B11 #18: label/hint per consumer) ── #}
+      {% if show_scoring %}
+      <div class="form-group">
+        {% if scoring_is_staleness %}<label>Custom staleness thresholds (YAML)</label>
+        {% elif scoring_is_triage %}<label>Custom triage scoring weights (YAML)</label>
+        {% else %}<label>Custom scoring file (YAML)</label>{% endif %}
+        <div class="fs-upload" data-kind="scoring" data-target="cardcfg-scoring-file">
+          <input type="file" class="fs-upload-input" accept=".yaml,.yml">
+          <span class="fs-upload-name">{{ eff.get('scoring_file','').rsplit('/', 1)[-1] or 'none' }}</span>
+          <button type="button" class="fs-upload-clear" aria-label="Clear">&times;</button>
+        </div>
+        <input type="hidden" id="cardcfg-scoring-file" name="scoring_file"
+               value="{{ eff.get('scoring_file','') }}"
+               data-override="{{ '1' if is_ov('scoring_file') else '0' }}">
+        {% if scoring_is_staleness %}<small class="form-hint">Scan-age staleness thresholds (days), e.g. <code>staleness_thresholds: {fresh: 30, aging: 90, stale: 365}</code>.</small>
+        {% elif scoring_is_triage %}<small class="form-hint">Triage scoring weights — reachability / exploitability / EPSS / CVSS and gate cutoffs.</small>
+        {% else %}<small class="form-hint">Custom scoring weights / staleness thresholds.</small>{% endif %}
+      </div>
+      {% endif %}
+
+      <div class="form-group">
+        <label for="cardcfg-cache-ttl">Cache TTL (0=off)</label>
+        <input type="text" id="cardcfg-cache-ttl" name="cache_ttl"
+               value="{{ eff.get('cache_ttl', '4') }}" placeholder="4h"
+               data-override="{{ '1' if is_ov('cache_ttl') else '0' }}">
+        <small class="form-hint">Examples: 4h, 2d, 30m, 1h30m, or bare number (hours)</small>
+        {% if not is_ov('cache_ttl') %}<small class="wf-cfg-inherit">Settings: {{ glob_val('cache_ttl') }}</small>{% endif %}
+      </div>
+
+      <div class="form-group form-row">
+        <label for="cardcfg-overwrite">Overwrite existing</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-overwrite" name="overwrite"
+                 {% if eff.get('overwrite') %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('overwrite') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      {% if show_component_match %}
+      <div class="form-group">
+        <label for="cardcfg-component-match">Component match mode</label>
+        <select id="cardcfg-component-match" name="component_match"
+                data-override="{{ '1' if is_ov('component_match') else '0' }}">
+          <option value="contains" {% if eff.get('component_match','contains') == 'contains' %}selected{% endif %}>Contains</option>
+          <option value="exact" {% if eff.get('component_match','contains') == 'exact' %}selected{% endif %}>Exact</option>
+        </select>
+      </div>
+      {% endif %}
+
+      {% if show_component_version %}
+      <div class="form-group">
+        {# B11 #28: this is a version RANGE, not a single version. #}
+        <label for="cardcfg-component-version">Component version range</label>
+        <input type="text" id="cardcfg-component-version" name="component_version"
+               value="{{ eff.get('component_version', '') }}"
+               placeholder="e.g. 1.2.11, &lt;2.0, &gt;=1.0,&lt;2.0"
+               data-override="{{ '1' if is_ov('component_version') else '0' }}">
+        <small class="form-hint">Exact version or a range — <code>1.2.11</code>, <code>&lt;2.0</code>, <code>&gt;=1.0,&lt;2.0</code>.</small>
+      </div>
+      {% endif %}
+
+      {% if show_standalone %}
+      <div class="form-group form-row">
+        <label for="cardcfg-standalone">Standalone (skip deps)</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-standalone" name="standalone"
+                 {% if eff.get('standalone') %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('standalone') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      {% endif %}
+
+      {% if show_detected_after %}
+      <div class="form-group">
+        <label for="cardcfg-detected-after">Detected after</label>
+        <input type="date" id="cardcfg-detected-after" name="detected_after"
+               value="{{ eff.get('detected_after','') }}"
+               data-override="{{ '1' if is_ov('detected_after') else '0' }}">
+      </div>
+      {% endif %}
+
+      {% if show_scan_filters %}
+      <div class="form-group">
+        <label>Scan types</label>
+        {% set cur_st = eff.get('scan_types','') %}
+        <div class="finding-type-checkboxes">
+          <label class="finding-type-cb"><input type="checkbox" name="st_cb" value="SCA" {% if 'SCA' in cur_st.split(',') %}checked{% endif %}> SCA</label>
+          <label class="finding-type-cb"><input type="checkbox" name="st_cb" value="SAST" {% if 'SAST' in cur_st.split(',') %}checked{% endif %}> SAST</label>
+          <label class="finding-type-cb"><input type="checkbox" name="st_cb" value="CONFIG" {% if 'CONFIG' in cur_st.split(',') %}checked{% endif %}> CONFIG</label>
+          <label class="finding-type-cb"><input type="checkbox" name="st_cb" value="SOURCE_SCA" {% if 'SOURCE_SCA' in cur_st.split(',') %}checked{% endif %}> SOURCE_SCA</label>
+          <label class="finding-type-cb"><input type="checkbox" name="st_cb" value="SBOM_IMPORT" {% if 'SBOM_IMPORT' in cur_st.split(',') %}checked{% endif %}> SBOM_IMPORT</label>
+          <label class="finding-type-cb"><input type="checkbox" name="st_cb" value="VULNERABILITY_ANALYSIS" {% if 'VULNERABILITY_ANALYSIS' in cur_st.split(',') %}checked{% endif %}> VULNERABILITY_ANALYSIS</label>
+        </div>
+        <input type="hidden" id="cardcfg-scan-types" name="scan_types"
+               value="{{ eff.get('scan_types','') }}"
+               data-override="{{ '1' if is_ov('scan_types') else '0' }}">
+      </div>
+
+      <div class="form-group">
+        <label>Scan statuses</label>
+        {% set cur_ss = eff.get('scan_statuses','') %}
+        <div class="finding-type-checkboxes">
+          <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="INITIAL" {% if 'INITIAL' in cur_ss.split(',') %}checked{% endif %}> INITIAL</label>
+          <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="PENDING_UPLOAD" {% if 'PENDING_UPLOAD' in cur_ss.split(',') %}checked{% endif %}> PENDING_UPLOAD</label>
+          <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="UPLOAD_FAILED" {% if 'UPLOAD_FAILED' in cur_ss.split(',') %}checked{% endif %}> UPLOAD_FAILED</label>
+          <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="COMPLETED" {% if 'COMPLETED' in cur_ss.split(',') %}checked{% endif %}> COMPLETED</label>
+          <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="ERROR" {% if 'ERROR' in cur_ss.split(',') %}checked{% endif %}> ERROR</label>
+          <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="STARTED" {% if 'STARTED' in cur_ss.split(',') %}checked{% endif %}> STARTED</label>
+          <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="NOT_APPLICABLE" {% if 'NOT_APPLICABLE' in cur_ss.split(',') %}checked{% endif %}> NOT_APPLICABLE</label>
+        </div>
+        <input type="hidden" id="cardcfg-scan-statuses" name="scan_statuses"
+               value="{{ eff.get('scan_statuses','') }}"
+               data-override="{{ '1' if is_ov('scan_statuses') else '0' }}">
+      </div>
+      {% endif %}
+    </div>
+
+    {# ── Footer (pinned) — command-center.js wires the buttons. ──── #}
+    <div class="wf-cfg-actions">
+      <button type="button" class="btn btn-primary cardcfg-save" id="cardcfg-save">Save</button>
+      <button type="button" class="btn btn-primary cardcfg-save-run" id="cardcfg-save-run">Save &amp; Run</button>
+      <button type="button" class="btn btn-default cardcfg-reset" id="cardcfg-reset">Reset to Settings defaults</button>
+    </div>
+  </form>
+</div>

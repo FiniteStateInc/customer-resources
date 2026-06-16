@@ -99,6 +99,30 @@ Assessment reports show the current security state of the target — the latest 
 
 > **Tip:** If you need to date-filter an Assessment report (e.g., "only show findings detected after January 1"), use the `--detected-after YYYY-MM-DD` flag. This injects a date floor without changing the report's current-state nature.
 
+### Comparison Reports
+
+**"What changed between these two scopes?"**
+
+Comparison reports diff two scopes — two project versions, two projects, or two
+folders — and render the result to HTML. They are run with the dedicated
+`fs-report compare` command (not `fs-report run`), passing a `--left` and
+`--right` scope reference such as `project:My Device@v3.2.1`, `project:My Device`
+(latest version), or `folder:EU-Routers`.
+
+| Report | What it shows |
+|--------|---------------|
+| **Component Diff** | Components added, removed, and version-changed between the two scopes |
+| **Finding Diff** | Findings (CVEs) introduced, resolved, and carried over |
+| **License Diff** | License classification changes across the two scopes |
+| **Triage Status Diff** | VEX/triage status changes per finding |
+
+```bash
+# Diff findings between two versions of a project
+fs-report compare "Finding Diff" --left "project:My Device@v3.2.1" --right "project:My Device@v3.3.0"
+```
+
+> For version-over-version trends *within* a single project, use the **Version Comparison** report (an Assessment report run with `fs-report run`) instead.
+
 ---
 
 ## Available Reports
@@ -239,7 +263,7 @@ fs-report run --recipe "Component Vulnerability Analysis" --period 30d
 - Complete list of security findings per project
 - CVSS scores and severity levels (color-coded badges)
 - CVE descriptions sourced from the NVD
-- CVSS v2 and v3 vector strings for detailed analysis
+- CVSS v3 vector strings for detailed analysis
 - Direct links to NVD detail pages and the Finite State platform
 - Affected components, versions, and folder paths
 - CVE identifiers and exploit information
@@ -251,7 +275,7 @@ fs-report run --recipe "Component Vulnerability Analysis" --period 30d
 - **Component & Version** — Specific vulnerable software
 - **Project Name** — Which project contains the finding
 - **Exploit/Weaponization Count** — Known active threats
-- **CVSS v2/v3 Vectors** — Raw vector strings for detailed vulnerability analysis
+- **CVSS v3 Vector** — Raw vector string for detailed vulnerability analysis (CVSS v2 was dropped — NVD stopped assigning it ~2016+)
 - **NVD URL** — Direct link to NVD detail page (CVE ID is also clickable in HTML)
 - **FS Link** — Direct link to the finding in the Finite State platform
 - **Folder** — Folder path (when folder filtering is active)
@@ -440,7 +464,7 @@ fs-report run --recipe "License Report"
 | **Unknown** | Unlicensed, non-SPDX names | Cannot assess risk |
 | **Permissive** | MIT, Apache-2.0, BSD-2-Clause | No disclosure obligations |
 
-**Output files (v1.9.7+):**
+**Output files:**
 
 | File | Shape | Purpose |
 |------|-------|---------|
@@ -451,7 +475,7 @@ fs-report run --recipe "License Report"
 
 The flat detail rows are bounded by component count, not per-license cardinality, so they pivot/auto-filter cleanly in Excel.
 
-**Optional flags (v1.9.7+):**
+**Optional flags:**
 - `--license "GPL,AGPL"` — restrict to license name(s) matching any of the comma-separated terms (case-insensitive substring). Filters both tables, the pie chart, and the KPIs. Use this to narrow the report to violation licenses (e.g. strong copyleft) and list every project + component that carries them. Note: filtering is client-side; the full component list is still fetched from the API.
 
 **Formats:** HTML, CSV, XLSX
@@ -729,9 +753,10 @@ Supports multiple LLM providers (auto-detected from environment variables):
 
 | Provider | Env Variable | Summary Model | Fast Model |
 |----------|-------------|---------------|------------|
-| **Anthropic** (default) | `ANTHROPIC_API_KEY` | Claude Opus | Claude Haiku |
+| **Anthropic** (default) | `ANTHROPIC_API_KEY` | Claude Opus | Claude Sonnet |
 | **OpenAI** | `OPENAI_API_KEY` | GPT-4o | GPT-4o-mini |
 | **GitHub Copilot** | `GITHUB_TOKEN` | GPT-4o | GPT-4o-mini |
+| **Google Gemini** | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | Gemini 2.5 Pro | Gemini 2.5 Flash |
 
 Set one of the environment variables above, or use `--ai-provider` to choose explicitly. Results are cached in `~/.fs-report/cache.db`.
 
@@ -887,7 +912,7 @@ fs-report run --recipe "Triage Prioritization" --serve
 fs-report run --recipe "Triage Prioritization" --serve --serve-port 9090
 ```
 
-The `--serve` flag starts a lightweight local server on `http://localhost:8080` (or custom port), which provides a proper HTTP origin and avoids CORS issues. Press `Ctrl+C` to stop the server.
+The `--serve` flag starts a lightweight local server on `http://localhost:8321` (or custom port), which provides a proper HTTP origin and avoids CORS issues. Press `Ctrl+C` to stop the server.
 
 ---
 
@@ -1103,7 +1128,7 @@ The four queue sections (🔥/🆕/🔁/⏰) are mutually exclusive per row — 
 |--------|-------------|
 | **CVE / Component / Severity / CVSS** | Standard identification |
 | **Maturity** | Exploit-maturity tier (kev / weaponized / poc / ransomware / threat_actor) |
-| **KEV Source** | `CISA` (in public CISA KEV catalog), `VcKEV` (FS verified-compromise signal), or `CISA+VcKEV` (both). Only on 🔥. |
+| **KEV Source** | `CISA` (in public CISA KEV catalog), `VcKEV` (in VulnCheck's KEV catalog, broader than CISA's), or `CISA+VcKEV` (both). Only on 🔥. |
 | **Breach Status** | `OVERDUE` / `DUE_SOON` / `UPCOMING` / `UNKNOWN` |
 | **Hours Until Due / Notification Deadline** | CRA Article 14 24-hour clock |
 | **CISA Remediation Due** | US federal BOD 22-01 deadline (separate from CRA clock). Only on 🔥. |
@@ -1366,12 +1391,12 @@ fs-report run --recipe "Version Comparison" \
 fs-report run --recipe "Executive Dashboard"
 ```
 
-**Modes (1.9.6+):** summary (default) and detailed (`--detailed`).
+**Modes:** summary (default) and detailed (`--detailed`).
 
 - **Summary mode** uses platform summary-count endpoints to render all 13 panels in under 10 minutes portfolio-wide. No per-finding data is fetched. RSQL-batched `/components` and `/versions` prefetching cuts round-trip count by 10–50x; warm-cache reruns skip the batch phases entirely when every id is already cached.
 - **Detailed mode** (`--detailed`) runs the legacy per-finding fetch pipeline. Slower (10+ hours on large portfolios) but enables per-severity Critical/High trend lines and per-finding detection histograms.
 
-**Period scoping (1.9.6+):** when `--period`, `--start`, or `--end` is explicit, summary mode restricts KPIs and charts to projects whose current version was scanned within that window. Default runs (no explicit period) aggregate the entire portfolio. Pass `--period 10y` to force all-time aggregation with an explicit window.
+**Period scoping:** when `--period`, `--start`, or `--end` is explicit, summary mode restricts KPIs and charts to projects whose current version was scanned within that window. Default runs (no explicit period) aggregate the entire portfolio. Pass `--period 10y` to force all-time aggregation with an explicit window.
 
 **What it shows (13 panels):**
 
@@ -1395,11 +1420,11 @@ fs-report run --recipe "Executive Dashboard"
 
 - Without `--folder`: groups findings by **folder** (portfolio-level view).
 - With `--folder "Product Line A"`: groups findings by **project** within that folder.
-- Empty-folder handling (1.9.6+): if `--folder` resolves to zero projects, the dashboard produces an empty report in seconds instead of silently scanning the entire portfolio.
+- Empty-folder handling: if `--folder` resolves to zero projects, the dashboard produces an empty report in seconds instead of silently scanning the entire portfolio.
 
 **Finding types:** The report automatically uses all finding categories regardless of `--finding-types`.
 
-**Partial-data resilience (1.9.6+):** per-project summary-count failures no longer abort the run. The dashboard renders with remaining data and names the failed projects in a banner.
+**Partial-data resilience:** per-project summary-count failures no longer abort the run. The dashboard renders with remaining data and names the failed projects in a banner.
 
 **Concurrency:** `FS_REPORT_EXEC_DASHBOARD_WORKERS` env var (default `1`) controls the per-version summary-count fan-out. Raise to `10` on environments with generous API quotas; keep at `1` when the platform rate-limits aggressively.
 
@@ -1541,7 +1566,7 @@ fs-report run --recipe "Remediation Package" --project "MyProject" --ai \
   --context-file deployment.yaml
 ```
 
-When `--ai` is enabled, each action is enriched with LLM-generated workaround guidance and breaking-change risk assessment. Add `--ai-analysis` to use the high-capability model for deeper analysis. Use `--ai off` to disable AI even if the recipe YAML enables it by default.
+When `--ai` is enabled, each action is enriched with LLM-generated workaround guidance and breaking-change risk assessment. Add `--ai-analysis` to use the high-capability model for deeper analysis. `--ai` is the master switch: simply omit it to disable all AI enrichment, even when a recipe enables AI by default.
 
 Add `--product-type` and `--network-exposure` (or `--context-file`) to get product-specific workaround recommendations tailored to your deployment environment. See the [Deployment Context](#deployment-context-product-aware-ai-guidance) section under Triage Prioritization for full details.
 
@@ -1601,7 +1626,7 @@ Most reports generate output in multiple formats:
 | `--baseline-version` | Baseline version ID | Version Comparison | `--baseline-version 12345` |
 | `--current-version` | Current version ID | Version Comparison | `--current-version 67890` |
 | `--ai-model-high` | Override the "high" (summary) LLM model | AI-enabled reports | `--ai-model-high claude-sonnet-4-20250514` |
-| `--ai-model-low` | Override the "low" (fast) LLM model | AI-enabled reports | `--ai-model-low claude-haiku-4-5-20251001` |
+| `--ai-model-low` | Override the "low" (fast) LLM model | AI-enabled reports | `--ai-model-low claude-sonnet-4-6` |
 | `--product-type` | Product type for AI persona selection | AI-enabled reports | `--product-type firmware` |
 | `--network-exposure` | Network exposure level | AI-enabled reports | `--network-exposure air_gapped` |
 | `--context-file` | Deployment context YAML file | AI-enabled reports | `--context-file deployment.yaml` |
@@ -1737,5 +1762,5 @@ fs-report run --period 30d --finding-types all
 
 For questions or issues:
 - Review the `README.md` for installation and CLI reference
-- Check `CUSTOMER_SETUP.md` for environment configuration
+- Run `fs-report config init` to set your domain and API token, and `fs-report config show` to inspect the resolved configuration
 - Contact your Finite State representative for support

@@ -1,0 +1,144 @@
+<style>
+.run-err-badge{font-family:var(--font-mono);font-size:9.5px;color:var(--sev-critical);margin-left:auto}
+.run-cancel-badge{font-family:var(--font-mono);font-size:9.5px;color:var(--ink-mute);margin-left:auto}
+.run-bar-err{background:rgba(var(--sev-critical-rgb,248,113,113),.15)}
+.run-fill-err{background:var(--sev-critical);box-shadow:none}
+</style>
+<div class="panel" id="running-reports">
+  <div class="phead">
+    <h2>Running Reports</h2>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="pmeta">live</span>
+      <a class="plink" href="/reports" style="font-size:11px">more →</a>
+      <button class="prefresh" id="rr-refresh"
+              hx-get="/api/running"
+              hx-target="#running-container"
+              hx-swap="innerHTML"
+              onclick="this.classList.add('spin');setTimeout(()=>this.classList.remove('spin'),900)">
+        ↻ Refresh
+      </button>
+    </div>
+  </div>
+  <div class="q-metrics">
+    <div class="q-metric">
+      <div class="qv" data-cc="rr-running" style="color:var(--accent)">{{ running_count }}</div>
+      <div class="ql"><span class="mdot" style="background:var(--accent)"></span> Running</div>
+    </div>
+    <div class="q-metric">
+      <div class="qv" data-cc="rr-done" style="color:var(--sev-low)">{{ done_count }}</div>
+      <div class="ql"><span class="mdot" style="background:var(--sev-low)"></span> Done</div>
+    </div>
+    <div class="q-metric">
+      <div class="qv" data-cc="rr-failed" style="color:var(--sev-critical)">{{ failed_count }}</div>
+      <div class="ql"><span class="mdot" style="background:var(--sev-critical)"></span> Failed</div>
+    </div>
+  </div>
+  {% if runs %}
+  {% for run in runs %}
+  {% set progress = run.progress %}
+  {% set is_multi = progress and progress.total > 1 %}
+  {% set pct = (progress.completed / progress.total * 100) | round(1) if is_multi else 0 %}
+  {% set is_err = run.status != 'running' and run.result == 'error' %}
+  {% set is_cancelled = run.status != 'running' and run.result == 'cancelled' %}
+  {% set is_success = run.status != 'running' and run.result == 'success' %}
+  {% set is_finished_unknown = run.status != 'running' and run.result != 'success' and run.result != 'error' and run.result != 'cancelled' %}
+  {% set report_url = run.report_url %}
+  {# A workflow run renders as ONE first-class row: named by the workflow, a
+     segment sparkline (done / pulsing-now / pending) in place of the bar, and a
+     click that opens the run (/run/{id}) — NOT the last report. The is_wf
+     branch is evaluated FIRST so a successful workflow links to /run/{id}, not
+     report_url.
+
+     A COMPOUND row links to the SAME canvas (/run/{id}): the fan-in canvas is
+     reopened and its deliverable node opens the combined report (spec §9). So
+     the LINK uses is_canvas (workflow OR compound); the NAME still uses is_wf
+     (a compound row shows recipes[0] = the compound/bundle name, not a
+     workflow_name) — only the link target changes.
+
+     ALL terminal states (success / cancelled / error / unknown) for a canvas
+     row reopen the canvas (/run/{id}) — including ERROR (fix ④): the canvas now
+     renders the terminal error state + the deliverable's error message, and a
+     persistent "Run log" link in the canvas toolbar keeps the raw log one click
+     away. Only ad-hoc (non-canvas) report errors still route straight to
+     /run/{id}/log. #}
+  {% set is_wf = run.kind == 'workflow' %}
+  {% set is_canvas = run.kind in ('workflow', 'compound') %}
+  {% set wf_total = (progress.total if progress else (run.recipes | length)) or (run.recipes | length) %}
+  {% set wf_completed = (progress.completed if progress else 0) %}
+  {% set wf_tint = 'success' if is_success else ('error' if is_err else ('cancelled' if is_cancelled else 'neutral')) %}
+  <div class="run-row{% if is_canvas %} run-row-link{% elif is_success and report_url %} run-row-link{% elif is_err %} run-row-link{% endif %}"
+       data-run-id="{{ run.run_id }}"
+       data-kind="{{ run.kind }}"
+       {% if run.status != 'running' %}data-done="1"{% endif %}
+       {% if is_canvas %}onclick="location.href='/run/{{ run.run_id }}'" style="cursor:pointer"
+       {% elif is_success and report_url %}onclick="location.href='{{ report_url }}'" style="cursor:pointer"
+       {% elif is_err %}onclick="location.href='/run/{{ run.run_id }}/log'" style="cursor:pointer"
+       {% endif %}>
+    <div class="run-row-top">
+      <span class="run-name">{% if is_wf %}{{ run.workflow_name or 'Workflow' }}{% else %}{{ run.recipes[0] }}{% if run.recipes | length > 1 %} <span class="run-more">+{{ run.recipes | length - 1 }}</span>{% endif %}{% endif %}</span>
+      <span class="run-scope">· {{ run.scope }}</span>
+      {% if is_err %}
+      <span class="run-err-badge" style="margin-left:auto">✕ failed</span>
+      {% elif is_cancelled %}
+      <span class="run-cancel-badge" style="margin-left:auto">— cancelled</span>
+      {% elif is_success %}
+      <span class="qdone-badge" style="margin-left:auto">✓ done</span>
+      {% elif is_finished_unknown %}
+      {# Defensive: completed run with null/unexpected result — show neutral state #}
+      <span class="run-cancel-badge" style="margin-left:auto">— finished</span>
+      {% else %}
+      <span class="run-elapsed" style="margin-left:auto">{% if run.elapsed >= 60 %}{{ (run.elapsed // 60) }}m{% else %}{{ run.elapsed }}s{% endif %}</span>
+      {# B2 #21: per-row Stop — wired to POST /api/run/{id}/cancel by the
+         delegated handler in command-center.js (stops row-navigation
+         propagation on canvas rows). The poller settles the row to "cancelled"
+         on its next tick. #}
+      <button type="button" class="run-stop" data-run-id="{{ run.run_id }}" title="Stop run" aria-label="Stop run">✕</button>
+      {% endif %}
+    </div>
+    {% if is_wf %}
+    {# ── Workflow segment sparkline (one .seg per step) ──────────────
+       Running: done (< completed) / now (== completed, pulsing) / pending.
+       Finished: all done, result-tinted (+ a one-time shimmer added by the
+       poller on the in-place transition). The template owns this markup; the
+       poller only toggles .seg classes + the label (no rebuild → no drift). #}
+    <div class="wf-spark{% if run.status != 'running' %} wf-spark--{{ wf_tint }}{% endif %}">
+      {% for i in range(wf_total) %}<i class="seg{% if run.status != 'running' or i < wf_completed %} done{% elif i == wf_completed %} now{% else %} pending{% endif %}"{% if run.recipes[i] is defined %} title="{{ run.recipes[i] }}"{% endif %}></i>{% endfor %}
+    </div>
+    <div class="run-status-text wf-spark-label">{% if run.status == 'running' %}step {{ wf_completed }} of {{ wf_total }}{% else %}{{ wf_total }} steps{% endif %}</div>
+    {% elif run.status == 'running' %}
+    {% if is_multi %}
+    {# Determinate bar: multiple recipes, show progress width #}
+    <div class="run-bar">
+      <i class="run-fill" style="width: {{ pct }}%"></i>
+    </div>
+    <div class="run-status-text">recipe {{ progress.completed }}/{{ progress.total }}</div>
+    {% else %}
+    {# Indeterminate bar: single recipe or no progress yet — use sweep animation #}
+    <div class="run-bar">
+      <i class="run-sweep"></i>
+    </div>
+    <div class="run-status-text">running…</div>
+    {% endif %}
+    {% elif is_err %}
+    <div class="run-bar run-bar-err">
+      <i class="run-fill run-fill-err" style="width:100%"></i>
+    </div>
+    {% elif is_success %}
+    <div class="run-bar run-bar-done">
+      <i class="run-fill run-fill-done" style="width:100%"></i>
+    </div>
+    {% else %}
+    {# cancelled or null result — neutral muted bar #}
+    <div class="run-bar run-bar-done" style="opacity:.4">
+      <i class="run-fill run-fill-done" style="width:100%"></i>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="run-empty">
+    <span style="color:var(--ink-mute);font-size:12px">No reports running</span>
+    <span style="color:var(--ink-faint);font-size:11px;margin-top:3px">Launch one from the report cards below.</span>
+  </div>
+  {% endif %}
+</div>

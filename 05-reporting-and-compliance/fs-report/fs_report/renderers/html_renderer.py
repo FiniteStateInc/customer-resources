@@ -45,18 +45,23 @@ from fs_report.renderers.chart_palette import (
     SLACK_LINK_COLOR,
 )
 from fs_report.renderers.fragment_extractor import extract_fragment
+from fs_report.renderers.render_mode import RenderMode
+from fs_report.scope_resolution import compute_effective_scope
+from fs_report.slug import slug
 
 logger = logging.getLogger(__name__)
 
 
-_SLUG_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
-
-
 def _recipe_scope_class(recipe: Recipe) -> str:
-    """Derive the ``.fs-section-<slug>`` class used for fragment scoping."""
-    name = (recipe.name or "section").strip().lower()
-    slug = _SLUG_NON_ALNUM_RE.sub("-", name).strip("-")
-    return f"fs-section-{slug or 'section'}"
+    """Derive the ``.fs-section-<slug>`` class used for fragment scoping.
+
+    Uses the canonical :func:`fs_report.slug.slug` function so the scope
+    class matches the compound-report TOC anchor (`#fs-section-<slug>`),
+    DOM id, output directory name, and CLI argv resolution. See the
+    compound-reports design spec § 7 "Canonical slug() function".
+    """
+    name = (recipe.name or "section").strip() or "section"
+    return f"fs-section-{slug(name)}"
 
 
 def _slack_mrkdwn_to_html(text: str) -> str:
@@ -65,7 +70,6 @@ def _slack_mrkdwn_to_html(text: str) -> str:
     Handles: *bold*, _italic_, ~strikethrough~, <url|label> links,
     and newlines → <br>.  Returns a Markup string (safe for Jinja2).
     """
-    import re
 
     from markupsafe import Markup
 
@@ -195,6 +199,13 @@ class HTMLRenderer:
             autoescape=select_autoescape(["html", "xml"]),
         )
         self.env.filters["slack_mrkdwn"] = _slack_mrkdwn_to_html
+        # ``short_scope`` aliases long folder labels (e.g. "folder TeamEdward
+        # (3 projects)" → "TeamEdward") in repeated comparison table headers /
+        # chips so they don't clip the PDF. Single source of truth lives in
+        # compound_assembler; the assembler env registers the same filter.
+        from fs_report.compound_assembler import short_scope
+
+        self.env.filters["short_scope"] = short_scope
 
         # Read canonical tokens.css once at init time so standalone reports
         # and PDFs (which can't fetch /static/canonical/css/tokens.css)
@@ -223,16 +234,31 @@ class HTMLRenderer:
         recipe: Recipe,
         report_data: ReportData,
         output_path: Path,
-        pdf_target: bool = False,
+        render_mode: RenderMode = RenderMode.HTML,
+        theme: str = "light",
     ) -> None:
         """Render the report to HTML.
 
-        When ``pdf_target`` is True, charts are pre-rendered server-side to
-        inline SVG (WeasyPrint can't execute Chart.js). The same template
-        is used; branching happens via the ``pdf_target`` context flag.
+        ``render_mode`` controls template branching:
+        - ``RenderMode.HTML`` (default): standalone HTML for browser viewing.
+        - ``RenderMode.PDF``: HTML intermediate for Playwright; charts
+          render via Chart.js in Chromium, no pre-rendered SVG. The PDF
+          mode is exposed to templates as ``pdf_mode = True`` so
+          ``_theme_init.html`` can skip the localStorage / URL /
+          prefers-color-scheme checks and honor the server-rendered
+          ``theme`` exactly — keeping PDF output deterministic.
+        - ``RenderMode.FRAGMENT``: bundle fragment; charts pre-render to
+          server-side SVG (fragment_extractor strips <script>).
+
+        ``theme`` is the server-side default theme (``"light"``, ``"dark"``,
+        or ``"auto"``). It is injected into the Jinja context so templates
+        can use it for chart palettes and as the fallback when the browser
+        cannot read localStorage / prefers-color-scheme. The client-side
+        ``_theme_init.html`` script overrides this at runtime if the user
+        has a stored preference. PDFs (rendered via Playwright) skip the
+        runtime script and use this server-side value.
         """
         try:
-            # Use template from recipe if specified
             template_name = getattr(recipe, "template", None)
             if template_name:
                 template = self.env.get_template(template_name)
@@ -246,10 +272,8 @@ class HTMLRenderer:
                     "Component Vulnerability Analysis",
                 )
             ):
-                # Use executive summary template only for recipes designed for it
                 template = self._get_template("executive_summary", recipe.name)
             else:
-                # Use default template for single chart
                 chart_type = None
                 if hasattr(recipe.output, "chart") and isinstance(
                     recipe.output.chart, dict
@@ -257,41 +281,47 @@ class HTMLRenderer:
                     chart_type = recipe.output.chart.get("type", "line")
                 else:
                     chart_type = recipe.output.chart
-                    # Convert enum to string if needed
                     if chart_type is not None and hasattr(chart_type, "value"):
                         chart_type = chart_type.value
                 template = self._get_template(
                     str(chart_type) if chart_type else None, recipe.name
                 )
 
-            # Prepare template data
             template_data = self._prepare_template_data(
                 recipe,
                 report_data,
-                pdf_target=pdf_target,
-                fragment_mode=False,
+                render_mode=render_mode,
                 heading_depth=1,
             )
 
-            # Scan for any remaining pandas/numpy objects before rendering
             self.logger.debug("Scanning template_data for pandas/numpy objects...")
             scan_for_pandas_objects(template_data)
-
-            # Convert all data to native types to prevent ambiguous truth value errors
             self.logger.debug("Converting template_data to native types...")
             template_data = convert_to_native_types(template_data)
             self.logger.debug("Conversion complete.")
 
-            # Render the template
+            # Inject the server-side theme default so that _theme_init.html
+            # can use it as the FOUC-safe fallback when localStorage and
+            # prefers-color-scheme are both unset. The runtime script
+            # overrides this for HTML viewers who have a stored preference.
+            # pdf_mode tells _theme_init.html to skip the runtime checks
+            # entirely so PDF rendering is deterministic.
+            #
+            # Direct assignment (not setdefault) — these are renderer-owned
+            # render options and must not be overridable by transform data
+            # that happens to use the same keys.
+            template_data["theme"] = theme
+            template_data["pdf_mode"] = render_mode == RenderMode.PDF
+            # Expose the package version so templates can surface the build
+            # that produced an exported HTML file (e.g. in status bars).
+            from fs_report import __version__ as _fs_report_version
+
+            template_data["fs_report_version"] = _fs_report_version
+
             self.logger.debug("Rendering HTML template...")
             html_content = template.render(**template_data)
             self.logger.debug("HTML rendering complete.")
-
-            # Write to file
             output_path.write_text(html_content, encoding="utf-8")
-
-            # self.logger.info(f"Generated HTML: {output_path}")
-
         except Exception as e:
             self.logger.error(f"Error generating HTML: {e}")
             import traceback
@@ -304,25 +334,44 @@ class HTMLRenderer:
         recipe: Recipe,
         report_data: ReportData,
         heading_depth: int = 2,
+        *,
+        fragment_scripts_enabled: bool = False,
+        suppress_section_title: bool = False,
     ) -> str:
         """Render the recipe as an embeddable HTML fragment.
 
         Returns inline HTML with no ``<html>`` / ``<head>`` / ``<body>``
         tags — selectors are prefixed with ``.fs-section-<slug>`` so styles
-        don't bleed across sections, charts are pre-rendered server-side
-        to inline SVG, and the top-level heading is rendered at
-        ``heading_depth`` (default ``<h2>`` for compound bundles).
+        don't bleed across sections, and the top-level heading is rendered
+        at ``heading_depth`` (default ``<h2>`` for compound bundles).
 
         Document-shell stripping, CSS scoping, heading promotion, and
         ``<script>``/``<style>`` removal happen as a post-render pass in
         ``fragment_extractor.extract_fragment`` — recipe templates do
-        not need to branch on ``fragment_mode`` for those concerns.
+        not need to branch on ``render_mode == RenderMode.FRAGMENT`` for
+        those concerns.
 
-        Per-recipe chrome (header / metadata / footer) is preserved in
-        the fragment. The Phase 2 compound assembler will decide how to
-        handle chrome at the bundle level — likely via per-recipe data
-        attributes or template conventions that distinguish top-level
-        chrome from inline content callouts.
+        ``fragment_scripts_enabled`` (default False): when True, body
+        ``<script>`` blocks are preserved through extraction AND the value
+        is injected into the template context so chart partials can emit
+        live ``<canvas>`` / ``<div>`` containers instead of pre-rendered
+        SVGs. Only the compound assembler sets it True; this is the
+        Option X pathway from the compound-reports design spec § 2.
+
+        ``suppress_section_title`` (default False): when True, the
+        post-shift body has its single ``data-fs-section-title``-marked
+        element removed. Recipe templates opt in by adding the attribute
+        to their section-title element; templates without the marker are
+        unaffected (no-op). The compound assembler uses this so the
+        section divider's title doesn't duplicate the in-fragment title.
+
+        Per-recipe chrome behavior depends on the template's own
+        render_mode gating. Templates that wrap their <header>/<footer>/
+        metadata in ``{% if render_mode != 'fragment' %}`` (e.g., briefing
+        recipes that extend ``_briefing_shell.html``) emit NO chrome in
+        fragment mode. Console recipes today still emit per-recipe header/
+        metadata/footer inside the fragment; B1's in-body chrome audit
+        extends the gate to ``fs.topbar`` / ``fs.status_bar`` macros.
         """
         # Reuse the template selection from `render` so single-recipe
         # standalone and fragment-mode go through identical paths.
@@ -354,15 +403,15 @@ class HTMLRenderer:
                 str(chart_type) if chart_type else None, recipe.name
             )
 
-        scope_class = _recipe_scope_class(recipe)
         template_data = self._prepare_template_data(
             recipe,
             report_data,
-            pdf_target=False,
-            fragment_mode=True,
+            render_mode=RenderMode.FRAGMENT,
             heading_depth=heading_depth,
+            fragment_scripts_enabled=fragment_scripts_enabled,
         )
-        template_data["fragment_scope_class"] = scope_class
+        # Populated by _prepare_template_data (T0b § item 3).
+        scope_class = template_data["fragment_scope_class"]
         scan_for_pandas_objects(template_data)
         template_data = convert_to_native_types(template_data)
         rendered: str = template.render(**template_data)
@@ -372,6 +421,8 @@ class HTMLRenderer:
             scope_class,
             heading_depth=heading_depth,
             nav_category_slug=nav_slug,
+            fragment_scripts_enabled=fragment_scripts_enabled,
+            suppress_section_title=suppress_section_title,
         )
 
     def _get_template(
@@ -401,25 +452,17 @@ class HTMLRenderer:
         recipe: Recipe,
         report_data: ReportData,
         *,
-        pdf_target: bool = False,
-        fragment_mode: bool = False,
+        render_mode: RenderMode = RenderMode.HTML,
         heading_depth: int = 1,
+        fragment_scripts_enabled: bool = False,
     ) -> dict[str, Any]:
         """Prepare data for template rendering.
 
-        Three new flags (added for fragment-mode + PDF charts):
-        - ``pdf_target``: emit pre-rendered SVGs and skip Chart.js bootstrap
-        - ``fragment_mode``: signals to templates that this render will be
-          consumed by ``extract_fragment``. Templates do NOT need to omit
-          ``<html>``/``<head>``/``<body>`` — the extractor strips those
-          post-render. The flag mainly suppresses the standalone-shell
-          Chart.js bootstrap (charts use server SVGs instead).
-        - ``heading_depth``: passed through for templates that want to
-          render at a specific level. The extractor also performs a
-          post-render heading shift based on this value.
-
-        These are passed through to Jinja as context vars
-        ``pdf_target``, ``fragment_mode``, ``heading_depth``.
+        ``render_mode`` selects between standalone HTML, Playwright PDF
+        intermediate, and bundle-fragment outputs (see RenderMode docs).
+        ``heading_depth`` is passed through for templates that render at
+        a specific level; the fragment extractor also performs a
+        post-render heading shift based on this value.
         """
         # Convert data to DataFrame if needed.
         # Custom-transform recipes (e.g. CRA Compliance) return a dict of
@@ -600,6 +643,82 @@ class HTMLRenderer:
                         }
                     # Pass period_label to template context
                     chart_data["scan_frequency_period_label"] = period_label
+
+                # Exploit Signals gauge (C1) — flat (label, count) bar shape,
+                # prepared DIRECTLY from the 3-row DataFrame. Deliberately NOT
+                # routed through _prepare_pie_chart_data, which emits a
+                # {labels, datasets:[{data}]} pie shape the horizontal-bar
+                # template doesn't consume.
+                if "exploit_signals" in [chart.name for chart in recipe.output.charts]:
+                    self.logger.debug("Preparing exploit signals chart")
+                    exploit_signals_data = report_data.metadata.get(
+                        "additional_data", {}
+                    ).get("exploit_signals")
+                    if exploit_signals_data is not None and not (
+                        isinstance(exploit_signals_data, pd.DataFrame)
+                        and len(exploit_signals_data) == 0
+                    ):
+                        if isinstance(exploit_signals_data, pd.DataFrame):
+                            exploit_signals_df = exploit_signals_data
+                        else:
+                            exploit_signals_df = pd.DataFrame(exploit_signals_data)
+                        chart_data["exploit_signals"] = {
+                            "labels": (
+                                exploit_signals_df["label"].tolist()
+                                if "label" in exploit_signals_df.columns
+                                else []
+                            ),
+                            "data": (
+                                exploit_signals_df["count"].tolist()
+                                if "count" in exploit_signals_df.columns
+                                else []
+                            ),
+                        }
+                    else:
+                        self.logger.debug("No exploit signals data found")
+                        chart_data["exploit_signals"] = {"labels": [], "data": []}
+
+                # Exploits Over Time line (C2) — same line shape + period_label
+                # contract as scan_frequency.
+                if "exploits_over_time" in [
+                    chart.name for chart in recipe.output.charts
+                ]:
+                    self.logger.debug("Preparing exploits over time chart")
+                    exploits_over_time_data = report_data.metadata.get(
+                        "additional_data", {}
+                    ).get("exploits_over_time")
+                    exploits_over_time_period_label = "Month"  # Default fallback
+                    if exploits_over_time_data is not None and not (
+                        isinstance(exploits_over_time_data, pd.DataFrame)
+                        and len(exploits_over_time_data) == 0
+                    ):
+                        if isinstance(exploits_over_time_data, pd.DataFrame):
+                            exploits_over_time_df = exploits_over_time_data
+                        else:
+                            exploits_over_time_df = pd.DataFrame(
+                                exploits_over_time_data
+                            )
+                        exploits_over_time_period_label = getattr(
+                            exploits_over_time_df, "period_label", "Month"
+                        )
+                        chart_data["exploits_over_time"] = (
+                            self._prepare_line_chart_data(exploits_over_time_df)
+                        )
+                    else:
+                        self.logger.debug("No exploits over time data found")
+                        chart_data["exploits_over_time"] = {
+                            "labels": [],
+                            "datasets": [
+                                {
+                                    "data": [],
+                                    "borderColor": "rgb(124, 58, 237)",
+                                    "backgroundColor": "rgba(124, 58, 237, 0.2)",
+                                }
+                            ],
+                        }
+                    chart_data["exploits_over_time_period_label"] = (
+                        exploits_over_time_period_label
+                    )
         else:
             # Legacy single chart support
             self.logger.debug("Using legacy single chart support")
@@ -685,6 +804,12 @@ class HTMLRenderer:
             "raw_count": report_data.metadata.get("raw_count", 0),
             "transformed_count": report_data.metadata.get("transformed_count", 0),
             "project_filter": report_data.metadata.get("project_filter", ""),
+            # Human-readable project name resolved by the engine. The engine
+            # overwrites config.project_filter with the numeric ID before
+            # transforms run (API filters need IDs), so any template that
+            # displays project_filter shows the raw ID — the 2026-06-06
+            # visual QA pass caught this in five recipes' topbars.
+            "project_name": report_data.metadata.get("project_name", "") or "",
             "folder_name": report_data.metadata.get("folder_name", ""),
             "folder_path": report_data.metadata.get("folder_path", ""),
             "folder_filter": report_data.metadata.get("folder_filter", ""),
@@ -726,6 +851,14 @@ class HTMLRenderer:
             "start_date": slim_metadata["start_date"],
             "end_date": slim_metadata["end_date"],
             "project_filter": slim_metadata["project_filter"],
+            "project_name": slim_metadata["project_name"],
+            # Canonical display string for project scope: the resolved
+            # name when the engine knows it, else the raw filter value.
+            # Templates should render THIS in topbars/status bars/chips,
+            # never project_filter (which is the resolved numeric ID).
+            "project_label": (
+                slim_metadata["project_name"] or slim_metadata["project_filter"]
+            ),
             "folder_name": slim_metadata["folder_name"],
             "folder_path": slim_metadata["folder_path"],
             "folder_filter": slim_metadata["folder_filter"],
@@ -735,7 +868,40 @@ class HTMLRenderer:
             "scan_frequency_period_label": chart_data.get(
                 "scan_frequency_period_label", "Month"
             ),
+            # Parallel period label for the Exploits Over Time line (C2).
+            "exploits_over_time_period_label": chart_data.get(
+                "exploits_over_time_period_label", "Month"
+            ),
         }
+
+        # B1 #15: effective scope for the report-shell topbar (Scope meta +
+        # active-filter chips), via the shared resolver so the in-report chrome,
+        # the run canvas, the Running Reports monitor, and the command palette
+        # all agree. Built from the RESOLVED display metadata: the engine
+        # overwrites project_filter with the numeric ID, so the display name
+        # (project_name) is passed as the project identity; folder_name is the
+        # pre-resolved folder label. A portfolio-wide report (nothing pinned)
+        # honestly reports "Portfolio" instead of a blank topbar.
+        template_data["effective_scope"] = compute_effective_scope(
+            {
+                "project_filter": (
+                    slim_metadata["project_name"] or slim_metadata["project_filter"]
+                ),
+                "folder_filter": slim_metadata["folder_filter"],
+                "folder_label": slim_metadata["folder_name"],
+                # Prefer the resolved version NAME; fall back to the raw
+                # version_filter so a version-scoped run keeps its "@ version"
+                # indicator even when the engine didn't resolve a display name.
+                "version_filter": (
+                    report_data.metadata.get("version_name")
+                    or report_data.metadata.get("version_filter")
+                    or ""
+                ),
+                "component_filter": report_data.metadata.get("component_filter", ""),
+                "component_version": report_data.metadata.get("component_version", ""),
+                "cve_filter": report_data.metadata.get("cve_filter", ""),
+            }
+        )
 
         # Add raw data for templates that need it (like findings by project)
         if isinstance(report_data.data, pd.DataFrame):
@@ -763,6 +929,9 @@ class HTMLRenderer:
                 "start_date",
                 "end_date",
                 "data",
+                # B1 #15: the report-shell scope chrome must not be silently
+                # overwritten by a transform's additional_data key.
+                "effective_scope",
             }
         )
         additional_data = report_data.metadata.get("additional_data", {})
@@ -836,9 +1005,20 @@ class HTMLRenderer:
         template_data["nav_category_slug"] = (
             nav_category.lower() if isinstance(nav_category, str) else ""
         )
-        template_data["pdf_target"] = pdf_target
-        template_data["fragment_mode"] = fragment_mode
+        template_data["render_mode"] = render_mode
         template_data["heading_depth"] = heading_depth
+        # B1 / Option X: chart partials branch on this flag so live-canvas
+        # paths fire under compound assembly. Default False keeps single-
+        # recipe FRAGMENT renders on the server-SVG path.
+        template_data["fragment_scripts_enabled"] = fragment_scripts_enabled
+        # Fragment-scope class is populated for every render mode (T0b
+        # spec § item 3). Recipe templates reference {{ fragment_scope_class }}
+        # for chart container IDs and section wrappers; the same ID scheme
+        # is used in HTML, PDF, and FRAGMENT modes so chart-init code
+        # doesn't branch on render_mode. The fragment_extractor wraps the
+        # body in <div class="{{ fragment_scope_class }}"> in fragment mode,
+        # but the ID lookup itself doesn't depend on that wrapper.
+        template_data["fragment_scope_class"] = _recipe_scope_class(recipe)
         template_data["tokens_inline_css"] = self._tokens_inline_css
         template_data["chart_palette_json"] = self._chart_palette_json
         template_data["sev_palette_json"] = self._sev_palette_json
@@ -849,12 +1029,21 @@ class HTMLRenderer:
         template_data["fs_font_body"] = FS_FONT_BODY
         template_data["fs_font_display"] = FS_FONT_DISPLAY
 
-        # Server-side chart SVGs for PDF / fragment targets. Charts not
+        # Server-side chart SVGs for fragment targets. Charts not
         # declared in recipe.output.charts (inline-only charts) stay browser-
-        # only; their templates must check fragment_mode/pdf_target and either
+        # only; their templates must check render_mode and either
         # render a placeholder or omit themselves.
+        #
+        # Under Option X (fragment_scripts_enabled=True, set only by the
+        # compound assembler), chart partials emit live <canvas>/<div>
+        # containers and the matplotlib SVG path is not used — skip the
+        # generation to save the compound run that work.
         server_svgs: dict[str, str] = {}
-        if (pdf_target or fragment_mode) and recipe.output.charts:
+        if (
+            render_mode == RenderMode.FRAGMENT
+            and not fragment_scripts_enabled
+            and recipe.output.charts
+        ):
             try:
                 from fs_report.renderers.chart_renderer import ChartRenderer
 
@@ -871,9 +1060,58 @@ class HTMLRenderer:
                 additional = report_data.metadata.get("additional_data", {}) or {}
                 for spec in recipe.output.charts:
                     # Resolve a DataFrame for this specific chart by name —
-                    # multi-chart recipes (Executive Dashboard, etc.) put
-                    # per-chart frames in metadata['additional_data'][name].
+                    # multi-chart recipes put per-chart frames in
+                    # metadata['additional_data'][name]. For specs whose
+                    # name ends in "_distribution" we also try the
+                    # suffix-stripped form on a miss (the report engine
+                    # writes some of those under the shorter key — e.g.
+                    # additional_data["open_issues"] for chart spec
+                    # "open_issues_distribution").
+                    #
+                    # Scope notes (deliberate; debated across the plan
+                    # multi-review rounds):
+                    #   * Fallback fires ONLY when the exact key is
+                    #     literally None — present-but-empty values
+                    #     (empty DataFrame, [], {}) suppress the
+                    #     fallback. Handling those would require
+                    #     inspecting candidate shape before deciding,
+                    #     which is a broader design choice than this
+                    #     minimal fix targets.
+                    #   * The downstream list/dict coercion branch
+                    #     below is preserved from existing renderer
+                    #     behavior — the fallback may newly route a
+                    #     list/dict under the suffix-stripped key
+                    #     through that branch, but the coercion logic
+                    #     itself is unchanged.
+                    #   * Suffix-stripping applies to every chart spec
+                    #     ending in "_distribution"; an audit of the
+                    #     repo's other such specs (band_distribution,
+                    #     staleness_distribution, unpack_rating_distribution)
+                    #     confirmed their suffix-stripped keys are not
+                    #     written to additional_data anywhere today,
+                    #     so the fallback is a no-op for them. See
+                    #     PR #74 audit table.
                     candidate = additional.get(spec.name)
+                    if candidate is None and spec.name.endswith("_distribution"):
+                        candidate = additional.get(
+                            spec.name.removesuffix("_distribution")
+                        )
+                    if candidate is None:
+                        # Final fallback: recipes like scan_quality nest their per-chart
+                        # payloads under additional_data["charts"][<name>]. Descend into
+                        # that dict so the dispatch finds the data instead of falling
+                        # through to main_df (round-1 B.1 multi-review M1-1 / M2-1 / M3-1).
+                        # Mirror the `_distribution` suffix-strip retry inside the
+                        # nested dict too — B.1 PR review M1-2 / M3-2 / M2-2 (round 1).
+                        nested_charts = additional.get("charts")
+                        if isinstance(nested_charts, dict):
+                            candidate = nested_charts.get(spec.name)
+                            if candidate is None and spec.name.endswith(
+                                "_distribution"
+                            ):
+                                candidate = nested_charts.get(
+                                    spec.name.removesuffix("_distribution")
+                                )
                     if isinstance(candidate, pd.DataFrame):
                         df_for_chart = candidate
                     elif isinstance(candidate, list | dict) and candidate:

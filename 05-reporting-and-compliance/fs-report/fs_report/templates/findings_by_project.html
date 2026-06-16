@@ -1,173 +1,243 @@
-{% extends "base.html" %}
+{% if render_mode != 'fragment' %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>Findings by Project - Finite State Report</title>
 
-{% block content %}
-<style>
-    .reach-badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }
-    .reach-REACHABLE { background: #dc3545; color: white; }
-    .reach-UNREACHABLE { background: #28a745; color: white; }
-    .reach-INCONCLUSIVE { background: #6c757d; color: white; }
-    .reach-UNKNOWN { background: #adb5bd; color: #333; }
-</style>
-<!-- Filter Information -->
-{% if folder_path or project_filter %}
-<div class="chart-container">
-    <h3>🔍 Applied Filter</h3>
-    {% if folder_path %}<p><strong>Folder:</strong> {{ folder_path }}</p>{% endif %}
-    {% if project_filter %}<p><strong>Project Filter:</strong> {{ project_filter }}</p>{% endif %}
-    <p>Showing findings for the specified scope only.</p>
-</div>
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
 {% endif %}
 
-<!-- Data Table -->
-<div class="table-container">
-    <h2>Findings by Project</h2>
-    <p>Comprehensive inventory of security findings across projects</p>
+{# NOTE: This <style> block sits OUTSIDE the
+   render_mode != 'fragment' gate intentionally. In fragment mode the
+   entire <head> is omitted, and fragment_extractor.py
+   (_STYLE_RE.findall) scans the rendered HTML for <style> blocks and
+   re-emits their contents scoped under .fs-section-<slug>. If this
+   block lived inside the gate, fragment-mode renders would drop all
+   .fbp-* rules and the table would render unstyled. In standalone
+   mode the <style> renders just after the </head> close — browsers
+   accept <style> outside <head> per HTML5. #}
+<style>
+    /* Findings by Project — recipe-specific overrides on top of the
+       shared console shell. Severity / reachability badges use design
+       tokens from _tokens_inline.html via _design_system.html, so
+       dark/light theming is automatic. */
 
-    {% include "_columns_schema.html" %}
+    .fbp-cvss {
+        display: inline-block;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: var(--r-sm);
+        min-width: 36px;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+    }
+    .fbp-cvss.critical { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .fbp-cvss.high     { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .fbp-cvss.medium   { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .fbp-cvss.low      { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .fbp-cvss.info     { background: var(--sev-info-bg);     color: var(--ink-dim); }
 
-    {% if data %}
-    <table>
-        <thead>
-            <tr>
-                <th>CVSS</th>
-                <th>KEV</th>
-                <th>Severity</th>
-                <th>Reachability</th>
-                <th>CVE ID</th>
-                <th>Description</th>
-                <th>Component Group</th>
-                <th>Component</th>
-                <th>Version</th>
-                {% if folder_path %}<th>Folder</th>{% endif %}
-                <th>Project</th>
-                <th>Project Version</th>
-                <th title="Single maturity tier: poc | weaponized | empty.">Exploit Maturity</th>
-                <th title="Count of distinct exploit-related signal categories. Not a per-source exploit count.">
-                    # exploit signal categories
-                </th>
-                <th title="Count of in-the-wild exploitation signals (botnet / ransomware / threat actor).">
-                    # in-the-wild exploitation signals
-                </th>
-                <th>CWE</th>
-                <th>CVSS v2 Vector</th>
-                <th>CVSS v3 Vector</th>
-                <th>FS Link</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% set current_project = namespace(value=None) %}
-            {% for row in data %}
-                {% if row['Project Name'] != current_project.value %}
-                    {% set current_project.value = row['Project Name'] %}
-                    <tr style="background-color: #f8f9fa; font-weight: bold;">
-                        <td colspan="{% if folder_path %}19{% else %}18{% endif %}">{{ row['Project Name'] }}</td>
-                    </tr>
+    .fbp-kev {
+        color: var(--sev-critical-text);
+        font-weight: 600;
+    }
+
+    /* Recipe-local reachability badge: the console-shell .reach-* family
+       uses an inner-glyph pattern that doesn't fit a plain text label here,
+       so we keep a flat token-driven pill scoped to this recipe. */
+    .fbp-reach {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: var(--r-sm);
+        font-size: 11px;
+        font-weight: 500;
+    }
+    .fbp-reach.REACHABLE    { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .fbp-reach.UNREACHABLE  { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .fbp-reach.INCONCLUSIVE { background: var(--surface-muted);   color: var(--ink-dim); }
+    .fbp-reach.UNKNOWN      { background: var(--surface-muted);   color: var(--ink-dim); }
+
+    .fbp-desc-cell {
+        max-width: 300px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+</style>
+
+{% if render_mode != 'fragment' %}
+</head>
+<body class="console">
+{% endif %}
+
+{% import "_console_macros.html" as fs with context %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "Findings by Project"],
+    meta=[
+        {"label": "Domain", "value": domain or "—"},
+        {"label": "Generated", "value": generated_at or "—"},
+    ],
+    controls=[],
+) }}
+
+{% endif %}
+
+{# No <div class="layout"> wrapper: that grid container is 220px sidebar + 1fr main.
+   This recipe is single-column (no sidebar), so we use .main directly to avoid
+   a dead 220px gutter on the left. The console pattern in _console_shell.html
+   supports both shapes; sidebar templates (like triage_prioritization) wrap in
+   .layout, sidebar-free templates skip it. #}
+<main class="main">
+        <div class="page-head">
+            <h1 data-fs-section-title>Findings by Project</h1>
+            <p class="subtitle">Comprehensive inventory of security findings across projects.</p>
+        </div>
+
+        {% if folder_path or project_label %}
+        <div class="panel" style="margin-bottom: 20px;">
+            {{ fs.panel_head("Applied filter") }}
+            {% if folder_path %}<p><strong>Folder:</strong> {{ folder_path }}</p>{% endif %}
+            {% if project_label %}<p><strong>Project filter:</strong> {{ project_label }}</p>{% endif %}
+            <p style="color: var(--ink-mute);">Showing findings for the specified scope only.</p>
+        </div>
+        {% endif %}
+
+        {% include "_columns_schema.html" %}
+
+        <div class="table-panel" style="margin-bottom: 20px;">
+            {{ fs.panel_head("Findings", meta=((data | length) | string) ~ (" row" if (data | length) == 1 else " rows")) }}
+            <div class="body" style="overflow-x: auto;">
+                {% if data %}
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>CVSS</th>
+                            <th>KEV</th>
+                            <th>Severity</th>
+                            <th>Reachability</th>
+                            <th>CVE ID</th>
+                            <th>Description</th>
+                            <th>Component Group</th>
+                            <th>Component</th>
+                            <th>Version</th>
+                            {% if folder_path %}<th>Folder</th>{% endif %}
+                            <th>Project</th>
+                            <th>Project Version</th>
+                            <th title="Single maturity tier: poc | weaponized | empty.">Exploit Maturity</th>
+                            {# F2: shortened visible labels (values are ≤ double
+                               digits); the full descriptions live in title=. #}
+                            <th title="Count of distinct exploit-related signal categories.">
+                                # Signal cats
+                            </th>
+                            <th title="Count of in-the-wild exploitation signals (botnet / ransomware / threat actor).">
+                                # In-the-wild
+                            </th>
+                            <th>CWE</th>
+                            <th>CVSS v3 Vector</th>
+                            <th>FS Link</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% set current_project = namespace(value=None) %}
+                        {% for row in data %}
+                            {% if row['Project Name'] != current_project.value %}
+                                {% set current_project.value = row['Project Name'] %}
+                                <tr class="project-group-row">
+                                    <td colspan="{% if folder_path %}18{% else %}17{% endif %}">{{ row['Project Name'] }}</td>
+                                </tr>
+                            {% endif %}
+                            {# CVSS coercion: row['CVSS'] may be a numpy scalar (from
+                               DataFrame.to_dict('records')), Python number, string
+                               ("N/A"), or None. `| float(0)` handles all of these
+                               uniformly: numerics round-trip, non-numerics → 0.0,
+                               and the band classification works off the float. #}
+                            {% set cvss_raw = row.get('CVSS', 0) %}
+                            {% set cvss_f = cvss_raw | float(0) %}
+                            {% if cvss_f >= 9.0 %}{% set cvss_class = 'critical' %}
+                            {% elif cvss_f >= 7.0 %}{% set cvss_class = 'high' %}
+                            {% elif cvss_f >= 4.0 %}{% set cvss_class = 'medium' %}
+                            {% elif cvss_f >= 0.1 %}{% set cvss_class = 'low' %}
+                            {% else %}{% set cvss_class = 'info' %}
+                            {% endif %}
+                            <tr>
+                                <td>
+                                    <span class="fbp-cvss {{ cvss_class }}">
+                                        {% if cvss_f > 0 %}{{ "%.1f"|format(cvss_f) }}{% else %}{{ cvss_raw if cvss_raw is not none else '' }}{% endif %}
+                                    </span>
+                                </td>
+                                <td>{% if row.get('KEV') == 'Yes' %}<span class="fbp-kev">Yes</span>{% endif %}</td>
+                                <td>
+                                    {% set sev = row.get('Severity', '') %}
+                                    {% if sev %}
+                                        <span class="severity-badge severity-{{ sev | upper }}">{{ sev }}</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% set rlabel = row.get('Reachability') or 'UNKNOWN' %}
+                                    <span class="fbp-reach {{ rlabel }}">{{ rlabel }}</span>
+                                </td>
+                                <td>
+                                    {% if row['CVE ID'] and row['CVE ID'] != 'N/A' %}
+                                        {% if row['CVE ID'].startswith('GHSA-') %}
+                                            <a class="entity-link-cve" href="https://github.com/advisories/{{ row['CVE ID'] }}" target="_blank">{{ row['CVE ID'] }}</a>
+                                        {% elif row['CVE ID'].startswith('PYSEC-') %}
+                                            <a class="entity-link-cve" href="https://osv.dev/vulnerability/{{ row['CVE ID'] }}" target="_blank">{{ row['CVE ID'] }}</a>
+                                        {% else %}
+                                            <a class="entity-link-cve" href="https://nvd.nist.gov/vuln/detail/{{ row['CVE ID'] }}" target="_blank">{{ row['CVE ID'] }}</a>
+                                        {% endif %}
+                                    {% else %}
+                                        {{ row['CVE ID'] }}
+                                    {% endif %}
+                                </td>
+                                <td class="fbp-desc-cell" title="{{ row.get('Description', '') }}">{{ row.get('Description', '') }}</td>
+                                <td>{{ row.get('Component Group', '') }}</td>
+                                <td>{{ row['Component'] }}</td>
+                                <td>{{ row['Component Version'] }}</td>
+                                {% if folder_path %}<td>{{ row.get('Folder', '') }}</td>{% endif %}
+                                <td>{{ row['Project Name'] }}</td>
+                                <td>{{ row['Project Version'] }}</td>
+                                <td>{{ row.get('Exploit Maturity', '') }}</td>
+                                <td>{{ row['# exploit signal categories'] }}</td>
+                                <td>{{ row['# in-the-wild exploitation signals'] }}</td>
+                                <td>{{ row['CWE'] }}</td>
+                                <td class="mono">{{ row.get('CVSS v3 Vector', '') }}</td>
+                                <td>
+                                    {% if row.get('FS Link') %}
+                                        <a href="{{ row['FS Link'] }}" target="_blank">View</a>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <div class="empty-state">
+                    <h3>No findings found</h3>
+                    <p>No security findings match the current criteria.</p>
+                </div>
                 {% endif %}
-                <tr>
-                    <td>
-                        <span style="
-                            font-weight: bold;
-                            padding: 4px 8px;
-                            border-radius: 4px;
-                            text-align: center;
-                            display: inline-block;
-                            min-width: 30px;
-                            {% if row.get('CVSS', 0) >= 9.0 %}
-                                background-color: #ffebee; color: #c62828;
-                            {% elif row.get('CVSS', 0) >= 7.0 %}
-                                background-color: #fff3e0; color: #ef6c00;
-                            {% elif row.get('CVSS', 0) >= 4.0 %}
-                                background-color: #fff8e1; color: #f57f17;
-                            {% elif row.get('CVSS', 0) >= 0.1 %}
-                                background-color: #f1f8e9; color: #558b2f;
-                            {% else %}
-                                background-color: #e8f5e8; color: #2e7d32;
-                            {% endif %}
-                        ">
-                            {{ "%.1f"|format(row.get('CVSS', 0)) if row.get('CVSS', 0) is number else row.get('CVSS', 0) }}
-                        </span>
-                    </td>
-                    <td>{% if row.get('KEV') == 'Yes' %}<span style="color:#c62828;font-weight:bold;">Yes</span>{% endif %}</td>
-                    <td>
-                        {% set sev = row.get('Severity', '') %}
-                        {% if sev %}
-                        <span style="
-                            font-weight: bold;
-                            padding: 3px 8px;
-                            border-radius: 4px;
-                            text-align: center;
-                            display: inline-block;
-                            font-size: 0.85em;
-                            {% if sev|lower == 'critical' %}
-                                background-color: #ffebee; color: #c62828;
-                            {% elif sev|lower == 'high' %}
-                                background-color: #fff3e0; color: #ef6c00;
-                            {% elif sev|lower == 'medium' %}
-                                background-color: #fff8e1; color: #f57f17;
-                            {% elif sev|lower == 'low' %}
-                                background-color: #f1f8e9; color: #558b2f;
-                            {% else %}
-                                background-color: #e8eaf6; color: #455a64;
-                            {% endif %}
-                        ">{{ sev }}</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% set rlabel = row.get('Reachability', 'UNKNOWN') %}
-                        <span class="reach-badge reach-{{ rlabel }}">{{ rlabel }}</span>
-                    </td>
-                    <td>
-                        {% if row['CVE ID'] and row['CVE ID'] != 'N/A' %}
-                            {% if row['CVE ID'].startswith('GHSA-') %}
-                            <a href="https://github.com/advisories/{{ row['CVE ID'] }}"
-                                target="_blank" style="color: #007bff; text-decoration: none;">
-                                {{ row['CVE ID'] }}
-                            </a>
-                            {% elif row['CVE ID'].startswith('PYSEC-') %}
-                            <a href="https://osv.dev/vulnerability/{{ row['CVE ID'] }}"
-                                target="_blank" style="color: #007bff; text-decoration: none;">
-                                {{ row['CVE ID'] }}
-                            </a>
-                            {% else %}
-                            <a href="https://nvd.nist.gov/vuln/detail/{{ row['CVE ID'] }}"
-                               target="_blank" style="color: #007bff; text-decoration: none;">
-                                {{ row['CVE ID'] }}
-                            </a>
-                            {% endif %}
-                        {% else %}
-                            {{ row['CVE ID'] }}
-                        {% endif %}
-                    </td>
-                    <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                        title="{{ row.get('Description', '') }}">
-                        {{ row.get('Description', '') }}
-                    </td>
-                    <td>{{ row.get('Component Group', '') }}</td>
-                    <td>{{ row['Component'] }}</td>
-                    <td>{{ row['Component Version'] }}</td>
-                    {% if folder_path %}<td>{{ row.get('Folder', '') }}</td>{% endif %}
-                    <td>{{ row['Project Name'] }}</td>
-                    <td>{{ row['Project Version'] }}</td>
-                    <td>{{ row.get('Exploit Maturity', '') }}</td>
-                    <td>{{ row['# exploit signal categories'] }}</td>
-                    <td>{{ row['# in-the-wild exploitation signals'] }}</td>
-                    <td>{{ row['CWE'] }}</td>
-                    <td style="font-family: monospace; font-size: 0.85em;">{{ row.get('CVSS v2 Vector', '') }}</td>
-                    <td style="font-family: monospace; font-size: 0.85em;">{{ row.get('CVSS v3 Vector', '') }}</td>
-                    <td>
-                        {% if row.get('FS Link') %}
-                            <a href="{{ row['FS Link'] }}" target="_blank" style="color: #007bff; text-decoration: none;">View</a>
-                        {% endif %}
-                    </td>
-                </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <div style="text-align: center; padding: 40px; color: #666; font-style: italic;">
-        <h3>No findings found</h3>
-        <p>No security findings match the current criteria.</p>
-    </div>
-    {% endif %}
-</div>
-{% endblock %}
+            </div>
+        </div>
+</main>
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Findings by Project",
+    "Rows: " ~ ((data | length) | string),
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+{% if render_mode != 'fragment' %}
+</body>
+</html>
+{% endif %}

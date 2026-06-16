@@ -1,3 +1,4 @@
+{% if render_mode != 'fragment' %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,253 +6,324 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
     <title>Scan Quality Report - Finite State Report</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 
-        {% include "_standalone_shell.html" %}
+    {# ECharts library — replaces Chart.js v4.4.1 + the legacy datalabels
+       plugin from the pre-migration template. ECharts has native
+       series.label.formatter for the percentage labels the datalabels
+       plugin used to provide. #}
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+    {% include "_echarts_ready.html" %}
+{% endif %}
+
+{# Recipe-local styles — render in BOTH standalone and fragment modes so
+   fragment_extractor (_STYLE_RE) collects them, scopes under
+   .fs-section-scan-quality, and re-emits at the top of the fragment. #}
 <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            line-height: 1.6; color: #333; background-color: #f8f9fa;
-        }
-        .container { margin: 0 auto; padding: 20px; background-color: white; border: 1px solid #dee2e6; min-height: 100%; }
+    .sq-chart-wrapper {
+        width: 100%;
+        height: 320px;
+    }
 
-        /* Header */
-        .header { text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid #e9ecef; }
-        .logo-container { margin-bottom: 20px; }
-        .company-logo { max-height: 50px; width: auto; margin: 0 auto; display: block; }
-        .header h1 { color: #2c3e50; font-size: 2.5em; margin-bottom: 10px; }
-        .header .subtitle { color: #6c757d; font-size: 1.1em; }
+    .sq-chart-wrapper-narrow {
+        width: 100%;
+        height: 320px;
+        max-width: 600px;
+        margin: 0 auto;
+    }
 
-        /* Metadata bar */
-        .metadata { background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 30px; font-size: 0.9em; color: #6c757d; }
+    /* Staleness legend strip — preserved from pre-migration template. */
+    .sq-staleness-legend {
+        background: var(--surface-muted);
+        color: var(--ink-mute);
+        padding: 10px 14px;
+        border-radius: 6px;
+        margin-bottom: 20px;
+        font-size: 0.9em;
+        line-height: 1.6;
+    }
 
-        /* KPI Cards */
-        .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 30px; }
-        .kpi-card {
-            background: white; border: 1px solid #dee2e6; border-radius: 8px;
-            padding: 20px; text-align: center;
-        }
-        .kpi-card .kpi-title { font-size: 0.85em; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-        .kpi-card .kpi-value { font-size: 2.2em; font-weight: 700; color: #2c3e50; line-height: 1; }
-        .kpi-card .kpi-sub { font-size: 0.8em; color: #6c757d; margin-top: 4px; }
+    /* Staleness badges — token-driven, theme-aware. */
+    .sq-staleness-fresh,
+    .sq-staleness-aging,
+    .sq-staleness-stale,
+    .sq-staleness-dormant {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.8em;
+        font-weight: 600;
+    }
+    .sq-staleness-fresh   { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .sq-staleness-aging   { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .sq-staleness-stale   { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .sq-staleness-dormant { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
 
-        /* Two-column layout */
-        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; }
-        @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+    /* Unpack rating badges. */
+    .sq-unpack-excellent,
+    .sq-unpack-good,
+    .sq-unpack-fair,
+    .sq-unpack-poor,
+    .sq-unpack-not-applicable {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.8em;
+        font-weight: 600;
+    }
+    .sq-unpack-excellent      { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .sq-unpack-good           { background: var(--accent-teal);     color: #fff; }
+    .sq-unpack-fair           { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .sq-unpack-poor           { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .sq-unpack-not-applicable { background: var(--surface-muted);   color: var(--ink-mute); }
 
-        /* Charts */
-        .chart-container { background-color: white; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #dee2e6; }
-        .chart-wrapper { position: relative; height: 350px; margin: 20px 0; }
-        .chart-title { color: #2c3e50; font-size: 1.5em; margin-bottom: 10px; }
-        .chart-description { color: #6c757d; font-size: 0.95em; margin-bottom: 20px; }
+    /* Coverage-score + reachability cell colors — token-driven. */
+    .sq-score-good { color: var(--sev-low-text);      font-weight: 600; }
+    .sq-score-mid  { color: var(--sev-medium-text);   font-weight: 600; }
+    .sq-score-low  { color: var(--sev-critical-text); font-weight: 600; }
+    .sq-reach-yes  { color: var(--sev-low-text);      font-weight: 600; }
+    .sq-reach-no   { color: var(--sev-critical-text); font-weight: 600; }
+    .sq-reach-na   { color: var(--ink-mute); }
 
-        /* Tables */
-        .table-container { background-color: white; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #dee2e6; overflow-x: auto; }
-        .table-container h2 { color: #2c3e50; font-size: 1.5em; margin-bottom: 10px; }
-        .table-description { color: #6c757d; font-size: 0.95em; margin-bottom: 15px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #dee2e6; }
-        th { background-color: #f8f9fa; font-weight: 600; color: #495057; position: sticky; top: 0; z-index: 10; cursor: pointer; white-space: nowrap; }
-        th:hover { background-color: #e9ecef; }
-        tr:hover { background-color: #f8f9fa; }
-        td.num { text-align: right; font-variant-numeric: tabular-nums; }
-        td.center, th.center { text-align: center; }
-        .auto-w { width: 1%; white-space: nowrap; }
+    /* Two-column chart row — single panel container; the 2-col grid
+       sits inside .sq-two-col. Stacks on narrow viewports. */
+    .sq-two-col {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+    }
+    @media (max-width: 900px) {
+        .sq-two-col { grid-template-columns: 1fr; }
+    }
 
-        /* Staleness badges */
-        .staleness-fresh   { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; background-color: #d4edda; color: #155724; }
-        .staleness-aging   { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; background-color: #fff3cd; color: #856404; }
-        .staleness-stale   { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; background-color: #ffe0b2; color: #6d3300; }
-        .staleness-dormant { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; background-color: #f8d7da; color: #721c24; }
+    .sq-no-data {
+        text-align: center;
+        color: var(--ink-mute);
+        font-style: italic;
+        padding: 40px;
+    }
 
-        /* Coverage score */
-        .score-good { color: #22c55e; font-weight: 600; }
-        .score-mid  { color: #f59e0b; font-weight: 600; }
-        .score-low  { color: #ef4444; font-weight: 600; }
+    /* Unpack-summary tooltip cell — pure CSS hover, no JS. */
+    .sq-tooltip-cell { position: relative; }
+    .sq-tooltip-cell .sq-unpack-summary {
+        display: none;
+        position: absolute;
+        left: 0;
+        top: 100%;
+        z-index: 100;
+        background: var(--surface-card);
+        border: 1px solid var(--hairline);
+        border-radius: 6px;
+        padding: 8px 12px;
+        font-size: 0.85em;
+        white-space: nowrap;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+        color: var(--ink-body);
+    }
+    .sq-tooltip-cell:hover .sq-unpack-summary { display: block; }
+</style>
 
-        /* Reachability */
-        .reach-yes { color: #22c55e; font-weight: 600; }
-        .reach-no  { color: #ef4444; font-weight: 600; }
-        .reach-na  { color: #9ca3af; }
-
-        /* Unpack rating */
-        .unpack-excellent      { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; background-color: #d4edda; color: #155724; }
-        .unpack-good           { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; background-color: #cfe2ff; color: #084298; }
-        .unpack-fair           { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; background-color: #fff3cd; color: #856404; }
-        .unpack-poor           { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; background-color: #f8d7da; color: #721c24; }
-        .unpack-not-applicable { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; background-color: #f3f4f6; color: #4b5563; }
-
-        /* Misc */
-        .no-data { text-align: center; color: #6c757d; font-style: italic; padding: 40px; }
-        .tooltip-cell { position: relative; }
-        .tooltip-cell .unpack-summary { display: none; position: absolute; left: 0; top: 100%; z-index: 100; background: #fff; border: 1px solid #dee2e6; border-radius: 6px; padding: 8px 12px; font-size: 0.85em; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
-        .tooltip-cell:hover .unpack-summary { display: block; }
-
-        /* Footer */
-        .footer { text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e9ecef; color: #6c757d; font-size: 0.9em; }
-        .finite-state-logo { color: #007bff; font-weight: bold; }
-
-        @media print {
-            body { background-color: white; }
-            .container { max-width: none; }
-        }
-    </style>
+{% if render_mode != 'fragment' %}
 </head>
-<body data-nav-category="{{ nav_category_slug }}">
-    <span id="fsConnectionBadge"></span>
-    <div class="container">
+<body class="console">
+{% endif %}
 
-        <!-- Header -->
-        <div class="header">
-            {% include "_default_logo.html" %}
-            <h1>Scan Quality Report</h1>
-            <div class="subtitle">
-                {{ scope_label | default('All Projects') }} &mdash; Scan Coverage &amp; Quality Analysis
-            </div>
-        </div>
+{% import "_console_macros.html" as fs with context %}
 
-        <!-- Metadata bar -->
-        <div class="metadata">
-            <strong>Report:</strong> Scan Quality |
-            <strong>Generated:</strong> {{ generated_at }} |
-            <strong>Scope:</strong> {{ scope_label | default('All Projects') }} |
-            <strong>Projects Scanned:</strong> {{ summary.total_projects | default(0) }}
-        </div>
+{# Defensive defaults — keeps the template renderable when the upstream
+   transform short-circuited (e.g. empty data). Mirrors license_report.html. #}
+{% set summary = summary | default({}) %}
+{% if not summary is mapping %}{% set summary = {} %}{% endif %}
+{% set charts = charts | default({}) %}
+{% if not charts is mapping %}{% set charts = {} %}{% endif %}
+{% set summary_table = summary_table | default([]) %}
+{% set detail_table = detail_table | default([]) %}
+{% set thresholds = thresholds | default({'fresh': 30, 'aging': 90, 'stale': 365}) %}
 
-        <!-- KPI Cards -->
-        <div class="kpi-row">
-            <!-- Projects Scanned -->
-            <div class="kpi-card">
-                <div class="kpi-title">Projects Scanned</div>
-                <div class="kpi-value">{{ summary.total_projects | default(0) }}</div>
-            </div>
+{# Reachability-coverage convenience locals. #}
+{% set rc = summary.get('reachability_coverage', {'with_reachability': 0, 'binary_projects': 0, 'source_only_projects': 0}) %}
+{% set rc_total = (rc.get('with_reachability', 0) | int) + (rc.get('binary_projects', 0) | int) %}
 
-            <!-- Avg Coverage Score -->
-            <div class="kpi-card">
-                <div class="kpi-title">Avg Coverage Score</div>
-                <div class="kpi-value
-                    {%- if summary.avg_coverage_score | default(0) >= 3 %} score-good
-                    {%- elif summary.avg_coverage_score | default(0) >= 2 %} score-mid
-                    {%- else %} score-low{% endif %}">
-                    {{ '%.1f' | format(summary.avg_coverage_score | default(0)) }}
-                </div>
-                <div class="kpi-sub">out of 4</div>
-            </div>
-
-            <!-- Reachability Coverage -->
-            {% set rc = summary.reachability_coverage | default({'with_reachability': 0, 'binary_projects': 0}) %}
-            {% set rc_total = rc.with_reachability + rc.binary_projects %}
-            <div class="kpi-card">
-                <div class="kpi-title">Reachability Coverage</div>
-                <div class="kpi-value">{{ rc.with_reachability }} <span style="font-size:0.5em;color:#6c757d;">of {{ rc_total }}</span></div>
-                <div class="kpi-sub">binary projects with reachability</div>
-            </div>
-
-            <!-- Stale Projects -->
-            <div class="kpi-card">
-                <div class="kpi-title">Stale Projects</div>
-                <div class="kpi-value {% if summary.stale_project_count | default(0) > 0 %}score-low{% endif %}">
-                    {{ summary.stale_project_count | default(0) }}
-                </div>
-                <div class="kpi-sub">no scan in 90+ days</div>
-            </div>
-
-            <!-- Unpack Issues (only if unpack data exists) -->
-            {% set unpack_issue_count = namespace(val=0) %}
-            {% if summary_table %}
-                {% for row in summary_table %}
-                    {% if row.unpack_rating is defined and row.unpack_rating in ('Fair', 'Poor') %}
-                        {% set unpack_issue_count.val = unpack_issue_count.val + 1 %}
-                    {% endif %}
-                {% endfor %}
-            {% endif %}
-            {% if charts and charts.unpack_rating_distribution is defined %}
-            <div class="kpi-card">
-                <div class="kpi-title">Unpack Issues</div>
-                <div class="kpi-value {% if unpack_issue_count.val > 0 %}score-low{% endif %}">
-                    {{ unpack_issue_count.val }}
-                </div>
-                <div class="kpi-sub">Fair or Poor rating</div>
-            </div>
-            {% endif %}
-        </div>
-
-        <!-- Staleness Legend -->
-        {% if thresholds %}
-        <div class="metadata" style="margin-top: 15px;">
-            <strong>Staleness Legend:</strong>
-            <span class="staleness-fresh">FRESH</span> = scanned within {{ thresholds.fresh }} days |
-            <span class="staleness-aging">AGING</span> = {{ thresholds.fresh + 1 }}&ndash;{{ thresholds.aging }} days |
-            <span class="staleness-stale">STALE</span> = {{ thresholds.aging + 1 }}&ndash;{{ thresholds.stale }} days |
-            <span class="staleness-dormant">DORMANT</span> = over {{ thresholds.stale }} days
-        </div>
+{# Count "Fair" / "Poor" unpack ratings for the Unpack Issues KPI cell —
+   only relevant when unpack data is available. #}
+{% set unpack_issue_count = namespace(val=0) %}
+{% if summary_table %}
+    {% for row in summary_table %}
+        {% if row.unpack_rating is defined and row.unpack_rating in ('Fair', 'Poor') %}
+            {% set unpack_issue_count.val = unpack_issue_count.val + 1 %}
         {% endif %}
+    {% endfor %}
+{% endif %}
+{# `has_unpack_data` = the KPI cell gate (matches pre-migration template's
+   `charts.unpack_rating_distribution is defined` — shows the cell even
+   when the chart payload has empty labels; round-1 M1-8). #}
+{% set has_unpack_data = (charts.unpack_rating_distribution is defined) %}
+{# `has_unpack_chart` = the chart-render gate (only render the chart when
+   actual labels exist, to avoid empty-canvas / empty-SVG output). #}
+{% set has_unpack_chart = has_unpack_data and (charts.unpack_rating_distribution.labels | default([]) | length > 0) %}
 
-        <!-- Charts -->
-        {% if charts %}
-        <div class="two-col">
-            {% if charts.staleness_distribution and charts.staleness_distribution.labels | default([]) | length > 0 %}
-            <div class="chart-container">
-                <h2 class="chart-title">Staleness Distribution</h2>
-                <p class="chart-description">Project staleness based on days since last scan.</p>
-                <div class="chart-wrapper">
-                    <canvas id="stalenessChart"></canvas>
-                </div>
+{# Per-section-scoped table IDs so two console recipes in a compound
+   bundle don't collide on `getElementById(summary_table_id)` — round-1
+   M1-4 / A.3 compound-bundle namespacing pattern. #}
+{% set summary_table_id = fragment_scope_class ~ '-summaryTable' %}
+{% set detail_table_id = fragment_scope_class ~ '-detailTable' %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "Scan Quality"],
+    meta=[
+        {"label": "Domain", "value": domain or "—"},
+        {"label": "Scope", "value": project_label or scope_label or "All Projects"},
+        {"label": "Projects", "value": (summary.get('total_projects', 0)) | string},
+        {"label": "Generated", "value": generated_at or "—"},
+    ],
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>Scan Quality Report</h1>
+        <p class="subtitle">{{ project_label or scope_label | default('All Projects') }} — Scan Coverage &amp; Quality Analysis</p>
+    </div>
+
+    {# KPI bar — 4 or 5 cells (Unpack Issues conditional).
+       Sub-caption text (e.g. "out of 4") flows through the macro's
+       `delta=` slot per _console_macros.html:134. #}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell("Projects Scanned", summary.get('total_projects', 0)) }}
+        {{ fs.kpi_cell(
+            "Avg Coverage Score",
+            "%.1f"|format(summary.get('avg_coverage_score', 0) | float),
+            delta="out of 4",
+            dot=("critical" if summary.get('avg_coverage_score', 0) < 2 else ("medium" if summary.get('avg_coverage_score', 0) < 3 else "low")),
+        ) }}
+        {{ fs.kpi_cell(
+            "Reachability Coverage",
+            (rc.get('with_reachability', 0) | string) ~ " of " ~ (rc_total | string),
+            delta="binary projects with reachability",
+        ) }}
+        {{ fs.kpi_cell(
+            "Stale Projects",
+            summary.get('stale_project_count', 0),
+            delta="no scan in " ~ (thresholds.aging | string) ~ "+ days",
+            dot=("critical" if summary.get('stale_project_count', 0) > 0 else None),
+        ) }}
+        {% if has_unpack_data %}
+        {{ fs.kpi_cell(
+            "Unpack Issues",
+            unpack_issue_count.val,
+            delta="Fair or Poor rating",
+            dot=("critical" if unpack_issue_count.val > 0 else None),
+        ) }}
+        {% endif %}
+    </div>
+
+    {# Staleness legend strip. #}
+    {% if thresholds %}
+    <div class="sq-staleness-legend">
+        <strong>Staleness Legend:</strong>
+        <span class="sq-staleness-fresh">FRESH</span> = scanned within {{ thresholds.fresh }} days |
+        <span class="sq-staleness-aging">AGING</span> = {{ thresholds.fresh + 1 }}–{{ thresholds.aging }} days |
+        <span class="sq-staleness-stale">STALE</span> = {{ thresholds.aging + 1 }}–{{ thresholds.stale }} days |
+        <span class="sq-staleness-dormant">DORMANT</span> = over {{ thresholds.stale }} days
+    </div>
+    {% endif %}
+
+    {# Charts — 2-column row (staleness + scan_type_coverage) then
+       unpack rating full-width below (if present). The outer panel only
+       renders when at least one of the two charts has non-empty labels —
+       prevents an empty bordered chart region in standalone HTML
+       (round-1 B.1 PR review M1-4). #}
+    {# Chart-render gates require at least one positive value, not just
+       non-empty labels — prevents the server-side doughnut from
+       falling back to a `chart-unavailable` placeholder when every
+       bucket is zero (round-2 B.1 PR review M2-1). Use subscript
+       syntax (`['values']`) because Jinja's dot access resolves
+       `.values` to the dict's `.values()` METHOD, not the dict's
+       `"values"` key. #}
+    {% set has_staleness_chart = charts.staleness_distribution and (charts.staleness_distribution['values'] | default([]) | sum > 0) %}
+    {% set has_scan_type_chart = charts.scan_type_coverage and (charts.scan_type_coverage['values'] | default([]) | sum > 0) %}
+    {% if has_staleness_chart or has_scan_type_chart %}
+    <div class="panel" style="margin-bottom: 20px;">
+        <div class="sq-two-col">
+            {# Per-slot gates use the same values | sum > 0 derived locals
+               as the outer panel — prevents an all-zero staleness slot
+               from rendering when scan_type_coverage opens the panel
+               (round-3 B.1 PR review M1-1). #}
+            {% if has_staleness_chart %}
+            <div>
+                {{ fs.panel_head("Staleness distribution", meta="project recency") }}
+                {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                    <div class="chart-server-svg">{{ server_svgs.get('staleness_distribution', '') | safe }}</div>
+                {% else %}
+                    <div id="{{ fragment_scope_class }}-stalenessChart" class="sq-chart-wrapper"></div>
+                {% endif %}
             </div>
             {% endif %}
 
-            {% if charts.scan_type_coverage and charts.scan_type_coverage.labels | default([]) | length > 0 %}
-            <div class="chart-container">
-                <h2 class="chart-title">Scan Type Coverage</h2>
-                <p class="chart-description">Number of projects with each scan type present in their latest version.</p>
-                <div class="chart-wrapper">
-                    <canvas id="scanTypeCoverageChart"></canvas>
-                </div>
+            {% if has_scan_type_chart %}
+            <div>
+                {{ fs.panel_head("Scan type coverage", meta="projects per scan type") }}
+                {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                    <div class="chart-server-svg">{{ server_svgs.get('scan_type_coverage', '') | safe }}</div>
+                {% else %}
+                    <div id="{{ fragment_scope_class }}-scanTypeCoverageChart" class="sq-chart-wrapper"></div>
+                {% endif %}
             </div>
             {% endif %}
         </div>
+    </div>
+    {% endif %}
 
-        {% if charts.unpack_rating_distribution is defined and charts.unpack_rating_distribution.labels | default([]) | length > 0 %}
-        <div class="chart-container">
-            <h2 class="chart-title">Unpack Rating Distribution</h2>
-            <p class="chart-description">Distribution of firmware unpack quality ratings across evaluated versions.</p>
-            <div class="chart-wrapper" style="max-width: 600px; margin: 20px auto;">
-                <canvas id="unpackRatingChart"></canvas>
-            </div>
-        </div>
+    {# Unpack chart panel — INTENTIONALLY outside the
+       `has_staleness_chart or has_scan_type_chart` gate above so an
+       unpack-only payload (rare but possible if the transform's
+       per-chart data is partial) still renders. Round-2 B.1 PR
+       review M1-1 caught the prior nesting bug. #}
+    {% if has_unpack_chart %}
+    <div class="panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Unpack rating distribution", meta="binary scan unpack quality") }}
+        {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+            <div class="chart-server-svg">{{ server_svgs.get('unpack_rating_distribution', '') | safe }}</div>
+        {% else %}
+            <div id="{{ fragment_scope_class }}-unpackRatingChart" class="sq-chart-wrapper-narrow"></div>
         {% endif %}
-        {% endif %}
+    </div>
+    {% endif %}
 
-        <!-- Summary Table -->
-        <div class="table-container">
-            <h2>Project Summary</h2>
-            <p class="table-description">One row per project, showing the latest version's scan coverage and quality indicators.</p>
+    {# Summary Table (per-project, latest-version snapshot). #}
+    <div class="table-panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Project summary", meta="latest version per project") }}
+        <div class="body" style="overflow-x: auto;">
             {% if summary_table and summary_table | length > 0 %}
-            <table id="summaryTable">
+            {% set ns = namespace(has_unpack=false) %}
+            {% for row in summary_table %}
+                {% if row.unpack_rating is defined and row.unpack_rating %}
+                    {% set ns.has_unpack = true %}
+                {% endif %}
+            {% endfor %}
+            <table id="{{ summary_table_id }}" class="data-table">
                 <thead>
                     <tr>
-                        {% set ns = namespace(has_unpack=false) %}
-                        {% for row in summary_table %}
-                            {% if row.unpack_rating is defined and row.unpack_rating %}
-                                {% set ns.has_unpack = true %}
-                            {% endif %}
-                        {% endfor %}
-                        <th onclick="sortTable('summaryTable', 0)">Project</th>
-                        <th onclick="sortTable('summaryTable', 1)">Folder</th>
-                        <th onclick="sortTable('summaryTable', 2)" class="center auto-w">Versions</th>
-                        <th onclick="sortTable('summaryTable', 3)">Latest Version</th>
-                        <th onclick="sortTable('summaryTable', 4)">Last Scan</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ summary_table_id }}', 0)"{% endif %}>Project</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ summary_table_id }}', 1)"{% endif %}>Folder</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ summary_table_id }}', 2)"{% endif %} class="num">Versions</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ summary_table_id }}', 3)"{% endif %}>Latest Version</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ summary_table_id }}', 4)"{% endif %}>Last Scan</th>
                         {% if ns.has_unpack %}
-                        <th onclick="sortTable('summaryTable', 5)">Unpack Rating</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ summary_table_id }}', 5)"{% endif %}>Unpack Rating</th>
                         {% endif %}
-                        <th onclick="sortTable('summaryTable', {{ 5 + (1 if ns.has_unpack else 0) }})">Staleness</th>
-                        <th onclick="sortTable('summaryTable', {{ 6 + (1 if ns.has_unpack else 0) }})" class="center auto-w">Coverage</th>
-                        <th onclick="sortTable('summaryTable', {{ 7 + (1 if ns.has_unpack else 0) }})" class="center">Reachability</th>
-                        <th onclick="sortTable('summaryTable', {{ 8 + (1 if ns.has_unpack else 0) }})" class="num">Critical</th>
-                        <th onclick="sortTable('summaryTable', {{ 9 + (1 if ns.has_unpack else 0) }})" class="num">High</th>
-                        <th onclick="sortTable('summaryTable', {{ 10 + (1 if ns.has_unpack else 0) }})" class="num">Total</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ summary_table_id }}', {{ 5 + (1 if ns.has_unpack else 0) }})"{% endif %}>Staleness</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ summary_table_id }}', {{ 6 + (1 if ns.has_unpack else 0) }})"{% endif %} class="num">Coverage</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ summary_table_id }}', {{ 7 + (1 if ns.has_unpack else 0) }})"{% endif %}>Reachability</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ summary_table_id }}', {{ 8 + (1 if ns.has_unpack else 0) }})"{% endif %} class="num">Critical</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ summary_table_id }}', {{ 9 + (1 if ns.has_unpack else 0) }})"{% endif %} class="num">High</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ summary_table_id }}', {{ 10 + (1 if ns.has_unpack else 0) }})"{% endif %} class="num">Total</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -260,39 +332,37 @@
                     <tr>
                         <td>{{ row.project_name | default('') }}</td>
                         <td>{{ row.folder_name | default('') }}</td>
-                        <td class="center auto-w">{{ row.version_count | default(0) }}</td>
+                        <td class="num">{{ row.version_count | default(0) }}</td>
                         <td>{{ row.latest_version | default('') }}</td>
                         <td>{{ row.last_scan_date | default('') }}</td>
                         {% if ns.has_unpack %}
-                        <td class="tooltip-cell">
+                        <td class="sq-tooltip-cell">
                             {% set ur = row.unpack_rating | default('') %}
-                            {% if ur == 'Excellent' %}<span class="unpack-excellent">Excellent</span>
-                            {% elif ur == 'Good' %}<span class="unpack-good">Good</span>
-                            {% elif ur == 'Fair' %}<span class="unpack-fair">Fair</span>
-                            {% elif ur == 'Poor' %}<span class="unpack-poor">Poor</span>
-                            {% elif ur == 'Not Applicable' %}<span class="unpack-not-applicable" title="No unpacking was possible — encrypted firmware, blank upload, or file too small to be firmware">N/A</span>
-                            {% else %}<span style="color:#9ca3af;">&mdash;</span>{% endif %}
+                            {% if ur == 'Excellent' %}<span class="sq-unpack-excellent">Excellent</span>
+                            {% elif ur == 'Good' %}<span class="sq-unpack-good">Good</span>
+                            {% elif ur == 'Fair' %}<span class="sq-unpack-fair">Fair</span>
+                            {% elif ur == 'Poor' %}<span class="sq-unpack-poor">Poor</span>
+                            {% elif ur == 'Not Applicable' %}<span class="sq-unpack-not-applicable" title="No unpacking was possible — encrypted firmware, blank upload, or file too small to be firmware">N/A</span>
+                            {% else %}<span style="color: var(--ink-mute);">—</span>{% endif %}
                             {% if row.unpack_short_summary is defined and row.unpack_short_summary %}
-                            <div class="unpack-summary">{{ row.unpack_short_summary }}</div>
+                            <div class="sq-unpack-summary">{{ row.unpack_short_summary }}</div>
                             {% endif %}
                         </td>
                         {% endif %}
                         <td>
                             {% if staleness_lc %}
-                            <span class="staleness-{{ staleness_lc }}">{{ row.staleness }}</span>
-                            {% else %}&mdash;{% endif %}
+                            <span class="sq-staleness-{{ staleness_lc }}">{{ row.staleness }}</span>
+                            {% else %}—{% endif %}
                         </td>
-                        <td class="center auto-w">
+                        <td class="num">
                             {% set cs = row.coverage_score | default(0) %}
-                            <span class="{% if cs >= 4 %}score-good{% elif cs >= 3 %}score-mid{% else %}score-low{% endif %}">
-                                {{ cs }}
-                            </span>
+                            <span class="{% if cs >= 4 %}sq-score-good{% elif cs >= 3 %}sq-score-mid{% else %}sq-score-low{% endif %}">{{ cs }}</span>
                         </td>
-                        <td class="center">
+                        <td>
                             {% set reach = row.has_reachability | default('') %}
-                            {% if reach == 'Yes' %}<span class="reach-yes">Yes</span>
-                            {% elif reach == 'No' %}<span class="reach-no">No</span>
-                            {% else %}<span class="reach-na">N/A</span>{% endif %}
+                            {% if reach == 'Yes' %}<span class="sq-reach-yes">Yes</span>
+                            {% elif reach == 'No' %}<span class="sq-reach-no">No</span>
+                            {% else %}<span class="sq-reach-na">N/A</span>{% endif %}
                         </td>
                         <td class="num">{{ row.critical_findings | default(0) }}</td>
                         <td class="num">{{ row.high_findings | default(0) }}</td>
@@ -302,14 +372,15 @@
                 </tbody>
             </table>
             {% else %}
-            <div class="no-data">No project data available.</div>
+            <div class="sq-no-data">No project data available.</div>
             {% endif %}
         </div>
+    </div>
 
-        <!-- Detail Table -->
-        <div class="table-container">
-            <h2>Version Detail</h2>
-            <p class="table-description">One row per project-version. Hover over Unpack Rating to see the short summary.</p>
+    {# Detail Table (per project-version). #}
+    <div class="table-panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Version detail", meta="one row per project-version") }}
+        <div class="body" style="overflow-x: auto;">
             {% if detail_table and detail_table | length > 0 %}
             {% set dns = namespace(has_unpack=false) %}
             {% for row in detail_table %}
@@ -317,23 +388,23 @@
                     {% set dns.has_unpack = true %}
                 {% endif %}
             {% endfor %}
-            <table id="detailTable">
+            <table id="{{ detail_table_id }}" class="data-table">
                 <thead>
                     <tr>
-                        <th onclick="sortTable('detailTable', 0)">Project</th>
-                        <th onclick="sortTable('detailTable', 1)">Folder</th>
-                        <th onclick="sortTable('detailTable', 2)">Version</th>
-                        <th onclick="sortTable('detailTable', 3)" class="center auto-w">Scans</th>
-                        <th onclick="sortTable('detailTable', 4)">Last Scan</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ detail_table_id }}', 0)"{% endif %}>Project</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ detail_table_id }}', 1)"{% endif %}>Folder</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ detail_table_id }}', 2)"{% endif %}>Version</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ detail_table_id }}', 3)"{% endif %} class="num">Scans</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ detail_table_id }}', 4)"{% endif %}>Last Scan</th>
                         {% if dns.has_unpack %}
-                        <th onclick="sortTable('detailTable', 5)">Unpack Rating</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ detail_table_id }}', 5)"{% endif %}>Unpack Rating</th>
                         {% endif %}
-                        <th onclick="sortTable('detailTable', {{ 5 + (1 if dns.has_unpack else 0) }})">Staleness</th>
-                        <th onclick="sortTable('detailTable', {{ 6 + (1 if dns.has_unpack else 0) }})" class="center auto-w">Coverage</th>
-                        <th onclick="sortTable('detailTable', {{ 7 + (1 if dns.has_unpack else 0) }})" class="center">Reachability</th>
-                        <th onclick="sortTable('detailTable', {{ 8 + (1 if dns.has_unpack else 0) }})" class="num">Critical</th>
-                        <th onclick="sortTable('detailTable', {{ 9 + (1 if dns.has_unpack else 0) }})" class="num">High</th>
-                        <th onclick="sortTable('detailTable', {{ 10 + (1 if dns.has_unpack else 0) }})" class="num">Total</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ detail_table_id }}', {{ 5 + (1 if dns.has_unpack else 0) }})"{% endif %}>Staleness</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ detail_table_id }}', {{ 6 + (1 if dns.has_unpack else 0) }})"{% endif %} class="num">Coverage</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ detail_table_id }}', {{ 7 + (1 if dns.has_unpack else 0) }})"{% endif %}>Reachability</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ detail_table_id }}', {{ 8 + (1 if dns.has_unpack else 0) }})"{% endif %} class="num">Critical</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ detail_table_id }}', {{ 9 + (1 if dns.has_unpack else 0) }})"{% endif %} class="num">High</th>
+                        <th{% if render_mode != 'fragment' %} onclick="sq_sortTable('{{ detail_table_id }}', {{ 10 + (1 if dns.has_unpack else 0) }})"{% endif %} class="num">Total</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -343,38 +414,36 @@
                         <td>{{ row.project_name | default('') }}</td>
                         <td>{{ row.folder_name | default('') }}</td>
                         <td>{{ row.version_name | default('') }}</td>
-                        <td class="center auto-w">{{ row.scan_count | default(0) }}</td>
+                        <td class="num">{{ row.scan_count | default(0) }}</td>
                         <td>{{ row.last_scan_date | default('') }}</td>
                         {% if dns.has_unpack %}
-                        <td class="tooltip-cell">
+                        <td class="sq-tooltip-cell">
                             {% set ur = row.unpack_rating | default('') %}
-                            {% if ur == 'Excellent' %}<span class="unpack-excellent">Excellent</span>
-                            {% elif ur == 'Good' %}<span class="unpack-good">Good</span>
-                            {% elif ur == 'Fair' %}<span class="unpack-fair">Fair</span>
-                            {% elif ur == 'Poor' %}<span class="unpack-poor">Poor</span>
-                            {% elif ur == 'Not Applicable' %}<span class="unpack-not-applicable" title="No unpacking was possible — encrypted firmware, blank upload, or file too small to be firmware">N/A</span>
-                            {% else %}<span style="color:#9ca3af;">&mdash;</span>{% endif %}
+                            {% if ur == 'Excellent' %}<span class="sq-unpack-excellent">Excellent</span>
+                            {% elif ur == 'Good' %}<span class="sq-unpack-good">Good</span>
+                            {% elif ur == 'Fair' %}<span class="sq-unpack-fair">Fair</span>
+                            {% elif ur == 'Poor' %}<span class="sq-unpack-poor">Poor</span>
+                            {% elif ur == 'Not Applicable' %}<span class="sq-unpack-not-applicable" title="No unpacking was possible — encrypted firmware, blank upload, or file too small to be firmware">N/A</span>
+                            {% else %}<span style="color: var(--ink-mute);">—</span>{% endif %}
                             {% if row.unpack_short_summary is defined and row.unpack_short_summary %}
-                            <div class="unpack-summary">{{ row.unpack_short_summary }}</div>
+                            <div class="sq-unpack-summary">{{ row.unpack_short_summary }}</div>
                             {% endif %}
                         </td>
                         {% endif %}
                         <td>
                             {% if staleness_lc %}
-                            <span class="staleness-{{ staleness_lc }}">{{ row.staleness }}</span>
-                            {% else %}&mdash;{% endif %}
+                            <span class="sq-staleness-{{ staleness_lc }}">{{ row.staleness }}</span>
+                            {% else %}—{% endif %}
                         </td>
-                        <td class="center auto-w">
+                        <td class="num">
                             {% set cs = row.coverage_score | default(0) %}
-                            <span class="{% if cs >= 4 %}score-good{% elif cs >= 3 %}score-mid{% else %}score-low{% endif %}">
-                                {{ cs }}
-                            </span>
+                            <span class="{% if cs >= 4 %}sq-score-good{% elif cs >= 3 %}sq-score-mid{% else %}sq-score-low{% endif %}">{{ cs }}</span>
                         </td>
-                        <td class="center">
+                        <td>
                             {% set reach = row.has_reachability | default('') %}
-                            {% if reach == 'Yes' %}<span class="reach-yes">Yes</span>
-                            {% elif reach == 'No' %}<span class="reach-no">No</span>
-                            {% else %}<span class="reach-na">N/A</span>{% endif %}
+                            {% if reach == 'Yes' %}<span class="sq-reach-yes">Yes</span>
+                            {% elif reach == 'No' %}<span class="sq-reach-no">No</span>
+                            {% else %}<span class="sq-reach-na">N/A</span>{% endif %}
                         </td>
                         <td class="num">{{ row.critical_findings | default(0) }}</td>
                         <td class="num">{{ row.high_findings | default(0) }}</td>
@@ -384,197 +453,269 @@
                 </tbody>
             </table>
             {% else %}
-            <div class="no-data">No version detail data available.</div>
+            <div class="sq-no-data">No version detail data available.</div>
             {% endif %}
         </div>
-
-        <!-- Footer -->
-        {% include "_default_footer.html" %}
     </div>
+</main>
 
-    <script>
-    // Table sort helper
-    function sortTable(tableId, colIdx) {
-        var table = document.getElementById(tableId);
-        if (!table) return;
-        var tbody = table.querySelector('tbody');
-        var rows = Array.from(tbody.querySelectorAll('tr'));
-        var asc = table.dataset.sortCol === String(colIdx) && table.dataset.sortDir !== 'asc';
-        table.dataset.sortCol = colIdx;
-        table.dataset.sortDir = asc ? 'asc' : 'desc';
-        rows.sort(function(a, b) {
-            var av = a.cells[colIdx] ? a.cells[colIdx].innerText.trim() : '';
-            var bv = b.cells[colIdx] ? b.cells[colIdx].innerText.trim() : '';
-            var an = parseFloat(av.replace(/[^0-9.\-]/g, ''));
-            var bn = parseFloat(bv.replace(/[^0-9.\-]/g, ''));
-            if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
-            return asc ? av.localeCompare(bv) : bv.localeCompare(av);
-        });
-        rows.forEach(function(r) { tbody.appendChild(r); });
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Scan Quality",
+    "Projects: " ~ ((summary.get('total_projects', 0)) | string),
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+{% if render_mode != 'fragment' or fragment_scripts_enabled %}
+<script>
+// Namespaced table-sort helper — recipe-scoped to avoid collisions in
+// compound bundles. Mirrors the vc_toggle* renaming pattern from A.3.
+function sq_sortTable(tableId, colIdx) {
+    var table = document.getElementById(tableId);
+    if (!table) return;
+    var tbody = table.querySelector('tbody');
+    var rows = Array.from(tbody.querySelectorAll('tr'));
+    var asc = table.dataset.sortCol === String(colIdx) && table.dataset.sortDir !== 'asc';
+    table.dataset.sortCol = colIdx;
+    table.dataset.sortDir = asc ? 'asc' : 'desc';
+    rows.sort(function(a, b) {
+        var av = a.cells[colIdx] ? a.cells[colIdx].innerText.trim() : '';
+        var bv = b.cells[colIdx] ? b.cells[colIdx].innerText.trim() : '';
+        var an = parseFloat(av.replace(/[^0-9.\-]/g, ''));
+        var bn = parseFloat(bv.replace(/[^0-9.\-]/g, ''));
+        if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
+        return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+    rows.forEach(function(r) { tbody.appendChild(r); });
+}
+
+(function() {
+    // Defensive ECharts CDN guard.
+    if (typeof echarts === 'undefined') {
+        if (typeof console !== 'undefined' && console.error) {
+            console.error('ECharts library not loaded — Scan Quality charts will be blank');
+        }
+        return;
     }
 
-    document.addEventListener('DOMContentLoaded', function() {
-        Chart.register(ChartDataLabels);
+    // Theme-aware token reader — called at buildOption time so re-renders
+    // pick up the live tokens.
+    function _tokens() {
+        var cs = getComputedStyle(document.documentElement);
+        return {
+            inkBody:     cs.getPropertyValue('--ink-body').trim() || '#374151',
+            inkMute:     cs.getPropertyValue('--ink-mute').trim() || '#6c757d',
+            surfaceCard: cs.getPropertyValue('--surface-card').trim() || '#ffffff',
+            hairline:    cs.getPropertyValue('--hairline').trim() || '#dee2e6',
+            accentTeal:  cs.getPropertyValue('--accent-teal').trim() || '#0d9488',
+            sevCritical: cs.getPropertyValue('--sev-critical').trim() || '#dc3545',
+            sevHigh:     cs.getPropertyValue('--sev-high').trim() || '#fd7e14',
+            sevMedium:   cs.getPropertyValue('--sev-medium').trim() || '#ffc107',
+            sevLow:      cs.getPropertyValue('--sev-low').trim() || '#28a745',
+        };
+    }
 
-        // ---- Staleness Doughnut Chart ----
-        {% if charts and charts.staleness_distribution and charts.staleness_distribution.labels | default([]) | length > 0 %}
-        (function() {
-            var ctx = document.getElementById('stalenessChart');
-            if (!ctx) return;
-            var data = {{ charts.staleness_distribution | tojson }};
-            if (!data.labels || data.labels.length === 0) return;
+    function _initChart(elId, optsFactory) {
+        var el = document.getElementById(elId);
+        if (!el) return null;
+        var inst = fsEChartsInit(el, { renderer: 'canvas' });
+        try {
+            inst.setOption(optsFactory());
+        } catch (e) {
+            window.fsBeaconRelease();
+            throw e;
+        }
+        var obs = new MutationObserver(function(mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+                if (mutations[i].attributeName === 'data-theme') {
+                    inst.setOption(optsFactory());
+                    break;
+                }
+            }
+        });
+        obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+        window.addEventListener('resize', function() { inst.resize(); });
+        return inst;
+    }
 
+    // 1. Staleness — doughnut chart.
+    {% if charts and charts.staleness_distribution and charts.staleness_distribution.labels | default([]) | length > 0 %}
+    (function() {
+        var data = {{ charts.staleness_distribution | tojson }};
+        if (!data.labels || data.labels.length === 0) return;
+        _initChart('{{ fragment_scope_class }}-stalenessChart', function() {
+            var t = _tokens();
             var colorMap = {
-                'FRESH':   '#22c55e',
-                'AGING':   '#f59e0b',
-                'STALE':   '#f97316',
-                'DORMANT': '#ef4444'
+                'FRESH':   t.sevLow,
+                'AGING':   t.sevMedium,
+                'STALE':   t.sevHigh,
+                'DORMANT': t.sevCritical
             };
-            var bgColors = data.labels.map(function(l) { return colorMap[l] || '#9ca3af'; });
-
-            new Chart(ctx.getContext('2d'), {
-                type: 'doughnut',
-                data: {
-                    labels: data.labels,
-                    datasets: [{
-                        data: data.values,
-                        backgroundColor: bgColors,
-                        borderWidth: 2,
-                        borderColor: '#fff'
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { position: 'bottom' },
-                        datalabels: {
-                            color: '#fff',
-                            font: { weight: 'bold', size: 13 },
-                            formatter: function(value, ctx) {
-                                if (value === 0) return '';
-                                var total = ctx.dataset.data.reduce(function(a, b) { return a + b; }, 0);
-                                var pct = ((value / total) * 100).toFixed(1);
-                                return value + '\n(' + pct + '%)';
-                            }
-                        }
-                    }
-                },
-                plugins: [ChartDataLabels]
+            var pieData = data.labels.map(function(label, i) {
+                return {
+                    name: label,
+                    value: data.values[i],
+                    itemStyle: { color: colorMap[label] || t.inkMute }
+                };
             });
-        })();
-        {% endif %}
-
-        // ---- Scan Type Coverage Bar Chart ----
-        {% if charts and charts.scan_type_coverage and charts.scan_type_coverage.labels | default([]) | length > 0 %}
-        (function() {
-            var ctx = document.getElementById('scanTypeCoverageChart');
-            if (!ctx) return;
-            var data = {{ charts.scan_type_coverage | tojson }};
-            if (!data.labels || data.labels.length === 0) return;
-
-            new Chart(ctx.getContext('2d'), {
-                type: 'bar',
-                data: {
-                    labels: data.labels,
-                    datasets: [{
-                        label: 'Projects',
-                        data: data.values,
-                        backgroundColor: '#3b82f6',
-                        borderColor: '#2563eb',
-                        borderWidth: 1,
-                        borderRadius: 4
-                    }]
+            return {
+                tooltip: {
+                    trigger: 'item',
+                    formatter: '{b}: <b>{c}</b> ({d}%)',
+                    backgroundColor: t.surfaceCard,
+                    borderColor: t.hairline,
+                    borderWidth: 1,
+                    textStyle: { color: t.inkBody, fontSize: 12 }
                 },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        datalabels: {
-                            anchor: 'end',
-                            align: 'top',
-                            color: '#333',
-                            font: { weight: 'bold', size: 12 },
-                            formatter: function(value) { return value; }
-                        }
+                legend: {
+                    orient: 'horizontal',
+                    bottom: 0,
+                    textStyle: { color: t.inkBody, fontSize: 11 }
+                },
+                series: [{
+                    type: 'pie',
+                    radius: ['45%', '70%'],
+                    center: ['50%', '45%'],
+                    avoidLabelOverlap: true,
+                    itemStyle: { borderColor: t.surfaceCard, borderWidth: 2, borderRadius: 4 },
+                    label: {
+                        show: true,
+                        formatter: function(p) {
+                            return p.value === 0 ? '' : p.value + '\n(' + p.percent.toFixed(1) + '%)';
+                        },
+                        fontSize: 11,
+                        color: '#fff',
+                        fontWeight: 'bold'
                     },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            ticks: { stepSize: 1 },
-                            title: { display: true, text: 'Number of Projects' }
-                        }
-                    }
-                },
-                plugins: [ChartDataLabels]
-            });
-        })();
-        {% endif %}
-
-        // ---- Unpack Rating Bar Chart (conditional) ----
-        {% if charts and charts.unpack_rating_distribution is defined and charts.unpack_rating_distribution.labels | default([]) | length > 0 %}
-        (function() {
-            var ctx = document.getElementById('unpackRatingChart');
-            if (!ctx) return;
-            var data = {{ charts.unpack_rating_distribution | tojson }};
-            if (!data.labels || data.labels.length === 0) return;
-
-            var colorMap = {
-                'Excellent':       '#22c55e',
-                'Good':            '#3b82f6',
-                'Fair':            '#f59e0b',
-                'Poor':            '#ef4444',
-                'Not Applicable':  '#9ca3af'
+                    labelLine: { show: false },
+                    // Preserve zero-count buckets in the legend (round-1
+                    // B.1 PR review M1-1) — labels are suppressed by the
+                    // formatter above; legend retains all 4 staleness
+                    // categories. Matches the pre-migration Chart.js
+                    // behavior where datalabels were hidden but the
+                    // dataset kept all labels.
+                    data: pieData
+                }]
             };
-            var bgColors = data.labels.map(function(l) { return colorMap[l] || '#9ca3af'; });
-            // Display "N/A" on the chart axis to match the table cell badges
-            // while keeping the canonical "Not Applicable" string in the
-            // underlying data (colorMap, JSON, etc.).
+        });
+    })();
+    {% endif %}
+
+    // 2. Scan type coverage — vertical bar chart.
+    {% if charts and charts.scan_type_coverage and charts.scan_type_coverage.labels | default([]) | length > 0 %}
+    (function() {
+        var data = {{ charts.scan_type_coverage | tojson }};
+        if (!data.labels || data.labels.length === 0) return;
+        _initChart('{{ fragment_scope_class }}-scanTypeCoverageChart', function() {
+            var t = _tokens();
+            return {
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { type: 'shadow' },
+                    backgroundColor: t.surfaceCard,
+                    borderColor: t.hairline,
+                    borderWidth: 1,
+                    textStyle: { color: t.inkBody }
+                },
+                grid: { left: 50, right: 20, top: 30, bottom: 30 },
+                xAxis: {
+                    type: 'category',
+                    data: data.labels,
+                    axisLabel: { color: t.inkBody, fontSize: 11 }
+                },
+                yAxis: {
+                    type: 'value',
+                    name: 'Number of Projects',
+                    axisLabel: { color: t.inkBody, fontSize: 10 },
+                    nameTextStyle: { color: t.inkMute, fontSize: 10 },
+                    splitLine: { lineStyle: { color: t.hairline } },
+                    minInterval: 1
+                },
+                series: [{
+                    type: 'bar',
+                    data: data.values,
+                    itemStyle: { color: t.accentTeal, borderRadius: [4, 4, 0, 0] },
+                    label: {
+                        show: true,
+                        position: 'top',
+                        color: t.inkBody,
+                        fontSize: 11,
+                        fontWeight: 'bold'
+                    }
+                }]
+            };
+        });
+    })();
+    {% endif %}
+
+    // 3. Unpack rating distribution — vertical bar chart (conditional).
+    {% if charts and charts.unpack_rating_distribution is defined and charts.unpack_rating_distribution.labels | default([]) | length > 0 %}
+    (function() {
+        var data = {{ charts.unpack_rating_distribution | tojson }};
+        if (!data.labels || data.labels.length === 0) return;
+        _initChart('{{ fragment_scope_class }}-unpackRatingChart', function() {
+            var t = _tokens();
+            var colorMap = {
+                'Excellent':       t.sevLow,
+                'Good':            t.accentTeal,
+                'Fair':            t.sevMedium,
+                'Poor':            t.sevCritical,
+                'Not Applicable':  t.inkMute
+            };
+            // Show "N/A" on the chart axis label (matches table cell badges).
             var displayLabels = data.labels.map(function(l) {
                 return l === 'Not Applicable' ? 'N/A' : l;
             });
-
-            new Chart(ctx.getContext('2d'), {
-                type: 'bar',
-                data: {
-                    labels: displayLabels,
-                    datasets: [{
-                        label: 'Versions',
-                        data: data.values,
-                        backgroundColor: bgColors,
-                        borderWidth: 1,
-                        borderRadius: 4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        datalabels: {
-                            anchor: 'end',
-                            align: 'top',
-                            color: '#333',
-                            font: { weight: 'bold', size: 12 },
-                            formatter: function(value) { return value; }
-                        }
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            ticks: { stepSize: 1 },
-                            title: { display: true, text: 'Number of Versions' }
-                        }
-                    }
-                },
-                plugins: [ChartDataLabels]
+            var colors = data.labels.map(function(l) {
+                return colorMap[l] || t.inkMute;
             });
-        })();
-        {% endif %}
-    });
-    </script>
+            return {
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { type: 'shadow' },
+                    backgroundColor: t.surfaceCard,
+                    borderColor: t.hairline,
+                    borderWidth: 1,
+                    textStyle: { color: t.inkBody }
+                },
+                grid: { left: 50, right: 20, top: 30, bottom: 30 },
+                xAxis: {
+                    type: 'category',
+                    data: displayLabels,
+                    axisLabel: { color: t.inkBody, fontSize: 11 }
+                },
+                yAxis: {
+                    type: 'value',
+                    name: 'Number of Versions',
+                    axisLabel: { color: t.inkBody, fontSize: 10 },
+                    nameTextStyle: { color: t.inkMute, fontSize: 10 },
+                    splitLine: { lineStyle: { color: t.hairline } },
+                    minInterval: 1
+                },
+                series: [{
+                    type: 'bar',
+                    data: data.values.map(function(v, i) {
+                        return { value: v, itemStyle: { color: colors[i], borderRadius: [4, 4, 0, 0] } };
+                    }),
+                    label: {
+                        show: true,
+                        position: 'top',
+                        color: t.inkBody,
+                        fontSize: 11,
+                        fontWeight: 'bold'
+                    }
+                }]
+            };
+        });
+    })();
+    {% endif %}
+})();
+</script>
 
-    {% include '_action_buttons.html' %}
+{% include '_action_buttons.html' %}
 </body>
 </html>
+{% endif %}

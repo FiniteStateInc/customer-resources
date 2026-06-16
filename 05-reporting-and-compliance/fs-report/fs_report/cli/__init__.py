@@ -16,6 +16,7 @@ import typer
 from rich.console import Console
 
 # ── Sub-apps ─────────────────────────────────────────────────────────
+from fs_report.cli.bundle_cmd import bundle_app
 from fs_report.cli.cache import cache_app
 from fs_report.cli.changelog_cmd import changelog_app
 
@@ -32,8 +33,10 @@ from fs_report.cli.common import (  # noqa: F401
     resolve_auth,
     setup_logging,
 )
+from fs_report.cli.compare_cmd import compare_app
 from fs_report.cli.config_cmd import config_app
 from fs_report.cli.help_cmd import help_app
+from fs_report.cli.install_engine_cmd import install_engine_app
 from fs_report.cli.list_cmd import list_app
 from fs_report.cli.run import create_config, run_app, run_reports  # noqa: F401
 from fs_report.cli.serve import serve_app
@@ -65,12 +68,27 @@ app = typer.Typer(
 
 # Register command groups
 app.add_typer(run_app, name="run", help="Generate reports from recipes.")
+app.add_typer(
+    bundle_app,
+    name="bundle",
+    help="Build a compound report bundle (multiple recipes in one document).",
+)
+app.add_typer(
+    compare_app,
+    name="compare",
+    help="Compare two scopes across diff facets (meta-compare).",
+)
 app.add_typer(list_app, name="list", help="List resources (projects, recipes, ...).")
 app.add_typer(cache_app, name="cache", help="Manage cached data.")
 app.add_typer(config_app, name="config", help="Manage configuration.")
 app.add_typer(help_app, name="help", help="Show help topics.")
 app.add_typer(serve_app, name="serve", help="Serve reports via local HTTP server.")
 app.add_typer(changelog_app, name="changelog", help="Show per-report changelog.")
+app.add_typer(
+    install_engine_app,
+    name="install-engine",
+    help="Install the Chromium binary used by the Playwright PDF renderer.",
+)
 
 
 # ── Deprecated top-level commands (backwards compat) ─────────────────
@@ -238,6 +256,11 @@ _RUN_FLAGS = {
     "--project",
     "--folder",
     "--version",
+    # Meta-compare scope flags (B3.7) — shared by `run` (saved meta-compare)
+    # and `compare`. Without these in the gate, a bare `fs-report --left ...`
+    # would be rejected before Typer dispatch.
+    "--left",
+    "--right",
     "--finding-types",
     "--scan-type",
     "--scan-status",
@@ -313,7 +336,25 @@ def _main() -> None:
     args = sys.argv[1:]
 
     # Check: no subcommand present but run-style flags are
-    subcommands = {"run", "list", "cache", "config", "help", "serve", "changelog"}
+    subcommands = {
+        "run",
+        "list",
+        "cache",
+        "config",
+        "help",
+        "serve",
+        "changelog",
+        "install-engine",
+        # ``bundle`` shares flags with the legacy run surface
+        # (--overwrite, --logo) — omitting it here routed those
+        # invocations into the bare-flag rejection before Typer
+        # dispatch (PR #104 round-1 review M2-2).
+        "bundle",
+        # ``compare`` shares run-surface flags (--logo, --overwrite,
+        # --token, ...); like ``bundle`` it must be a recognized
+        # subcommand so those invocations reach Typer (B3.7).
+        "compare",
+    }
     has_subcommand = any(a in subcommands for a in args)
 
     if not has_subcommand and args:

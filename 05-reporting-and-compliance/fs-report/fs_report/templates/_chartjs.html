@@ -10,14 +10,12 @@
    Chart.defaults block (which checks `typeof Chart !== 'undefined'`)
    actually picks up the design-token font/color/border defaults.
 
-   Skipped in pdf_target mode — WeasyPrint can't execute JS. The renderer
-   builds a `server_svgs` dict (keyed by recipe.output.charts[].name) in
-   pdf_target/fragment_mode, but individual base-extending templates
-   (executive_summary, user_activity, assessment_overview) still emit
-   raw <canvas> instead of consuming server_svgs — so PDF/fragment
-   renders for those reports currently have blank chart slots. Tracked
-   as a follow-up; the standalone chart-bearing templates already use
-   server_svgs correctly. #}
-{% if not pdf_target %}
+   Loaded for BOTH HTML and PDF render modes — under A1 the Playwright
+   PDF renderer runs Chart.js inside Chromium and fires fsReportNewChart
+   to drive the readiness beacon, so the live <canvas> branch is used
+   for PDF too. Only `render_mode == 'fragment'` skips the library (the
+   parent shell supplies it, or the fragment is server-rendered SVG and
+   needs no runtime). #}
+{% if render_mode != 'fragment' %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 {% endif %}

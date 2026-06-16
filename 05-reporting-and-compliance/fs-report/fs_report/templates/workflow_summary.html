@@ -1,242 +1,312 @@
-{% extends "base.html" %}
+{% if render_mode != 'fragment' %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>Workflow Summary - Finite State Report</title>
 
-{% block title %}Workflow Summary{% endblock %}
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+{% endif %}
 
-{% block content %}
+{# NOTE: This <style> block sits OUTSIDE the
+   render_mode != 'fragment' gate intentionally. In fragment mode the
+   entire <head> is omitted, and fragment_extractor.py
+   (_STYLE_RE.findall) scans the rendered HTML for <style> blocks and
+   re-emits their contents scoped under .fs-section-<slug>. If this
+   block lived inside the gate, fragment-mode renders would drop all
+   .ws-* rules and the timeline/cards would render unstyled. In
+   standalone mode the <style> renders just after the </head> close —
+   browsers accept <style> outside <head> per HTML5. #}
 <style>
-  .kpi-row { display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
-  .kpi-card {
-    flex: 1; min-width: 130px; background: #fff; border: 1px solid #dee2e6;
-    border-radius: 8px; padding: 18px 16px; text-align: center;
-  }
-  .kpi-card.border-blue   { border-top: 4px solid #1976d2; }
-  .kpi-card.border-green  { border-top: 4px solid #388e3c; }
-  .kpi-card.border-orange { border-top: 4px solid #f57c00; }
-  .kpi-card.border-gray   { border-top: 4px solid #757575; }
-  .kpi-value { font-size: 2em; font-weight: 700; line-height: 1.2; }
-  .kpi-label { font-size: 0.8em; color: #666; margin-top: 4px; }
-  .kpi-blue   .kpi-value { color: #1976d2; }
-  .kpi-green  .kpi-value { color: #388e3c; }
-  .kpi-orange .kpi-value { color: #f57c00; }
-  .kpi-gray   .kpi-value { color: #757575; }
+    /* Workflow Summary — recipe-specific styling.
+       Tokens come from _design_system.html / _tokens_inline.html. */
 
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }
-  .badge-success { background: #388e3c; color: #fff; }
-  .badge-fail    { background: #d32f2f; color: #fff; }
-  .badge-unknown { background: #9e9e9e; color: #fff; }
+    .ws-timeline {
+        position: relative;
+        padding-left: 28px;
+        margin: 16px 0 28px;
+    }
+    .ws-timeline::before {
+        content: "";
+        position: absolute;
+        left: 10px; top: 0; bottom: 0;
+        width: 3px;
+        background: var(--hairline);
+        border-radius: 2px;
+    }
+    .ws-tl-step {
+        position: relative;
+        margin-bottom: 18px;
+    }
+    .ws-tl-step::before {
+        content: "";
+        position: absolute;
+        left: -22px; top: 4px;
+        width: 10px; height: 10px;
+        border-radius: 50%;
+        background: var(--accent-teal);
+        border: 2px solid var(--surface-card);
+        box-shadow: 0 0 0 2px var(--accent-teal);
+    }
+    .ws-tl-time { font-size: 11px; color: var(--ink-dim); }
+    .ws-tl-name {
+        font-weight: 600;
+        display: inline-block;
+        max-width: 500px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: bottom;
+        color: var(--ink-strong);
+    }
+    .ws-tl-dur {
+        font-size: 11px;
+        color: var(--ink-dim);
+        margin-left: 8px;
+    }
 
-  section.report-section { margin-bottom: 32px; }
-  section.report-section h2 {
-    font-size: 1.15em; color: #2c3e50;
-    border-bottom: 2px solid #e9ecef; padding-bottom: 6px; margin-bottom: 14px;
-  }
+    .ws-step-card {
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-md);
+        padding: 14px 16px;
+        margin-bottom: 14px;
+        background: var(--surface-card);
+    }
+    .ws-step-card h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+        color: var(--ink-strong);
+    }
+    .ws-step-tag {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: var(--r-sm);
+        font-size: 11px;
+        font-weight: 600;
+        margin-left: 8px;
+        background: var(--surface-muted);
+        color: var(--ink-dim);
+    }
+    .ws-step-tag.known {
+        background: var(--surface-subtle);
+        color: var(--accent-teal);
+    }
 
-  /* Timeline */
-  .timeline { position: relative; padding-left: 28px; margin: 16px 0 28px; }
-  .timeline::before {
-    content: ""; position: absolute; left: 10px; top: 0; bottom: 0;
-    width: 3px; background: #dee2e6; border-radius: 2px;
-  }
-  .tl-step { position: relative; margin-bottom: 18px; }
-  .tl-step::before {
-    content: ""; position: absolute; left: -22px; top: 4px;
-    width: 10px; height: 10px; border-radius: 50%; background: #1976d2; border: 2px solid #fff;
-    box-shadow: 0 0 0 2px #1976d2;
-  }
-  .tl-step .tl-time { font-size: 0.78em; color: #888; }
-  .tl-step .tl-name {
-    font-weight: 600; font-size: 0.95em;
-    display: inline-block; max-width: 500px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    vertical-align: bottom;
-  }
-  .tl-step .tl-dur  { font-size: 0.75em; color: #999; margin-left: 8px; }
+    .ws-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: var(--r-sm);
+        font-size: 11px;
+        font-weight: 600;
+    }
+    .ws-badge.success { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .ws-badge.fail    { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .ws-badge.muted   { background: var(--surface-muted);   color: var(--ink-dim); }
 
-  /* Step detail cards */
-  .step-card {
-    border: 1px solid #dee2e6; border-radius: 6px;
-    padding: 14px 16px; margin-bottom: 14px; background: #fafafa;
-  }
-  .step-card h3 { margin: 0 0 8px; font-size: 1em; color: #2c3e50; }
-  .step-card .step-type-tag {
-    display: inline-block; padding: 1px 7px; border-radius: 3px;
-    font-size: 0.7em; font-weight: 600; margin-left: 8px;
-    background: #e3f2fd; color: #1565c0;
-  }
-  .step-card .step-type-tag.tag-unknown { background: #eeeeee; color: #666; }
+    .ws-ticket-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+    }
+    .ws-ticket-table th,
+    .ws-ticket-table td {
+        padding: 5px 10px;
+        border-bottom: 1px solid var(--hairline);
+        text-align: left;
+    }
+    .ws-ticket-table th {
+        background: var(--surface-subtle);
+        font-weight: 600;
+        color: var(--ink-strong);
+    }
 
-  .triage-bar { display: flex; height: 22px; border-radius: 4px; overflow: hidden; margin: 10px 0; }
-  .triage-seg { text-align: center; font-size: 0.7em; font-weight: 600; color: #fff; line-height: 22px; }
+    .ws-raw-json {
+        background: var(--surface-subtle);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-sm);
+        padding: 10px;
+        font-size: 11px;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        color: var(--ink-strong);
+    }
 
-  .ticket-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
-  .ticket-table th, .ticket-table td { padding: 5px 10px; border-bottom: 1px solid #eee; text-align: left; }
-  .ticket-table th { background: #f5f5f5; font-weight: 600; }
-
-  pre.raw-json {
-    background: #f5f5f5; border: 1px solid #dee2e6; border-radius: 4px;
-    padding: 10px; font-size: 0.8em; overflow-x: auto; white-space: pre-wrap;
-  }
-
-  .ws-header { margin-bottom: 24px; }
-  .ws-header .report-date { color: #888; font-size: 0.85em; margin-top: 4px; }
-  .ws-footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #eee; font-size: 0.8em; color: #999; }
+    .ws-msg-quote {
+        margin-top: 8px;
+        padding: 10px 12px;
+        background: var(--surface-subtle);
+        border-left: 3px solid var(--accent-teal);
+        border-radius: var(--r-sm);
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--ink-strong);
+    }
+    .ws-msg-quote.email { border-left-color: var(--sev-medium); }
 </style>
 
-<!-- Header -->
-<div class="ws-header">
-  <h2>Workflow Summary</h2>
-  {% if workflow_meta and workflow_meta.start_time %}
-    <div class="report-date">Started: {{ workflow_meta.start_time }}</div>
-  {% endif %}
-</div>
+{% if render_mode != 'fragment' %}
+</head>
+<body class="console">
+{% endif %}
 
-<!-- KPI Cards -->
-<section class="report-section">
-  <div class="kpi-row">
-    <div class="kpi-card border-blue kpi-blue">
-      <div class="kpi-value">{{ kpis.total_findings_triaged | default(0) }}</div>
-      <div class="kpi-label">Findings Triaged</div>
-    </div>
-    <div class="kpi-card border-green kpi-green">
-      <div class="kpi-value">{{ kpis.vex_applied | default(0) }}</div>
-      <div class="kpi-label">VEX Applied</div>
-    </div>
-    <div class="kpi-card border-orange kpi-orange">
-      <div class="kpi-value">{{ kpis.tickets_created | default(0) }}</div>
-      <div class="kpi-label">Tickets Created</div>
-    </div>
-    <div class="kpi-card border-blue kpi-blue">
-      <div class="kpi-value">{{ kpis.notifications_sent | default(0) }}</div>
-      <div class="kpi-label">Notifications</div>
-    </div>
-    <div class="kpi-card border-gray kpi-gray">
-      {% set dur = kpis.total_duration_sec | default(0) %}
-      {% if dur >= 60 %}
-        <div class="kpi-value">{{ (dur / 60) | round(1) }}m</div>
-      {% else %}
-        <div class="kpi-value">{{ dur | round(0) | int }}s</div>
-      {% endif %}
-      <div class="kpi-label">Duration</div>
-    </div>
-  </div>
-</section>
+{% import "_console_macros.html" as fs with context %}
 
-<!-- Timeline -->
-<section class="report-section">
-  <h2>Timeline</h2>
-  <div class="timeline">
-    {% for tl in timeline %}
-    <div class="tl-step">
-      <span class="tl-name">{{ tl.label or tl.step }}</span>
-      {% if tl.duration_from_prev_sec and tl.duration_from_prev_sec > 0 %}
-        <span class="tl-dur">+{{ tl.duration_from_prev_sec | round(1) }}s</span>
-      {% endif %}
-      {% if tl.timestamp %}
-        <div class="tl-time">{{ tl.timestamp }}</div>
-      {% endif %}
-    </div>
-    {% endfor %}
-  </div>
-</section>
+{% if render_mode != 'fragment' %}
 
-<!-- Per-Step Detail Cards -->
-<section class="report-section">
-  <h2>Step Details</h2>
-  {% for step in steps %}
-  <div class="step-card">
-    <h3>
-      {{ step.label or step.step }}
-      <span class="step-type-tag {% if not step.known %}tag-unknown{% endif %}">{{ step.step }}</span>
-    </h3>
+{{ fs.topbar(
+    crumbs=["Finite State", "Workflow Summary"],
+    meta=[
+        {"label": "Domain", "value": domain or "—"},
+        {"label": "Started", "value": (workflow_meta.start_time if workflow_meta else None) or "—"},
+    ],
+    controls=[],
+) }}
 
-    {% if step.step_type == "triage" %}
-      {% set ts = step.detail.triage_summary if step.detail.triage_summary else {} %}
-      {% set cr = step.detail.change_report if step.detail.change_report else {} %}
-      {% set vx = step.detail.vex_applied if step.detail.vex_applied else {} %}
-      <p>
-        <strong>{{ ts.total_recommendations | default(0) }}</strong> findings triaged
-        {% if cr.new_recommendations %} &middot; <strong>{{ cr.new_recommendations }}</strong> new recommendations{% endif %}
-      </p>
-      {% if vx.applied_count %}
-        <p><span class="badge badge-success">VEX</span> {{ vx.applied_count }} statements applied</p>
-      {% endif %}
+{% endif %}
 
-    {% elif step.step_type == "tickets" %}
-      {% set tickets = step.detail.tickets_created if step.detail.tickets_created is iterable and step.detail.tickets_created is not string and step.detail.tickets_created else [] %}
-      {% set count = step.detail.tickets_count | default(0) %}
-      {% if tickets %}
-        <table class="ticket-table">
-          <thead><tr><th>Component</th><th>Ticket</th></tr></thead>
-          <tbody>
-          {% for t in tickets %}
-            <tr>
-              <td>{{ t.component | default("—") }}</td>
-              <td>{{ t.ticket_key | default(t.key | default("—")) }}</td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      {% elif count %}
-        <p><strong>{{ count }}</strong> ticket{{ "s" if count != 1 }} created.</p>
-      {% else %}
-        <p>No tickets created.</p>
-      {% endif %}
-
-    {% elif step.step_type == "notification" %}
-      {% if step.detail.success %}
-        <span class="badge badge-success">Sent</span>
-      {% else %}
-        <span class="badge badge-fail">Failed</span>
-      {% endif %}
-      {% if step.detail.channel %}
-        <span style="margin-left: 8px; font-size: 0.9em;">{{ step.detail.channel }}</span>
-      {% endif %}
-      {# Slack-style: full message with mrkdwn rendering #}
-      {% if step.detail.message %}
-        <div style="margin-top: 8px; padding: 10px 12px; background: #f5f5f5; border-left: 3px solid #1976d2; border-radius: 4px; font-size: 0.85em; line-height: 1.5;">
-          {{ step.detail.message | slack_mrkdwn }}
+{# Single-column — no <div class="layout"> wrapper.  See findings_by_project.html
+   for the rationale (avoids the 220px sidebar gutter from the .layout grid). #}
+<main class="main">
+        <div class="page-head">
+            <h1 data-fs-section-title>Workflow Summary</h1>
+            {% if workflow_meta and workflow_meta.start_time %}
+            <p class="subtitle">Started {{ workflow_meta.start_time }}</p>
+            {% endif %}
         </div>
-      {% endif %}
-      {# Email-style: subject + recipients + body preview #}
-      {% if step.detail.subject %}
-        <div style="margin-top: 8px; font-size: 0.85em;">
-          <p><strong>Subject:</strong> {{ step.detail.subject }}</p>
-          {% if step.detail.recipients %}
-            <p><strong>To:</strong> {{ step.detail.recipients | join(', ') }}</p>
-          {% endif %}
-          {% if step.detail.body_preview %}
-            <div style="margin-top: 6px; padding: 10px 12px; background: #f5f5f5; border-left: 3px solid #f57c00; border-radius: 4px; line-height: 1.5;">
-              {{ step.detail.body_preview | slack_mrkdwn }}
+
+        <div class="kpi-bar" style="margin-bottom: 20px;">
+            {{ fs.kpi_cell("Findings Triaged", kpis.total_findings_triaged | default(0)) }}
+            {{ fs.kpi_cell("VEX Applied", kpis.vex_applied | default(0)) }}
+            {{ fs.kpi_cell("Tickets Created", kpis.tickets_created | default(0)) }}
+            {{ fs.kpi_cell("Notifications", kpis.notifications_sent | default(0)) }}
+            {% set dur = kpis.total_duration_sec | default(0) %}
+            {% if dur >= 60 %}
+                {{ fs.kpi_cell("Duration", ((dur / 60) | round(1)) ~ "m") }}
+            {% else %}
+                {{ fs.kpi_cell("Duration", ((dur | round(0)) | int) ~ "s") }}
+            {% endif %}
+        </div>
+
+        <div class="panel" style="margin-bottom: 20px;">
+            {{ fs.panel_head("Timeline") }}
+            <div class="ws-timeline">
+                {% for tl in timeline %}
+                <div class="ws-tl-step">
+                    <span class="ws-tl-name">{{ tl.label or tl.step }}</span>
+                    {% if tl.duration_from_prev_sec and tl.duration_from_prev_sec > 0 %}
+                        <span class="ws-tl-dur">+{{ tl.duration_from_prev_sec | round(1) }}s</span>
+                    {% endif %}
+                    {% if tl.timestamp %}
+                        <div class="ws-tl-time">{{ tl.timestamp }}</div>
+                    {% endif %}
+                </div>
+                {% endfor %}
             </div>
-          {% endif %}
         </div>
-      {% endif %}
 
-    {% elif step.step_type == "recipe_run" %}
-      {% if step.detail.recipe %}
-        <p>Recipe: <strong>{{ step.detail.recipe }}</strong></p>
-      {% endif %}
-      {% if step.detail.output_files %}
-        <details style="margin-top: 6px;">
-          <summary style="font-size: 0.8em; color: #888; cursor: pointer;">{{ step.detail.output_files | length }} output file{{ "s" if step.detail.output_files | length != 1 }}</summary>
-          <ul style="font-size: 0.8em; margin-top: 4px; color: #555;">
-            {% for f in step.detail.output_files %}
-              <li>{{ f.split("/") | last }}</li>
-            {% endfor %}
-          </ul>
-        </details>
-      {% endif %}
+        <div class="panel" style="margin-bottom: 20px;">
+            {{ fs.panel_head("Step details") }}
+            {% for step in steps %}
+                <div class="ws-step-card">
+                    <h3>
+                        {{ step.label or step.step }}
+                        <span class="ws-step-tag {% if step.known %}known{% endif %}">{{ step.step }}</span>
+                    </h3>
 
-    {% else %}
-      {# Unknown step — render raw JSON #}
-      <pre class="raw-json">{{ step.raw_data | tojson(indent=2) }}</pre>
-    {% endif %}
-  </div>
-  {% endfor %}
-</section>
+                    {% if step.step_type == "triage" %}
+                        {% set ts = step.detail.triage_summary if step.detail.triage_summary else {} %}
+                        {% set cr = step.detail.change_report if step.detail.change_report else {} %}
+                        {% set vx = step.detail.vex_applied if step.detail.vex_applied else {} %}
+                        <p>
+                            <strong>{{ ts.total_recommendations | default(0) }}</strong> findings triaged
+                            {% if cr.new_recommendations %} &middot; <strong>{{ cr.new_recommendations }}</strong> new recommendations{% endif %}
+                        </p>
+                        {% if vx.applied_count %}
+                            <p><span class="ws-badge success">VEX</span> {{ vx.applied_count }} statements applied</p>
+                        {% endif %}
 
-<!-- Footer -->
-<div class="ws-footer">
-  Report generated: {{ generated_at }}
-</div>
-{% endblock %}
+                    {% elif step.step_type == "tickets" %}
+                        {% set tickets = step.detail.tickets_created if step.detail.tickets_created is iterable and step.detail.tickets_created is not string and step.detail.tickets_created else [] %}
+                        {% set count = step.detail.tickets_count | default(0) %}
+                        {% if tickets %}
+                            <table class="ws-ticket-table">
+                                <thead><tr><th>Component</th><th>Ticket</th></tr></thead>
+                                <tbody>
+                                {% for t in tickets %}
+                                    <tr>
+                                        <td>{{ t.component | default("—") }}</td>
+                                        <td>{{ t.ticket_key | default(t.key | default("—")) }}</td>
+                                    </tr>
+                                {% endfor %}
+                                </tbody>
+                            </table>
+                        {% elif count %}
+                            <p><strong>{{ count }}</strong> ticket{{ "s" if count != 1 }} created.</p>
+                        {% else %}
+                            <p>No tickets created.</p>
+                        {% endif %}
+
+                    {% elif step.step_type == "notification" %}
+                        {% if step.detail.success %}
+                            <span class="ws-badge success">Sent</span>
+                        {% else %}
+                            <span class="ws-badge fail">Failed</span>
+                        {% endif %}
+                        {% if step.detail.channel %}
+                            <span style="margin-left: 8px; color: var(--ink-mute);">{{ step.detail.channel }}</span>
+                        {% endif %}
+                        {% if step.detail.message %}
+                            <div class="ws-msg-quote">{{ step.detail.message | slack_mrkdwn }}</div>
+                        {% endif %}
+                        {% if step.detail.subject %}
+                            <div style="margin-top: 8px;">
+                                <p><strong>Subject:</strong> {{ step.detail.subject }}</p>
+                                {% if step.detail.recipients %}
+                                    <p><strong>To:</strong> {{ step.detail.recipients | join(', ') }}</p>
+                                {% endif %}
+                                {% if step.detail.body_preview %}
+                                    <div class="ws-msg-quote email">{{ step.detail.body_preview | slack_mrkdwn }}</div>
+                                {% endif %}
+                            </div>
+                        {% endif %}
+
+                    {% elif step.step_type == "recipe_run" %}
+                        {% if step.detail.recipe %}
+                            <p>Recipe: <strong>{{ step.detail.recipe }}</strong></p>
+                        {% endif %}
+                        {% if step.detail.output_files %}
+                            <details style="margin-top: 6px;">
+                                <summary style="cursor: pointer; color: var(--ink-mute);">{{ step.detail.output_files | length }} output file{{ "s" if step.detail.output_files | length != 1 }}</summary>
+                                <ul style="margin-top: 4px; color: var(--ink-mute);">
+                                    {% for f in step.detail.output_files %}
+                                        <li>{{ f.split("/") | last }}</li>
+                                    {% endfor %}
+                                </ul>
+                            </details>
+                        {% endif %}
+
+                    {% else %}
+                        <pre class="ws-raw-json">{{ step.raw_data | tojson(indent=2) }}</pre>
+                    {% endif %}
+                </div>
+                {% endfor %}
+        </div>
+</main>
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Workflow Summary",
+    "Generated: " ~ (generated_at or "—"),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+{% if render_mode != 'fragment' %}
+</body>
+</html>
+{% endif %}

@@ -1,0 +1,68 @@
+{# ECharts-side chart-readiness wrapper. Templates that emit
+   <div> chart containers + echarts.init() use fsEChartsInit(el,
+   opts) instead of echarts.init(el, opts). The wrapper:
+
+   - calls fsBeaconAcquire() before init
+   - delegates to echarts.init(el, opts)
+   - registers chart.on('finished', fsBeaconRelease) once: ECharts
+     can fire 'finished' multiple times (after setOption, resize,
+     theme change), but we only release ONCE — first paint is
+     sufficient for PDF capture; later updates don't add new pending
+     work from the beacon's perspective
+   - if echarts.init throws (missing library, bad element), the
+     wrapper releases the acquire (fail-closed) so the beacon
+     doesn't strand the counter and the PDF doesn't hang
+
+   CALLER RESPONSIBILITY: fsEChartsInit acquires the beacon before
+   echarts.init returns. If the INITIAL chart.setOption(...) call
+   throws, the chart never paints, the 'finished' listener registered
+   below never fires, and the acquire strands — so the caller MUST
+   wrap that initial call in try/catch and call window.fsBeaconRelease()
+   in the catch handler. The wrapper can't see post-return throws,
+   and a stranded acquire forces PDF rendering through the full 30s
+   BEACON_TIMEOUT.
+
+   DO NOT wrap subsequent chart-method calls (setTheme, resize,
+   dispatchAction, additional setOption calls after first paint) in
+   release-on-throw. Once the chart paints, 'finished' fires and
+   fsBeaconRelease has already been called; a second release from a
+   catch block prematurely flips fsReportReady when other charts are
+   still pending. The beacon coordinator's clamp-to-0 logic catches
+   single-chart over-release but not multi-chart cases. Let subsequent
+   throws propagate to the caller's regular error handling.
+
+   See dev/template_migration.md § Pattern 2 for the canonical pattern.
+
+   fsBeaconAcquire/Release are provided by _ready_beacon.html,
+   the shared coordinator that owns window.fsReportReady. This
+   wrapper does NOT own that flag; the beacon does. Chart.js
+   uses the same beacon via _chart_ready.html. #}
+{% include "_ready_beacon.html" %}
+<script>
+(function () {
+    if (typeof window.fsEChartsInit === 'function') {
+        return;  // Already defined; another include path beat us to it.
+    }
+    window.fsEChartsInit = function (el, opts) {
+        window.fsBeaconAcquire();
+        var chart;
+        try {
+            chart = echarts.init(el, null, opts || { renderer: 'canvas' });
+        } catch (e) {
+            // Fail-closed: release the acquire so the beacon counter
+            // doesn't strand. PDF captures without this chart instead
+            // of hanging for the 30s timeout.
+            window.fsBeaconRelease();
+            throw e;
+        }
+        var released = false;
+        chart.on('finished', function () {
+            if (released) return;  // One-shot: ignore subsequent finished
+                                   // events (setOption, resize, theme).
+            released = true;
+            window.fsBeaconRelease();
+        });
+        return chart;
+    };
+})();
+</script>

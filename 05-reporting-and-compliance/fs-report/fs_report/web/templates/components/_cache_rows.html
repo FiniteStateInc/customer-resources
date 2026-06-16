@@ -1,0 +1,27 @@
+<div class="cache-row">
+  <div class="cache-meta">
+    <span class="cache-name">API</span>
+    <span class="cache-stat">{{ cache_info.api_size_mb }} MB · {{ cache_info.api_entries }} entries{% if cache_info.domain_dbs %} · {{ cache_info.domain_dbs | length }} domain{{ 's' if cache_info.domain_dbs | length != 1 }}{% endif %}</span>
+  </div>
+  <button type="button" class="btn btn-ghost btn-clear" data-cache="api">
+    <i data-lucide="trash-2"></i> Clear
+  </button>
+</div>
+<div class="cache-row">
+  <div class="cache-meta">
+    <span class="cache-name">NVD</span>
+    <span class="cache-stat">{{ cache_info.nvd_size_mb }} MB · {{ cache_info.nvd_entries }} entries</span>
+  </div>
+  <button type="button" class="btn btn-ghost btn-clear" data-cache="nvd">
+    <i data-lucide="trash-2"></i> Clear
+  </button>
+</div>
+<div class="cache-row">
+  <div class="cache-meta">
+    <span class="cache-name">AI</span>
+    <span class="cache-stat">{{ cache_info.ai_size_mb }} MB · {{ cache_info.ai_entries }} entries</span>
+  </div>
+  <button type="button" class="btn btn-ghost btn-clear" data-cache="ai">
+    <i data-lucide="trash-2"></i> Clear
+  </button>
+</div>

@@ -1,0 +1,84 @@
+{# Shared chart-readiness coordinator for the Playwright PDF
+   renderer. Owns window.fsReportReady. Exposes fsBeaconAcquire()
+   to register a pending chart and fsBeaconRelease() to mark it
+   done; fsReportReady flips to true when the pending counter
+   reaches zero.
+
+   Used by both _chart_ready.html (Chart.js wrapper) and
+   _echarts_ready.html (ECharts wrapper) so PDFs that include
+   both libraries are captured only after BOTH finish painting.
+
+   COMPATIBILITY: also exposes window.fsReportPendingCharts as a
+   live numeric view of the internal counter. pdf_renderer.py uses
+   this for BEACON_TIMEOUT diagnostics — preserving the name lets
+   us replace the coordinator without changing the diagnostic.
+
+   EMPTY-DATA / NO-CHART SAFETY NET: if no chart has acquired the
+   beacon by paint time (e.g., the recipe declared charts in YAML
+   but the data was empty, or the chart library CDN was blocked),
+   we flip fsReportReady=true after DOMContentLoaded + setTimeout(0)
+   so the PDF renderer doesn't hang waiting for a beacon that will
+   never fire. Mirrors the empty-data safety net the prior
+   _chart_ready.html shipped (which is being delegated to here).
+
+   IDEMPOTENT: including this partial twice in the same document
+   (e.g., a template that includes both chart-ready partials) is
+   safe — the bootstrap script guards with a typeof check, so
+   only the first include initializes the coordinator. Subsequent
+   includes are no-ops and do NOT reset the flag or counter. #}
+<script>
+(function () {
+    if (typeof window.fsBeaconAcquire !== 'function') {
+        window.fsReportReady = false;
+        var pending = 0;
+        // Live view of the counter for pdf_renderer.py BEACON_TIMEOUT
+        // diagnostics. Defined via property accessor so it always
+        // reflects the current value.
+        Object.defineProperty(window, 'fsReportPendingCharts', {
+            get: function () { return pending; },
+            configurable: true,
+        });
+        window.fsBeaconAcquire = function () {
+            // Late-acquire safety: if the empty-data safety net already
+            // flipped fsReportReady=true and a delayed script then calls
+            // acquire (async chart init, deferred render), reset to false
+            // so Playwright doesn't capture before the new chart paints.
+            // Release will flip it back true when the counter returns
+            // to zero.
+            if (window.fsReportReady === true) {
+                window.fsReportReady = false;
+            }
+            pending++;
+        };
+        window.fsBeaconRelease = function () {
+            pending--;
+            if (pending < 0) {
+                // Over-release: more releases than acquires. Indicates a wrapper
+                // bug or manual misuse. We clamp pending to 0 so fsReportReady
+                // doesn't flip multiple times, but log the issue loudly so
+                // developers see it in dev tools / Playwright console capture.
+                console.error(
+                    'fsBeaconRelease called more times than fsBeaconAcquire. ' +
+                    'Pending went negative — clamping to 0. This indicates a chart-' +
+                    'wrapper bug or double-release; investigate.'
+                );
+                pending = 0;
+            }
+            if (pending <= 0) {
+                pending = 0;
+                window.fsReportReady = true;
+            }
+        };
+        // Empty-data safety net: if nobody acquired by paint time, flip
+        // ready so the PDF renderer doesn't hang. (Late acquires reset
+        // the flag via fsBeaconAcquire above.)
+        window.addEventListener('DOMContentLoaded', function () {
+            setTimeout(function () {
+                if (pending === 0 && !window.fsReportReady) {
+                    window.fsReportReady = true;
+                }
+            }, 0);
+        });
+    }
+})();
+</script>

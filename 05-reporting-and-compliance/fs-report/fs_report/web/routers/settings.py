@@ -1,5 +1,7 @@
 """Settings page and API router."""
 
+import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -9,9 +11,113 @@ from fastapi.responses import JSONResponse
 
 from fs_report.cli.common import redact_token
 from fs_report.web.dependencies import get_nonce, get_state
+from fs_report.web.shell_context import build_shell_context
 from fs_report.web.state import WebAppState
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["settings"])
+
+
+def _detected_ai(state: WebAppState) -> dict[str, Any]:
+    """Return read-only AI provider/key status detected from the environment.
+
+    Mirrors ``LLMClient._detect_provider()``'s auto-detect EXACTLY (two-phase):
+      1. First present of the PRIMARY vars, in order:
+         ``ANTHROPIC_API_KEY``→anthropic, ``OPENAI_API_KEY``→openai,
+         ``GEMINI_API_KEY``→gemini, ``GITHUB_TOKEN``→copilot.
+      2. Only if phase 1 found nothing, the LEGACY fallbacks:
+         ``ANTHROPIC_AUTH_TOKEN``→anthropic, then ``GOOGLE_API_KEY``→gemini.
+
+    Grouping a legacy var into phase 1 would change precedence vs the run path
+    when multiple creds are set (e.g. ``ANTHROPIC_AUTH_TOKEN`` +
+    ``OPENAI_API_KEY`` must resolve to **openai**).
+
+    The high/low model values reflect what a run would actually use: the
+    ``ai_model_high`` / ``ai_model_low`` config overrides (from config.yaml,
+    surfaced through ``state``) take precedence over the provider's
+    ``MODEL_MAP`` defaults, exactly as ``cli/run.py`` merges them. When an
+    override is in effect the corresponding ``*_overridden`` flag is True so
+    the UI can label it.
+
+    Returns ``{detected, provider, env_var, high_model, low_model,
+    high_overridden, low_overridden, hint}``. Guarded: on any failure returns
+    ``detected=False`` and never raises. Uses the public
+    ``llm_client.AI_ENV_VARS`` for the "any key present?" hint; never imports
+    the private ``_PROVIDER_ENV_VARS``.
+    """
+    empty: dict[str, Any] = {
+        "detected": False,
+        "provider": "",
+        "provider_label": "",
+        "env_var": "",
+        "high_model": "",
+        "low_model": "",
+        "high_overridden": False,
+        "low_overridden": False,
+        "hint": "",
+    }
+    labels = {
+        "anthropic": "Anthropic",
+        "openai": "OpenAI",
+        "gemini": "Gemini",
+        "copilot": "Copilot",
+    }
+    try:
+        from fs_report.llm_client import AI_ENV_VARS, MODEL_MAP
+
+        # Phase 1 — primary vars, in detect order.
+        primary: list[tuple[str, str]] = [
+            ("ANTHROPIC_API_KEY", "anthropic"),
+            ("OPENAI_API_KEY", "openai"),
+            ("GEMINI_API_KEY", "gemini"),
+            ("GITHUB_TOKEN", "copilot"),
+        ]
+        provider = ""
+        env_var = ""
+        for var, prov in primary:
+            if os.getenv(var):
+                provider, env_var = prov, var
+                break
+
+        # Phase 2 — legacy fallbacks (only if phase 1 found nothing).
+        if not provider:
+            legacy: list[tuple[str, str]] = [
+                ("ANTHROPIC_AUTH_TOKEN", "anthropic"),
+                ("GOOGLE_API_KEY", "gemini"),
+            ]
+            for var, prov in legacy:
+                if os.getenv(var):
+                    provider, env_var = prov, var
+                    break
+
+        if not provider:
+            return {
+                **empty,
+                "hint": "No AI key detected — set " + " / ".join(AI_ENV_VARS),
+            }
+
+        high, low = MODEL_MAP.get(provider, ("", ""))
+        # Config overrides win, exactly as cli/run.py merges them onto the
+        # provider defaults. state.get returns None when unset (not in DEFAULTS).
+        cfg_high = str(state.get("ai_model_high") or "").strip()
+        cfg_low = str(state.get("ai_model_low") or "").strip()
+        return {
+            "detected": True,
+            "provider": provider,
+            "provider_label": labels.get(provider, provider.title()),
+            "env_var": env_var,
+            "high_model": cfg_high or high,
+            "low_model": cfg_low or low,
+            "high_overridden": bool(cfg_high),
+            "low_overridden": bool(cfg_low),
+            "hint": "",
+        }
+    except Exception:
+        logger.warning("AI provider detection failed", exc_info=True)
+        # Distinct from the "no key" case so a detection failure isn't misread
+        # as a missing credential.
+        return {**empty, "hint": "AI status unavailable"}
 
 
 def _count_rows(db_path: Path, table: str) -> int:
@@ -31,37 +137,58 @@ def _file_size_mb(path: Path) -> float:
 
 
 def _get_cache_info(state: WebAppState) -> dict[str, Any]:
-    """Gather cache database stats."""
-    cache_dir = Path(state.get("cache_dir", "") or str(Path.home() / ".fs-report"))
-    info: dict[str, Any] = {"location": str(cache_dir)}
+    """Gather cache database stats.
 
-    # --- API cache (domain-specific *.db files contain cache_meta) ---
-    api_entries = 0
-    api_size = 0.0
-    domain_dbs: list[str] = []
-    for db_file in sorted(cache_dir.glob("*.finitestate.io.db")):
-        n = _count_rows(db_file, "cache_meta")
-        if n >= 0:
-            api_entries += n
-        api_size += _file_size_mb(db_file)
-        domain_dbs.append(db_file.name)
-    info["api_entries"] = api_entries
-    info["api_size_mb"] = round(api_size, 2)
-    info["domain_dbs"] = domain_dbs
-
-    # --- NVD cache ---
-    nvd_path = cache_dir / "nvd_cache.db"
-    info["nvd_size_mb"] = _file_size_mb(nvd_path)
-    info["nvd_entries"] = (
-        _count_rows(nvd_path, "nvd_cve_cache") if nvd_path.is_file() else 0
+    The directory glob / stat calls are wrapped in try/except so a bad or
+    inaccessible ``cache_dir`` degrades to an "unavailable" notice instead of
+    raising (the page would otherwise 500). ``_count_rows`` is already guarded.
+    """
+    cache_dir = Path(
+        str(state.get("cache_dir") or "").strip() or str(Path.home() / ".fs-report")
     )
+    info: dict[str, Any] = {
+        "location": str(cache_dir),
+        "available": True,
+        "api_entries": 0,
+        "api_size_mb": 0.0,
+        "domain_dbs": [],
+        "nvd_size_mb": 0.0,
+        "nvd_entries": 0,
+        "ai_size_mb": 0.0,
+        "ai_entries": 0,
+    }
 
-    # --- AI remediation cache (cve_remediations in cache.db) ---
-    ai_db = cache_dir / "cache.db"
-    info["ai_size_mb"] = _file_size_mb(ai_db)
-    info["ai_entries"] = (
-        _count_rows(ai_db, "cve_remediations") if ai_db.is_file() else 0
-    )
+    try:
+        # --- API cache (domain-specific *.db files contain cache_meta) ---
+        api_entries = 0
+        api_size = 0.0
+        domain_dbs: list[str] = []
+        for db_file in sorted(cache_dir.glob("*.finitestate.io.db")):
+            n = _count_rows(db_file, "cache_meta")
+            if n >= 0:
+                api_entries += n
+            api_size += _file_size_mb(db_file)
+            domain_dbs.append(db_file.name)
+        info["api_entries"] = api_entries
+        info["api_size_mb"] = round(api_size, 2)
+        info["domain_dbs"] = domain_dbs
+
+        # --- NVD cache ---
+        nvd_path = cache_dir / "nvd_cache.db"
+        info["nvd_size_mb"] = _file_size_mb(nvd_path)
+        info["nvd_entries"] = (
+            _count_rows(nvd_path, "nvd_cve_cache") if nvd_path.is_file() else 0
+        )
+
+        # --- AI remediation cache (cve_remediations in cache.db) ---
+        ai_db = cache_dir / "cache.db"
+        info["ai_size_mb"] = _file_size_mb(ai_db)
+        info["ai_entries"] = (
+            _count_rows(ai_db, "cve_remediations") if ai_db.is_file() else 0
+        )
+    except Exception:
+        logger.warning("Cache info collection failed for %s", cache_dir, exc_info=True)
+        info["available"] = False
 
     return info
 
@@ -72,21 +199,28 @@ async def settings_page(
     state: WebAppState = Depends(get_state),
     nonce: str = Depends(get_nonce),
 ) -> object:
-    """Render the settings page."""
+    """Render the Settings page on the Command Center shell.
+
+    Offline-capable: local fields are editable without platform config and the
+    page never redirects to /setup. Cache + AI provider detection are guarded
+    so a bad cache_dir / import cannot 500 the page.
+    """
     token_display = redact_token(state.token) if state.token else "(not set)"
-    cache_info = _get_cache_info(state)
+    try:
+        cache_info = _get_cache_info(state)
+    except Exception:
+        logger.warning("Cache info unavailable", exc_info=True)
+        cache_info = {"location": str(state.get("cache_dir", "")), "available": False}
+
+    ctx = build_shell_context(state, nonce, crumb="Settings", active_view="settings")
+    ctx["state"] = state
+    ctx["token_display"] = token_display
+    ctx["cache_info"] = cache_info
+    ctx["ai_detected"] = _detected_ai(state)
+    ctx["nvd_mirror"] = os.getenv("FS_NVD_SERVICE_URL", "")
 
     templates = request.app.state.templates
-    return templates.TemplateResponse(
-        request,
-        "pages/settings.html",
-        {
-            "nonce": nonce,
-            "state": state,
-            "token_display": token_display,
-            "cache_info": cache_info,
-        },
-    )
+    return templates.TemplateResponse(request, "pages/settings.html", ctx)
 
 
 @router.get("/api/settings")
@@ -120,6 +254,9 @@ async def save_settings(
         "network_exposure",
         "regulatory",
         "deployment_notes",
+        # SP3: uploaded scoring/context file paths (global Settings defaults).
+        "scoring_file",
+        "context_file",
     ):
         val = form.get(key)
         if val is not None:
@@ -135,6 +272,20 @@ async def save_settings(
         val = form.get(key)
         state[key] = str(val).lower() in ("true", "on", "1", "yes") if val else False
 
+    # ── Couple version filter to project scope ───────────────────────────────
+    # A version name is only meaningful relative to one project, so drop a bare
+    # version_filter that has no project scoped (the engine rejects
+    # version+multi-project anyway). The "version no longer belongs to the
+    # project" case is handled AUTHORITATIVELY at the source: the scope cascade
+    # clears the version when the project changes (see _scope_dropdowns.html),
+    # so the form never submits a stale version past a project change. That is
+    # deliberately NOT re-derived here from a version-name comparison — names
+    # are not unique across projects, so a server-side equality check can't tell
+    # a valid same-named re-pick (project A's "v2.0" → project B's "v2.0") from a
+    # stale carry-over, and would silently wipe a legitimate selection.
+    if state.get("version_filter") and not state.get("project_filter"):
+        state["version_filter"] = ""
+
     state.save()
     return JSONResponse({"status": "saved"})
 
@@ -148,7 +299,9 @@ async def cache_stats(state: WebAppState = Depends(get_state)) -> JSONResponse:
 @router.delete("/api/settings/cache/api")
 async def clear_api_cache(state: WebAppState = Depends(get_state)) -> JSONResponse:
     """Clear all domain-specific API cache databases."""
-    cache_dir = Path(state.get("cache_dir", "") or str(Path.home() / ".fs-report"))
+    cache_dir = Path(
+        str(state.get("cache_dir") or "").strip() or str(Path.home() / ".fs-report")
+    )
     cleared = 0
     for db_file in cache_dir.glob("*.finitestate.io.db"):
         db_file.unlink(missing_ok=True)
@@ -165,7 +318,9 @@ async def clear_api_cache(state: WebAppState = Depends(get_state)) -> JSONRespon
 @router.delete("/api/settings/cache/nvd")
 async def clear_nvd_cache(state: WebAppState = Depends(get_state)) -> JSONResponse:
     """Clear the NVD CVE cache."""
-    cache_dir = Path(state.get("cache_dir", "") or str(Path.home() / ".fs-report"))
+    cache_dir = Path(
+        str(state.get("cache_dir") or "").strip() or str(Path.home() / ".fs-report")
+    )
     target = cache_dir / "nvd_cache.db"
     if target.is_file():
         target.unlink()
@@ -176,7 +331,9 @@ async def clear_nvd_cache(state: WebAppState = Depends(get_state)) -> JSONRespon
 @router.delete("/api/settings/cache/ai")
 async def clear_ai_cache(state: WebAppState = Depends(get_state)) -> JSONResponse:
     """Clear the AI remediation cache (cve_remediations table in cache.db)."""
-    cache_dir = Path(state.get("cache_dir", "") or str(Path.home() / ".fs-report"))
+    cache_dir = Path(
+        str(state.get("cache_dir") or "").strip() or str(Path.home() / ".fs-report")
+    )
     target = cache_dir / "cache.db"
     if target.is_file():
         try:

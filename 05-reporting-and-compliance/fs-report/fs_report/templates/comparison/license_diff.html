@@ -1,0 +1,246 @@
+{% if render_mode != 'fragment' %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>License Diff - Finite State Report</title>
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+{% endif %}
+
+<style>
+    /* ---- existing license-diff chrome (kept: tables + copyleft badges) ---- */
+    .ld-empty-callout {
+        background: var(--surface-muted);
+        border: 1px solid var(--hairline);
+        border-radius: 8px;
+        padding: 24px;
+        text-align: center;
+        color: var(--ink-mute);
+        margin-bottom: 20px;
+    }
+    .ld-copyleft-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-size: 11px;
+        font-weight: 600;
+    }
+    .ld-copyleft-badge.strong { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .ld-copyleft-badge.weak   { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .ld-direction-added   { color: var(--sev-critical-text); font-weight: 600; }
+    .ld-direction-removed { color: var(--ink-mute); }
+
+    /* ============================================================
+       meta-compare §03 — section intro + lede (ported verbatim)
+       ============================================================ */
+    .mc-section-intro {
+        display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
+        justify-content: space-between; margin: 0 0 18px;
+    }
+    .mc-section-lede { font-size: 14px; line-height: 1.55; color: var(--ink-body); max-width: 70ch; }
+    .mc-section-lede strong { color: var(--ink); font-weight: 600; }
+    .mc-scope-tag {
+        font-family: var(--font-mono); font-size: 11px; color: var(--ink-mute);
+        display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+        padding: 6px 10px; border: 1px solid var(--hairline); border-radius: var(--r-sm);
+        background: var(--surface-card);
+    }
+    .mc-scope-tag .l { color: var(--accent-teal); font-weight: 600; }
+    .mc-scope-tag .r { color: var(--ink-body); font-weight: 600; }
+
+    /* ============================================================
+       meta-compare §03 — demoted "aligned / no-op" facet strip.
+       Action-weighted ranking collapses a fully-clear license facet to a
+       single one-line confirmation (not a full panel + KPI band) so
+       attention flows to the facets with work. Light-only (no dark wiring).
+       ============================================================ */
+    .mc-aligned-strip {
+        display: flex; align-items: center; gap: 13px; padding: 13px 18px;
+        border: 1px solid var(--border-green, var(--sev-low)); border-radius: var(--r-md);
+        background: var(--sev-low-bg); margin-bottom: 8px;
+    }
+    .mc-aligned-strip .ic { color: var(--sev-low); width: 20px; height: 20px; stroke-width: 2.2; flex-shrink: 0; }
+    .mc-aligned-strip .txt { font-size: 13px; color: var(--ink-body); line-height: 1.45; }
+    .mc-aligned-strip .txt strong { color: var(--sev-low-text); font-weight: 700; }
+    .mc-aligned-strip .counts { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-mute); white-space: nowrap; }
+
+    @media print {
+        .mc-aligned-strip, .kpi-bar, .panel { page-break-inside: avoid; }
+    }
+</style>
+
+{% if render_mode != 'fragment' %}
+</head>
+<body class="console">
+{% endif %}
+
+{% import "_console_macros.html" as fs with context %}
+
+{# Defensive defaults #}
+{% set summary = summary | default({}) %}
+{% if summary is not mapping %}{% set summary = {} %}{% endif %}
+{% set license_changes = license_changes | default([]) %}
+{% set copyleft_deltas = copyleft_deltas | default([]) %}
+{% set empty_side = empty_side | default(None) %}
+
+{% set left_label = summary.get('left_label', 'Left') if summary is mapping else 'Left' %}
+{% set right_label = summary.get('right_label', 'Right') if summary is mapping else 'Right' %}
+
+{# Summary counts — every dynamic number in this section comes from here #}
+{% set license_changes_count = summary.get('license_changes_count', 0) if summary is mapping else 0 %}
+{% set copyleft_additions_count = summary.get('copyleft_additions_count', 0) if summary is mapping else 0 %}
+{% set copyleft_removals_count = summary.get('copyleft_removals_count', 0) if summary is mapping else 0 %}
+{% set copyleft_changes_count = summary.get('copyleft_changes_count', 0) if summary is mapping else 0 %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "License Diff"],
+    meta=[
+        {"label": "Left", "value": left_label},
+        {"label": "Right", "value": right_label},
+        {"label": "Generated", "value": generated_at or "—"},
+    ],
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>License Comparison</h1>
+        <p class="subtitle">{{ left_label }} vs {{ right_label }}</p>
+    </div>
+
+    {% if empty_side %}
+    <div class="ld-empty-callout">
+        {% if empty_side == 'both' %}
+        <p>Both scopes had no component data.</p>
+        {% elif empty_side == 'left' %}
+        <p><strong>{{ left_label }}</strong> scope had no data — nothing to compare.</p>
+        {% elif empty_side == 'right' %}
+        <p><strong>{{ right_label }}</strong> scope had no data — nothing to compare.</p>
+        {% endif %}
+    </div>
+    {% else %}
+
+    {# Lede stat-line — fixed string + summary slots (README §03) #}
+    <div class="mc-section-intro">
+        <p class="mc-section-lede"><strong>{{ license_changes_count }}</strong> license-set changes · <strong>{{ copyleft_additions_count }}</strong> copyleft added · <strong>{{ copyleft_removals_count }}</strong> removed · <strong>{{ copyleft_changes_count }}</strong> tier shifts across shared components.</p>
+        <span class="mc-scope-tag"><span class="l">● {{ left_label }}</span> vs <span class="r">{{ right_label }} ●</span></span>
+    </div>
+
+    {# KPI summary row #}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell("License Changes", license_changes_count, dot=("high" if license_changes_count > 0 else None)) }}
+        {{ fs.kpi_cell("Copyleft Added", copyleft_additions_count, dot=("critical" if copyleft_additions_count > 0 else None)) }}
+        {{ fs.kpi_cell("Copyleft Removed", copyleft_removals_count, dot=("low" if copyleft_removals_count > 0 else None)) }}
+        {{ fs.kpi_cell("Copyleft Tier Shifts", copyleft_changes_count, dot=("medium" if copyleft_changes_count > 0 else None)) }}
+    </div>
+
+    {# Aligned strip when the facet is FULLY clear. The spec's shorthand is
+       (license_changes_count == 0 and copyleft_changes_count == 0); HARDENED
+       here to gate on ALL FOUR summary counts — license_changes_count +
+       copyleft_additions_count + copyleft_removals_count + copyleft_changes_count
+       (copyleft_changes_count is only tier-shifts; additions/removals are
+       separate) — so the facet is demoted ONLY when truly clear, never hiding
+       an added/removed copyleft obligation. (Flagged in the build report.) #}
+    {% if license_changes_count == 0 and copyleft_additions_count == 0 and copyleft_removals_count == 0 and copyleft_changes_count == 0 %}
+    {# DEMOTED aligned state — single compact strip, fixed copy + summary slots #}
+    <div class="mc-aligned-strip">
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-check-circle"/></svg>
+        <div class="txt"><strong>No action needed.</strong> Every shared component carries the same license set across {{ left_label }} and {{ right_label }} — no copyleft added, removed, or shifted tier.</div>
+        <div class="counts">{{ license_changes_count }} changes · {{ copyleft_additions_count + copyleft_removals_count }} copyleft · {{ copyleft_changes_count }} tier shifts</div>
+    </div>
+    {% else %}
+
+    {# License changes table #}
+    {% if license_changes and license_changes | length > 0 %}
+    <div class="panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("License changes", meta=(license_changes | length | string) ~ " component" ~ ("s" if license_changes | length != 1 else "")) }}
+        <p class="subtitle" style="padding: 0 16px;">Shared components whose license set changed between {{ left_label }} and {{ right_label }}.</p>
+        <div class="body" style="overflow-x: auto;">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>{{ left_label }} Licenses</th>
+                        <th>{{ right_label }} Licenses</th>
+                        <th>Project</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in license_changes %}
+                    <tr>
+                        <td>{{ row.name or '—' }}</td>
+                        <td>{{ row.left_licenses or '(none)' }}</td>
+                        <td>{{ row.right_licenses or '(none)' }}</td>
+                        <td>{{ row.project_name or '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    {# Copyleft deltas table #}
+    {% if copyleft_deltas and copyleft_deltas | length > 0 %}
+    <div class="panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Copyleft deltas", meta=(copyleft_deltas | length | string) ~ " component" ~ ("s" if copyleft_deltas | length != 1 else "")) }}
+        <p class="subtitle" style="padding: 0 16px;">Components whose copyleft classification changed: added, removed, or tier-shifted (e.g. Strong ↔ Weak Copyleft).</p>
+        <div class="body" style="overflow-x: auto;">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>Family</th>
+                        <th>Direction</th>
+                        <th>Project</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in copyleft_deltas %}
+                    {% set family_cls = 'strong' if row.family == 'Strong Copyleft' else 'weak' %}
+                    {% set is_added = 'added' in row.direction %}
+                    <tr>
+                        <td>{{ row.name or '—' }}</td>
+                        <td><span class="ld-copyleft-badge {{ family_cls }}">{{ row.family or '—' }}</span></td>
+                        <td class="{{ 'ld-direction-added' if is_added else 'ld-direction-removed' }}">{{ row.direction or '—' }}</td>
+                        <td>{{ row.project_name or '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if not license_changes and not copyleft_deltas %}
+    <div class="ld-empty-callout">
+        <p>No license differences found between {{ left_label }} and {{ right_label }}.</p>
+    </div>
+    {% endif %}
+
+    {% endif %}{# end aligned vs tables #}
+
+    {% endif %}{# end empty_side else #}
+</main>
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: License Diff",
+    "Left: " ~ left_label,
+    "Right: " ~ right_label,
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% include '_action_buttons.html' %}
+</body>
+</html>
+{% endif %}

@@ -20,9 +20,13 @@
 
 """Main report engine for orchestrating the reporting process."""
 
+import base64
+import datetime as _datetime
 import gc
 import hashlib
+import importlib
 import logging
+import mimetypes
 import os
 import platform
 import threading
@@ -34,7 +38,8 @@ try:
     import resource  # Unix only; not available on Windows
 except ImportError:
     resource = None  # type: ignore[assignment]
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from typing import Any
 
 import httpx
@@ -44,9 +49,26 @@ from fs_report.api_client import APIClient
 from fs_report.data_cache import DataCache
 from fs_report.data_transformer import DataTransformer
 from fs_report.dependency_resolver import DependencyNode, DependencyResolver
-from fs_report.models import Config, QueryConfig, QueryParams, Recipe, ReportData
-from fs_report.recipe_loader import RecipeLoader
+from fs_report.models import (
+    AxisConfig,
+    ComparisonRecipe,
+    CompoundRecipe,
+    Config,
+    FailedSection,
+    QueryConfig,
+    QueryParams,
+    Recipe,
+    RenderedFragment,
+    ReportData,
+    SectionRef,
+    SectionResult,
+)
+from fs_report.recipe_loader import RecipeLoader, RecipeSlugCollision
+from fs_report.recipe_requirements import recipe_requirements
 from fs_report.renderers import ReportRenderer
+from fs_report.scope_ref import ResolvedScope, ScopeRef, ScopeRefError
+from fs_report.scope_ref import parse as _parse_scope_ref
+from fs_report.slug import slug as _slug
 from fs_report.sqlite_cache import _trim_factors
 
 
@@ -66,6 +88,12 @@ class RunResult:
 
     success: bool
     recipes: list[RecipeResult] = field(default_factory=list)
+    # Actionable failure message for the CLI to surface to the user instead of
+    # the generic "Report generation failed!" banner. Populated on validation
+    # failures (axis scope-flag checks, axis-compound missing-scope prechecks)
+    # so the user sees e.g. "pass --left and --right" or "run via fs-report
+    # compare". None when there's no single actionable message. (M1-3, M1-4.)
+    error_message: str | None = None
 
 
 # Raw API columns that _normalize_columns already extracts into flat
@@ -114,6 +142,35 @@ _EXEC_SUMMARY_KEEP: frozenset[str] = frozenset(
 )
 
 
+# Per-facet row-list keys a comparison transform emits, exposed on
+# ``RenderedFragment.rows`` for the compound exec Action Plan (spec §5a).
+_COMPARISON_ROW_KEYS: tuple[str, ...] = (
+    "port_fixes_left_to_right",
+    "port_fixes_right_to_left",
+    "version_skew",
+    "triaged_left_untriaged_right",
+    "triaged_right_untriaged_left",
+    "status_divergence",
+)
+
+
+def _extract_comparison_rows(data: Any) -> dict[str, Any] | None:
+    """Extract the comparison facet row lists from a child transform dict.
+
+    ``data`` is the child ``report_data.data`` — the transform's output dict
+    for a comparison child, or anything else for a non-comparison child.
+    Returns a dict carrying only the :data:`_COMPARISON_ROW_KEYS` actually
+    present (defensive, mirrors how ``summary`` is extracted), or ``None`` when
+    ``data`` isn't a dict or carries none of the row keys (non-comparison
+    children). The exec Action Plan tolerates missing facets, so a partial dict
+    is fine.
+    """
+    if not isinstance(data, dict):
+        return None
+    rows = {k: data[k] for k in _COMPARISON_ROW_KEYS if k in data}
+    return rows or None
+
+
 def _prune_exec_summary(
     df: pd.DataFrame,
     extra_keep: frozenset[str] | None = None,
@@ -134,9 +191,48 @@ def _prune_exec_summary(
         df = df.copy()
 
     keep = _EXEC_SUMMARY_KEEP | extra_keep if extra_keep else _EXEC_SUMMARY_KEEP
+    # Derive exploit-signal scalars (inKev/inVcKev/is_real_exploit) BEFORE the
+    # column drop, while the heavy exploitInfo/exploitMaturity columns are
+    # still present — they are dropped just below, so the memory win is
+    # preserved. Gated on the keep-set so this only runs for Exec Summary
+    # (which sets _exec_extra_keep to include the scalars); other callers pay
+    # nothing. See C1/C2 (2026-06-14 pre-release fixes).
+    if keep & {"inKev", "inVcKev", "is_real_exploit"}:
+        df = _derive_exec_exploit_scalars(df)
     drop = [c for c in df.columns if c not in keep]
     if drop:
         df = df.drop(columns=drop)
+    return df
+
+
+def _derive_exec_exploit_scalars(df: pd.DataFrame) -> pd.DataFrame:
+    """Add the Executive Summary exploit-signal scalar columns in place.
+
+    Computes ``inKev`` / ``inVcKev`` (coerced to clean booleans) and
+    ``is_real_exploit`` from each raw finding. Folded into ``_prune_exec_summary``
+    so all seven per-batch prune call sites get the scalars with one edit
+    rather than per-site duplication (mirrors the Findings-by-Project
+    pre-flatten intent). Idempotent: a second pass after pruning reuses the
+    already-computed ``is_real_exploit`` column.
+    """
+    from fs_report.transforms.pandas.executive_exploit_signals_transform import (
+        _bool_series,
+    )
+    from fs_report.transforms.pandas.executive_exploit_signals_transform import (
+        is_real_exploit as _is_real_exploit,
+    )
+
+    # Coerce via the shared helper so NaN/None and falsey string renderings
+    # ("false"/"0"/…) normalize to False (missing column → all-False).
+    for col in ("inKev", "inVcKev"):
+        df[col] = _bool_series(df, col)
+    if "is_real_exploit" not in df.columns:
+        if df.empty:
+            df["is_real_exploit"] = pd.Series(dtype=bool)
+        else:
+            df["is_real_exploit"] = df.apply(
+                lambda r: _is_real_exploit(r.to_dict()), axis=1
+            )
     return df
 
 
@@ -300,19 +396,6 @@ TYPE_TO_CATEGORY = {
     "cve": ["CVE"],
     "sast": ["SAST_ANALYSIS"],
 }
-
-# v2 backend per-version endpoints ignore RSQL category== filters (the category
-# field is always null).  Map legacy API category values to the v2 backend `type`
-# URL param instead.
-_V2_CATEGORY_TO_TYPE = {
-    "CVE": "cve",
-    "SAST_ANALYSIS": "sast",
-}
-
-
-def _v2_category_to_type(category: str) -> str | None:
-    """Convert a legacy API category value to a v2 backend type URL param value."""
-    return _V2_CATEGORY_TO_TYPE.get(category.upper())
 
 
 def _strip_project_scope(filter_str: str | None) -> str | None:
@@ -502,20 +585,59 @@ class ReportEngine:
         data_override: dict[str, Any] | None = None,
         cancel_event: threading.Event | None = None,
         on_recipe_complete: Callable[[int, int, str], None] | None = None,
+        on_recipe_start: Callable[[int, int, str], None] | None = None,
+        on_section_start: Callable[[int, str], None] | None = None,
+        on_section_complete: Callable[[int, str, bool], None] | None = None,
         deployment_context: Any | None = None,
+        extra_recipes: list[Recipe] | None = None,
+        scan_user_recipes: bool = True,
     ) -> None:
         """Initialize the report engine.
 
         Args:
             on_recipe_complete: Optional callback invoked after each recipe
                 finishes.  Signature: ``(completed, total, recipe_name)``.
+            on_recipe_start: Optional callback invoked just before each recipe
+                begins processing (after its per-recipe cancel check + the
+                requires-* pre-checks, so a skipped recipe fires neither hook).
+                Signature: ``(index, total, recipe_name)``.  Used by the web
+                run-canvas to light a plain-report node "running" (T5); the CLI
+                never supplies it.
+            on_section_start: Optional callback invoked just before a compound
+                child section begins processing (after the per-child cancel
+                check, so a cancelled child fires neither hook).  Signature:
+                ``(child_index, child_name)``.  Fired only on the non-axis
+                ``_process_compound`` path; the CLI never supplies it.
+            on_section_complete: Optional callback invoked once per compound
+                child that started, after its section result is recorded.
+                Signature: ``(child_index, child_name, success)`` where
+                ``success`` is True iff the child produced a rendered fragment
+                (False for any failure path).  Fired only on the non-axis
+                ``_process_compound`` path; the CLI never supplies it.
             deployment_context: Optional DeploymentContext for AI prompt customization.
+            extra_recipes: Optional pre-constructed recipe objects merged into
+                the loaded corpus (decision #10). B3.7's ``fs-report compare``
+                uses this to execute an in-memory axis ``CompoundRecipe`` (plus
+                its comparison children) without writing a temp YAML. An extra
+                with the same slug as a loaded recipe OVERRIDES it (extra wins)
+                — extras are explicit per-run injections that legitimately
+                shadow disk recipes. See ``set_extra_recipes``.
+            scan_user_recipes: When ``True`` (default), the loader also scans
+                the user-recipes dir (``~/.fs-report/recipes/``) so saved
+                compound bundles AND user-defined comparison recipes are
+                discoverable. CLI entrypoints (``fs-report run`` /
+                ``fs-report compare``) opt in; programmatic / test consumers
+                keep the default. Ignored when ``config.recipes_dir`` is set (an
+                explicit overlay dir already supersedes the user scan).
         """
         self.config = config
         self._deployment_context = deployment_context
         self.logger = logging.getLogger(__name__)
         self._cancel_event = cancel_event
         self._on_recipe_complete = on_recipe_complete
+        self._on_recipe_start = on_recipe_start
+        self._on_section_start = on_section_start
+        self._on_section_complete = on_section_complete
 
         # Initialize cache
         self.cache = DataCache()
@@ -527,11 +649,6 @@ class ReportEngine:
             cache_ttl=getattr(config, "cache_ttl", 0),
             cache_refresh=getattr(config, "cache_refresh", False),
         )
-        if self.api_client.is_v2:
-            self.logger.info(
-                "v2 backend detected — page size capped at 1000, "
-                "scan filters use versionId"
-            )
         # Secondary API client for cross-server version comparison
         if config.compare_domain and config.compare_auth_token:
             compare_config = Config(
@@ -558,7 +675,21 @@ class ReportEngine:
         self.recipe_loader = RecipeLoader(
             config.recipes_dir,
             use_bundled=getattr(config, "use_bundled_recipes", True),
+            # CLI entrypoints opt into user-recipe discovery (~/.fs-report/recipes/)
+            # for saved compound bundles AND user-defined comparison recipes.
+            # Programmatic / test consumers of RecipeLoader keep the default
+            # False.
+            scan_user_recipes=scan_user_recipes,
         )
+
+        # Pre-constructed recipe objects merged into the loaded corpus
+        # (decision #10 — the extra_recipes seam used by `fs-report compare`).
+        # set_extra_recipes() validates the in-memory list for self-collisions
+        # at registration; run() merges them with OVERRIDE semantics (an extra
+        # replaces a loaded recipe of the same slug — extra wins).
+        self._extra_recipes: list[Recipe] = []
+        if extra_recipes:
+            self.set_extra_recipes(extra_recipes)
 
         # Initialize transformer (only pandas is used)
         self.transformer = DataTransformer()
@@ -574,6 +705,11 @@ class ReportEngine:
 
         # In-memory cache: folder project IDs → latest version IDs (avoids re-resolving per report)
         self._folder_version_ids_cache: dict[str, list] = {}
+        # In-memory cache: same key → {project_id: latest_version_id} mapping,
+        # populated as a side effect of _get_latest_version_ids_for_projects so
+        # callers (folder-scope resolution) can recover per-project provenance
+        # from a single batch call without a second N+1 pass.
+        self._folder_version_id_map_cache: dict[str, dict[str, Any]] = {}
 
         # In-memory cache: findings data keyed by (endpoint, filter, finding_type, version_ids_hash)
         # Avoids redundant API fetches when multiple reports need the same data
@@ -837,6 +973,28 @@ class ReportEngine:
         """Raise ``ReportCancelled`` if the cancel event has been set."""
         if self._cancel_event is not None and self._cancel_event.is_set():
             raise ReportCancelled("Report cancelled by user")
+
+    def _cancellable_sleep(self, seconds: float) -> None:
+        """Sleep ``seconds``, but in short chunks so a Stop takes effect promptly.
+
+        The engine's own delays (batch cooldown, inter-request spacing, retry
+        backoff) used plain ``time.sleep`` and so swallowed a Stop until the full
+        delay elapsed — the batch cooldown (~15s) dominated portfolio wall-clock,
+        making the run-view Stop feel dead (#13). This mirrors the NVD client's
+        ``_cancellable_sleep``: check the cancel event at each chunk boundary
+        (~0.5s) and raise ``ReportCancelled`` so cancellation lands within a chunk
+        rather than after the whole sleep. With no cancel event it degrades to a
+        plain sleep. (An in-flight network/LLM call is still not interruptible —
+        the run cancels when that call returns.)
+        """
+        if self._cancel_event is None:
+            time.sleep(max(0, seconds))
+            return
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self._check_cancel()
+            time.sleep(max(0, min(0.5, end - time.monotonic())))
+        self._check_cancel()
 
     def _validate_numeric_project_id(self, project_id: int | str) -> bool:
         """Check whether *project_id* is a valid project in the API.
@@ -1130,14 +1288,17 @@ class ReportEngine:
 
     def _collect_folder_tree(
         self, target_folder_id: str, all_folders: list[dict] | None = None
-    ) -> tuple[set[str], dict[str, str], list[dict], dict[str, str]]:
+    ) -> tuple[set[str], dict[str, str], list[dict], dict[str, str], dict[str, str]]:
         """
         Walk the folder tree starting from *target_folder_id* and collect:
         1. All descendant folder IDs (including the target itself).
         2. project_id -> folder_name mapping for every project in those folders.
         3. The list of subfolder dicts (for logging/display).
+        4. project_name(lowercased) -> project_id (for case-insensitive lookup).
+        5. project_id -> project_name (ORIGINAL case, for provenance labels).
 
-        Returns (folder_ids, project_folder_map, subfolder_list).
+        Returns (folder_ids, project_folder_map, subfolder_list,
+        project_name_to_id, project_id_to_name).
         """
         if all_folders is None:
             all_folders = self._fetch_all_folders()
@@ -1169,6 +1330,7 @@ class ReportEngine:
 
         project_folder_map: dict[str, str] = {}
         project_name_to_id: dict[str, str] = {}
+        project_id_to_name: dict[str, str] = {}
         all_project_ids: set[str] = set()
 
         for fid in all_folder_ids:
@@ -1187,6 +1349,7 @@ class ReportEngine:
                         project_folder_map[pid] = folder_name
                         if pname:
                             project_name_to_id[pname.lower()] = pid
+                            project_id_to_name[pid] = pname
             except Exception as e:
                 self.logger.warning(
                     f"Error fetching projects for folder '{folder_name}' ({fid}): {e}"
@@ -1197,7 +1360,13 @@ class ReportEngine:
             f"{len(all_project_ids)} project(s)"
         )
 
-        return all_project_ids, project_folder_map, subfolder_list, project_name_to_id
+        return (
+            all_project_ids,
+            project_folder_map,
+            subfolder_list,
+            project_name_to_id,
+            project_id_to_name,
+        )
 
     def _build_folder_path(
         self, folder_id: str, all_folders: list[dict] | None = None
@@ -1247,7 +1416,7 @@ class ReportEngine:
         all_folders = self._fetch_all_folders()
         self._folder_path = self._build_folder_path(folder_id, all_folders)
 
-        project_ids, project_folder_map, subfolders, project_name_to_id = (
+        project_ids, project_folder_map, subfolders, project_name_to_id, _id_to_name = (
             self._collect_folder_tree(folder_id, all_folders)
         )
 
@@ -1386,6 +1555,7 @@ class ReportEngine:
         )
 
         requested_ids = {str(pid) for pid in project_ids}
+        id_map = self._extract_version_id_map_from_projects(all_projects, requested_ids)
         version_ids = self._extract_version_ids_from_projects(
             all_projects, requested_ids
         )
@@ -1400,9 +1570,13 @@ class ReportEngine:
                 f"({len(project_ids)} projects, "
                 f"delay={self.config.request_delay}s)"
             )
-            version_ids = self._fetch_version_ids_per_project(project_ids)
+            id_map = self._fetch_version_id_map_per_project(project_ids)
+            version_ids = list(id_map.values())
 
         self._folder_version_ids_cache[cache_key] = version_ids
+        # Stash the pid→vid map so folder-scope resolution can recover
+        # per-project provenance without re-fetching (item 4: no second N+1).
+        self._folder_version_id_map_cache[cache_key] = id_map
         return version_ids
 
     # ------------------------------------------------------------------
@@ -1410,12 +1584,20 @@ class ReportEngine:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_version_ids_from_projects(
+    def _extract_version_id_map_from_projects(
         projects: list[dict], requested_ids: set[str]
-    ) -> list:
-        """Extract defaultBranch.latestVersion.id from a list of project dicts."""
+    ) -> dict[str, Any]:
+        """Build a ``project_id -> latest_version_id`` map from project dicts.
+
+        Reads ``defaultBranch.latestVersion.id`` for each requested project.
+        Projects without a latest version are omitted from the map (and
+        logged). The version-id value keeps its raw API type (int or str) so
+        the flat-list contract of ``_extract_version_ids_from_projects`` is
+        unchanged; callers that need string version IDs coerce at the use
+        site. Insertion order follows the *projects* order.
+        """
         logger = logging.getLogger(__name__)
-        version_ids: list = []
+        id_map: dict[str, Any] = {}
         for project in projects:
             pid = str(project.get("id", ""))
             if pid not in requested_ids:
@@ -1430,24 +1612,42 @@ class ReportEngine:
                 latest_version.get("id") if isinstance(latest_version, dict) else None
             )
             if version_id:
-                version_ids.append(version_id)
+                id_map[pid] = version_id
             else:
                 pname = project.get("name", pid)
                 logger.info(
                     f"Project '{pname}' (id={pid}) has no defaultBranch.latestVersion; skipping"
                 )
-        return version_ids
+        return id_map
 
-    def _fetch_version_ids_per_project(self, project_ids: list) -> list:
+    @classmethod
+    def _extract_version_ids_from_projects(
+        cls, projects: list[dict], requested_ids: set[str]
+    ) -> list:
+        """Extract defaultBranch.latestVersion.id from a list of project dicts.
+
+        Preserves the order in which projects appear in *projects* and the
+        raw API type of each version id.
+        """
+        id_map = cls._extract_version_id_map_from_projects(projects, requested_ids)
+        return [
+            id_map[str(p.get("id", ""))]
+            for p in projects
+            if str(p.get("id", "")) in id_map
+        ]
+
+    def _fetch_version_id_map_per_project(self, project_ids: list) -> dict[str, Any]:
         """Fetch defaultBranch.latestVersion.id one project at a time.
 
+        Returns a ``project_id -> latest_version_id`` map (projects without a
+        latest version are omitted; version-id value keeps its raw API type).
         Used as a fallback when the batch /projects list doesn't include
         branch data. Respects --request-delay for throttling.
         """
         from tqdm import tqdm
 
         delay = max(0.5, self.config.request_delay)
-        version_ids: list = []
+        id_map: dict[str, Any] = {}
         for pid in tqdm(
             project_ids,
             desc="Fetching latest versions",
@@ -1471,7 +1671,7 @@ class ReportEngine:
                     else None
                 )
                 if vid:
-                    version_ids.append(vid)
+                    id_map[str(pid)] = vid
                 else:
                     self.logger.debug(
                         f"No defaultBranch.latestVersion for project {pid}"
@@ -1481,8 +1681,8 @@ class ReportEngine:
                     f"Failed to fetch version for project {pid}",
                     exc_info=True,
                 )
-            time.sleep(delay)
-        return version_ids
+            self._cancellable_sleep(delay)
+        return id_map
 
     def _split_and_cache_by_version(
         self,
@@ -1810,147 +2010,50 @@ class ReportEngine:
 
                 from fs_report.models import QueryConfig, QueryParams
 
-                if self.api_client.is_v2:
-                    # v2 backend path: fetch each version individually via
-                    # /versions/{vid}/findings (or /components).  The
-                    # portfolio-wide /findings endpoint returns 500 on the
-                    # v2 backend when RSQL filters are used.
-                    batch_results: list[dict] = []
-                    for vid_idx, vid in enumerate(batch_ids):
-                        per_version_endpoint = (
-                            f"/public/v0/versions/{vid}/{entity_type}"
-                        )
+                # Batch version IDs with RSQL filter against the
+                # portfolio-wide /findings endpoint.
 
-                        # Build per-version filter and type param.
-                        # v2 backend per-version endpoints don't support RSQL
-                        # category== filters (the category field is always
-                        # null).  Convert category filters to the `type`
-                        # URL param instead, and strip projectVersion
-                        # clauses (endpoint is already version-scoped).
-                        # Strip project== / project=in=() too — the URL is
-                        # already scoped to a specific version (which
-                        # uniquely identifies its project), and keeping a
-                        # large project list in every batch URL hits HTTP
-                        # 414 on customer deployments. See CST-747.
-                        # Project-scope stripping is shared with the legacy
-                        # path via _strip_project_scope().
-                        per_version_filter: str | None = None
-                        v2_finding_type = base_query.params.finding_type
-                        _v2_filter_in = _strip_project_scope(base_query.params.filter)
-                        if _v2_filter_in:
-                            kept_parts: list[str] = []
-                            for p in _v2_filter_in.split(";"):
-                                stripped = p.strip()
-                                if stripped.startswith("projectVersion"):
-                                    continue
-                                # Convert category==CVE -> type=cve URL param
-                                if stripped.startswith("category=="):
-                                    cat_val = stripped.split("==", 1)[1]
-                                    v2_finding_type = (
-                                        _v2_category_to_type(cat_val) or v2_finding_type
-                                    )
-                                    continue
-                                # Convert category=in=(...) -> type param
-                                # (only if single category; multi not
-                                # supported via URL param, fetch all and
-                                # post-filter)
-                                if stripped.startswith("category=in="):
-                                    cats = stripped.split("(", 1)[1].rstrip(")")
-                                    cat_list = [c.strip() for c in cats.split(",")]
-                                    if len(cat_list) == 1:
-                                        v2_finding_type = (
-                                            _v2_category_to_type(cat_list[0])
-                                            or v2_finding_type
-                                        )
-                                    # else: skip filter, fetch all and post-filter
-                                    continue
-                                kept_parts.append(p)
-                            if kept_parts:
-                                per_version_filter = ";".join(kept_parts)
+                # Build version filter
+                version_filter = (
+                    f"projectVersion=in=({','.join(str(v) for v in batch_ids)})"
+                )
 
-                        self.logger.debug(
-                            f"v2 backend per-version fetch {vid_idx + 1}/"
-                            f"{len(batch_ids)} in batch "
-                            f"{i // batch_size + 1}/{total_batches}: "
-                            f"endpoint={per_version_endpoint} "
-                            f"filter={per_version_filter} "
-                            f"type={v2_finding_type}"
-                        )
-
-                        vid_query = QueryConfig(
-                            endpoint=per_version_endpoint,
-                            params=QueryParams(
-                                limit=base_query.params.limit,
-                                filter=per_version_filter,
-                                finding_type=v2_finding_type,
-                                archived=(False if entity_type == "findings" else None),
-                                excluded=(False if entity_type == "findings" else None),
-                                include_additional_details=base_query.params.include_additional_details,
-                            ),
-                        )
-
-                        vid_results = self.api_client.fetch_all_with_resume(
-                            vid_query,
-                            show_progress=False,
-                            skip_cache_store=True,
-                        )
-                        batch_results.extend(vid_results)
-
-                        # Cooldown between individual versions within a batch
-                        if vid_idx + 1 < len(batch_ids):
-                            cooldown_between = self._volume_based_cooldown(
-                                len(vid_results)
-                            )
-                            if cooldown_between > 0:
-                                time.sleep(cooldown_between)
-
+                # Combine with existing filter (MUST preserve base filter
+                # like type!=file). Strip any project== / project=in=()
+                # clauses though — the per-batch projectVersion=in=(...)
+                # uniquely identifies both project and version, and
+                # keeping a 706-project list in every batch URL pushes
+                # past nginx's 8 KB default and yields HTTP 414. See
+                # CST-747.
+                base_filter_stripped = _strip_project_scope(base_query.params.filter)
+                if base_filter_stripped:
+                    combined_filter = f"{base_filter_stripped};{version_filter}"
                 else:
-                    # Legacy path: batch version IDs with RSQL filter against
-                    # the portfolio-wide /findings endpoint.
+                    combined_filter = version_filter
 
-                    # Build version filter
-                    version_filter = (
-                        f"projectVersion=in=({','.join(str(v) for v in batch_ids)})"
-                    )
+                self.logger.debug(
+                    f"Batch {i//batch_size + 1}/{total_batches} filter: {combined_filter[:100]}..."
+                )
 
-                    # Combine with existing filter (MUST preserve base filter
-                    # like type!=file). Strip any project== / project=in=()
-                    # clauses though — the per-batch projectVersion=in=(...)
-                    # uniquely identifies both project and version, and
-                    # keeping a 706-project list in every batch URL pushes
-                    # past nginx's 8 KB default and yields HTTP 414. See
-                    # CST-747.
-                    base_filter_stripped = _strip_project_scope(
-                        base_query.params.filter
-                    )
-                    if base_filter_stripped:
-                        combined_filter = f"{base_filter_stripped};{version_filter}"
-                    else:
-                        combined_filter = version_filter
+                # Create batch query
+                batch_query = QueryConfig(
+                    endpoint=base_query.endpoint,
+                    params=QueryParams(
+                        limit=base_query.params.limit,
+                        filter=combined_filter,
+                        finding_type=base_query.params.finding_type,
+                        archived=False if entity_type == "findings" else None,
+                        excluded=False if entity_type == "findings" else None,
+                        include_additional_details=base_query.params.include_additional_details,
+                    ),
+                )
 
-                    self.logger.debug(
-                        f"Batch {i//batch_size + 1}/{total_batches} filter: {combined_filter[:100]}..."
-                    )
-
-                    # Create batch query
-                    batch_query = QueryConfig(
-                        endpoint=base_query.endpoint,
-                        params=QueryParams(
-                            limit=base_query.params.limit,
-                            filter=combined_filter,
-                            finding_type=base_query.params.finding_type,
-                            archived=False if entity_type == "findings" else None,
-                            excluded=False if entity_type == "findings" else None,
-                            include_additional_details=base_query.params.include_additional_details,
-                        ),
-                    )
-
-                    # Use skip_cache_store to avoid duplicating batch-level SQLite entries
-                    batch_results = self.api_client.fetch_all_with_resume(
-                        batch_query,
-                        show_progress=False,
-                        skip_cache_store=True,
-                    )
+                # Use skip_cache_store to avoid duplicating batch-level SQLite entries
+                batch_results = self.api_client.fetch_all_with_resume(
+                    batch_query,
+                    show_progress=False,
+                    skip_cache_store=True,
+                )
 
                 # Split and cache per-version (in-memory + SQLite).
                 # Pass batch_ids so versions with 0 results are cached as
@@ -2014,9 +2117,147 @@ class ReportEngine:
                         f"Cooling down {cooldown:.0f}s. "
                         f"~{est_minutes:.0f} min remaining"
                     )
-                    time.sleep(cooldown)
+                    self._cancellable_sleep(cooldown)
 
         return all_results
+
+    def _fire_recipe_start(self, idx: int, total: int, name: str) -> None:
+        """Fire the optional on_recipe_start hook (T5 — lights the plain-report
+        canvas node 'running' before the recipe runs). Defensive: a misbehaving
+        observer must never break the run, but log it so a silent SSE/recorder
+        failure leaves a trail (mirrors on_section_start, M1-4)."""
+        if self._on_recipe_start:
+            try:
+                self._on_recipe_start(idx, total, name)
+            except Exception:
+                self.logger.exception("on_recipe_start hook raised")
+
+    def _resolve_run_scope(self) -> bool:
+        """Resolve folder / project / version scope on ``self.config`` in place.
+
+        Folder name→IDs (``_folder_project_ids``), project name/glob→ID, and
+        version name→ID resolution — the API filters require IDs.  Mutates
+        ``self.config`` (and ``self.resolved_project_name`` /
+        ``self._folder_project_ids``) and returns ``True`` on success, ``False``
+        on any unresolvable / invalid scope (the caller maps False to a run
+        failure).  Skipped entirely under ``data_override``.
+
+        Extracted from ``run()`` so the per-section compound override path can
+        re-resolve a child's overridden scope through the SAME logic
+        (``_process_compound``) — a section that retargets ``project_filter`` /
+        ``folder_filter`` / ``version_filter`` resolves exactly as a run-level
+        scope would, with no duplicated resolution code.
+        """
+        # Resolve folder scope first (may narrow down project set)
+        if self.config.folder_filter and not self.data_override:
+            if not self._resolve_folder_scope():
+                return False
+
+        # Resolve project name to ID if needed (API filters require IDs)
+        if self.config.project_filter and not self.data_override:
+            if self._is_id_like(self.config.project_filter):
+                pid = self.config.project_filter
+                # ID-like value — validate it actually refers to a project
+                if not self._validate_numeric_project_id(pid):
+                    self.logger.error(
+                        f"No project found with ID {pid}. "
+                        "This may be a project *version* ID rather than a project ID. "
+                        "If so, use --version (with --project) or "
+                        "--baseline-version / --current-version instead.\n"
+                        "Use 'fs-report list-projects' to see available projects."
+                    )
+                    return False
+                # Resolve ID to project name for display
+                self.resolved_project_name = self._resolve_project_id_to_name(pid)
+            else:
+                filter_value = self.config.project_filter
+                if self._is_glob(filter_value):
+                    matches = self._resolve_project_glob(filter_value)
+                    if not matches:
+                        self.logger.error(
+                            f"No projects matched glob pattern '{filter_value}'. "
+                            "Use 'fs-report list-projects' to see available projects."
+                        )
+                        return False
+                    elif len(matches) == 1:
+                        mid, mname = matches[0]
+                        self.logger.info(
+                            f"Glob '{filter_value}' matched 1 project: {mname} (ID {mid})"
+                        )
+                        self.resolved_project_name = mname
+                        self.config.project_filter = str(mid)
+                    else:
+                        names = [m[1] for m in matches]
+                        self.logger.info(
+                            f"Glob '{filter_value}' matched {len(matches)} projects: "
+                            + ", ".join(sorted(names))
+                        )
+                        self._folder_project_ids = {str(m[0]) for m in matches}
+                        self.config.project_filter = None
+                else:
+                    original_name = filter_value
+                    resolved_id = self._resolve_project_name(filter_value)
+                    if resolved_id:
+                        self.logger.info(
+                            f"Resolved project '{filter_value}' to ID {resolved_id}"
+                        )
+                        self.resolved_project_name = original_name
+                        self.config.project_filter = str(resolved_id)
+                    else:
+                        self.logger.error(
+                            f"Could not resolve project name '{filter_value}'. "
+                            "Use 'fs-report list-projects' to see available projects."
+                        )
+                        return False
+
+        # Reject version filter with multi-project glob
+        if (
+            self.config.version_filter
+            and not self.data_override
+            and self._folder_project_ids
+            and not self.config.project_filter
+            and not self.config.folder_filter
+        ):
+            self.logger.error(
+                "Version filter is not supported with project glob patterns. "
+                "Use an exact project name or ID with --version."
+            )
+            return False
+
+        # Resolve version name to ID if needed (API filters require IDs)
+        if self.config.version_filter and not self.data_override:
+            if not self.config.project_filter:
+                self.logger.error(
+                    "Version filter requires a project filter. "
+                    "Use --project-filter to specify the project."
+                )
+                return False
+            if self._is_id_like(self.config.version_filter):
+                pass  # Already an ID — no resolution needed
+            else:
+                if not self._is_id_like(self.config.project_filter):
+                    # project_filter should already be resolved above
+                    self.logger.error(
+                        f"Cannot resolve version name '{self.config.version_filter}': "
+                        f"project filter '{self.config.project_filter}' is not an ID."
+                    )
+                    return False
+                resolved_ver_id = self._resolve_version_name(
+                    self.config.project_filter, self.config.version_filter
+                )
+                if resolved_ver_id:
+                    self.logger.info(
+                        f"Resolved version '{self.config.version_filter}' to ID {resolved_ver_id}"
+                    )
+                    self.config.version_filter = str(resolved_ver_id)
+                else:
+                    self.logger.error(
+                        f"Could not resolve version name '{self.config.version_filter}' "
+                        f"in project {self.config.project_filter}. "
+                        "Use 'fs-report list-versions <project>' to see available versions."
+                    )
+                    return False
+        return True
 
     def run(self) -> "RunResult":
         """Run the complete report generation process. Returns RunResult with success status."""
@@ -2025,6 +2266,26 @@ class ReportEngine:
 
         # Load recipes
         recipes = self.recipe_loader.load_recipes()
+
+        # Merge pre-constructed extra_recipes (decision #10) into the corpus.
+        # `fs-report compare` (B3.7) uses this to run an in-memory axis
+        # CompoundRecipe + its comparison children without a temp YAML.
+        #
+        # OVERRIDE semantics: an extra recipe REPLACES a loaded recipe with the
+        # same slug (extra wins) rather than colliding with it. Extras are
+        # explicit per-run injections that legitimately shadow disk recipes —
+        # e.g. `compare --save-as NAME` writes NAME.yaml AND injects the same
+        # compound as an extra; the on-disk copy and the extra share a slug, so
+        # the extra simply overrides the loaded copy and the run proceeds
+        # cleanly. The loaded-corpus integrity check (loaded-vs-loaded
+        # collisions) still runs at load time in load_recipes(); only this
+        # extra-vs-loaded merge uses override instead of collision.
+        if self._extra_recipes:
+            extra_slugs = {_slug(r.name) for r in self._extra_recipes}
+            recipes = [r for r in recipes if _slug(r.name) not in extra_slugs] + list(
+                self._extra_recipes
+            )
+
         if not recipes:
             if self.recipe_loader.recipe_filter:
                 self.logger.warning(
@@ -2055,8 +2316,18 @@ class ReportEngine:
             recipes = filtered_recipes
             self.logger.info(f"Filtered to {len(recipes)} recipe(s)")
         elif not explicit_recipe_requested:
-            # Exclude recipes with auto_run=False only when no specific recipe is requested
-            auto_run_recipes = [r for r in recipes if getattr(r, "auto_run", True)]
+            # Exclude recipes with auto_run=False only when no specific recipe
+            # is requested. Comparison recipes never auto-run, but add a
+            # defensive engine-side skip too: a bare `fs-report run` must
+            # never execute a category=='comparison' recipe (decision #14 —
+            # standalone comparisons are not a supported run path; use
+            # `fs-report compare`).
+            auto_run_recipes = [
+                r
+                for r in recipes
+                if getattr(r, "auto_run", True)
+                and getattr(r, "category", "") != "comparison"
+            ]
             skipped = len(recipes) - len(auto_run_recipes)
             if skipped > 0:
                 self.logger.info(
@@ -2064,121 +2335,29 @@ class ReportEngine:
                 )
             recipes = auto_run_recipes
 
+        # Meta-compare scope-flag + standalone-comparison validation (B3.6).
+        # --left/--right only apply to an axis-bearing compound; a comparison
+        # recipe requested standalone errors with a pointer to `fs-report
+        # compare` (decision #14).
+        _axis_ok, _axis_msg = self._validate_axis_scope_flags(recipes)
+        if not _axis_ok:
+            self.logger.error(_axis_msg)
+            # Surface the actionable message to the CLI (M1-3) rather than the
+            # generic "Report generation failed!" banner.
+            return RunResult(success=False, error_message=_axis_msg)
+
         # Sort recipes by execution_order to maximize cache reuse
         # Lower order = runs first (e.g., Scan Analysis fetches scans that other reports reuse)
         recipes = sorted(recipes, key=lambda r: r.execution_order)
 
         self.logger.info(f"Loaded {len(recipes)} recipes")
 
-        # Resolve folder scope first (may narrow down project set)
-        if self.config.folder_filter and not self.data_override:
-            if not self._resolve_folder_scope():
-                return _fail
-
-        # Resolve project name to ID if needed (API filters require IDs)
-        if self.config.project_filter and not self.data_override:
-            if self._is_id_like(self.config.project_filter):
-                pid = self.config.project_filter
-                # ID-like value — validate it actually refers to a project
-                if not self._validate_numeric_project_id(pid):
-                    self.logger.error(
-                        f"No project found with ID {pid}. "
-                        "This may be a project *version* ID rather than a project ID. "
-                        "If so, use --version (with --project) or "
-                        "--baseline-version / --current-version instead.\n"
-                        "Use 'fs-report list-projects' to see available projects."
-                    )
-                    return _fail
-                # Resolve ID to project name for display
-                self.resolved_project_name = self._resolve_project_id_to_name(pid)
-            else:
-                filter_value = self.config.project_filter
-                if self._is_glob(filter_value):
-                    matches = self._resolve_project_glob(filter_value)
-                    if not matches:
-                        self.logger.error(
-                            f"No projects matched glob pattern '{filter_value}'. "
-                            "Use 'fs-report list-projects' to see available projects."
-                        )
-                        return _fail
-                    elif len(matches) == 1:
-                        mid, mname = matches[0]
-                        self.logger.info(
-                            f"Glob '{filter_value}' matched 1 project: {mname} (ID {mid})"
-                        )
-                        self.resolved_project_name = mname
-                        self.config.project_filter = str(mid)
-                    else:
-                        names = [m[1] for m in matches]
-                        self.logger.info(
-                            f"Glob '{filter_value}' matched {len(matches)} projects: "
-                            + ", ".join(sorted(names))
-                        )
-                        self._folder_project_ids = {str(m[0]) for m in matches}
-                        self.config.project_filter = None
-                else:
-                    original_name = filter_value
-                    resolved_id = self._resolve_project_name(filter_value)
-                    if resolved_id:
-                        self.logger.info(
-                            f"Resolved project '{filter_value}' to ID {resolved_id}"
-                        )
-                        self.resolved_project_name = original_name
-                        self.config.project_filter = str(resolved_id)
-                    else:
-                        self.logger.error(
-                            f"Could not resolve project name '{filter_value}'. "
-                            "Use 'fs-report list-projects' to see available projects."
-                        )
-                        return _fail
-
-        # Reject version filter with multi-project glob
-        if (
-            self.config.version_filter
-            and not self.data_override
-            and self._folder_project_ids
-            and not self.config.project_filter
-            and not self.config.folder_filter
-        ):
-            self.logger.error(
-                "Version filter is not supported with project glob patterns. "
-                "Use an exact project name or ID with --version."
-            )
+        # Resolve folder / project / version scope on self.config in place
+        # (folder→IDs, project name/glob→ID, version name→ID). Extracted to
+        # _resolve_run_scope so the compound per-section override path can
+        # re-resolve a child's overridden scope through the same logic.
+        if not self._resolve_run_scope():
             return _fail
-
-        # Resolve version name to ID if needed (API filters require IDs)
-        if self.config.version_filter and not self.data_override:
-            if not self.config.project_filter:
-                self.logger.error(
-                    "Version filter requires a project filter. "
-                    "Use --project-filter to specify the project."
-                )
-                return _fail
-            if self._is_id_like(self.config.version_filter):
-                pass  # Already an ID — no resolution needed
-            else:
-                if not self._is_id_like(self.config.project_filter):
-                    # project_filter should already be resolved above
-                    self.logger.error(
-                        f"Cannot resolve version name '{self.config.version_filter}': "
-                        f"project filter '{self.config.project_filter}' is not an ID."
-                    )
-                    return _fail
-                resolved_ver_id = self._resolve_version_name(
-                    self.config.project_filter, self.config.version_filter
-                )
-                if resolved_ver_id:
-                    self.logger.info(
-                        f"Resolved version '{self.config.version_filter}' to ID {resolved_ver_id}"
-                    )
-                    self.config.version_filter = str(resolved_ver_id)
-                else:
-                    self.logger.error(
-                        f"Could not resolve version name '{self.config.version_filter}' "
-                        f"in project {self.config.project_filter}. "
-                        "Use 'fs-report list-versions <project>' to see available versions."
-                    )
-                    return _fail
 
         # Resolve --baseline-version / --current-version names to IDs
         # (Version Comparison's explicit-pair short-circuit needs IDs)
@@ -2192,12 +2371,73 @@ class ReportEngine:
         all_succeeded = True
         generated_files: list[str] = []
         recipe_results: list[RecipeResult] = []
+        # Captures an actionable per-recipe failure message (e.g. an axis
+        # compound's missing-scope precheck) so the CLI can surface it instead
+        # of the generic banner. (M1-4.)
+        run_error_message: str | None = None
         total = len(recipes)
+
+        # Pre-build a slug-keyed index over the FULL loaded corpus so a
+        # compound's children can resolve even when they have
+        # auto_run=False or are excluded from the current `recipes` slice
+        # by --recipe filtering. Compound-section validation in the loader
+        # already enforced slug bijection (B1.3) — duplicates would have
+        # raised RecipeSlugCollision at startup, so a name appearing once
+        # here is the unique resolution.
+        #
+        # IMPORTANT: load_recipes() honors recipe_loader.recipe_filter,
+        # which the CLI sets when the user passes --recipe <bundle>. A
+        # naive second call would return ONLY the compound and leave
+        # children unresolvable. Shadow the filter while we fetch the
+        # full corpus, then restore it so the subsequent normal flow is
+        # unchanged. (PR #100 round-1 multi-review C1.)
+        _saved_filter = self.recipe_loader.recipe_filter
+        self.recipe_loader.recipe_filter = None
+        try:
+            all_recipes_for_compound: dict[str, Recipe] = {
+                _slug(r.name): r for r in self.recipe_loader.load_recipes()
+            }
+        finally:
+            self.recipe_loader.recipe_filter = _saved_filter
+        # Make extra_recipes (decision #10) resolvable as compound children
+        # too — an in-memory axis CompoundRecipe's comparison children come
+        # from the extras list, not the on-disk corpus.
+        for _extra in self._extra_recipes:
+            all_recipes_for_compound[_slug(_extra.name)] = _extra
+
         for idx, recipe in enumerate(recipes, 1):
             self._current_dependency_tree = None  # Reset per recipe
             self._check_cancel()
             try:
                 self.logger.info(f"[{idx}/{total}] Generating: {recipe.name} ...")
+
+                # Compound dispatch — BEFORE the standalone per-recipe
+                # pre-checks. The compound has no data of its own, so the
+                # requires_project / requires_cve / etc. checks apply to
+                # its children, not the bundle. _process_compound runs
+                # those pre-checks per child and either fails fast (if a
+                # child is misconfigured for this run) or builds a
+                # SectionResult list and dispatches to the assembler.
+                if isinstance(recipe, CompoundRecipe):
+                    compound_result = self._process_compound(
+                        recipe, all_recipes_for_compound
+                    )
+                    recipe_results.append(compound_result)
+                    generated_files.extend(compound_result.files)
+                    if compound_result.stats.get("any_failed"):
+                        all_succeeded = False
+                        # Surface the compound's actionable message in
+                        # stats["error"] rather than the generic banner. This
+                        # covers BOTH:
+                        #   * an axis-compound precheck failure (missing
+                        #     --left/--right) that produces NO files (M1-4), and
+                        #   * a partial-failure bundle that DID write files but
+                        #     has failed sections — the summary names them so
+                        #     the CLI shows specifics. (M1-12.)
+                        _cm = compound_result.stats.get("error")
+                        if _cm:
+                            run_error_message = str(_cm)
+                    continue
 
                 # Require --project for recipes that declare requires_project
                 if (
@@ -2235,12 +2475,35 @@ class ReportEngine:
                     all_succeeded = False
                     continue
 
-                # Folder-scoped Remediation Package: iterate over projects
+                # Require --component for recipes that declare requires_component
+                # (B4 #25) — e.g. Component Impact / Component Remediation Package.
+                if (
+                    getattr(recipe, "requires_component", False) is True
+                    and not str(
+                        getattr(self.config, "component_filter", None) or ""
+                    ).strip()
+                ):
+                    self.logger.error(
+                        f"'{recipe.name}' requires a --component filter. "
+                        "Use --component <name> to specify the component."
+                    )
+                    all_succeeded = False
+                    continue
+
+                # Folder-scoped Remediation Package: iterate over projects.
+                # Note: the same recipe name is encoded in
+                # recipe_requirements._NAME_REQUIRES_PROJECT_OR_FOLDER; keep
+                # in sync if this recipe is ever renamed.
                 if (
                     recipe.name == "Remediation Package"
                     and not self.config.project_filter
                     and self._folder_project_ids
                 ):
+                    # T5/M3-1: this branch does real per-project work then
+                    # `continue`s BEFORE the generic on_recipe_start site below,
+                    # so light the node "running" here too (else a folder-scoped
+                    # Remediation Package stays visually queued until completion).
+                    self._fire_recipe_start(idx, total, recipe.name)
                     folder_ok = self._run_remediation_folder(
                         recipe,
                         sorted(self._folder_project_ids),
@@ -2251,7 +2514,10 @@ class ReportEngine:
                         all_succeeded = False
                     continue
 
-                # Remediation Package without --project or --folder
+                # Remediation Package without --project or --folder.
+                # Note: the same recipe name is encoded in
+                # recipe_requirements._NAME_REQUIRES_PROJECT_OR_FOLDER; keep
+                # in sync if this recipe is ever renamed.
                 if (
                     recipe.name == "Remediation Package"
                     and not self.config.project_filter
@@ -2276,6 +2542,15 @@ class ReportEngine:
                     _scoped_recipe = recipe.model_copy(
                         update={"name": f"{recipe.name} - {scope_suffix}"}
                     )
+                # Light the plain-report canvas node "running" before the recipe
+                # does its work (T5).  Fired here (generic path) AND in the
+                # folder-scoped Remediation Package branch above — both AFTER the
+                # requires-* skip checks, so a skipped recipe never lights running.
+                # Placed BEFORE check_output_guard so an overwrite-guard failure
+                # still gets underway feedback rather than queued→done (M1-1).
+                # Uses recipe.name to match the report node id (build_canvas_nodes)
+                # + the on_recipe_complete signal.
+                self._fire_recipe_start(idx, total, recipe.name)
                 self.renderer.check_output_guard(_scoped_recipe)
                 report_data = self._process_recipe(recipe)
                 if report_data:
@@ -2319,6 +2594,16 @@ class ReportEngine:
                         )
                     )
                     all_succeeded = False
+            except ReportCancelled:
+                # A Stop mid-recipe (e.g. ReportCancelled re-raised out of a
+                # compound's child loop) must PROPAGATE out of run() so the web
+                # worker's `except ReportCancelled` reports status="cancelled".
+                # The bare `except Exception` below would otherwise record it as
+                # a failed recipe and return success=False → "error", defeating
+                # cancel parity for compound (and plain-recipe) runs. The CLI
+                # never sets a cancel_event, so _check_cancel never raises and
+                # this path is web-only — CLI behavior is unchanged. (R3 M1-1.)
+                raise
             except Exception as e:
                 self.logger.error(f"Failed to process recipe {recipe.name}: {e}")
                 recipe_results.append(
@@ -2341,7 +2626,1879 @@ class ReportEngine:
             print("\nReports generated:")
             for f in generated_files:
                 print(f"  - {f}")
-        return RunResult(success=all_succeeded, recipes=recipe_results)
+        return RunResult(
+            success=all_succeeded,
+            recipes=recipe_results,
+            error_message=None if all_succeeded else run_error_message,
+        )
+
+    # ------------------------------------------------------------------
+    # extra_recipes seam (B3.6, decision #10)
+    # ------------------------------------------------------------------
+
+    def set_extra_recipes(self, recipes: list[Recipe]) -> None:
+        """Register pre-constructed recipe objects to merge into the corpus.
+
+        Used by ``fs-report compare`` (B3.7) to run an in-memory axis
+        ``CompoundRecipe`` (and its comparison children) without writing a
+        temp YAML. The extras are merged into the loaded corpus in ``run()``
+        with OVERRIDE semantics: an extra whose slug matches a loaded recipe
+        REPLACES that loaded recipe (extra wins). Extras are explicit per-run
+        injections that legitimately shadow disk recipes — e.g.
+        ``compare --save-as NAME`` writes ``NAME.yaml`` AND injects the same
+        compound as an extra; the on-disk copy is overridden by the extra, so
+        the run proceeds with no collision.
+
+        This setter validates the extras for collisions *among themselves*
+        up front so a programmatic caller gets a clear error at registration.
+        It does NOT collision-check extras against the on-disk corpus —
+        override is the intended behavior there.
+
+        Raises:
+            RecipeSlugCollision: if two extras normalize to the same slug.
+        """
+        by_slug: dict[str, list[str]] = {}
+        for r in recipes:
+            by_slug.setdefault(_slug(r.name), []).append(r.name)
+        collisions = {s: names for s, names in by_slug.items() if len(names) > 1}
+        if collisions:
+            details = "; ".join(
+                f"slug={s!r} shared by {names}" for s, names in collisions.items()
+            )
+            raise RecipeSlugCollision(
+                f"extra_recipes contain slug collisions: {details}. "
+                "Each extra recipe name must normalize to a unique slug."
+            )
+        self._extra_recipes = list(recipes)
+
+    # ------------------------------------------------------------------
+    # Meta-compare scope resolution (B3.6 — spec § 1)
+    # ------------------------------------------------------------------
+
+    def _resolve_scope(self, ref: "ScopeRef") -> "ResolvedScope":
+        """Resolve a parsed :class:`ScopeRef` against the API.
+
+        Runs post-auth, BEFORE any comparison-recipe fetch. Failures raise
+        ``ValueError`` with a CLI-grade message that fails the whole run.
+
+        * project scope: name/ID → project id; ``@version`` → version id
+          (name match or accepted ID); no ``@version`` → latest version id.
+          Label: ``"{project_name} @ {version_display}"``.
+        * folder scope: folder → recursive project set → latest version per
+          project. Label: ``"folder {folder_name} ({N} projects)"``.
+
+        See docs/superpowers/specs/2026-05-11-meta-compare-design.md § 1.
+        """
+        if ref.kind == "folder":
+            return self._resolve_folder_scope_ref(ref)
+        return self._resolve_project_scope_ref(ref)
+
+    def _resolve_project_scope_ref(self, ref: "ScopeRef") -> "ResolvedScope":
+        """Resolve a ``project:`` scope reference (see ``_resolve_scope``)."""
+        target = ref.target
+        # ---- Resolve target → (project_id, project_name).
+        if self._is_id_like(target):
+            if self._validate_numeric_project_id(target):
+                project_id: int | str = target
+                project_name = self._resolve_project_id_to_name(target) or target
+            else:
+                # M3-3 (round-4 item 7): the target LOOKS id-like but no project
+                # has that ID. Before erroring, fall back to a NAME lookup — a
+                # project whose NAME is a numeric string (e.g. "12345") is
+                # otherwise untargetable. Only error if the name lookup also
+                # misses.
+                resolved = self._resolve_project_name(target)
+                if not resolved:
+                    raise ValueError(
+                        f"Project '{target}' not found. "
+                        "Use 'fs-report list-projects' to see available projects."
+                    )
+                project_id = resolved
+                project_name = target
+        else:
+            resolved = self._resolve_project_name(target)
+            if not resolved:
+                hint = self._folder_name_hint(target)
+                raise ValueError(
+                    f"Project '{target}' not found{hint}. "
+                    "Use 'fs-report list-projects' to see available projects."
+                )
+            project_id = resolved
+            project_name = target
+
+        # ---- Resolve version.
+        if ref.version is not None:
+            if self._is_id_like(ref.version):
+                version_id: str = str(ref.version)
+                # Fail fast if the id isn't actually a version of this project.
+                # _lookup_version_display_name can't signal "not a member" (it
+                # falls back to str(version_id)), so do an explicit membership
+                # check against the same version list the name path uses
+                # (PR review I).
+                project_versions = self._get_project_versions(project_id)
+                is_member = any(
+                    str(v.get("id")) == version_id for v in project_versions
+                )
+                if not is_member:
+                    raise ValueError(
+                        f"Version '{ref.version}' not found on project "
+                        f"{project_name}. Use 'fs-report list-versions "
+                        f"{project_name}' to see available versions."
+                    )
+                version_display = self._lookup_version_display_name(
+                    project_id, version_id
+                )
+            else:
+                resolved_ver = self._resolve_version_name(project_id, ref.version)
+                if not resolved_ver:
+                    raise ValueError(
+                        f"Version '{ref.version}' not found on project "
+                        f"{project_name}. Use 'fs-report list-versions "
+                        f"{project_name}' to see available versions."
+                    )
+                version_id = str(resolved_ver)
+                version_display = ref.version
+        else:
+            latest = self._get_latest_version_ids_for_projects([str(project_id)])
+            if not latest:
+                raise ValueError(
+                    f"Project '{project_name}' has no versions to compare. "
+                    "Upload a scan to create a version, or pass an explicit "
+                    "@<version>."
+                )
+            version_id = str(latest[0])
+            version_display = self._lookup_version_display_name(project_id, version_id)
+
+        return ResolvedScope(
+            label=f"{project_name} @ {version_display}",
+            version_ids=[version_id],
+            project_names={version_id: project_name},
+            version_displays={version_id: version_display},
+        )
+
+    def _resolve_folder_scope_ref(self, ref: "ScopeRef") -> "ResolvedScope":
+        """Resolve a ``folder:`` scope reference (see ``_resolve_scope``)."""
+        folder = self._resolve_folder(ref.target)
+        if folder is None:
+            raise ValueError(
+                f"Folder '{ref.target}' not found. "
+                "Use 'fs-report list-folders' to see available folders."
+            )
+        folder_id = str(folder.get("id", ""))
+        folder_name = folder.get("name", ref.target)
+
+        _pids, _pf_map, _subs, _name_to_id, id_to_name = self._collect_folder_tree(
+            folder_id
+        )
+        sorted_pids = sorted(_pids)
+        total_projects = len(sorted_pids)
+
+        # Resolve latest versions for ALL projects in ONE batch call (item 4:
+        # no per-project N+1). The pid→vid map is stashed by the helper so we
+        # can recover per-project provenance.
+        self._get_latest_version_ids_for_projects(sorted_pids)
+        cache_key = ",".join(sorted_pids)
+        pid_to_vid = self._folder_version_id_map_cache.get(cache_key)
+
+        if not pid_to_vid:
+            # The batch resolver did not stash a pid→vid map (e.g. a test stub
+            # overrides _get_latest_version_ids_for_projects, or an API shape
+            # that the batch path couldn't map). Recover the association BY
+            # PROJECT via the per-project resolver — NEVER by positionally
+            # zipping a flat version list against sorted pids, which mis-
+            # associates versions whenever a project is silently omitted.
+            # (M1-6/M3-2.)
+            try:
+                pid_to_vid = self._fetch_version_id_map_per_project(sorted_pids)
+            except Exception as exc:  # pragma: no cover - defensive
+                # If even the per-project resolve is unavailable, drop the
+                # association rather than risk mis-association: warn and treat
+                # every project as unresolved.
+                self.logger.warning(
+                    "Folder '%s': could not resolve per-project latest versions "
+                    "(%s); the folder compare cannot be scoped by project.",
+                    folder_name,
+                    exc,
+                )
+                pid_to_vid = {}
+
+        version_ids: list[str] = []
+        project_names: dict[str, str] = {}
+        version_displays: dict[str, str] = {}
+
+        # Association is ALWAYS by project id (never positional). Projects
+        # without a resolvable latest version are skipped.
+        ordered = [(pid, pid_to_vid[pid]) for pid in sorted_pids if pid in pid_to_vid]
+        skipped_pids = [pid for pid in sorted_pids if pid not in pid_to_vid]
+
+        for pid, raw_vid in ordered:
+            vid = str(raw_vid)
+            version_ids.append(vid)
+            # Provenance from the folder tree's id→name map built once in
+            # _collect_folder_tree (item 4: no per-project
+            # _resolve_project_id_to_name N+1).
+            project_names[vid] = id_to_name.get(pid) or pid
+            # No version display name is resolved per-project for folder scope
+            # (the folder label omits versions); the version_id is a safe,
+            # correct backfill for projectVersion.version — never the project
+            # name (item 1).
+            version_displays[vid] = vid
+
+        n = len(version_ids)
+
+        # M1-5/M1-7: a folder compare must not silently run against a subset.
+        # When some folder projects have no resolvable latest version, WARN
+        # naming how many (and which, when cheap) were skipped.
+        if skipped_pids:
+            skipped_names = [id_to_name.get(p) or p for p in skipped_pids]
+            self.logger.warning(
+                "Folder '%s': %d of %d project%s have no resolvable latest "
+                "version and were skipped from the comparison scope: %s",
+                folder_name,
+                len(skipped_pids),
+                total_projects,
+                "" if total_projects == 1 else "s",
+                ", ".join(skipped_names),
+            )
+
+        # M1-2 (round-4 item 3): a scope resolving to ZERO versions must fail
+        # fast. An empty folder, or a folder whose every project lacks a scanned
+        # version, would otherwise return an empty scope that produces a
+        # misleading empty-diff report. Raise a clear ValueError instead (which
+        # becomes a clean precheck failure via _process_axis_compound).
+        if n == 0:
+            if total_projects == 0:
+                detail = "the folder is empty"
+            else:
+                detail = (
+                    f"none of its {total_projects} project"
+                    f"{'' if total_projects == 1 else 's'} has a scanned version"
+                )
+            raise ValueError(
+                f"Scope 'folder {folder_name}' resolved to 0 versions — "
+                f"{detail}. Upload a scan to a project in this folder, or point "
+                "--left/--right at a project with a version."
+            )
+
+        # A folder scope spans multiple projects. Comparison rows are grouped by
+        # match_key, so a CVE/component shared by several projects is reported as
+        # ONE row (counts are key-level). Per-project provenance is NOT lost —
+        # the playbook redesign preserves each project's variant as owner
+        # attribution (the owner chips / Project column, via the transforms'
+        # ``project_names`` / side-specific owner sets). Note it at INFO so the
+        # folder-mode aggregation is never silent without crying limitation.
+        if n > 1:
+            self.logger.info(
+                "Folder '%s' spans %d projects: findings shared across projects "
+                "are aggregated to one row per match_key, with each project's "
+                "variant preserved as owner attribution (owner chips / Project "
+                "column).",
+                folder_name,
+                n,
+            )
+
+        # M1-5: make the label honest — show resolved-version count AND total
+        # folder-project count when they differ; keep the simple form when all
+        # resolve.
+        if n == total_projects:
+            label = f"folder {folder_name} ({n} project{'' if n == 1 else 's'})"
+        else:
+            label = (
+                f"folder {folder_name} ({n} of {total_projects} projects "
+                "with a version)"
+            )
+
+        return ResolvedScope(
+            label=label,
+            version_ids=version_ids,
+            project_names=project_names,
+            version_displays=version_displays,
+        )
+
+    def _folder_name_hint(self, target: str) -> str:
+        """Return a ``(a folder named 'X' exists — use folder:X)`` hint.
+
+        Only consulted on the project-not-found failure path. A name match
+        against the (already-cached when folder resolution ran) folder list
+        keeps this cheap. Returns an empty string when no folder matches.
+        """
+        try:
+            folders = self._fetch_all_folders()
+        except Exception:
+            return ""
+        for f in folders:
+            if str(f.get("name", "")).lower() == target.lower():
+                return f" (a folder named '{target}' exists — use folder:{target})"
+        return ""
+
+    def _fetch_scope_data(
+        self, query: "QueryConfig", resolved_scope: "ResolvedScope"
+    ) -> pd.DataFrame:
+        """Fetch one side's data for every version in *resolved_scope*.
+
+        Routing follows the per-version precedents in this engine:
+
+        * findings endpoint → RSQL ``projectVersion==<id>`` composed with any
+          recipe filter via ``;`` (preserving ``finding_type`` / category per
+          the ``_fetch_findings`` precedent); reuses the version-keyed cache.
+        * components endpoint → URL rewrite to
+          ``/public/v0/versions/{id}/components`` (RSQL ``projectVersion==``
+          400s on /api/-prefixed deployments) + projectVersion backfill.
+
+        Frames are concatenated across the scope's ``version_ids``. A
+        ``project_name`` provenance column is backfilled from
+        ``resolved_scope.project_names`` (decision #6).
+
+        See docs/superpowers/specs/2026-05-11-meta-compare-design.md § 4.
+        """
+        is_findings = query.endpoint.rstrip("/").endswith("/findings")
+        recipe_filter = query.params.filter if query.params else None
+        limit = (query.params.limit if query.params else None) or 10000
+
+        type_params = build_findings_type_params(self.config.finding_types)
+        finding_type = type_params.get("type", "cve") or ""
+        category_filter = type_params.get("category_filter")
+        # The findings branch composes the recipe's own filter onto the
+        # type/category clause so both narrowings survive (RSQL ';' = AND).
+        # The category clause (e.g. ``category==CVE``) is meaningful ONLY on
+        # the findings endpoint — folding it onto the version-scoped
+        # /components endpoint filters the wrong field (or 400s on real
+        # deployments), so components get the BARE recipe filter (item 2).
+        findings_filter = recipe_filter
+        if category_filter:
+            findings_filter = (
+                f"{category_filter};{recipe_filter}"
+                if recipe_filter
+                else category_filter
+            )
+
+        frames: list[pd.DataFrame] = []
+        for version_id in resolved_scope.version_ids:
+            project_name = resolved_scope.project_names.get(version_id, "")
+            version_display = resolved_scope.version_displays.get(version_id, "")
+            if is_findings:
+                df = self._fetch_scope_findings(
+                    version_id, finding_type, findings_filter, limit
+                )
+            else:
+                df = self._fetch_scope_components(
+                    version_id, recipe_filter, limit, project_name, version_display
+                )
+            if df is None or df.empty:
+                continue
+            # Provenance backfill (decision #6) — only when rows lack it.
+            if "project_name" not in df.columns:
+                df["project_name"] = project_name
+            else:
+                df["project_name"] = df["project_name"].fillna(project_name)
+            frames.append(df)
+
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True)
+
+    def _fetch_scope_findings(
+        self,
+        version_id: str,
+        finding_type: str,
+        recipe_filter: str | None,
+        limit: int,
+    ) -> pd.DataFrame:
+        """Fetch findings for one version (cache-aware, RSQL-composed)."""
+        version_filter = f"projectVersion=={version_id}"
+        combined_filter = (
+            f"{version_filter};{recipe_filter}" if recipe_filter else version_filter
+        )
+        # The version-keyed cache key keys on the category filter portion only
+        # (the precedent stores per (entity, version, finding_type, category)),
+        # so it lines up with sibling Version Comparison entries when the recipe
+        # adds no extra clause.
+        cached = self._check_version_in_cache(
+            version_id, "findings", finding_type, recipe_filter
+        )
+        if cached is not None:
+            return pd.DataFrame(cached) if cached else pd.DataFrame()
+        q = QueryConfig(
+            endpoint="/public/v0/findings",
+            params=QueryParams(
+                limit=limit,
+                filter=combined_filter,
+                finding_type=finding_type,
+                archived=False,
+                excluded=False,
+            ),
+        )
+        result = self.api_client.fetch_all_with_resume(q, show_progress=False)
+        cache_key = self._cache_key("findings", version_id, finding_type, recipe_filter)
+        self._version_findings_cache[cache_key] = result
+        return pd.DataFrame(result) if result else pd.DataFrame()
+
+    def _fetch_scope_components(
+        self,
+        version_id: str,
+        recipe_filter: str | None,
+        limit: int,
+        project_name: str,
+        version_display: str = "",
+    ) -> pd.DataFrame:
+        """Fetch components for one version via the version-scoped endpoint.
+
+        URL-rewrite path (RSQL ``projectVersion==`` 400s on /api/-prefixed
+        deployments) + projectVersion backfill, mirroring the Component-List
+        precedent. Reuses the per-version components cache so a sibling
+        Component Diff in the same bundle makes the inventory fetch free.
+
+        The cache key includes the *effective filter* whenever one is present
+        so a filtered fetch never poisons the unfiltered key (and vice versa)
+        — sibling recipes / inventory fetches that request different filters
+        must not cross-contaminate (item 3). The bare key (no filter part) is
+        reserved for unfiltered fetches so the inventory / Component Diff
+        sharing still works.
+        """
+        if recipe_filter:
+            # Filtered fetch — use a filter-aware key (and skip the shared
+            # unfiltered cache helper, which keys only on (entity, version)).
+            cache_key = self._cache_key("components", version_id, recipe_filter)
+            cached_records = self._version_findings_cache.get(cache_key)
+            if cached_records is not None:
+                df = pd.DataFrame(cached_records) if cached_records else pd.DataFrame()
+            else:
+                df = self._fetch_scope_components_fresh(
+                    version_id, recipe_filter, limit, cache_key
+                )
+        else:
+            # Unfiltered fetch — share the bare per-version components cache
+            # so inventory / Component Diff in the same bundle is free.
+            cached = self._check_version_in_cache(version_id, "components")
+            if cached is not None:
+                df = pd.DataFrame(cached) if cached else pd.DataFrame()
+            else:
+                df = self._fetch_scope_components_fresh(
+                    version_id, None, limit, self._cache_key("components", version_id)
+                )
+
+        if df.empty:
+            return df
+        # Backfill projectVersion (the version-scoped endpoint omits it; the
+        # version is implicit in the URL) so downstream transforms reading
+        # projectVersion.version don't render "Unknown". The version slot gets
+        # the VERSION display name (falling back to the version_id), never the
+        # project name (item 1) — mirroring the Component-List precedent.
+        if "projectVersion" not in df.columns:
+            pv_obj = {
+                "id": str(version_id),
+                "version": version_display or str(version_id),
+            }
+            df["projectVersion"] = pd.Series(
+                [pv_obj] * len(df), index=df.index, dtype=object
+            )
+        return df
+
+    def _fetch_scope_components_fresh(
+        self,
+        version_id: str,
+        recipe_filter: str | None,
+        limit: int,
+        cache_key: str,
+    ) -> pd.DataFrame:
+        """Fetch components from the version-scoped endpoint and cache them."""
+        q = QueryConfig(
+            endpoint=f"/public/v0/versions/{version_id}/components",
+            params=QueryParams(
+                limit=limit,
+                filter=recipe_filter,
+                archived=False,
+                excluded=False,
+            ),
+        )
+        result = self.api_client.fetch_all_with_resume(q, show_progress=False)
+        self._version_findings_cache[cache_key] = result
+        return pd.DataFrame(result) if result else pd.DataFrame()
+
+    # ------------------------------------------------------------------
+    # Meta-compare axis validation (B3.6 — spec § 3, decision #14)
+    # ------------------------------------------------------------------
+
+    def _validate_axis_scope_flags(self, recipes: list[Recipe]) -> tuple[bool, str]:
+        """Validate --left/--right + standalone-comparison invariants.
+
+        Returns ``(ok, message)``. On ``ok == False`` the caller aborts the
+        run with *message*. Rules:
+
+        * ``--left``/``--right`` set but no axis-bearing CompoundRecipe in the
+          run → error (those flags only mean something for a meta-compare).
+        * a bare ``ComparisonRecipe`` requested standalone (no axis parent in
+          the run) → error pointing at ``fs-report compare`` (decision #14).
+
+        Invariant for B3.7: comparison children are assumed NEVER to land in
+        this post-filter ``recipes`` list — they are dispatched only as
+        ``CompoundRecipe.sections`` via ``_process_compound``, never run
+        directly. The ``fs-report compare`` CLI (B3.7) must therefore keep its
+        ``extra_recipes`` limited to the compound itself (its children are
+        looked up from the corpus by slug, not appended as runnable recipes);
+        any comparison child reaching here is a standalone request and is
+        rejected above. If B3.7 ever needs to register children as extras,
+        the auto-run filter that drops ``category == "comparison"`` recipes
+        (see ``run()``) is what keeps them out of this list — keep it.
+        """
+        has_axis_compound = any(
+            isinstance(r, CompoundRecipe) and r.axis is not None for r in recipes
+        )
+        scopes_set = bool(self.config.left_scope or self.config.right_scope)
+
+        standalone_comparisons = [
+            r.name for r in recipes if isinstance(r, ComparisonRecipe)
+        ]
+        if standalone_comparisons:
+            # M1-12 (round-4 item 6): explain comparison recipes run INSIDE an
+            # axis bundle (not "positionally"), and show the exact invocation.
+            example_name = standalone_comparisons[0]
+            return (
+                False,
+                f"Comparison recipe '{example_name}' runs only inside a "
+                "meta-compare. Use: fs-report compare "
+                f"{example_name} --left <scope> --right <scope>.",
+            )
+
+        if scopes_set and not has_axis_compound:
+            return (
+                False,
+                "--left / --right only apply to a meta-compare bundle (an "
+                "axis-bearing compound recipe). The selected recipe(s) are "
+                "not a meta-compare. Use 'fs-report compare' or select a "
+                "saved meta-compare bundle.",
+            )
+
+        return (True, "")
+
+    # ------------------------------------------------------------------
+    # Per-section effective config (compound override merge)
+    # ------------------------------------------------------------------
+
+    def _compound_run_effective(self) -> dict[str, Any]:
+        """The run-level effective config seen by every compound child.
+
+        Reads the already-resolved ``self.config`` scope/AI/finding-type/date
+        fields into a dict shaped like the workflow effective config (date mode
+        expressed as ``period`` OR ``start``/``end``). This is the LOWER-priority
+        side of the per-section merge — a section override layers on top.
+
+        Note the date mode is carried as ``start``/``end`` (the resolved run
+        window) so a section that overrides ``period`` correctly CLEARS the run
+        range via the period↔range mutual-exclusion in the merge (mirrors the
+        workflow ``_effective_step_config``).
+        """
+        eff: dict[str, Any] = {}
+        for key in (
+            "project_filter",
+            "folder_filter",
+            "version_filter",
+            "finding_types",
+            "current_version_only",
+            "ai",
+            "ai_depth",
+        ):
+            val = getattr(self.config, key, None)
+            if val is not None and val != "":
+                eff[key] = val
+        # Run window as start/end (the engine resolves period→start_date/end_date
+        # at config build, so the live run mode is always a range here).
+        if getattr(self.config, "start_date", None):
+            eff["start"] = self.config.start_date
+        if getattr(self.config, "end_date", None):
+            eff["end"] = self.config.end_date
+        return eff
+
+    def _section_overrides(self, section: "SectionRef") -> dict[str, Any]:
+        """Whitelisted, coerced, non-empty overrides for one section (or {})."""
+        from fs_report.compound_overrides import effective_child_config
+
+        # effective_child_config(base={}, overrides) returns just the cleaned,
+        # coerced override dict (no run-level keys) — reuse it so the whitelist /
+        # coercion / emptiness rules live in ONE place.
+        return effective_child_config({}, getattr(section, "overrides", None))
+
+    @contextmanager
+    def _apply_section_config(
+        self, section: "SectionRef"
+    ) -> "Generator[bool, None, None]":
+        """Temporarily apply a section's effective config to ``self.config``.
+
+        Yields ``True`` when the section's overridden scope re-resolved cleanly
+        (or there were no scope overrides), ``False`` when a scope override
+        failed to resolve (the caller records a FailedSection). Restores
+        ``self.config`` / ``self.api_client.config`` / ``resolved_project_name``
+        / ``_folder_project_ids`` on exit, so the next child sees the run-level
+        config again. Not re-entrant: it assumes the section loop is sequential
+        and never nested (compound nesting is rejected by validation), since a
+        nested call would clobber the saved run-level snapshot.
+
+        Precedence (highest→lowest): section override ▸ run-level effective
+        config (``self.config``) ▸ recipe/engine defaults. The authored bundle
+        ``global`` block is deliberately NOT re-applied here — this path only
+        layers the per-SECTION overrides onto the run-level config, so the
+        global can never be double-applied on top of a section override.
+        """
+        from fs_report.compound_overrides import effective_child_config
+
+        overrides = self._section_overrides(section)
+        if not overrides:
+            # No-op fast path: child runs under the run-level config unchanged.
+            yield True
+            return
+
+        run_eff = self._compound_run_effective()
+        child_eff = effective_child_config(run_eff, getattr(section, "overrides", None))
+
+        # Scope-provenance precedence — mirrors the workflow _effective_step_config
+        # so an inherited run-level scope can't combine into an invalid pairing.
+        step_sets_project = bool(str(overrides.get("project_filter") or "").strip())
+        step_sets_folder = bool(str(overrides.get("folder_filter") or "").strip())
+        step_sets_version = bool(str(overrides.get("version_filter") or "").strip())
+        # A folder-only section drops the INHERITED run-level project + version
+        # (folder-wins for that child).
+        if step_sets_folder and not step_sets_project:
+            child_eff.pop("project_filter", None)
+            child_eff.pop("version_filter", None)
+        # A section retargeting its OWN project drops an inherited version (that
+        # version ID belongs to the run-level project, not this one) unless it
+        # supplies its own version.
+        if step_sets_project and not step_sets_version:
+            child_eff.pop("version_filter", None)
+        # Project-wins: an effective project means the folder was only a UI
+        # filter and must not travel into the engine (it would force the
+        # stricter project-in-folder intersection).
+        if str(child_eff.get("project_filter") or "").strip():
+            child_eff.pop("folder_filter", None)
+
+        # Translate the merged effective dict back onto a Config copy. Scope keys
+        # are forced (set even when they resolved to empty above) so a child that
+        # dropped an inherited project/version/folder doesn't keep the run-level
+        # value on the copied Config.
+        update: dict[str, Any] = {}
+        for k in ("project_filter", "folder_filter", "version_filter"):
+            update[k] = child_eff.get(k) or None
+        for k in (
+            "finding_types",
+            "current_version_only",
+            "ai",
+            "ai_depth",
+        ):
+            if k in child_eff:
+                update[k] = child_eff[k]
+        # Date mode → start_date/end_date. A section ``period`` is resolved to a
+        # window via PeriodParser (same as create_config); a section start/end
+        # pair is used verbatim. period↔range exclusion was already applied by
+        # effective_child_config, so child_eff carries at most ONE mode.
+        if child_eff.get("start") and child_eff.get("end"):
+            update["start_date"] = child_eff["start"]
+            update["end_date"] = child_eff["end"]
+            update["period_explicit"] = True
+        elif child_eff.get("period"):
+            from fs_report.period_parser import PeriodParser
+
+            try:
+                _s, _e = PeriodParser.parse_period(str(child_eff["period"]))
+                update["start_date"] = _s
+                update["end_date"] = _e
+                update["period_explicit"] = True
+            except ValueError:
+                self.logger.warning(
+                    "Section override period %r could not be parsed; "
+                    "keeping the run-level window.",
+                    child_eff["period"],
+                )
+
+        # A scope override means we must re-resolve names→IDs for this child.
+        scope_overridden = any(
+            key in overrides
+            for key in ("project_filter", "folder_filter", "version_filter")
+        )
+
+        saved_config = self.config
+        saved_api_config = self.api_client.config
+        saved_resolved_name = self.resolved_project_name
+        saved_folder_ids = self._folder_project_ids
+        child_config = self.config.model_copy(update=update)
+        self.config = child_config
+        self.api_client.config = child_config
+        # A retargeted scope starts from a clean folder-id set so a prior
+        # child's glob/folder expansion doesn't leak in.
+        if scope_overridden:
+            self._folder_project_ids = None
+            self.resolved_project_name = None
+        try:
+            ok = self._resolve_run_scope() if scope_overridden else True
+            yield ok
+        finally:
+            self.config = saved_config
+            self.api_client.config = saved_api_config
+            self.resolved_project_name = saved_resolved_name
+            self._folder_project_ids = saved_folder_ids
+
+    # ------------------------------------------------------------------
+    # Compound-recipe dispatch
+    # ------------------------------------------------------------------
+
+    def _process_compound(
+        self,
+        compound: "CompoundRecipe",
+        all_recipes_index: dict[str, Recipe],
+    ) -> "RecipeResult":
+        """Render one CompoundRecipe — see compound-reports spec § 4.
+
+        Steps:
+
+        1. Resolve each ``compound.sections[].recipe`` to a child Recipe
+           via the slug-keyed corpus index. Loader-level validation has
+           already enforced this, but a defensive check guards against
+           an out-of-band ``all_recipes_index`` mismatch.
+        2. Run per-child pre-checks (``requires_project``,
+           ``requires_cve``, ``requires_project_or_folder``); if any
+           child can't satisfy them under the current scope, fail the
+           bundle fast — no partial output.
+        3. Reject folder-iterating recipes (Remediation Package without
+           ``--project``) at runtime, before any child runs.
+        4. For each child: call ``_process_recipe`` for the data, then
+           ``HTMLRenderer.render_fragment(...,
+           fragment_scripts_enabled=True, suppress_section_title=True)``.
+           Catch transform exceptions and ``None`` returns alike and
+           record them as ``FailedSection`` entries.
+        5. Run the compound assembler to build the bundled HTML.
+        6. Call ``PDFRenderer.render_html()`` to produce the bundled PDF.
+        7. Return a ``RecipeResult`` describing the compound output
+           directory, files, and per-child stats.
+
+        Always returns a ``RecipeResult``. Pre-check or folder-iterator
+        rejections produce a result with empty ``files`` and
+        ``stats["error"]`` set so programmatic consumers can distinguish
+        "compound skipped at pre-check" from "compound never reached".
+        PDF render failures keep the HTML in place and surface via
+        logged warnings (HTML still ships; CLI exits non-zero via
+        ``any_failed`` stat). (PR #100 round-1 multi-review N4.)
+
+        When ``compound.axis is not None`` (a meta-compare bundle), dispatch
+        is routed to ``_process_axis_compound`` (B3.6 — meta-compare design
+        spec § 4): the two scopes are resolved ONCE for the bundle, each
+        comparison child is fetched for left+right and diffed, and the
+        ``requires_*`` pre-checks (which describe single-scope recipes) are
+        skipped — the axis scopes replace them.
+        """
+        from fs_report.renderers.html_renderer import HTMLRenderer
+
+        def _precheck_failure(message: str) -> RecipeResult:
+            self.logger.error(message)
+            return RecipeResult(
+                recipe=compound.name,
+                output_dir="",
+                files=[],
+                stats={"error": message, "any_failed": True},
+            )
+
+        # ---- Axis branch: a meta-compare bundle. Resolve both scopes once,
+        # then fetch+diff each comparison child. The single-scope pre-checks
+        # below don't apply (axis scopes replace requires_project etc.).
+        # Route to the axis path ONLY when the compound itself declares an axis.
+        # The config left_scope/right_scope are runtime overrides that only
+        # matter for an axis compound — a non-axis compound must never take the
+        # comparison path even if both scopes happen to be set (PR review A).
+        if compound.axis is not None:
+            return self._process_axis_compound(
+                compound, all_recipes_index, _precheck_failure
+            )
+
+        # ---- 1. Resolve children + 2. pre-checks + 3. folder rejection.
+        children: list[Recipe] = []
+        for section in compound.sections:
+            child_slug = _slug(section.recipe)
+            child = all_recipes_index.get(child_slug)
+            if child is None:
+                return _precheck_failure(
+                    f"Compound '{compound.name}' references unknown child "
+                    f"recipe '{section.recipe}' (slug='{child_slug}'). "
+                    "Loader validation should have caught this — failing "
+                    "fast to surface the index mismatch."
+                )
+
+            # Folder-iterating recipes can't ride a single sections[] entry
+            # because they fan out one render per project under the same
+            # fs-section-<slug> scope — every per-project fragment would
+            # collide on ids. Reject the whole bundle BEFORE any child runs
+            # so we don't leak partial output.
+            # Note: the same recipe name is encoded in
+            # recipe_requirements._NAME_REQUIRES_PROJECT_OR_FOLDER; keep
+            # in sync if this recipe is ever renamed.
+            if (
+                child.name == "Remediation Package"
+                and not self.config.project_filter
+                and self._folder_project_ids
+            ):
+                return _precheck_failure(
+                    f"Compound '{compound.name}' includes "
+                    f"'{child.name}' under --folder scope. Folder-iterating "
+                    "recipes can't be bundled in v1 — pass --project explicitly "
+                    "or remove the recipe from the bundle. See compound-reports "
+                    "design spec § 4."
+                )
+
+            # Per-child requires_* pre-checks. Bundle fails fast — partial
+            # bundles with missing sections are confusing.
+            # Use the shared predicate (recipe_requirements) so this path
+            # and the web prerun computation (PR2.3) can't diverge.  The
+            # predicate also enforces name-based rules (e.g. "Remediation
+            # Package" requires project-or-folder despite declaring no flag),
+            # closing a gap where that child was previously not pre-checked.
+            #
+            # Scope requirements are evaluated against the section's EFFECTIVE
+            # scope (run-level ▸ section override): a section that retargets
+            # ``project_filter`` satisfies a ``requires_project`` child even when
+            # the bundle carries no run-level project. ``cve_filter`` /
+            # ``component_filter`` are NOT section-overridable (not in the
+            # whitelist), so those checks read run-level config only.
+            _sec_ov = self._section_overrides(section)
+            _eff_project = str(
+                _sec_ov.get("project_filter") or self.config.project_filter or ""
+            ).strip()
+            _eff_folder = str(
+                _sec_ov.get("folder_filter") or self.config.folder_filter or ""
+            ).strip()
+            _reqs = recipe_requirements(child)
+            if _reqs.requires_project and not _eff_project:
+                return _precheck_failure(
+                    f"Compound '{compound.name}' child '{child.name}' "
+                    "requires --project. Pass --project <name-or-id>."
+                )
+            if _reqs.requires_cve and not getattr(self.config, "cve_filter", None):
+                return _precheck_failure(
+                    f"Compound '{compound.name}' child '{child.name}' "
+                    "requires --cve."
+                )
+            if (
+                _reqs.requires_project_or_folder
+                and not _eff_project
+                and not _eff_folder
+            ):
+                return _precheck_failure(
+                    f"Compound '{compound.name}' child '{child.name}' "
+                    "requires --project or --folder."
+                )
+            if (
+                _reqs.requires_component
+                and not str(
+                    getattr(self.config, "component_filter", None) or ""
+                ).strip()
+            ):
+                return _precheck_failure(
+                    f"Compound '{compound.name}' child '{child.name}' "
+                    "requires --component."
+                )
+
+            children.append(child)
+
+        # ---- 3.5. Resolve formats + 3.6. output guard (shared helper). ----
+        compound_slug = _slug(compound.name)
+        output_dir = Path(self.config.output_dir) / compound_slug
+        wants_html, wants_pdf = self._compound_output_guard(compound, output_dir)
+
+        # ---- 4. Per-child data fetch + fragment render.
+        html_renderer = HTMLRenderer()
+        section_results: list[SectionResult] = []
+        chart_libraries_union: list[str] = []
+        extra_files: list[str] = []
+        any_failed = False
+        for i, child in enumerate(children):
+            # Observe cancellation between children so long bundles
+            # don't run to completion after a user cancel. Other engine
+            # loops re-check between work units; the compound loop now
+            # matches. (PR #100 round-1 multi-review N3.)
+            #
+            # The cancel check is OUTSIDE the try/finally below so a cancel
+            # raises ReportCancelled BEFORE we announce the child as running
+            # — a cancelled child fires NEITHER the start NOR the complete
+            # hook (it never executed). (Pass 4 Run canvas.)
+            self._check_cancel()
+            # Additive, optional Run-canvas hook: announce this child as
+            # starting. Defensive try/except mirrors _on_recipe_complete so a
+            # misbehaving observer can never break the render.
+            if self._on_section_start:
+                try:
+                    self._on_section_start(i, child.name)
+                except Exception:
+                    self.logger.exception(
+                        f"on_section_start hook raised for compound "
+                        f"'{compound.name}' child '{child.name}'"
+                    )
+            child_slug = _slug(child.name)
+            child_title = getattr(child.output, "slide_title", None) or child.name
+            # The per-child body sits in a try/finally so the completion hook
+            # fires from a SINGLE place reached by EVERY path — the success
+            # path AND all three failure paths (each ends in `continue`). The
+            # `finally` runs before the loop continues, and `ok` is derived
+            # from the section result actually appended for THIS child, so a
+            # child that survives _process_recipe but then fails in
+            # render_fragment (or returns None data) is correctly reported as
+            # ok=False. (Pass 4 Run canvas — the completion-placement invariant.)
+            section_count_before = len(section_results)
+            # A Stop during an in-flight child surfaces as ReportCancelled from
+            # _process_recipe / render_fragment. It must PROPAGATE (so the run
+            # ends status="cancelled" via _execute_run's handler) — NOT be
+            # swallowed as a FailedSection by the bare `except Exception` below,
+            # which (on the LAST child) would let the compound assemble a partial
+            # bundle and report "error" instead of "cancelled" (cancel-parity
+            # bug, multi-review R2 M1-1). The flag suppresses the completion hook
+            # for the cancelled child (it never finished).
+            _child_cancelled = False
+            # Per-section effective config (run-level ▸ section override). The
+            # context swaps self.config (+ api_client.config) for the duration of
+            # THIS child's fetch+render and restores it afterwards, so a saved
+            # override actually steers the child's data fetch / transform. A
+            # scope override that fails to re-resolve yields False → FailedSection.
+            _section = compound.sections[i]
+            try:
+                _scope_ctx = self._apply_section_config(_section)
+                _scope_ok = _scope_ctx.__enter__()
+            except Exception as exc:  # pragma: no cover — defensive
+                self.logger.error(
+                    f"Compound '{compound.name}' child '{child.name}' "
+                    f"raised applying section overrides: {exc}"
+                )
+                section_results.append(
+                    FailedSection(slug=child_slug, title=child_title, error=str(exc))
+                )
+                any_failed = True
+                if not _child_cancelled and self._on_section_complete:
+                    try:
+                        self._on_section_complete(i, child.name, False)
+                    except Exception:
+                        self.logger.exception(
+                            f"on_section_complete hook raised for compound "
+                            f"'{compound.name}' child '{child.name}'"
+                        )
+                continue
+            try:
+                if not _scope_ok:
+                    self.logger.error(
+                        f"Compound '{compound.name}' child '{child.name}' "
+                        "section scope override could not be resolved."
+                    )
+                    section_results.append(
+                        FailedSection(
+                            slug=child_slug,
+                            title=child_title,
+                            error="section scope override could not be resolved",
+                        )
+                    )
+                    any_failed = True
+                    continue
+                try:
+                    report_data = self._process_recipe(child)
+                except ReportCancelled:
+                    _child_cancelled = True
+                    raise
+                except Exception as exc:
+                    self.logger.error(
+                        f"Compound '{compound.name}' child '{child.name}' "
+                        f"raised during _process_recipe: {exc}"
+                    )
+                    section_results.append(
+                        FailedSection(
+                            slug=child_slug, title=child_title, error=str(exc)
+                        )
+                    )
+                    any_failed = True
+                    continue
+
+                if report_data is None:
+                    self.logger.error(
+                        f"Compound '{compound.name}' child '{child.name}' "
+                        "returned no report data."
+                    )
+                    section_results.append(
+                        FailedSection(
+                            slug=child_slug,
+                            title=child_title,
+                            error="no report data",
+                        )
+                    )
+                    any_failed = True
+                    continue
+
+                try:
+                    fragment_html = html_renderer.render_fragment(
+                        child,
+                        report_data,
+                        heading_depth=2,
+                        fragment_scripts_enabled=True,
+                        suppress_section_title=True,
+                    )
+                except ReportCancelled:
+                    _child_cancelled = True
+                    raise
+                except Exception as exc:
+                    self.logger.error(
+                        f"Compound '{compound.name}' child '{child.name}' "
+                        f"raised during render_fragment: {exc}"
+                    )
+                    section_results.append(
+                        FailedSection(
+                            slug=child_slug, title=child_title, error=str(exc)
+                        )
+                    )
+                    any_failed = True
+                    continue
+
+                # Expose the comparison child's facet summary dict to the
+                # assembler so the compound exec overview can bind to it.
+                # report_data.data is the transform dict; its ``summary`` key
+                # holds the facet counts. None for non-comparison children.
+                child_summary = (
+                    report_data.data.get("summary")
+                    if isinstance(getattr(report_data, "data", None), dict)
+                    else None
+                )
+                child_summary = (
+                    child_summary if isinstance(child_summary, dict) else None
+                )
+                # Expose the comparison child's per-facet row lists (§5a) so the
+                # assembler's Action Plan can bind to them. Extract only the six
+                # known keys when present; None for non-comparison children.
+                child_rows = _extract_comparison_rows(
+                    getattr(report_data, "data", None)
+                )
+                section_results.append(
+                    RenderedFragment(
+                        slug=child_slug,
+                        title=child_title,
+                        html=fragment_html,
+                        summary=child_summary,
+                        rows=child_rows,
+                    )
+                )
+                # Only surviving children contribute libraries to the shell's
+                # <head> union (spec § 5 step 4).
+                chart_libraries_union.extend(child.chart_libraries)
+                # Some child transforms emit side-effect files (VEX JSON,
+                # AI prompts) via report_data.metadata. Standalone runs surface
+                # these in generated_files; compounds should too so a saved
+                # bundle's VEX export isn't invisible to automation.
+                # (PR #100 round-1 multi-review N6.)
+                child_extra = (
+                    report_data.metadata.get("additional_data", {}).get(
+                        "_extra_generated_files", []
+                    )
+                    if isinstance(report_data.metadata, dict)
+                    else []
+                )
+                if child_extra:
+                    extra_files.extend(child_extra)
+            finally:
+                # Restore the run-level config (the section-config swap is scoped
+                # to THIS child). The context manager only restores in its own
+                # finally — it never suppresses exceptions — so calling __exit__
+                # with no exc info here is correct even when ReportCancelled is
+                # propagating through this finally.
+                try:
+                    _scope_ctx.__exit__(None, None, None)
+                except Exception:  # pragma: no cover — defensive
+                    self.logger.exception(
+                        f"Restoring section config raised for compound "
+                        f"'{compound.name}' child '{child.name}'"
+                    )
+                # Fire exactly once per child that started, from the single
+                # exit point every path passes through. ``ok`` reflects the
+                # FINAL section result appended for this child: a
+                # RenderedFragment means success; any FailedSection (from any
+                # of the three failure paths above) means failure. Defensive
+                # try/except so a hook exception can never break the render.
+                # A child cancelled mid-flight (ReportCancelled propagating)
+                # fires NEITHER hook — it never finished (R2 M1-1).
+                if not _child_cancelled and self._on_section_complete:
+                    ok = len(section_results) > section_count_before and isinstance(
+                        section_results[-1], RenderedFragment
+                    )
+                    try:
+                        self._on_section_complete(i, child.name, ok)
+                    except Exception:
+                        self.logger.exception(
+                            f"on_section_complete hook raised for compound "
+                            f"'{compound.name}' child '{child.name}'"
+                        )
+
+        # ---- 5. Assemble HTML + 6. render PDF + 7. RecipeResult (shared). ----
+        return self._finalize_compound_render(
+            compound,
+            output_dir=output_dir,
+            compound_slug=compound_slug,
+            wants_html=wants_html,
+            wants_pdf=wants_pdf,
+            html_renderer=html_renderer,
+            section_results=section_results,
+            chart_libraries_union=chart_libraries_union,
+            extra_files=extra_files,
+            any_failed=any_failed,
+        )
+
+    # ------------------------------------------------------------------
+    # Shared compound finalize (used by both non-axis and axis paths)
+    # ------------------------------------------------------------------
+
+    def _compound_output_guard(
+        self,
+        compound: "CompoundRecipe",
+        output_dir: Path,
+        *,
+        force_overwrite: bool = False,
+    ) -> tuple[bool, bool]:
+        """Resolve formats + run the output-directory overwrite guard.
+
+        Returns ``(wants_html, wants_pdf)``. Raises ``FileExistsError`` when
+        a deliverable would be written into a non-empty directory without
+        ``--overwrite``. Both compound paths call this before the per-child
+        fetch loop so a blocked overwrite doesn't waste API + transform work.
+        (PR #100 round-2 M1-1; round-3 M2-1/M3-1.)
+
+        ``force_overwrite`` (M1-3): the meta-compare (axis) path passes True so
+        a re-run regenerates its output directory unconditionally. A meta-
+        compare ALWAYS executes and regenerates the report, so the output-dir
+        guard must not block a second run; ``--overwrite`` governs only the
+        saved YAML there, not the deliverable directory.
+        """
+        formats = [f.lower() for f in (compound.output.formats or [])]
+        wants_html = "html" in formats
+        wants_pdf = "pdf" in formats
+        if not (wants_html or wants_pdf):
+            self.logger.warning(
+                f"Compound '{compound.name}' resolved to formats={formats!r} — "
+                "no HTML or PDF deliverable will be produced. Children still "
+                "run for side-effect files (VEX, prompts). Set "
+                "output.formats explicitly in the bundle YAML to silence "
+                "this warning."
+            )
+        if force_overwrite:
+            # M3-3: the meta-compare path forces overwrite so a re-run isn't
+            # blocked — but a forced re-run must also REMOVE pre-existing files
+            # in the compound's OWN output subdirectory. Otherwise stale
+            # artifacts linger (an old `.pdf` when a later run is html-only, or
+            # a renamed file) alongside the fresh output. Scoped strictly to
+            # ``output/<compound-slug>/`` — never a parent or user dir.
+            if wants_html or wants_pdf:
+                self._clean_compound_output_dir(compound, output_dir)
+        elif wants_html or wants_pdf:
+            if (
+                output_dir.exists()
+                and any(output_dir.iterdir())
+                and not self.renderer.overwrite
+            ):
+                raise FileExistsError(
+                    f"Compound output directory '{output_dir}' already contains "
+                    "files. Use --overwrite to replace existing reports."
+                )
+        return wants_html, wants_pdf
+
+    def _clean_compound_output_dir(
+        self, compound: "CompoundRecipe", output_dir: Path
+    ) -> None:
+        """Remove pre-existing files in the compound's OWN output subdirectory.
+
+        Called only on the force-overwrite (meta-compare) path before fresh
+        artifacts are written, so stale files from a prior run (an old `.pdf`,
+        a renamed leftover) don't linger. Deliberately conservative:
+
+        * The target MUST be ``<config.output_dir>/<compound-slug>`` — we
+          recompute the slug here and refuse to touch anything else (guards
+          against an empty slug or path traversal upstream).
+        * We never recurse into or delete a parent / user directory; only the
+          direct contents of the compound's own subdir are removed.
+        """
+        compound_slug = _slug(compound.name)
+        # Defensive: _slug never returns empty (falls back to "section"), but
+        # re-assert before any unlink so a future regression can't widen scope.
+        if not compound_slug:
+            return
+        base = Path(self.config.output_dir).resolve()
+        expected = (base / compound_slug).resolve()
+        try:
+            resolved = output_dir.resolve()
+        except OSError:
+            return
+        # The dir we're about to clean must be EXACTLY the compound's own
+        # output subdir under the configured output base — not a parent, not a
+        # sibling, not the base itself. Refuse anything that doesn't match.
+        if resolved != expected or resolved == base or resolved.parent != base:
+            self.logger.warning(
+                f"Refusing to clean compound output dir '{output_dir}': "
+                f"resolved path '{resolved}' is not the expected "
+                f"'{expected}' under output base '{base}'."
+            )
+            return
+        if not resolved.is_dir():
+            return
+        for entry in resolved.iterdir():
+            try:
+                if entry.is_file() or entry.is_symlink():
+                    entry.unlink(missing_ok=True)
+                elif entry.is_dir():
+                    import shutil
+
+                    shutil.rmtree(entry, ignore_errors=True)
+            except OSError as exc:
+                self.logger.warning(
+                    f"Could not remove stale compound artifact '{entry}': {exc}"
+                )
+
+    def _finalize_compound_render(
+        self,
+        compound: "CompoundRecipe",
+        *,
+        output_dir: Path,
+        compound_slug: str,
+        wants_html: bool,
+        wants_pdf: bool,
+        html_renderer: Any,
+        section_results: list[SectionResult],
+        chart_libraries_union: list[str],
+        extra_files: list[str],
+        any_failed: bool,
+        runtime_scope_extra: dict[str, str] | None = None,
+        facet_titles: list[str] | None = None,
+        left_leads: bool | None = None,
+    ) -> "RecipeResult":
+        """Assemble the shell, render the PDF, and build the RecipeResult.
+
+        Shared by the non-axis and axis (meta-compare) compound paths so the
+        two never drift on overwrite/PDF/return semantics.
+        ``runtime_scope_extra`` lets the axis path inject ``left_scope`` /
+        ``right_scope`` cover labels on top of the base substitution vars.
+        ``facet_titles`` carries the ordered child section display titles for
+        the comparison cover's Facets row (axis path only; ``None`` on the
+        non-axis path, which renders no Facets row).
+        ``left_leads`` carries the axis path's already-computed pass-1 leader
+        direction into the assembler (single source of truth — M1-1 / M1-5 /
+        M3-3) so the verdict band, cover, action plan, and the surviving
+        fragments share ONE direction even across a render failure. ``None`` on
+        the non-axis path (no leader); the assembler then falls back to
+        ``compute_left_leads`` over the RenderedFragment summaries.
+        """
+        from fs_report.compound_assembler import assemble
+        from fs_report.renderers.pdf_renderer import PDFRenderer
+
+        html_path = output_dir / f"{compound_slug}.html"
+        pdf_path = output_dir / f"{compound_slug}.pdf"
+        if wants_html or wants_pdf:
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+        runtime_scope = self._build_compound_runtime_scope(compound)
+        if runtime_scope_extra:
+            runtime_scope.update(runtime_scope_extra)
+        logo_data_uri = self._resolve_compound_logo_data_uri(
+            compound.cover.logo if compound.cover else None
+        )
+        tokens_inline_css = html_renderer._tokens_inline_css
+
+        written_files: list[str] = []
+        # Child side-effect files (e.g. VEX JSON) are part of the bundle's
+        # output regardless of compound.output.formats — they're emitted
+        # by the child transforms, not by the assembler.
+        written_files.extend(extra_files)
+
+        # Only write the HTML if we'll consume it (as a deliverable or
+        # as the PDF source). When formats is explicitly empty, we still
+        # ran the children for their side effects but produce no shell.
+        if wants_html or wants_pdf:
+            assembled_html = assemble(
+                compound,
+                runtime_scope=runtime_scope,
+                section_results=section_results,
+                chart_libraries=chart_libraries_union,
+                tokens_inline_css=tokens_inline_css,
+                logo_data_uri=logo_data_uri,
+                facet_titles=facet_titles,
+                left_leads=left_leads,
+            )
+            html_path.write_text(assembled_html, encoding="utf-8")
+            if wants_html:
+                written_files.append(str(html_path))
+
+        if wants_pdf:
+            try:
+                pdf_renderer = PDFRenderer()
+                pdf_renderer.render_html(
+                    html_path,
+                    pdf_path,
+                    # Inherited OutputConfig overrides — when the bundle
+                    # YAML declares pdf_footer_template / pdf_margin,
+                    # those win over the shell's defaults. The string-
+                    # template footer wins over the compound-footer
+                    # template-id fallback inside render_html(). (PR #100
+                    # round-1 multi-review J1, J2, M2-3.)
+                    footer_template=compound.output.pdf_footer_template,
+                    pdf_footer_template_id="compound-footer",
+                    pdf_header_template_id=compound.output.pdf_header_template_id,
+                    pdf_margin=compound.output.pdf_margin,
+                    # Spec § 5: the compound assembler ALWAYS passes
+                    # wait_for_chart_beacon=True. The shell template
+                    # includes the readiness partials unconditionally
+                    # (counter clamps to 0 / safety net flips to true
+                    # if no charts construct) so chart-free bundles
+                    # aren't penalized. (PR #100 round-1 multi-review J4.)
+                    wait_for_chart_beacon=True,
+                )
+                written_files.append(str(pdf_path))
+                # PDF-only deliverables don't keep the intermediate HTML.
+                # On PDF failure we DO keep it AND surface it (caller can
+                # re-render or triage), which is why the unlink is in the
+                # success branch only.
+                if not wants_html:
+                    html_path.unlink(missing_ok=True)
+            except Exception as exc:
+                # PDF failure does NOT roll back the HTML — caller sees
+                # the bundled HTML for triage. Surface it in written_files
+                # even when "html" wasn't a requested format so
+                # programmatic consumers can discover the artifact
+                # without parsing logs. (PR #100 round-2 multi-review
+                # M1-2.) CLI exits non-zero via any_failed.
+                self.logger.error(
+                    f"Compound '{compound.name}' PDF render failed: {exc}. "
+                    f"HTML preserved at {html_path}."
+                )
+                any_failed = True
+                if not wants_html and html_path.exists():
+                    written_files.append(str(html_path))
+
+        # Per-child stats: which slugs rendered, which failed, what the
+        # union of chart libraries looked like.
+        rendered_slugs = [
+            r.slug for r in section_results if isinstance(r, RenderedFragment)
+        ]
+        failed_slugs = [r.slug for r in section_results if isinstance(r, FailedSection)]
+        stats: dict[str, Any] = {
+            "sections_total": len(section_results),
+            "sections_rendered": len(rendered_slugs),
+            "sections_failed": len(failed_slugs),
+            "rendered_slugs": rendered_slugs,
+            "failed_slugs": failed_slugs,
+            "chart_libraries": sorted(set(chart_libraries_union)),
+            "any_failed": any_failed,
+        }
+        # M1-12: when the bundle completes but one or more children failed,
+        # carry a short summary naming the failed sections in stats["error"] so
+        # both `run` and `compare` can surface specifics (which sections) rather
+        # than the generic banner. (A PDF-render failure with no failed_slugs
+        # still sets any_failed; describe that case too.)
+        if any_failed:
+            if failed_slugs:
+                joined = ", ".join(failed_slugs)
+                section_word = "section" if len(failed_slugs) == 1 else "sections"
+                stats["error"] = (
+                    f"Compound '{compound.name}': {len(failed_slugs)} of "
+                    f"{len(section_results)} {section_word} failed ({joined}). "
+                    "See logs for per-section details."
+                )
+            else:
+                stats["error"] = (
+                    f"Compound '{compound.name}' completed with errors "
+                    "(see logs — e.g. PDF render)."
+                )
+        return RecipeResult(
+            recipe=compound.name,
+            output_dir=str(output_dir),
+            files=written_files,
+            stats=stats,
+        )
+
+    # ------------------------------------------------------------------
+    # Axis (meta-compare) compound dispatch (B3.6 — spec § 4)
+    # ------------------------------------------------------------------
+
+    def _process_axis_compound(
+        self,
+        compound: "CompoundRecipe",
+        all_recipes_index: dict[str, Recipe],
+        precheck_failure: "Callable[[str], RecipeResult]",
+    ) -> "RecipeResult":
+        """Dispatch a meta-compare bundle — see meta-compare design spec § 4.
+
+        Resolve the two scopes ONCE for the whole compound, then for each
+        comparison child: fetch left+right data, optionally fetch each side's
+        component inventory (``needs_component_inventory``), run the comparison
+        transform, and render a fragment. Per-child failures are isolated as
+        ``FailedSection`` entries (the bundle completes; ``any_failed`` drives
+        the non-zero exit). The cover gains ``left_scope`` / ``right_scope``
+        labels.
+        """
+        from fs_report.renderers.html_renderer import HTMLRenderer
+
+        # ---- Resolve the two sides ONCE. Runtime --left/--right override
+        # any pinned axis.left / axis.right.
+        axis = compound.axis or AxisConfig(left=None, right=None)
+        left_raw = self.config.left_scope or axis.left
+        right_raw = self.config.right_scope or axis.right
+        if not left_raw or not right_raw:
+            return precheck_failure(
+                f"Recipe '{compound.name}' requires --left and --right flags."
+            )
+
+        if self.config.period_explicit:
+            self.logger.warning(
+                "Meta-compare: --period is ignored — the compared scopes are "
+                "explicit (--left / --right or the bundle's pinned axis)."
+            )
+
+        try:
+            left_ref = _parse_scope_ref(left_raw)
+            right_ref = _parse_scope_ref(right_raw)
+        except ScopeRefError as exc:
+            return precheck_failure(
+                f"Recipe '{compound.name}' has an invalid scope reference: {exc}"
+            )
+
+        try:
+            left_scope = self._resolve_scope(left_ref)
+            right_scope = self._resolve_scope(right_ref)
+        except Exception as exc:
+            # Broadened from ValueError (M1-3/M1-4): scope resolution issues
+            # API calls (project / folder / version lookups) that can raise
+            # auth / network / API-status errors, not just the curated
+            # ValueErrors. Convert ALL of them into a clean precheck failure
+            # (RunResult.error_message set) so the run fails cleanly via the
+            # same path instead of surfacing an uncaught traceback.
+            return precheck_failure(
+                f"Recipe '{compound.name}' scope resolution failed: {exc}"
+            )
+
+        if left_scope.label == right_scope.label or left_raw == right_raw:
+            self.logger.warning(
+                "Meta-compare: left and right resolve to the same scope "
+                f"('{left_scope.label}'). Producing a self-comparison "
+                "(useful as a sanity check)."
+            )
+
+        # ---- Resolve children (loader guarantees ComparisonRecipe; keep a
+        # defensive check). The single-scope requires_* pre-checks don't
+        # apply — axis scopes replace them.
+        children: list[Recipe] = []
+        for section in compound.sections:
+            child_slug = _slug(section.recipe)
+            child = all_recipes_index.get(child_slug)
+            if child is None:
+                return precheck_failure(
+                    f"Compound '{compound.name}' references unknown child "
+                    f"recipe '{section.recipe}' (slug='{child_slug}')."
+                )
+            children.append(child)
+
+        # Ordered child section display titles (compound.sections source order)
+        # for the cover's Facets row — resolved here at cover time from the
+        # loaded child Recipe objects using the SAME rule the section
+        # divider/TOC uses (spec §6 R5 M1-4). Passed to the assembler so the
+        # cover Facets match the actual section headers, not the bare recipe
+        # canonical names.
+        facet_titles = [
+            getattr(child.output, "slide_title", None) or child.name
+            for child in children
+        ]
+
+        compound_slug = _slug(compound.name)
+        output_dir = Path(self.config.output_dir) / compound_slug
+        # M1-3: a meta-compare ALWAYS executes and regenerates the report, so a
+        # re-run into an existing output dir must not be blocked by the compound
+        # output guard. ``--overwrite`` governs only the saved YAML for compare,
+        # not the deliverable directory — force the output regeneration here.
+        wants_html, wants_pdf = self._compound_output_guard(
+            compound, output_dir, force_overwrite=True
+        )
+
+        html_renderer = HTMLRenderer()
+        section_results: list[SectionResult] = []
+        chart_libraries_union: list[str] = []
+        # Intentionally empty: no current comparison transform emits
+        # side-effect files (prompts / VEX JSON). Revisit if one does — wire
+        # the transform's extra files into this list before finalize.
+        extra_files: list[str] = []
+        any_failed = False
+
+        # ---- TWO-PASS dispatch (spec § 5.0 / G0). The playbook needs the
+        # leader/laggard direction inside the per-child fragments, but the
+        # direction is only knowable after every facet's transform has produced
+        # its summary. So we split the single child loop into two passes over
+        # the SAME children in source order:
+        #
+        #   Pass 1 (transform): fire on_section_start, run the comparison
+        #     transform (the API fetch happens HERE, once), and STORE each
+        #     report_data. No render yet. A child that can't transform records
+        #     a FailedSection, fires its on_section_complete(ok=False) right
+        #     here (so every started child still gets exactly one complete),
+        #     and is skipped in pass 2.
+        #   Between passes: compute left_leads from whatever facet summaries
+        #     survived pass 1 (shared compute_left_leads → agrees with the
+        #     assembler verdict on identical summaries; see its docstring for
+        #     the lone transform-ok/render-fail edge).
+        #   Pass 2 (render): inject left_leads / leader_label / laggard_label
+        #     into each stored report_data.data, render the fragment, and fire
+        #     on_section_complete when the fragment is rendered.
+        #
+        # Hook timing (M2-4 — the Run canvas's sole compound progress source):
+        # on_section_start in pass 1, on_section_complete in pass 2 (or in
+        # pass 1 for a child that failed there). Exactly one start+complete
+        # pair per child in a non-cancelled run. A child cancelled mid-flight
+        # (ReportCancelled) fires NEITHER hook from that point and propagates
+        # (run ends status="cancelled"); children that only finished their
+        # pass-1 transform before the cancel have fired start but not yet
+        # complete — the run aborts before pass 2, exactly as a cancel should.
+        from fs_report.compound_assembler import compute_left_leads
+
+        # Per-child carry from pass 1 → pass 2 for the children that transformed
+        # successfully (source order preserved). Failed/non-comparison children
+        # are NOT carried (they already recorded their FailedSection + complete
+        # in pass 1) so pass 2 skips them.
+        pending: list[tuple[int, ComparisonRecipe, str, str, ReportData]] = []
+        # Collected facet summaries keyed by bare slug, for the leader
+        # computation (mirrors the assembler's comparison_summaries shape).
+        collected_summaries: dict[str, dict] = {}
+        # Per-child SectionResult slot indexed by source position. Both passes
+        # write into this so section_results stays in compound.sections order
+        # (the assembler's TOC + "SECTION NN" numbering depend on it) even when
+        # pass-1 failures and pass-2 renders interleave. Flushed to
+        # section_results in index order after pass 2.
+        per_child_result: list[SectionResult | None] = [None] * len(children)
+
+        def _fire_complete(idx: int, name: str, ok: bool) -> None:
+            # Defensive try/except so a misbehaving observer can never abort
+            # the run (preserved invariant).
+            if not self._on_section_complete:
+                return
+            try:
+                self._on_section_complete(idx, name, ok)
+            except Exception:
+                self.logger.exception(
+                    f"on_section_complete hook raised for meta-compare "
+                    f"'{compound.name}' child '{name}'"
+                )
+
+        # ---- Pass 1: transform every child, store report_data.
+        for i, child in enumerate(children):
+            self._check_cancel()
+            # Additive, optional Run-canvas hook: announce this child as
+            # starting. Mirrors _process_compound's hook pattern — defensive
+            # try/except so a misbehaving observer can never abort the run.
+            if self._on_section_start:
+                try:
+                    self._on_section_start(i, child.name)
+                except Exception:
+                    self.logger.exception(
+                        f"on_section_start hook raised for meta-compare "
+                        f"'{compound.name}' child '{child.name}'"
+                    )
+            child_slug = _slug(child.name)
+            child_title = getattr(child.output, "slide_title", None) or child.name
+
+            if not isinstance(child, ComparisonRecipe):
+                self.logger.error(
+                    f"Meta-compare '{compound.name}' child '{child.name}' is "
+                    "not a comparison recipe; skipping."
+                )
+                per_child_result[i] = FailedSection(
+                    slug=child_slug,
+                    title=child_title,
+                    error="not a comparison recipe",
+                )
+                any_failed = True
+                # Failed in pass 1 → fire its completion now (ok=False) so
+                # every started child still gets exactly one complete; skipped
+                # in pass 2.
+                _fire_complete(i, child.name, False)
+                continue
+
+            try:
+                report_data = self._run_comparison_child(child, left_scope, right_scope)
+            except ReportCancelled:
+                # A Stop mid-transform must PROPAGATE (run ends "cancelled") and
+                # fire NEITHER complete — neither for this child nor for earlier
+                # children still awaiting their pass-2 render.
+                raise
+            except Exception as exc:
+                self.logger.error(
+                    f"Meta-compare '{compound.name}' child '{child.name}' "
+                    f"raised during fetch/transform: {exc}"
+                )
+                per_child_result[i] = FailedSection(
+                    slug=child_slug, title=child_title, error=str(exc)
+                )
+                any_failed = True
+                _fire_complete(i, child.name, False)
+                continue
+
+            # Collect the facet summary for the leader computation (same shape
+            # as the assembler's comparison_summaries). None for non-dict data.
+            child_summary = (
+                report_data.data.get("summary")
+                if isinstance(getattr(report_data, "data", None), dict)
+                else None
+            )
+            if isinstance(child_summary, dict):
+                collected_summaries[child_slug] = child_summary
+
+            pending.append((i, child, child_slug, child_title, report_data))
+
+        # ---- Between passes: compute the leader direction ONCE from the
+        # surviving facet summaries (shared helper → identical to the verdict).
+        left_leads = compute_left_leads(collected_summaries)
+        leader_label = left_scope.label if left_leads else right_scope.label
+        laggard_label = right_scope.label if left_leads else left_scope.label
+
+        # ---- Pass 2: inject the leader direction into each stored report_data
+        # and render its fragment.
+        for i, child, child_slug, child_title, report_data in pending:
+            self._check_cancel()
+            child_summary = collected_summaries.get(child_slug)
+
+            # Inject the leader direction into the transform dict so the
+            # fragment templates can select the primary (leader→laggard)
+            # worklist without re-deriving the verdict. html_renderer merges
+            # report_data.data into the fragment template context, so these
+            # are reachable as data.left_leads / data.leader_label /
+            # data.laggard_label. Only meaningful when data is the transform
+            # dict (it always is for a comparison child).
+            if isinstance(getattr(report_data, "data", None), dict):
+                report_data.data["left_leads"] = left_leads
+                report_data.data["leader_label"] = leader_label
+                report_data.data["laggard_label"] = laggard_label
+
+            try:
+                fragment_html = html_renderer.render_fragment(
+                    child,
+                    report_data,
+                    heading_depth=2,
+                    fragment_scripts_enabled=True,
+                    suppress_section_title=True,
+                )
+            except ReportCancelled:
+                # A Stop mid-render propagates and fires NEITHER complete for
+                # this child (it never finished), mirroring today's guard.
+                raise
+            except Exception as exc:
+                self.logger.error(
+                    f"Meta-compare '{compound.name}' child '{child.name}' "
+                    f"raised during render_fragment: {exc}"
+                )
+                per_child_result[i] = FailedSection(
+                    slug=child_slug, title=child_title, error=str(exc)
+                )
+                any_failed = True
+                _fire_complete(i, child.name, False)
+                continue
+
+            # Expose the per-facet row lists (§5a) for the assembler Action
+            # Plan. Extracted from the stored transform dict; the leader
+            # injection above does not touch these keys.
+            child_rows = _extract_comparison_rows(getattr(report_data, "data", None))
+            per_child_result[i] = RenderedFragment(
+                slug=child_slug,
+                title=child_title,
+                html=fragment_html,
+                summary=child_summary,
+                rows=child_rows,
+            )
+            chart_libraries_union.extend(child.chart_libraries)
+            # Fire completion when the fragment is rendered (pass 2).
+            _fire_complete(i, child.name, True)
+
+        # Flush per-child results in source order — keeps the assembler's TOC +
+        # "SECTION NN" numbering aligned with compound.sections even when pass-1
+        # failures and pass-2 renders interleave. Slots stay None only for a
+        # child whose render was skipped by a propagating cancel (which aborts
+        # the run before this flush), so every reached slot is filled.
+        section_results.extend(r for r in per_child_result if r is not None)
+
+        return self._finalize_compound_render(
+            compound,
+            output_dir=output_dir,
+            compound_slug=compound_slug,
+            wants_html=wants_html,
+            wants_pdf=wants_pdf,
+            html_renderer=html_renderer,
+            section_results=section_results,
+            chart_libraries_union=chart_libraries_union,
+            extra_files=extra_files,
+            any_failed=any_failed,
+            runtime_scope_extra={
+                "left_scope": left_scope.label,
+                "right_scope": right_scope.label,
+            },
+            facet_titles=facet_titles,
+            # Single source of truth (M1-1 / M1-5 / M3-3): thread the pass-1
+            # leader direction (the SAME value injected into every surviving
+            # fragment above) into the assembler so the verdict band, cover, and
+            # action plan can't diverge from the fragments — even when a
+            # leader-driving facet transformed but failed to render. The
+            # non-axis call omits this (default None → assembler falls back to
+            # compute_left_leads over the RenderedFragment summaries).
+            left_leads=left_leads,
+        )
+
+    def _run_comparison_child(
+        self,
+        child: "ComparisonRecipe",
+        left_scope: "ResolvedScope",
+        right_scope: "ResolvedScope",
+    ) -> "ReportData":
+        """Fetch both sides, run the comparison transform, wrap as ReportData.
+
+        Routes through a dedicated comparison resolver (decision #4 — NOT
+        ``DataTransformer._apply_pandas_transform_function``): the module is
+        ``child.transform_function`` minus the ``_transform`` suffix, imported
+        from ``fs_report.transforms.pandas.comparison``. When
+        ``child.needs_component_inventory`` is set, each side's component
+        inventory is also fetched (reusing the per-version components cache)
+        and passed as ``left_components`` / ``right_components``.
+        """
+        # ComparisonRecipe's validator guarantees both are set; assert for mypy.
+        assert child.query is not None
+        assert child.transform_function
+        left_df = self._fetch_scope_data(child.query, left_scope)
+        right_df = self._fetch_scope_data(child.query, right_scope)
+
+        kwargs: dict[str, Any] = {
+            "left_label": left_scope.label,
+            "right_label": right_scope.label,
+            "config": child.parameters,
+        }
+        if child.needs_component_inventory:
+            comp_query = QueryConfig(
+                endpoint="/public/v0/components",
+                params=QueryParams(limit=10000),
+            )
+            kwargs["left_components"] = self._fetch_scope_data(comp_query, left_scope)
+            kwargs["right_components"] = self._fetch_scope_data(comp_query, right_scope)
+
+        transform_fn = self._resolve_comparison_transform(child.transform_function)
+        result = transform_fn(left_df, right_df, **kwargs)
+
+        # Intentionally empty metadata: no current comparison transform emits
+        # side-effect files (prompts / VEX JSON) the way assessment transforms
+        # do via metadata["additional_data"]["_extra_generated_files"].
+        # Revisit if one does — surface them here and into extra_files.
+        return ReportData(recipe_name=child.name, data=result, metadata={})
+
+    @staticmethod
+    def _resolve_comparison_transform(transform_function: str) -> "Callable[..., Any]":
+        """Resolve a comparison ``transform_function`` name to its callable.
+
+        Decision #4: comparison transforms are NOT routed through
+        ``DataTransformer._apply_pandas_transform_function``. The module is
+        the function name minus the ``_transform`` suffix, imported from
+        ``fs_report.transforms.pandas.comparison``.
+        """
+        module_name = transform_function
+        if module_name.endswith("_transform"):
+            module_name = module_name[: -len("_transform")]
+        module = importlib.import_module(
+            f"fs_report.transforms.pandas.comparison.{module_name}"
+        )
+        fn: Callable[..., Any] = getattr(module, transform_function)
+        return fn
+
+    def _build_compound_runtime_scope(
+        self, compound: "CompoundRecipe"
+    ) -> dict[str, str]:
+        """Resolve the base substitution vars for a bundle.
+
+        Returns the four scope-independent whitelisted vars
+        (``project_name``, ``period``, ``title``, ``generated_at``). The
+        meta-compare (axis) path adds the two scope vars (``left_scope`` /
+        ``right_scope``) via ``runtime_scope_extra`` in
+        ``_finalize_compound_render``, for six whitelisted substitution
+        variables in total.
+
+        Values flow from current ``self.config`` + already-resolved
+        engine state (``self.resolved_project_name``). Missing scope
+        produces an empty string for that key so the assembler omits the
+        corresponding metadata row instead of rendering blank values.
+        """
+        project_name = self.resolved_project_name or (self.config.project_filter or "")
+        start = getattr(self.config, "start_date", None)
+        end = getattr(self.config, "end_date", None)
+        if start and end:
+            period = f"{start} – {end}"
+        elif start:
+            period = f"from {start}"
+        elif end:
+            period = f"through {end}"
+        else:
+            period = ""
+        # UTC ISO-8601 second precision — same format spreadsheet/CSV
+        # consumers see elsewhere in the report.
+        generated_at = _datetime.datetime.now(_datetime.UTC).strftime(
+            "%Y-%m-%d %H:%M UTC"
+        )
+        return {
+            "project_name": str(project_name),
+            "period": period,
+            "title": compound.title,
+            "generated_at": generated_at,
+        }
+
+    @staticmethod
+    def _bundled_logo_data_uri() -> str:
+        """Return the bundled Finite State wordmark as a base64 data-URI.
+
+        Uses ``fs_report/templates/assets/fs-logo.png`` — the single
+        canonical bundled PNG shared by every fallback path.  This is the
+        Python-side equivalent of the Jinja ``default_logo_data_uri()``
+        macro in ``_console_macros.html``.
+        """
+        import importlib.resources
+
+        pkg_files = importlib.resources.files("fs_report.templates")
+        logo_ref = pkg_files / "assets" / "fs-logo.png"
+        with importlib.resources.as_file(logo_ref) as logo_path:
+            data = logo_path.read_bytes()
+        b64 = base64.b64encode(data).decode("ascii")
+        return f"data:image/png;base64,{b64}"
+
+    def _resolve_compound_logo_data_uri(self, logo: str | None) -> str | None:
+        """Resolve a cover-config logo path to a base64 data URI.
+
+        Mirrors ``_resolve_logo_path`` (which reads from
+        ``self.config.logo``) but takes the path from
+        ``compound.cover.logo``. Bare filenames resolve under
+        ``~/.fs-report/logos/`` per the spec. Missing or unsupported
+        logos warn-and-skip rather than failing the bundle.
+
+        E1 precedence: per-bundle ``compound.cover.logo`` →
+        ``config.logo`` → bundled Finite State wordmark.
+
+        When no cover logo is set, fall through to the user-configured
+        ``config.logo`` (via ``_resolve_logo_path``), and then to the
+        bundled wordmark — so the compound cover always shows branding,
+        matching every other report family.
+
+        When the per-bundle logo is set but missing/unreadable/unsupported,
+        fall through to ``config.logo`` / bundled (rather than silently
+        dropping all branding).
+        """
+        if not logo:
+            return self._resolve_logo_path() or self._bundled_logo_data_uri()
+        path = Path(logo)
+        if not path.is_absolute():
+            path = Path.home() / ".fs-report" / "logos" / logo
+        if not path.is_file():
+            self.logger.warning(f"Compound logo file not found: {path}")
+            return self._resolve_logo_path() or self._bundled_logo_data_uri()
+        suffix = path.suffix.lower()
+        allowed = {".png", ".jpg", ".jpeg", ".svg", ".webp"}
+        if suffix not in allowed:
+            self.logger.warning(
+                f"Unsupported compound logo format '{suffix}'. "
+                f"Use: {', '.join(sorted(allowed))}"
+            )
+            return self._resolve_logo_path() or self._bundled_logo_data_uri()
+        mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        if suffix == ".svg":
+            mime = "image/svg+xml"
+        data = path.read_bytes()
+        b64 = base64.b64encode(data).decode("ascii")
+        return f"data:{mime};base64,{b64}"
 
     # ------------------------------------------------------------------
     # Folder-scoped Remediation Package helper
@@ -3216,7 +5373,7 @@ class ReportEngine:
                     # version-name lookup on the same project.
                     versions = self._get_project_versions(pid)
                     if delay > 0:
-                        time.sleep(delay)
+                        self._cancellable_sleep(delay)
                     if not versions:
                         # API error or empty list — _get_project_versions
                         # already logged the underlying exception.
@@ -3336,7 +5493,7 @@ class ReportEngine:
                     try:
                         findings = _fetch_findings(vid)
                         if delay > 0:
-                            time.sleep(delay)
+                            self._cancellable_sleep(delay)
                         components = _fetch_components(vid)
                         version_records.append(
                             {
@@ -3370,7 +5527,7 @@ class ReportEngine:
 
                     # Throttle between versions to avoid overloading the server
                     if delay > 0:
-                        time.sleep(delay)
+                        self._cancellable_sleep(delay)
 
                 n_failed = sum(1 for rec in version_records if rec.get("fetch_failed"))
                 if n_failed:
@@ -3706,8 +5863,8 @@ class ReportEngine:
                         # this guard the falsy `elif self._folder_project_ids:`
                         # checks below fall through to the "no folder" branch
                         # and silently process the entire portfolio (observed
-                        # on rolandl with --folder Routers: 0 projects in
-                        # folder, 155 processed over 10+ minutes). Skip the
+                        # in testing with a --folder that resolved to 0
+                        # projects: 155 processed over 10+ minutes). Skip the
                         # fetch and return an empty DataFrame — downstream
                         # transform/render handle empty input.
                         if (
@@ -3965,7 +6122,16 @@ class ReportEngine:
                         # Keep only the 5 columns the transforms actually use,
                         # dropping ~50+ nested-dict/API columns per batch.
                         _is_exec_summary = recipe.name == "Executive Summary"
-                        _exec_extra_keep: frozenset[str] | None = None
+                        # Retain the exploit-signal scalars derived in the
+                        # per-batch pre-flatten (C1/C2). One assignment covers
+                        # all 7 _prune_exec_summary call sites — none builds its
+                        # own keep-set. exploitInfo/exploitMaturity are still
+                        # dropped after the scalars are computed.
+                        _exec_extra_keep: frozenset[str] | None = (
+                            frozenset({"inKev", "inVcKev", "is_real_exploit"})
+                            if _is_exec_summary
+                            else None
+                        )
 
                         # --- Per-batch column pruning for Executive Dashboard ---
                         _is_exec_dashboard = recipe.name == "Executive Dashboard"
@@ -4583,7 +6749,7 @@ class ReportEngine:
                                             # Inter-batch delay to reduce server load
                                             # Scales with --request-delay (minimum 1s between batches)
                                             if i + batch_size < len(folder_pids):
-                                                time.sleep(
+                                                self._cancellable_sleep(
                                                     max(1.0, self.config.request_delay)
                                                 )
                                     raw_data = (
@@ -4858,7 +7024,7 @@ class ReportEngine:
                                         # Inter-batch delay to reduce server load
                                         # Scales with --request-delay (minimum 1s between batches)
                                         if i + batch_size < len(project_ids):
-                                            time.sleep(
+                                            self._cancellable_sleep(
                                                 max(1.0, self.config.request_delay)
                                             )
                                 raw_data = (
@@ -5242,6 +7408,12 @@ class ReportEngine:
             additional_data: dict[str, Any] = {}
             # Add config for pandas transform functions
             additional_data["config"] = self.config
+            # Human-readable project name. config.project_filter holds the
+            # resolved numeric ID by transform time, so transforms that
+            # build display strings (scope labels, subtitles) must prefer
+            # this (2026-06-06 visual QA: IDs leaked into five topbars).
+            if self.resolved_project_name:
+                additional_data["project_name"] = self.resolved_project_name
             if self._deployment_context is not None:
                 additional_data["deployment_context"] = self._deployment_context
             # Pass recipe parameters so transforms can access them
@@ -5345,7 +7517,7 @@ class ReportEngine:
                 "Assessment Overview",
                 "Customer Brief",
                 "Customer Brief Detailed",
-                "CRA Compliance",  # added 2026-05-24 per CRA Seagate spec step 2
+                "CRA Compliance",  # added 2026-05-24 per CRA compliance spec step 2
                 "CVE Component Evidence",
             ):
                 additional_data["api_client"] = self.api_client
@@ -5669,6 +7841,24 @@ class ReportEngine:
                 additional_data["open_issues"] = self.transformer.transform(
                     raw_data,
                     recipe.open_issues_transform,
+                    additional_data={"config": self.config},
+                )
+
+            # Exploit Signals gauge (C1) — open-snapshot KEV/real-exploit counts.
+            if recipe.exploit_signals_transform:
+                self.logger.debug("Applying exploit signals transform to main data")
+                additional_data["exploit_signals"] = self.transformer.transform(
+                    raw_data,
+                    recipe.exploit_signals_transform,
+                    additional_data={"config": self.config},
+                )
+
+            # Exploits Over Time line (C2) — real-exploit detection volume.
+            if recipe.exploits_over_time_transform:
+                self.logger.debug("Applying exploits over time transform to main data")
+                additional_data["exploits_over_time"] = self.transformer.transform(
+                    raw_data,
+                    recipe.exploits_over_time_transform,
                     additional_data={"config": self.config},
                 )
 
@@ -6354,8 +8544,6 @@ class ReportEngine:
 
         Returns a list of exploit detail dicts, or empty list on failure.
         """
-        import time
-
         url = (
             f"{self.api_client.base_url}/public/v0/findings"
             f"/{project_version_id}/{finding_numeric_id}/exploits"
@@ -6392,7 +8580,7 @@ class ReportEngine:
                 f"(pv={project_version_id}, finding={finding_numeric_id}): {exc}"
             )
         # Polite delay between API calls
-        time.sleep(0.3)
+        self._cancellable_sleep(0.3)
         return result
 
     def _fetch_scans_with_early_termination(
@@ -6512,7 +8700,7 @@ class ReportEngine:
                         self.logger.debug(
                             f"Transient error at offset {offset}: {e}. Retrying in {wait:.1f}s..."
                         )
-                        time.sleep(wait)
+                        self._cancellable_sleep(wait)
                         if retry_count >= max_retries - 1:
                             if all_scans:
                                 self.logger.warning(
@@ -6658,10 +8846,9 @@ class ReportEngine:
             )
 
         if self.config.version_filter:
-            field = "versionId" if self.api_client.is_v2 else "projectVersion"
-            additional_filters.append(f"{field}=={self.config.version_filter}")
+            additional_filters.append(f"projectVersion=={self.config.version_filter}")
             self.logger.debug(
-                f"Added version filter to scans: {field}=={self.config.version_filter}"
+                f"Added version filter to scans: projectVersion=={self.config.version_filter}"
             )
 
         if getattr(self.config, "scan_types", None):
@@ -6890,13 +9077,21 @@ class ReportEngine:
         )
 
     def _batched_fetch_components_by_pv(
-        self, pv_ids: list[str]
+        self,
+        pv_ids: list[str],
+        failed_out: list[str] | None = None,
     ) -> dict[str, list[dict]]:
         """Fetch /components for many projectVersions in RSQL `=in=(...)` batches.
 
         Returns ``{pv_id: [components...]}`` with an entry for every requested
         id (empty list if no components). Batch size follows the existing
         convention (15 if >200 ids, else 25) to stay under URI length limits.
+
+        ``failed_out`` (when provided) collects projectVersion ids whose
+        fetch degraded to an empty list because the platform 400s even a
+        single-id query (poisoned row, ALLOY-3274 family). Those ids get
+        an empty entry in the result but are NOT cache-warmed, and callers
+        should surface them to report consumers.
 
         Per-PV cache read first: any projectVersion whose per-PV SQLite entry
         (written by ``_split_and_cache_by_version``) is still valid bypasses
@@ -6921,7 +9116,15 @@ class ReportEngine:
                 params = {"filter": f"projectVersion=={pv_id}", "limit": 10000}
                 if cache.is_cache_valid(endpoint, params, ttl):
                     data = cache.get_cached_data(endpoint, params, allow_empty=True)
-                    by_pv[pv_id] = data if data is not None else []
+                    # Per-PV cache entries are stored under a filterless
+                    # key and may predate the type!=file batch filter (or
+                    # come from a path that cached file rows). Filter on
+                    # read so warm caches can't reintroduce file-typed
+                    # SAST placeholders into the SCA KPIs (round-2
+                    # review, 2/3 finding).
+                    by_pv[pv_id] = [
+                        c for c in (data or []) if (c or {}).get("type") != "file"
+                    ]
                 else:
                     uncached.append(pv_id)
         else:
@@ -6935,6 +9138,7 @@ class ReportEngine:
             )
             return by_pv
 
+        all_failed: list[str] = []
         batch_size = 15 if len(uncached) > 200 else 25
         total_batches = (len(uncached) + batch_size - 1) // batch_size
         self.logger.info(
@@ -6948,17 +9152,10 @@ class ReportEngine:
 
         for i in range(0, len(uncached), batch_size):
             batch_ids = uncached[i : i + batch_size]
-            batch_filter = f"projectVersion=in=({','.join(batch_ids)})"
-            batch_query = QueryConfig(
-                endpoint="/public/v0/components",
-                params=QueryParams(limit=10000, filter=batch_filter),
-            )
             t0 = time.monotonic()
-            batch_records = (
-                self.api_client.fetch_all_with_resume(
-                    batch_query, show_progress=False, skip_cache_store=True
-                )
-                or []
+            batch_failed: list[str] = []
+            batch_records = self._fetch_components_batch_with_bisect(
+                batch_ids, batch_failed
             )
             elapsed = time.monotonic() - t0
             self.logger.info(
@@ -6972,10 +9169,28 @@ class ReportEngine:
 
             # Warm per-version SQLite cache so later projectVersion=={pv}
             # fetches (e.g. detailed mode, Version Comparison) hit the cache.
+            # Degraded (poisoned) versions are EXCLUDED: caching their empty
+            # result would make the degradation sticky for the cache TTL and
+            # indistinguishable from a legitimately component-free version —
+            # leaving them uncached retries the platform on every run until
+            # the corrupt row is repaired.
+            cacheable_ids = [v for v in batch_ids if v not in batch_failed]
+            # _split_and_cache_by_version partitions records by their OWN
+            # projectVersion.id, so salvaged partial rows for a poisoned
+            # version must be filtered out too — caching them would make
+            # the incomplete list sticky for the TTL and indistinguishable
+            # from a complete fetch (round-4 review M2-2).
+            _failed_set = set(map(str, batch_failed))
+            cacheable_records = [
+                r
+                for r in batch_records
+                if str(((r or {}).get("projectVersion") or {}).get("id"))
+                not in _failed_set
+            ]
             self._split_and_cache_by_version(
-                batch_records,
+                cacheable_records,
                 entity_type="components",
-                batch_version_ids=batch_ids,
+                batch_version_ids=cacheable_ids,
             )
 
             for comp in batch_records:
@@ -6984,8 +9199,181 @@ class ReportEngine:
                     by_pv.setdefault(str(pv), []).append(comp)
             for pv_id in batch_ids:
                 by_pv.setdefault(pv_id, [])
+            if failed_out is not None:
+                failed_out.extend(batch_failed)
+            all_failed.extend(batch_failed)
+
+        # Systemic-failure guard: poison rows are a PER-VERSION data
+        # defect. If EVERY REQUESTED version degraded (and there was
+        # more than one), the 400s are far more likely a request/
+        # contract regression on our side — degrading would mask an
+        # outage behind rollup fallbacks (round-5 review M3-1).
+        # Compared against the full requested scope, not just the
+        # uncached subset: cache-served versions prove the platform is
+        # not systemically failing, so a warm-cache run must not
+        # hard-fail where a cold run would degrade (round-6 M3-3).
+        # A single-version scope keeps degradation so one poisoned
+        # project can still report.
+        if len(sorted_ids) > 1 and len(all_failed) == len(sorted_ids):
+            raise ValueError(
+                f"/components batched fetch degraded for ALL "
+                f"{len(sorted_ids)} projectVersions — treating as a "
+                f"systemic API failure rather than per-row corruption."
+            )
 
         return by_pv
+
+    @staticmethod
+    def _is_components_page_error(exc: BaseException) -> bool:
+        """True for the HTTP-400 page-failure family that bisection can
+        actually help with (platform window / poisoned-row 400s,
+        ALLOY-3274 family). ``fetch_all_with_resume`` formats permanent
+        errors as ``API request failed at offset N: <status> - <body>``;
+        auth/permission/contract failures (401/403/404/422...) affect
+        every batch equally, so bisecting them would only spam the API
+        and mis-label the failure as a corrupt row (round-2 review,
+        3/3 finding). Both observed corrupt-row variants (ALLOY-3274
+        "Illegal character in path", ALLOY-3275 "URLDecoder: Incomplete
+        trailing escape") carry the platform's "Invalid parameter value"
+        envelope — generic 400s (e.g. contract violations) propagate."""
+        msg = str(exc)
+        return ": 400 -" in msg and "Invalid parameter value" in msg
+
+    def _fetch_single_pv_components_partial(self, pv_id: str) -> list[dict]:
+        """Salvage pages of a single projectVersion's /components up to the
+        first failing window.
+
+        Used when even the single-id batched query 400s (poisoned row).
+        Pages at limit=1000 give finer salvage granularity than the
+        batched 10k pages; the loop stops at the first page-level
+        failure or after a sane cap. Errors are swallowed by design —
+        this path only ever runs inside degradation handling.
+        """
+        from fs_report.models import QueryConfig as _QC
+        from fs_report.models import QueryParams as _QP
+
+        salvaged: list[dict] = []
+        page_limit = 1000
+        max_pages = 50  # 50k rows — generous cap for a single version
+        for page_no in range(max_pages):
+            page_query = _QC(
+                endpoint="/public/v0/components",
+                params=_QP(
+                    limit=page_limit,
+                    offset=page_no * page_limit,
+                    filter=f"type!=file;projectVersion=in=({pv_id})",
+                ),
+            )
+            try:
+                page = self.api_client._fetch_page_direct(page_query)
+            except Exception:
+                break
+            if not page:
+                break
+            salvaged.extend(page)
+            if len(page) < page_limit:
+                break
+        else:
+            self.logger.warning(
+                "Component salvage for projectVersion %s hit the %d-page "
+                "cap (%d rows) — the salvaged list may be truncated "
+                "beyond the cap, in addition to the poison-row gap.",
+                pv_id,
+                max_pages,
+                len(salvaged),
+            )
+        return salvaged
+
+    def _fetch_components_batch_with_bisect(
+        self,
+        batch_ids: list[str],
+        failed_ids: list[str] | None = None,
+    ) -> list[dict]:
+        """Fetch one /components RSQL batch; bisect on permanent 4xx.
+
+        The filter always carries ``type!=file``, matching every other
+        /components path (generic version batching, License Report, ED
+        detailed mode). Without it, file-typed SAST placeholders inflate
+        the summary-mode SCA KPIs (vs. both the platform UI and the
+        latestVersion-rollup fallback in executive_dashboard_summary).
+
+        Bisection: the platform 400s (bogus "URLDecoder: Incomplete
+        trailing escape (%)" message) on /components queries that must
+        reach past its first ~10k-row window — deep ``offset``, or a
+        ``!=`` post-filter at limit=10000 — observed in the 2026-06-06
+        qabot run (step_05b). ``fetch_all_with_resume`` surfaces that as
+        ``ValueError``. Halving the id list keeps each query's matched
+        rows under the window, so the fetch recovers without waiting on
+        a platform-side fix.
+
+        A projectVersion that fails even as a single-id query (a
+        platform-side corrupt row, ALLOY-3274 family) DEGRADES: it is
+        logged, appended to ``failed_ids`` (when provided), and
+        contributes whatever pages could be SALVAGED before the failing
+        window (possibly empty) — the whole portfolio report must not
+        die for one poisoned row. Callers use ``failed_ids`` to skip
+        cache-warming for those versions (so a repaired platform
+        dataset is retried on the next run) and to surface the
+        degradation to report consumers; salvaged partial lists must be
+        treated as incomplete (KPI sums prefer rollups for degraded
+        projects).
+        """
+        batch_filter = f"type!=file;projectVersion=in=({','.join(batch_ids)})"
+        batch_query = QueryConfig(
+            endpoint="/public/v0/components",
+            params=QueryParams(limit=10000, filter=batch_filter),
+        )
+        try:
+            return (
+                self.api_client.fetch_all_with_resume(
+                    batch_query, show_progress=False, skip_cache_store=True
+                )
+                or []
+            )
+        except ValueError as e:
+            if not self._is_components_page_error(e):
+                # Auth / permission / contract errors are not row-window
+                # failures — bisection can't help and degradation would
+                # hide a real outage. Propagate.
+                raise
+            if len(batch_ids) <= 1:
+                # One projectVersion still fails after bisection: a
+                # platform-side corrupt row (ALLOY-3274 family — e.g. a
+                # component field with a bare '%') 400s every page whose
+                # window touches it. Salvage the pages BEFORE the poison
+                # (a >10k-component version failing in a late window
+                # would otherwise lose everything — round-3 review,
+                # 3/3 finding), then degrade: the summary transform
+                # falls back to latestVersion rollups when the salvage
+                # comes back empty.
+                pv = batch_ids[0] if batch_ids else "?"
+                partial = self._fetch_single_pv_components_partial(str(pv))
+                self.logger.warning(
+                    "/components fetch for projectVersion %s failed even as "
+                    "a single-id query (%s); salvaged %d component row(s) "
+                    "from pages before the failure. Its project is marked "
+                    "degraded%s. Likely platform-side corrupt row (see "
+                    "ALLOY-3274).",
+                    pv,
+                    str(e)[:160],
+                    len(partial),
+                    "" if partial else " and falls back to latestVersion rollups",
+                )
+                if failed_ids is not None and batch_ids:
+                    failed_ids.append(batch_ids[0])
+                return partial
+            mid = len(batch_ids) // 2
+            self.logger.warning(
+                "/components batch of %d projectVersions failed (%s); "
+                "bisecting into %d + %d",
+                len(batch_ids),
+                str(e)[:120],
+                mid,
+                len(batch_ids) - mid,
+            )
+            return self._fetch_components_batch_with_bisect(
+                batch_ids[:mid], failed_ids
+            ) + self._fetch_components_batch_with_bisect(batch_ids[mid:], failed_ids)
 
     def _batched_fetch_versions_histories(
         self, project_ids: list[str]
@@ -7191,6 +9579,7 @@ class ReportEngine:
         # Collect pv_ids + project_ids for batched pre-fetch.
         pv_ids: list[str] = []
         project_ids: list[str] = []
+        pv_to_project_name: dict[str, str] = {}
         for proj in in_scope:
             db = proj.get("defaultBranch") or {}
             lv = db.get("latestVersion") or {} if isinstance(db, dict) else {}
@@ -7199,9 +9588,13 @@ class ReportEngine:
             if pv_id and pid is not None:
                 pv_ids.append(str(pv_id))
                 project_ids.append(str(pid))
+                pv_to_project_name[str(pv_id)] = proj.get("name") or str(pid)
 
         # 2. Batched /components fetch
-        components_by_pv = self._batched_fetch_components_by_pv(pv_ids)
+        degraded_pv_ids: list[str] = []
+        components_by_pv = self._batched_fetch_components_by_pv(
+            pv_ids, failed_out=degraded_pv_ids
+        )
 
         # 3. Batched /versions fetch
         versions_by_project = self._batched_fetch_versions_histories(project_ids)
@@ -7248,11 +9641,34 @@ class ReportEngine:
                 continue
             successes.append(outcome)
 
+        # Map degraded (poisoned-row) projectVersions back to project names
+        # so the template can surface the gap: their SCA KPIs fall back to
+        # latestVersion rollups and they are absent from component-derived
+        # charts (License Bar / License KPIs / Policy Health).
+        degraded_names: list[str] = []
+        if degraded_pv_ids:
+            degraded_names = [
+                pv_to_project_name.get(str(pv), str(pv)) for pv in degraded_pv_ids
+            ]
+            self.logger.warning(
+                "Executive Dashboard summary: component lists degraded for "
+                "%d project(s): %s (platform-side corrupt rows — see "
+                "ALLOY-3274; SCA KPIs use rollups, license/policy charts "
+                "include only the salvaged subset)",
+                len(degraded_names),
+                ", ".join(degraded_names),
+            )
+
         return {
             "projects": successes,
             "mode": "summary",
-            "partial_report": bool(failed_names),
+            # Umbrella machine-readable flag: True when ANY project's data
+            # is incomplete — fully-failed fetches OR component-degraded
+            # projects (round-3 review M-3: automation gating on
+            # partial_report alone must detect degraded runs).
+            "partial_report": bool(failed_names or degraded_names),
             "failed_projects": failed_names,
+            "degraded_components_projects": degraded_names,
         }
 
     def clear_cache(self) -> None:

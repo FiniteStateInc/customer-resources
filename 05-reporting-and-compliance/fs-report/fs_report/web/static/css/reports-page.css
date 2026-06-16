@@ -1,0 +1,64 @@
+/* ============================================================
+   fs-report Phase 2 — reports-page.css
+   Standalone Report History page (/reports) body styles.
+   Tokens → tokens.css | Chrome (.page-head/.eyebrow/.btn) → shell.css
+   .chips/.chip + .btn.spin (rfspin) come from command-center.css —
+   do NOT redefine them here.
+   ============================================================ */
+
+/* ── Filter chips container (chip styles are shell-loaded) ──── */
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.btn.spin svg{animation:rfspin .8s linear}
+
+/* The Report History head packs New report + search + 5 chips + Refresh;
+   allow it to wrap so controls never clip on narrower viewports.
+   (reports-page.css only loads on /reports, so this is page-scoped.) */
+.page-head .head-actions{flex-wrap:wrap;gap:8px}
+
+/* ── Search box ───────────────────────────────────────────── */
+.search{display:inline-flex;align-items:center;gap:8px;background:var(--surface-subtle);border:1px solid var(--hairline);border-radius:var(--r-sm);padding:7px 11px;width:240px}
+.search svg{width:14px;height:14px;color:var(--ink-faint)}
+.search input{background:none;border:none;outline:none;color:var(--ink);font-family:var(--font-body);font-size:12px;width:100%}
+.search input::placeholder{color:var(--ink-faint)}
+
+/* ── Date group header ────────────────────────────────────── */
+.rep-date{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);font-weight:700;margin:18px 0 9px}
+.rep-date:first-child{margin-top:0}
+
+/* ── Report row ───────────────────────────────────────────── */
+.rep{display:flex;align-items:center;gap:13px;padding:12px 15px;background:var(--surface-card);border:1px solid var(--hairline);border-radius:var(--r-md);margin-bottom:8px;transition:.15s;position:relative;overflow:hidden}
+.rep:hover{border-color:rgba(var(--accent-rgb),.4);box-shadow:0 6px 20px rgba(0,0,0,.35),0 0 18px rgba(var(--accent-rgb),.07);transform:translateY(-1px)}
+.rep::after{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--cat,var(--accent));opacity:0;transition:opacity .15s}
+.rep:hover::after{opacity:.85}
+
+.rep-ic{width:38px;height:38px;border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;flex:0 0 auto;background:color-mix(in srgb,var(--cat,var(--accent)) 14%,transparent);border:1px solid color-mix(in srgb,var(--cat,var(--accent)) 28%,transparent);color:var(--cat,var(--accent))}
+.rep-ic svg{width:18px;height:18px}
+
+.rep-tx{flex:1;min-width:0}
+.rep-tx .rt{font-family:var(--font-display);font-size:13.5px;font-weight:700;color:var(--ink);display:flex;align-items:center;gap:9px}
+.rep-cat{font-family:var(--font-mono);font-size:8.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);padding:2px 7px;border-radius:3px;background:var(--surface-subtle)}
+.rep-tx .rm{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-mute);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ── Format chips ─────────────────────────────────────────── */
+.fmts{display:flex;gap:5px}
+.fmt{font-family:var(--font-mono);font-size:8.5px;font-weight:700;padding:2px 6px;border-radius:3px;border:1px solid var(--hairline);background:rgba(0,0,0,.25);color:var(--ink-faint);text-decoration:none}
+.fmt.html{color:var(--sev-medium);border-color:rgba(251,191,36,.35)}
+.fmt.csv{color:var(--sev-low);border-color:rgba(74,222,128,.35)}
+.fmt.xlsx{color:#2dd4bf;border-color:rgba(45,212,191,.35)}
+.fmt.md{color:var(--sev-info);border-color:rgba(96,165,250,.35)}
+.fmt.pdf{color:var(--sev-critical);border-color:rgba(248,113,113,.35)}
+.fmt.json{color:var(--ink-mute)}
+
+/* ── Relative time + trailing actions ─────────────────────── */
+.rep .when{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-faint);width:52px;text-align:right;flex:0 0 auto}
+.rep-act{display:flex;align-items:center;gap:10px;flex:0 0 auto}
+.view-btn{font-size:11px;font-weight:600;color:var(--accent);display:inline-flex;align-items:center;gap:4px;text-decoration:none}
+.view-btn svg{width:13px;height:13px}
+.rep-icon-btn{display:inline-flex;align-items:center;justify-content:center;color:var(--ink-faint);text-decoration:none;transition:color .15s}
+.rep-icon-btn:hover{color:var(--accent)}
+.rep-icon-btn svg{width:14px;height:14px}
+.rep-gone{font-family:var(--font-mono);font-size:10px;color:var(--ink-faint);font-style:italic}
+
+/* ── Empty state ──────────────────────────────────────────── */
+.rep-empty{display:flex;align-items:center;gap:9px;color:var(--ink-mute);font-size:12.5px;padding:16px;background:var(--surface-card);border:1px solid var(--hairline);border-radius:var(--r-lg)}
+.rep-empty svg{width:16px;height:16px;color:var(--ink-faint)}

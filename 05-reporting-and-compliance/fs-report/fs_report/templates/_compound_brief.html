@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+{# Compound-report shell.
+
+   Context vars (assembled by fs_report.compound_assembler):
+   - ``compound``     — the CompoundRecipe being rendered.
+   - ``cover_html``   — pre-rendered cover-page HTML (or empty string).
+   - ``toc_entries``  — list[{anchor, title, number}] for the TOC.
+   - ``show_toc``     — bool; gates the TOC block.
+   - ``show_page_numbers`` — bool; gates the page-number footer.
+   - ``compound_libs`` — deduped list of chart-library tokens (echarts,
+                         marked, dompurify, chartjs, datalabels) drawn
+                         from each child's Recipe.chart_libraries.
+   - ``section_blocks`` — list[str]; one HTML block per child (already
+                         contains the section divider + fragment body OR
+                         a failure-callout placeholder).
+   - ``classification`` — text for cover badge + page footer (may be empty).
+   - ``tokens_inline_css`` — verbatim contents of static/css/tokens.css.
+
+   The compound shell is the home for compound-wide CSS (cover, page
+   layout, section dividers). Per-section CSS travels INSIDE each
+   section block — fragment_extractor scopes it to ``.fs-section-<slug>``
+   so it can't bleed across siblings.
+
+   See the compound-reports design spec § 5 (Compound Assembler) and
+   § 6 (Visual Design).
+
+   THEME — LIGHT-ONLY for META-COMPARE only (Fix I / M1-7, scoped R3 M3-2): the
+   redesigned meta-compare surfaces ship light-only (no .mc-* dark variants).
+   _design_system.html transitively pulls _theme_init.html, whose 'auto' branch
+   can read a persisted dark theme from another report's localStorage and
+   activate the dark tokens (:root[data-theme="dark"] in tokens.css), degrading
+   these surfaces. We defend the on-screen meta-compare HTML two ways:
+     1. data-theme="light" is set directly on <html> in markup (gated to
+        meta-compare below), so the document is light even before/without JS and
+        regardless of inherited state.
+     2. theme='light' is passed into this render context (see compound_assembler
+        .assemble, ALSO gated to meta-compare) so _theme_init.html takes its
+        EXPLICIT branch — it re-asserts data-theme="light" and never consults
+        localStorage / ?theme= / prefers-color-scheme. The JS therefore cannot
+        flip this layout to dark.
+   NON-meta compounds get NEITHER gate, so they keep the normal auto/persisted
+   theme behavior — forcing light on every bundle was a cross-feature regression.
+   PDF is light regardless (pdf_mode pins the server theme). #}
+<html lang="en"{% if verdict and verdict.is_meta_compare %} data-theme="light"{% endif %}>
+<head>
+  <meta charset="utf-8">
+  <title>{{ resolved_title }}</title>
+
+  {# Recipe shell styles. Standalone renders include these inside their
+     own gated <head>; fragment renders strip the document shell so the
+     CSS doesn't reach the bundle. The compound shell loads them here
+     so every section's content (with classes like .topbar / .panel /
+     .kpi-bar from console recipes and .briefing chrome from briefing
+     recipes) styles correctly inside the bundle. (B1.4 follow-up:
+     fragment-mode visual parity.)
+
+     ``_design_system.html`` transitively includes ``_tokens_inline.html``
+     plus ``_theme_init.html`` — we do NOT also include _tokens_inline
+     directly above, since that would emit the :root token block twice
+     in every compound bundle's <head>. (Round-1 multi-review M1-4,
+     M2-3, M3-2 — 3/3 consensus.)
+
+     Class-collision audit (round-1 multi-review M2-2 / M3-1): of the
+     23 user-facing recipes, 22 use ``_console_shell.html`` (briefing
+     bundle expects those styles) and 1 — ``executive_summary.html`` —
+     uses ``_briefing_shell.html``. We audited class-name overlap
+     between executive_summary's emitted markup and console_shell's
+     selectors: zero conflicts (briefing classes are .briefing /
+     .hero / .stats / .stat / .deck / .distribution / .methodology /
+     .exec-summary-sections / .data-table — console classes are
+     .panel / .grid / .main / .sidebar / .table-panel / .topbar /
+     .kpi-bar / .band etc.). Including console_shell at bundle scope
+     is safe for the briefing recipe; the alternative (per-recipe
+     dynamic shell selection) is significantly more complex without
+     a real conflict to motivate it. #}
+  {% include "_design_system.html" %}
+  {% include "_console_shell.html" %}
+
+  {# Chart-readiness coordinator + per-engine wrappers. Idempotent: the
+     fsBeaconAcquire/Release counter spans every child's charts, so
+     window.fsReportReady only flips true once *every* chart has painted.
+     Including both partials is safe — each does an internal "if already
+     defined, return" guard. #}
+  {% include "_chart_ready.html" %}
+  {% include "_echarts_ready.html" %}
+
+  {# Per-child chart libraries (union of children's chart_libraries). #}
+  {% include "_compound_libs.html" %}
+
+  <style>
+    /* @page setup. Content pages get vertical margins so content
+       doesn't kiss top/bottom edges; cover page 1 gets margin:0 for
+       full-bleed gradient. Horizontal margin is supplied by the
+       .fs-compound-content wrapper below so we can preserve cover
+       full-bleed even when @page :first applies. */
+    @page {
+      size: A4;
+      margin: 16mm 0;
+    }
+    @page :first {
+      margin: 0;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: var(--font-body, system-ui, -apple-system, "Segoe UI", sans-serif);
+      color: var(--ink-default, #1a1a1a);
+      background: #fff;
+    }
+
+    /* Cover page — adopted from the threat-model treatment.
+
+       Final sizing approach (after iterating on @page :first +
+       negative-margin variants that came up short in Chromium print
+       mode):
+
+       - ``@page :first { margin: 0; }`` gives page 1 the full A4 area.
+       - ``@page { margin: 16mm 0; }`` gives content pages vertical
+         margin only (horizontal margin is supplied by the
+         .fs-compound-content padding below so the cover stays full-
+         bleed regardless of which @page rule wins).
+       - The cover element itself is ``width: 100%; height: 297mm;``
+         with no negative margins — the @page :first / body / cover
+         all align edge-to-edge.
+
+       Earlier iterations using ``min-height: 100vh`` plus
+       ``-22mm`` horizontal negative margins under-filled because
+       Chromium's body content-width is computed from the regular
+       @page margin, not @page :first. Documented here so the next
+       editor doesn't reintroduce that approach. (Round-1 multi-
+       review M1-12.) */
+    .fs-compound-cover {
+      position: relative;
+      width: 100%;
+      height: 297mm;
+      box-sizing: border-box;
+      padding: 36mm 22mm 30mm 22mm;
+      background:
+        linear-gradient(135deg,
+          var(--accent-teal, #14b8a6),
+          var(--accent-cyan, #06b6d4),
+          var(--accent-teal, #14b8a6));
+      color: #fff;
+      overflow: hidden;
+      page-break-after: always;
+    }
+    /* Wrapper around body content (TOC + section blocks) supplies the
+       visual horizontal margin since @page margins are 0. Vertical
+       margin handled per-section via the section divider's padding-top. */
+    .fs-compound-content {
+      padding: 0 22mm;
+    }
+    .fs-compound-cover::before {
+      content: "";
+      position: absolute;
+      top: -120mm; right: -80mm;
+      width: 240mm; height: 240mm;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .fs-compound-cover::after {
+      content: "";
+      position: absolute;
+      bottom: -100mm; left: -60mm;
+      width: 200mm; height: 200mm;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.08);
+    }
+    .fs-compound-cover-inner {
+      position: relative;
+      z-index: 1;
+      /* Inner height = cover height - vertical padding so the flex
+         layout has a defined dimension to compute against. The
+         margin-top:auto on the metadata block uses this height to
+         anchor to the visible bottom of the cover area. */
+      height: calc(297mm - 36mm - 30mm);
+      display: flex;
+      flex-direction: column;
+    }
+    .fs-compound-cover-eyebrow {
+      font-size: 10pt;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      opacity: 0.85;
+      font-weight: 500;
+    }
+    .fs-compound-cover-divider {
+      width: 60px;
+      height: 4px;
+      margin: 8mm 0;
+      background: rgba(255, 255, 255, 0.85);
+    }
+    .fs-compound-cover-title {
+      font-size: 38pt;
+      font-weight: 700;
+      line-height: 1.1;
+      margin: 0 0 4mm 0;
+    }
+    .fs-compound-cover-subtitle {
+      font-size: 16pt;
+      font-weight: 300;
+      opacity: 0.92;
+      margin: 0;
+    }
+    .fs-compound-cover-meta {
+      margin-top: auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6mm 12mm;
+      font-size: 10pt;
+    }
+    .fs-compound-cover-meta dt {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 8pt;
+      opacity: 0.75;
+      margin-bottom: 1mm;
+    }
+    .fs-compound-cover-meta dd {
+      margin: 0;
+      font-weight: 500;
+    }
+    .fs-compound-cover-logo {
+      max-height: 18mm;
+      max-width: 60mm;
+      margin-bottom: 8mm;
+    }
+    .fs-compound-cover-classification {
+      position: absolute;
+      bottom: 16mm;
+      right: 22mm;
+      padding: 2mm 4mm;
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      border-radius: 2px;
+      font-size: 9pt;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      z-index: 2;
+    }
+
+    /* TOC. */
+    .fs-compound-toc {
+      break-before: page;
+      padding: 6mm 0;
+    }
+    .fs-compound-toc h2 {
+      font-size: 22pt;
+      margin: 0 0 8mm 0;
+    }
+    .fs-compound-toc ol {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      counter-reset: fs-toc;
+    }
+    .fs-compound-toc li {
+      counter-increment: fs-toc;
+      padding: 2mm 0;
+      font-size: 12pt;
+      border-bottom: 1px dotted var(--ink-faint, #ccc);
+    }
+    .fs-compound-toc li::before {
+      content: counters(fs-toc, ".", decimal-leading-zero) ".  ";
+      color: var(--ink-faint, #888);
+      font-variant-numeric: tabular-nums;
+    }
+    .fs-compound-toc a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    /* Section dividers — emitted by the assembler before each
+       RenderedFragment. */
+    .fs-compound-section-divider {
+      break-before: page;
+      padding: 18mm 0 6mm 0;
+    }
+    .fs-compound-section-eyebrow {
+      font-size: 10pt;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink-faint, #666);
+    }
+    .fs-compound-section-title {
+      font-size: 28pt;
+      font-weight: 700;
+      margin: 4mm 0 8mm 0;
+    }
+
+    /* Section content overflow guards.
+
+       Issue 1: CSS grid items default min-width to auto = intrinsic
+       content width. A chart container declared as
+       ``width:100%;height:240px`` claims a near-infinite intrinsic min,
+       so a "1fr 1fr" grid track blows out past the @page right margin
+       — descriptive <p> text gets clipped and the chart canvas bleeds
+       into the page edge. min-width:0 on grid items lets them shrink
+       to the column track and the inner <p> wraps normally.
+
+       Issue 2: A bundle child that has fewer data points than its
+       chart was designed for (e.g. Executive Summary's project-
+       breakdown bar chart on a single-project run) stretches its one
+       bar across the full chart canvas, and the canvas itself spans
+       the full @page content width — visually awkward. Cap chart
+       containers at a comfortable max-width and center them so a
+       1-bar dataset doesn't span the whole page. */
+    [class*="fs-section-"] .chart-row > *,
+    [class*="fs-section-"] .exec-summary-sections > *,
+    [class*="fs-section-"] .grid > *,
+    [class*="fs-section-"] [style*="grid-template-columns"] > * {
+      min-width: 0;
+    }
+    [class*="fs-section-"] .distribution > div[style*="height"],
+    [class*="fs-section-"] .chart-half > div[style*="height"] {
+      max-width: 140mm;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    /* Failure-callout placeholder shares the section-page-break behavior
+       via _compound_failure_section.html's inline style. */
+
+    /* Generic fragment-mode compaction for compound-bundled recipes.
+
+       Tables: drop body-font / cell-padding so wide column counts fit
+       inside the A4 content area without right-edge clipping. Pre-A1
+       standalone HTML can horizontal-scroll; PDF in compound mode
+       can't, so we trim the per-cell footprint. Recipe-specific
+       compaction (e.g. triage_prioritization's tbl-findings-detail)
+       layers on top of this baseline.
+
+       KPI bars: the shared shell uses ``minmax(140px, 1fr)`` which
+       fits 4 cells across A4 — recipes with 5-7 KPIs spill to a
+       partial second row. Drop the minimum to ~85px so the strip
+       stays single-row across the bundle's 166mm content width.
+
+       (B1.4 follow-up: fragment-mode visual parity.) */
+    [class*="fs-section-"] table {
+      font-size: 10px;
+    }
+    [class*="fs-section-"] th,
+    [class*="fs-section-"] td {
+      padding: 5px 8px;
+      line-height: 1.35;
+    }
+    /* Compound-bundle row cap: hide rows 26+ in any tbody so detail-
+       heavy tables (Assessment Overview's 914 rows, Findings by
+       Project's 704 rows, Component List's 211 rows, License Report's
+       232 rows) don't balloon bundles to 80+ pages. Standalone
+       rendering is unaffected — this selector matches only fragments
+       wrapped under fs-section-*. Tables with ≤25 rows render fully.
+
+       Round-1 multi-review M1-7 raised that silent truncation is bad
+       UX — readers should know they're looking at a capped view. The
+       caption-style indicator below uses ``tbody:has(tr:nth-of-type(26))``
+       to show a notice ONLY when the table actually has 26+ rows and
+       the cap fires. Chromium's :has() is enabled by default in PDF
+       renders. For per-recipe finer control (e.g. triage_prioritization
+       caps at 25 in template code), the template's own slice still
+       wins because it never emits the 26th+ row at all. */
+    [class*="fs-section-"] table tbody tr:nth-of-type(n+26) {
+      display: none;
+    }
+    [class*="fs-section-"] table:has(tbody tr:nth-of-type(26))::after {
+      content: "Showing first 25 rows — see the standalone report for the full table.";
+      display: block;
+      padding: 4px 8px;
+      font-size: 9px;
+      font-style: italic;
+      color: var(--ink-mute, #888);
+      border-top: 1px dashed var(--hairline, #ccc);
+    }
+    [class*="fs-section-"] .kpi-bar {
+      grid-template-columns: repeat(auto-fit, minmax(85px, 1fr));
+    }
+    [class*="fs-section-"] .kpi-cell {
+      padding: 10px 10px;
+    }
+    [class*="fs-section-"] .kpi-cell .label { font-size: 9px; }
+    [class*="fs-section-"] .kpi-cell .value { font-size: 18px; }
+    [class*="fs-section-"] .kpi-cell .delta { font-size: 9px; }
+
+    /* ====================================================================
+       META-COMPARE — global + cover-extension + exec-summary regions.
+
+       Ported verbatim from the meta-compare design handoff
+       (assets/meta-compare.css), GLOBAL / COVER / EXEC SUMMARY / PRINT
+       regions only. Per-section blocks (worklist / propbar / skew /
+       aligned / noconflict / backlog) live INSIDE each comparison section
+       template (fragment_extractor scopes them to .fs-section-<slug>).
+       The prototype-only tweaks-panel + annotation (.mc-annot/.mc-bind)
+       CSS is intentionally omitted, and the inherited dark-mode wiring is
+       dropped — the compound report is LIGHT-ONLY (owner decision, spec §9
+       Open Q #1; PDF is light regardless). Side-identity rule: left =
+       leader = teal; right = laggard = neutral slate; amber reserved for
+       "Behind" only, always paired with a label/glyph (never color alone).
+       ==================================================================== */
+    :root {
+      --side-left: var(--accent-teal);   /* leader  */
+      --side-right: var(--ink-mute);     /* laggard (neutral structure) */
+      --attention: var(--accent-amber);  /* "behind / needs sync" status */
+      --attention-bg: var(--sev-high-bg);
+      --attention-text: var(--sev-high-text);
+    }
+
+    /* On-screen reading width. Cover stays full-bleed (it lives outside
+       this). Print keeps the existing A4 horizontal margin. */
+    .fs-compound-content {
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+    @media print { .fs-compound-content { max-width: none; padding: 0 22mm; } }
+
+    /* icon sprite sizing */
+    svg.ic, svg.ic-20, svg.ic-24 {
+      fill: none; stroke: currentColor;
+      stroke-linecap: round; stroke-linejoin: round;
+    }
+    .ic { width: 16px; height: 16px; flex-shrink: 0; stroke-width: 1.6; vertical-align: middle; }
+    .ic-20 { width: 20px; height: 20px; }
+    .ic-24 { width: 24px; height: 24px; stroke-width: 1.5; }
+
+    /* ---- COVER extension — Left / Right role tags + spine line ---- */
+    .fs-compound-cover-meta .mc-side { display: flex; align-items: center; gap: 7px; }
+    .fs-compound-cover-meta .mc-side::before {
+      content: ""; width: 9px; height: 9px; border-radius: 50%;
+      box-shadow: 0 0 0 3px rgba(255,255,255,0.18);
+    }
+    .fs-compound-cover-meta .mc-side.left::before  { background: #fff; }
+    .fs-compound-cover-meta .mc-side.right::before { background: rgba(255,255,255,0.45); }
+    .fs-compound-cover-role {
+      font-size: 7.5pt; letter-spacing: 0.14em; text-transform: uppercase;
+      opacity: 0.8; margin-left: 4px;
+    }
+    .mc-cover-spine {
+      margin-top: 7mm; display: flex; align-items: center; gap: 10px;
+      font-size: 9.5pt; opacity: 0.92;
+    }
+    .mc-cover-spine .mc-cv-arrow { font-family: var(--font-mono); letter-spacing: 0.1em; }
+    /* Classification badge inside the cover metadata grid — renders the
+       actual --classification text (e.g. INTERNAL), not hardcoded copy. */
+    .fs-compound-cover-meta .mc-cover-badge {
+      display: inline-block; padding: 1.5mm 3mm;
+      border: 1px solid rgba(255,255,255,0.55); border-radius: 2px;
+      font-size: 8pt; letter-spacing: 0.1em; text-transform: uppercase;
+    }
+
+    /* ====================================================================
+       EXEC SUMMARY — the verdict
+       ==================================================================== */
+    .mc-exec { padding-top: 30px; }
+    .mc-eyebrow {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.16em;
+      text-transform: uppercase; color: var(--accent-teal);
+      font-family: var(--font-body); margin-bottom: 12px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .mc-eyebrow::before {
+      content: ""; width: 18px; height: 2px; background: var(--accent-teal);
+    }
+    .mc-verdict-headline {
+      font-family: var(--font-display);
+      font-size: clamp(26px, 3.4vw, 38px); line-height: 1.12;
+      font-weight: 700; letter-spacing: -0.02em; color: var(--ink);
+      margin: 0 0 14px; max-width: 22ch; text-wrap: balance;
+    }
+    .mc-verdict-headline .lead { color: var(--accent-teal); }
+    .mc-verdict-sub {
+      font-size: 15px; line-height: 1.55; color: var(--ink-body);
+      max-width: 68ch; margin: 0 0 28px;
+    }
+    .mc-verdict-sub strong { color: var(--ink); font-weight: 600; }
+
+    /* ---- parity / no-false-comfort line near the verdict ---- */
+    .mc-parity {
+      display: flex; align-items: flex-start; gap: 12px; padding: 13px 18px; margin: 0 0 24px;
+      border: 1px solid var(--sev-medium); border-left: 4px solid var(--sev-medium);
+      border-radius: var(--r-md); background: var(--sev-medium-bg);
+    }
+    .mc-parity .ic { color: var(--sev-medium-text); width: 20px; height: 20px; stroke-width: 2; flex-shrink: 0; margin-top: 1px; }
+    .mc-parity .txt { font-size: 13px; color: var(--ink-body); line-height: 1.5; }
+    .mc-parity .txt strong { color: var(--sev-medium-text); font-weight: 700; }
+
+    /* ====================================================================
+       ACTION PLAN — ranked, severity-weighted "do this, in order".
+       Binds to the action_plan.steps list (computed in Python).
+       ==================================================================== */
+    .mc-plan { display: flex; flex-direction: column; gap: 12px; margin: 0 0 14px; }
+    .mc-plan-item {
+      display: grid; grid-template-columns: auto 1fr auto; gap: 20px; align-items: center;
+      padding: 18px 22px; background: var(--surface-card);
+      border: 1px solid var(--hairline); border-radius: var(--r-lg);
+      border-left: 4px solid var(--accent-teal); box-shadow: var(--shadow-soft);
+    }
+    .mc-plan-item.is-low { border-left-color: var(--ink-faint); }
+    .mc-plan-rank {
+      width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0;
+      background: var(--accent-teal); color: var(--surface-card);
+      display: flex; align-items: center; justify-content: center;
+      font-family: var(--font-display); font-size: 18px; font-weight: 700;
+    }
+    .mc-plan-item.is-low .mc-plan-rank { background: var(--ink-mute); }
+    .mc-plan-main { min-width: 0; }
+    .mc-plan-do {
+      font-family: var(--font-display); font-size: 17px; font-weight: 700;
+      letter-spacing: -0.01em; color: var(--ink); line-height: 1.2; margin: 0 0 6px;
+      display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+    }
+    .mc-plan-do .verflow { font-family: var(--font-mono); font-size: 13px; font-weight: 500; }
+    .mc-plan-do .verflow .new { color: var(--sev-low-text); }
+    .mc-plan-do .verflow .ar { color: var(--ink-faint); margin: 0 3px; }
+    .mc-plan-clears { font-size: 13.5px; color: var(--ink-body); line-height: 1.45; margin: 0 0 9px; }
+    .mc-plan-clears b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+    .mc-plan-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .mc-tag {
+      display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600;
+      padding: 4px 10px; border-radius: var(--radius-sm, 4px); font-family: var(--font-body);
+      background: var(--surface-subtle); color: var(--ink-body); border: 1px solid var(--hairline-soft);
+    }
+    .mc-tag .ic { width: 13px; height: 13px; stroke-width: 2; }
+    .mc-tag.sev { background: var(--sev-high-bg); color: var(--sev-high-text); border-color: transparent; }
+    .mc-tag.effort-low { background: var(--sev-low-bg); color: var(--sev-low-text); border-color: transparent; }
+    .mc-tag.effort-none { background: rgba(var(--accent-rgb),0.12); color: var(--accent-teal); border-color: transparent; }
+    .mc-plan-clearbar { width: 150px; flex-shrink: 0; text-align: right; }
+    .mc-plan-clearnum { font-family: var(--font-mono); font-size: 30px; font-weight: 500; color: var(--ink); line-height: 1; font-variant-numeric: tabular-nums; }
+    .mc-plan-clearnum .of { font-size: 15px; color: var(--ink-mute); }
+    .mc-plan-clearlbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-mute); margin-top: 4px; }
+    .mc-plan-clearbar .mc-sevbar { width: 150px; height: 7px; margin-top: 9px; margin-left: auto; }
+    @media (max-width: 720px) {
+      .mc-plan-item { grid-template-columns: auto 1fr; }
+      .mc-plan-clearbar { grid-column: 2; text-align: left; }
+      .mc-plan-clearbar .mc-sevbar { width: 100%; margin-left: 0; }
+    }
+
+    /* ---- owner / variant rollup chips (Affects N variants) ---- */
+    .mc-owners { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+    .mc-owners .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-mute); font-weight: 600; margin-right: 2px; }
+    .mc-owner {
+      display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-family: var(--font-mono);
+      color: var(--ink-body); background: var(--surface-subtle); border: 1px solid var(--hairline-soft);
+      padding: 4px 10px; border-radius: var(--radius-sm, 4px);
+    }
+    .mc-owner b { color: var(--ink); font-weight: 600; }
+
+    /* ---- severity proportion bar (action plan + facet headers) ---- */
+    .mc-sevbar { display: flex; height: 9px; border-radius: 3px; overflow: hidden; width: 280px; max-width: 100%; }
+    .mc-sevbar > span { height: 100%; }
+    .mc-sevbar .s-crit { background: var(--sev-critical); }
+    .mc-sevbar .s-high { background: var(--sev-high); }
+    .mc-sevbar .s-med  { background: var(--sev-medium); }
+    .mc-sevbar .s-low  { background: var(--sev-low); }
+
+    /* ---- facet index strip ---- */
+    .mc-facets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 0 0 8px; }
+    @media (max-width: 860px) { .mc-facets { grid-template-columns: 1fr 1fr; } }
+    .mc-facet {
+      display: block; text-decoration: none; color: inherit;
+      background: var(--surface-card); border: 1px solid var(--hairline);
+      border-radius: var(--r-lg); padding: 16px 16px 14px;
+      transition: border-color var(--dur-fast), transform var(--dur-fast), box-shadow var(--dur-fast);
+    }
+    .mc-facet:hover { border-color: var(--accent-teal); transform: translateY(-2px); box-shadow: var(--shadow-elev); }
+    .mc-facet-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .mc-facet-ic { width: 34px; height: 34px; border-radius: var(--r-md); display: flex; align-items: center; justify-content: center; background: var(--surface-subtle); color: var(--ink-body); }
+    .mc-facet-ic .ic { width: 18px; height: 18px; }
+    .mc-facet-n { font-size: 10px; font-family: var(--font-mono); color: var(--ink-faint); letter-spacing: 0.08em; }
+    .mc-facet-name { font-size: 12px; font-weight: 600; color: var(--ink); letter-spacing: 0.02em; margin-bottom: 5px; }
+    .mc-facet-metric { font-family: var(--font-mono); font-size: 21px; font-weight: 500; color: var(--ink); line-height: 1.1; font-variant-numeric: tabular-nums; }
+    .mc-facet-metric .unit { font-size: 12px; color: var(--ink-mute); margin-left: 4px; }
+    .mc-facet-note { font-size: 11.5px; color: var(--ink-mute); margin-top: 6px; line-height: 1.35; }
+    .mc-status-chip {
+      display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700;
+      letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 8px; border-radius: var(--r-sm);
+    }
+    .mc-status-chip.act   { background: var(--attention-bg); color: var(--attention-text); }
+    .mc-status-chip.ok    { background: var(--sev-low-bg); color: var(--sev-low-text); }
+    .mc-status-chip.watch { background: var(--sev-medium-bg); color: var(--sev-medium-text); }
+
+    /* ---- META-COMPARE PRINT — keep exec units intact, no chrome ---- */
+    @media print {
+      .mc-facet, .mc-plan-item, .mc-parity { page-break-inside: avoid; }
+      .mc-facets { page-break-inside: avoid; }
+      a[href^="#"] { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+
+{# ====================== ICON SPRITE (inlined Lucide, offline-safe) ======================
+   Document-global <symbol>/<g> defs so #i-* ids resolve from any section
+   (exec band + comparison section templates reference these via <use>).
+   Copied verbatim from the meta-compare design handoff prototype. #}
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="i-check"><polyline points="20 6 9 17 4 12"/></g>
+    <g id="i-check-circle"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></g>
+    <g id="i-circle"><circle cx="12" cy="12" r="9"/></g>
+    <g id="i-alert"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></g>
+    <g id="i-chevron-down"><path d="m6 9 6 6 6-6"/></g>
+    <g id="i-arrow-right"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></g>
+    <g id="i-arrow-down"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></g>
+    <g id="i-arrow-up-right"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></g>
+    <g id="i-package"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/></g>
+    <g id="i-shield"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/></g>
+    <g id="i-scale"><path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/></g>
+    <g id="i-list-checks"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></g>
+    <g id="i-git-compare"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M11 18H8a2 2 0 0 1-2-2V9"/></g>
+    <g id="i-target"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></g>
+    <g id="i-layers"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></g>
+    <g id="i-arrows-lr"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></g>
+    <g id="i-trending"><path d="M16 7h6v6"/><path d="m22 7-8.5 8.5-5-5L2 17"/></g>
+    <g id="i-inbox"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></g>
+    <g id="i-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></g>
+    <g id="i-moon"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></g>
+    <g id="i-sliders"><line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/></g>
+    <g id="i-x"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></g>
+  </defs>
+</svg>
+
+{% if cover_html %}
+{{ cover_html|safe }}
+{% endif %}
+
+<div class="fs-compound-content">
+
+{# ====================== EXEC "SYNC PLAN" ======================
+   Front matter, before the TOC. Gated to meta-compare bundles only. Every
+   value is bound from the deterministic ``action_plan`` dict (computed in
+   compound_assembler._compute_action_plan) + the ``verdict``/per-facet
+   summary dicts (cd/fd/ld/td) — NO Jinja-side math, NO hand-written prose.
+   Leader→laggard direction, severity-weighted headline figures, the ranked
+   steps + owners + effort enum are all decided in Python; the template only
+   composes fixed strings around the slots. (Spec §6 Exec "Sync Plan".) #}
+{% if verdict and verdict.is_meta_compare and action_plan %}
+{% set cd = verdict.cd %}{% set fd = verdict.fd %}{% set ld = verdict.ld %}{% set td = verdict.td %}
+{% set ap = action_plan %}
+<section class="mc-exec">
+  <div class="mc-eyebrow">Sync Plan</div>
+
+  {# Severity-weighted headline — a lead acts on severity, not a raw count.
+     Raw total demoted to the subtitle.
+
+     Three mutually-exclusive cases (fixed strings around slots, no Jinja math):
+       1. port_total > 0 → severity-weighted port headline (code fixes lead).
+       2. else if verdict.port_triage > 0 → triage-only: lead with the
+          propagation framing — no "fixes" language, since a no_engineering
+          plan ports VEX decisions, not code (Fix D / M1-4 / M1-9).
+       3. else → nothing to do; scopes are aligned. #}
+  {# Degraded banner — shown whenever ANY comparison facet failed to render (a
+     FailedSection the rendered-only summaries/rows never see). It sits ABOVE the
+     headline and fires independent of which headline branch wins, so a surviving
+     port- OR triage-led Sync Plan still warns that work from the failed facet may
+     be missing — not only the empty/aligned case (Fix 2 / M1-1). #}
+  {% if degraded %}
+  <div class="mc-parity">
+    <svg class="ic" viewBox="0 0 24 24"><use href="#i-alert"/></svg>
+    <div class="txt">A comparison facet failed to render — this Sync Plan may be <strong>incomplete</strong>; work from the failed facet is not reflected below. See the section errors.</div>
+  </div>
+  {% endif %}
+  {% if ap.port_total > 0 %}
+  <h2 class="mc-verdict-headline">Port <span class="lead">{{ ap.crit }} Critical + {{ ap.high }} High</span> fixes to {{ ap.laggard }}.</h2>
+  <p class="mc-verdict-sub"><strong>{{ ap.leader }}</strong> leads: <strong>{{ ap.port_total }}</strong> fix{{ '' if ap.port_total == 1 else 'es' }} resolved there are still open in <strong>{{ ap.laggard }}</strong> — <strong>{{ ap.crit + ap.high }}</strong> Critical or High. Each ranked step below is one component bump or a no-engineering triage sync.</p>
+  {% elif verdict.port_triage > 0 %}
+  <h2 class="mc-verdict-headline">Sync <span class="lead">{{ verdict.port_triage }} triage decision{{ '' if verdict.port_triage == 1 else 's' }}</span> to {{ ap.laggard }} — no engineering.</h2>
+  {# Neutral sync framing, NOT "to closure" (Fix 4 / M2-3): a propagated triage
+     decision can be EXPLOITABLE (assessed but still actionable) — it syncs the
+     assessment, it doesn't necessarily close the finding. #}
+  <p class="mc-verdict-sub"><strong>{{ ap.leader }}</strong> has already triaged <strong>{{ verdict.port_triage }}</strong> finding{{ '' if verdict.port_triage == 1 else 's' }} that <strong>{{ ap.laggard }}</strong> has not yet assessed. No code change — copy the dispositions. The single step below is a no-engineering triage sync.</p>
+  {% elif not degraded %}
+  {# Genuine all-clear: no port/triage work AND no facet failed to render.
+     (When degraded with no surviving work, the banner above is the message —
+     we do NOT print a false "aligned" headline.) #}
+  <h2 class="mc-verdict-headline"><span class="lead">Scopes are aligned.</span></h2>
+  <p class="mc-verdict-sub">Nothing to port from <strong>{{ ap.leader }}</strong> to <strong>{{ ap.laggard }}</strong> — no resolved fixes or triage decisions are sitting open on the other side. Review the facets below for context.</p>
+  {% endif %}
+
+  {# Parity / no-false-comfort line: closing the gap reaches parity, not
+     safety. Fixed caption; renders when the shared backlog exceeds the
+     leader-direction port count (computed in Python). #}
+  {% if ap.needs_action_in_both_count > ap.port_count %}
+  <div class="mc-parity">
+    <svg class="ic" viewBox="0 0 24 24"><use href="#i-alert"/></svg>
+    <div class="txt">Closing this gap brings the two scopes to <strong>parity</strong> — not to safety. Both still carry <strong>{{ ap.needs_action_in_both_count }}</strong> finding{{ '' if ap.needs_action_in_both_count == 1 else 's' }} open on <em>both</em> sides, on their own remediation track.</div>
+  </div>
+  {% endif %}
+
+  {# ---- THE ACTION PLAN — ranked, severity-weighted (steps come pre-sorted
+       and pre-ranked from Python; the loop only composes the fixed copy). ---- #}
+  {% if ap.steps %}
+  <div class="mc-eyebrow" style="margin-top:4px">Do this, in order</div>
+  <div class="mc-plan">
+    {% for step in ap.steps %}
+    {% set sc = step.sev_counts %}
+    {% set is_low = (sc.CRITICAL|default(0)) == 0 and (sc.HIGH|default(0)) == 0 %}
+    <div class="mc-plan-item{{ ' is-low' if is_low else '' }}">
+      <div class="mc-plan-rank">{{ step.rank }}</div>
+      <div class="mc-plan-main">
+        <h3 class="mc-plan-do">
+          {%- if step.effort_kind == 'no_engineering' -%}
+          Apply {{ ap.leader }}'s triage decisions — no engineering
+          {%- elif step.fix_target -%}
+          Upgrade {{ step.component }} <span class="verflow"><span class="ar">→</span><span class="new">{{ step.fix_target }}</span></span>
+          {%- else -%}
+          Rebuild {{ step.component }}
+          {%- endif -%}
+        </h3>
+        {# "Syncs" for the no-engineering triage step (it propagates decisions —
+           a synced status can be EXPLOITABLE, not a removal); "Clears" only for
+           code fixes, which genuinely remove findings (Fix 4 / M2-3). #}
+        <p class="mc-plan-clears">{{ 'Syncs' if step.effort_kind == 'no_engineering' else 'Clears' }} <b>{{ step.clears }} of {{ ap.port_total if step.effort_kind != 'no_engineering' else step.total }}</b>
+          {%- set tags = [] -%}
+          {%- if sc.CRITICAL|default(0) %}{% set _ = tags.append(sc.CRITICAL ~ ' Critical') %}{% endif -%}
+          {%- if sc.HIGH|default(0) %}{% set _ = tags.append(sc.HIGH ~ ' High') %}{% endif -%}
+          {%- if sc.MEDIUM|default(0) %}{% set _ = tags.append(sc.MEDIUM ~ ' Medium') %}{% endif -%}
+          {%- if sc.LOW|default(0) %}{% set _ = tags.append(sc.LOW ~ ' Low') %}{% endif -%}
+          {%- if tags %} — <b>{{ tags | join(', ') }}</b>{% endif -%}.
+        </p>
+        {# Owner chips — render only when the step has non-empty owners. #}
+        {% if step.owners %}
+        <div class="mc-owners">
+          <span class="lbl">Affects</span>
+          {% for owner in step.owners %}<span class="mc-owner"><b>{{ owner | short_scope }}</b></span>{% endfor %}
+        </div>
+        {% endif %}
+        <div class="mc-plan-meta" style="margin-top:8px">
+          <span class="mc-tag sev"><svg class="ic" viewBox="0 0 24 24"><use href="#i-alert"/></svg>{{ sc.CRITICAL|default(0) }}C · {{ sc.HIGH|default(0) }}H · {{ sc.MEDIUM|default(0) }}M · {{ sc.LOW|default(0) }}L</span>
+          {% if step.effort_kind == 'no_engineering' %}<span class="mc-tag effort-none"><svg class="ic" viewBox="0 0 24 24"><use href="#i-check"/></svg>No engineering</span>
+          {% elif step.effort_kind == 'component_bump' %}<span class="mc-tag effort-low"><svg class="ic" viewBox="0 0 24 24"><use href="#i-package"/></svg>1 component bump</span>
+          {% else %}<span class="mc-tag effort-low"><svg class="ic" viewBox="0 0 24 24"><use href="#i-package"/></svg>1 component rebuild</span>{% endif %}
+        </div>
+      </div>
+      <div class="mc-plan-clearbar">
+        <div class="mc-plan-clearnum">{{ step.clears }}{% if step.effort_kind != 'no_engineering' %}<span class="of"> / {{ ap.port_total }}</span>{% endif %}</div>
+        {# A no_engineering step PROPAGATES leader triage decisions; a propagated
+           status can be EXPLOITABLE (assessed but still actionable — a sync, not
+           a closure/suppression). Use neutral sync wording, not "suppressed".
+           "fixes cleared" stays only where a code fix genuinely removes findings.
+           (Fix 4 / M2-3.) #}
+        <div class="mc-plan-clearlbl">{{ 'decisions synced' if step.effort_kind == 'no_engineering' else 'fixes cleared' }}</div>
+        <div class="mc-sevbar">
+          {% if sc.CRITICAL|default(0) %}<span class="s-crit" style="flex:{{ sc.CRITICAL }}"></span>{% endif %}
+          {% if sc.HIGH|default(0) %}<span class="s-high" style="flex:{{ sc.HIGH }}"></span>{% endif %}
+          {% if sc.MEDIUM|default(0) %}<span class="s-med" style="flex:{{ sc.MEDIUM }}"></span>{% endif %}
+          {% if sc.LOW|default(0) %}<span class="s-low" style="flex:{{ sc.LOW }}"></span>{% endif %}
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# ---- Facet index cards — ordered by (has_action desc, action_count desc,
+       name). License is always last (has_action false). Built as a sortable
+       list of fixed dicts, then sorted; status chip = fixed label. ---- #}
+  {% set fct_finding = {
+        'order': 1,
+        'name': 'Findings', 'num': '02', 'icon': 'i-shield', 'anchor': 'fs-section-finding-diff',
+        'has_action': (fd.fixed_left_open_right_count|default(0) if verdict.left_leads else fd.fixed_right_open_left_count|default(0)) > 0,
+        'action_count': (fd.fixed_left_open_right_count|default(0) if verdict.left_leads else fd.fixed_right_open_left_count|default(0)),
+        'metric': (ap.crit + ap.high), 'unit': 'crit+high to port',
+        'note': verdict.port_fixes ~ ' total · ' ~ (fd.needs_action_in_both_count|default(0)) ~ ' open on both',
+        'chip': ('Action' if verdict.port_fixes > 0 else 'Aligned')
+     } %}
+  {# Triage card chip keys on PROPAGATION (the Action Plan only acts on
+     verdict.port_triage), NOT on divergence (Fix E / M1-10): propagation →
+     Action (matches the plan + this card's has_action); divergence-only →
+     Context (review, not a mechanical apply step); neither → Aligned.
+     'unit' is "to sync", NOT "to suppress" (Fix 4 / M2-3): a propagated triage
+     decision can be EXPLOITABLE — assessed but still actionable — so the facet
+     ports DECISIONS, it doesn't suppress findings. #}
+  {% set fct_triage = {
+        'order': 2,
+        'name': 'Triage', 'num': '04', 'icon': 'i-list-checks', 'anchor': 'fs-section-triage-status-diff',
+        'has_action': verdict.port_triage > 0,
+        'action_count': verdict.port_triage,
+        'metric': verdict.port_triage, 'unit': 'to sync',
+        'note': (td.status_divergence_count|default(0)) ~ ' status conflict' ~ ('' if (td.status_divergence_count|default(0)) == 1 else 's') ~ ' · no engineering',
+        'chip': ('Action' if verdict.port_triage > 0 else ('Context' if td.status_divergence_count|default(0) > 0 else 'Aligned'))
+     } %}
+  {% set fct_component = {
+        'order': 3,
+        'name': 'Components', 'num': '01', 'icon': 'i-package', 'anchor': 'fs-section-component-diff',
+        'has_action': (verdict.laggard_only + (cd.version_skew_count|default(0))) > 0,
+        'action_count': (verdict.laggard_only + (cd.version_skew_count|default(0))),
+        'metric': verdict.laggard_only, 'unit': 'extra in ' ~ (verdict.laggard | short_scope),
+        'note': (cd.shared_count|default(0)) ~ ' shared · ' ~ (cd.version_skew_count|default(0)) ~ ' version skew',
+        'chip': ('Context' if (verdict.laggard_only + (cd.version_skew_count|default(0))) > 0 else 'Aligned')
+     } %}
+  {# License card 'chip' uses the ALL-FOUR-zero condition — match
+     license_diff.html's §03 aligned strip exactly (R3 M2-2): the two-term
+     shorthand hid added/removed copyleft obligations when only
+     copyleft_additions_count / copyleft_removals_count were nonzero. #}
+  {% set fct_license = {
+        'order': 4,
+        'name': 'License', 'num': '03', 'icon': 'i-scale', 'anchor': 'fs-section-license-diff',
+        'has_action': false,
+        'action_count': 0,
+        'metric': (ld.license_changes_count|default(0)), 'unit': 'differences',
+        'note': (ld.copyleft_additions_count|default(0)) ~ ' copyleft added · ' ~ (ld.copyleft_removals_count|default(0)) ~ ' removed',
+        'chip': ('Aligned' if (ld.license_changes_count|default(0)) == 0 and (ld.copyleft_additions_count|default(0)) == 0 and (ld.copyleft_removals_count|default(0)) == 0 and (ld.copyleft_changes_count|default(0)) == 0 else 'Context')
+     } %}
+  {# Sort: has_action desc, action_count desc, then the deterministic original
+     order (license always last via its has_action=false + order=4). #}
+  {% set facets = [fct_finding, fct_triage, fct_component, fct_license]
+       | sort(attribute='order')
+       | sort(attribute='action_count', reverse=true)
+       | sort(attribute='has_action', reverse=true) %}
+  <div class="mc-facets">
+    {% for f in facets %}
+    <a class="mc-facet" href="#{{ f.anchor }}">
+      <div class="mc-facet-top"><span class="mc-facet-ic"{% if f.has_action %} style="background:rgba(var(--accent-rgb),0.12);color:var(--accent-teal)"{% endif %}><svg class="ic" viewBox="0 0 24 24"><use href="#{{ f.icon }}"/></svg></span><span class="mc-facet-n">{{ f.num }}</span></div>
+      <div class="mc-facet-name">{{ f.name }}</div>
+      <div class="mc-facet-metric">{{ f.metric }}<span class="unit">{{ f.unit }}</span></div>
+      <div class="mc-facet-note">{{ f.note }}</div>
+      <div style="margin-top:10px">
+        {%- if f.chip == 'Action' -%}<span class="mc-status-chip act">Action</span>
+        {%- elif f.chip == 'Context' -%}<span class="mc-status-chip watch">Context</span>
+        {%- else -%}<span class="mc-status-chip ok"><svg class="ic" viewBox="0 0 24 24" style="width:12px;height:12px"><use href="#i-check"/></svg>Aligned</span>{%- endif -%}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{# Skip the TOC for bundles with 2 or fewer sections — a 2-entry TOC
+   leaves 7/8 of an A4 page empty, costing a whole page of front matter
+   before the first content section. The cover already names the bundle;
+   listing two sections is overhead. Bundles with 3+ sections show the
+   TOC. Authors can still force the TOC off via output.toc=False. #}
+{% if show_toc and toc_entries and toc_entries|length >= 3 %}
+<nav class="fs-compound-toc" aria-label="Table of contents">
+  <h2>Contents</h2>
+  <ol>
+    {% for entry in toc_entries %}
+    <li><a href="#{{ entry.anchor }}">{{ entry.title }}</a></li>
+    {% endfor %}
+  </ol>
+</nav>
+{% endif %}
+
+{% for block in section_blocks %}
+{{ block|safe }}
+{% endfor %}
+</div>{# /.fs-compound-content #}
+
+{# Meta-compare worklist tail reveal — progressive enhancement only. The
+   report is fully legible with JS disabled (all rows are in the DOM; print
+   forces .mc-row-hidden visible). Ported from the design handoff's
+   meta-compare.js (the [data-more] handler only — theme is handled by the
+   shell; the tweaks-panel + annotation toggles are prototype-only and
+   omitted). A button with data-more="<tableId>" toggles .expanded on that
+   table to reveal the collapsed tail rows. #}
+<script>
+(function () {
+  'use strict';
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('[data-more]') : null;
+    if (!btn) return;
+    var tbl = document.getElementById(btn.getAttribute('data-more'));
+    if (!tbl) return;
+    var expanded = tbl.classList.toggle('expanded');
+    var lbl = btn.querySelector('.more-lbl');
+    if (lbl) lbl.textContent = expanded
+      ? btn.getAttribute('data-collapse')
+      : btn.getAttribute('data-expand');
+    var chev = btn.querySelector('svg');
+    if (chev) chev.style.transform = expanded ? 'rotate(180deg)' : '';
+  });
+})();
+</script>
+
+{# Action-button gating: _action_buttons.html ships a DOMContentLoaded
+   listener that hides every .action-btn / .action-cell when the page
+   is NOT served via http://localhost (the only context in which Jira
+   integration + Remediation Package generation work). Triage
+   Prioritization includes this partial in its standalone path; the
+   include is gated by render_mode != 'fragment' there so it doesn't
+   leak into fragment output. The compound shell re-includes it ONCE
+   at bundle level so the gating JS runs even when the bundle is
+   opened from file:// (which a saved compound HTML always is) or
+   rendered to PDF via Playwright. Without this, Jira / Remediation
+   buttons would show up in every compound that bundled a recipe
+   carrying action cells, despite the bundle having no proxy to call
+   through. (B1.4 follow-up.) #}
+{% include "_action_buttons.html" %}
+
+{# Footer template — Chromium's page.pdf(footer_template=...) extracts
+   this element's innerHTML at PDF time and renders it on every page.
+   All CSS inline (Chromium's footer context has no stylesheet access).
+   The compound assembler passes pdf_footer_template_id="compound-footer"
+   to PDFRenderer.render_html().
+
+   When NEITHER classification text NOR page numbers are configured,
+   emit just <span></span> so PDFRenderer.render_html()'s display-header-
+   footer check (which treats <span></span> as the empty sentinel)
+   correctly disables Chromium's header/footer mode. Otherwise an
+   essentially-empty footer band would still reserve vertical space
+   on every page. (PR #100 round-1 multi-review M1-9.) #}
+<template id="compound-footer">
+{% if (classification and classification|trim) or show_page_numbers %}
+  <div style="font-size: 8pt; width: 100%; padding: 0 22mm; color: #666; font-family: system-ui, sans-serif;">
+    <span style="float: left;">{{ classification|default('', true) }}</span>
+    {% if show_page_numbers %}
+    <span style="float: right;">
+      <span class="pageNumber"></span> / <span class="totalPages"></span>
+    </span>
+    {% endif %}
+  </div>
+{% else %}<span></span>{% endif %}
+</template>
+
+</body>
+</html>

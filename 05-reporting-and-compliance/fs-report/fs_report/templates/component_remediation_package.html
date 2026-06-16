@@ -7,208 +7,315 @@
     instead of blowing up on "'summary' is undefined".
 #}
 {% set summary = summary | default({}) %}
+{% if not summary is mapping %}{% set summary = {} %}{% endif %}
 {% set actions = actions | default([]) %}
 {% set suppressed = suppressed | default([]) %}
 {% set ai_prompts = ai_prompts | default([]) %}
+
+{% if render_mode != 'fragment' %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
-    <title>Component Remediation Package — {{ summary.component_name | default('Unknown') }}</title>
-        {% include "_standalone_shell.html" %}
+    <title>Component Remediation Package — {{ summary.get('component_name', 'Unknown') }}</title>
+
+    {# No charts in this recipe (output.charts: []) — ECharts CDN is
+       intentionally NOT included. Only design-system tokens + console
+       shell chrome. #}
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+{% endif %}
+
+{# Recipe-local styles — render in BOTH standalone and fragment modes so
+   fragment_extractor (_STYLE_RE) collects them, scopes under
+   .fs-section-component-remediation-package, and re-emits at the top
+   of the fragment. #}
 <style>
-        :root {
-            --p0: #dc2626; --p1: #ea580c; --p2: #ca8a04; --p3: #2563eb;
-            --bg: #f8fafc; --card: #ffffff; --border: #e2e8f0;
-            --text: #1e293b; --muted: #64748b; --code-bg: #f1f5f9;
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-               background: var(--bg); color: var(--text); line-height: 1.5; padding: 24px; }
-        h1 { font-size: 1.5rem; margin-bottom: 4px; }
-        h2 { font-size: 1.25rem; margin: 24px 0 12px 0; }
+    /* Action cards — left-border severity color. */
+    .crp-action-card {
+        background: var(--surface-card);
+        border: 1px solid var(--hairline);
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 12px;
+        border-left: 4px solid var(--hairline);
+    }
+    .crp-action-card-critical { border-left-color: var(--sev-critical-text); }
+    .crp-action-card-high     { border-left-color: var(--sev-high-text); }
+    .crp-action-card-medium   { border-left-color: var(--sev-medium-text); }
+    .crp-action-card-low      { border-left-color: var(--sev-low-text); }
+    .crp-action-card-unknown  { border-left-color: var(--ink-mute); }
 
-        .header { text-align: center; margin-bottom: 24px; padding-bottom: 20px; border-bottom: 2px solid var(--border); }
-        .company-logo { max-height: 50px; width: auto; margin: 0 auto 12px auto; display: block; }
-        .header h1 { color: var(--text); font-size: 2em; margin-bottom: 6px; }
-        .header .subtitle { color: var(--muted); font-size: 1.1em; }
+    .crp-action-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+    .crp-action-title {
+        font-weight: 700;
+        font-size: 1rem;
+        color: var(--ink-strong);
+    }
+    .crp-priority-critical,
+    .crp-priority-high,
+    .crp-priority-medium,
+    .crp-priority-low,
+    .crp-priority-unknown {
+        display: inline-block;
+        font-weight: 700;
+        font-size: 0.8rem;
+        padding: 2px 8px;
+        border-radius: 4px;
+        text-transform: uppercase;
+    }
+    .crp-priority-critical { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .crp-priority-high     { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .crp-priority-medium   { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .crp-priority-low      { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .crp-priority-unknown  { background: var(--surface-muted);   color: var(--ink-mute); }
 
-        .metadata { background: var(--code-bg); padding: 15px; border-radius: 8px; margin-bottom: 24px;
-                    font-size: 0.9em; color: var(--muted); }
+    .crp-action-meta {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        font-size: 0.85rem;
+        color: var(--ink-mute);
+        margin-bottom: 8px;
+    }
+    .crp-action-meta span { display: inline-flex; align-items: center; gap: 4px; }
 
-        .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 15px; margin-bottom: 30px; }
-        .kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
-                    padding: 20px; text-align: center; }
-        .kpi-card .kpi-title { font-size: 0.85em; color: var(--muted); text-transform: uppercase;
-                                letter-spacing: 0.5px; margin-bottom: 8px; }
-        .kpi-card .kpi-value { font-size: 2.2em; font-weight: 700; color: var(--text); line-height: 1; }
+    /* Zero-day badge — uses --accent-purple token for text (tokens.css:55).
+       Background derived from accent token via color-mix so it tracks
+       theme changes (light/dark) automatically. */
+    .crp-tag-zero-day {
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        background: color-mix(in srgb, var(--accent-purple) 15%, transparent);
+        color: var(--accent-purple);
+    }
 
-        .section { margin-bottom: 32px; }
-        .section-header { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
-        .section-count { background: var(--code-bg); padding: 2px 8px; border-radius: 10px;
-                         font-size: 0.8rem; color: var(--muted); }
+    /* CVE chips. */
+    .crp-cve-item {
+        display: inline-block;
+        margin: 2px 4px 2px 0;
+        padding: 1px 6px;
+        border-radius: 3px;
+        background: var(--surface-muted);
+        color: var(--ink-body);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.8rem;
+    }
+    .crp-cve-item-critical { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .crp-cve-item-high     { background: var(--sev-high-bg);     color: var(--sev-high-text); }
 
-        .action-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
-                       padding: 16px; margin-bottom: 12px; border-left: 4px solid var(--border); }
-        .action-card.critical { border-left-color: var(--p0); }
-        .action-card.high { border-left-color: var(--p1); }
-        .action-card.medium { border-left-color: var(--p2); }
-        .action-card.low { border-left-color: var(--p3); }
+    .crp-guidance {
+        background: var(--sev-low-bg);
+        color: var(--sev-low-text);
+        border: 1px solid var(--sev-low-text);
+        border-radius: 4px;
+        padding: 10px 12px;
+        margin: 8px 0;
+        font-size: 0.85rem;
+    }
 
-        .action-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .action-title { font-weight: 700; font-size: 1rem; }
-        .action-priority { font-weight: 700; font-size: 0.8rem; padding: 2px 8px; border-radius: 4px; color: #fff; }
-        .action-priority.critical { background: var(--p0); }
-        .action-priority.high { background: var(--p1); }
-        .action-priority.medium { background: var(--p2); }
-        .action-priority.low { background: var(--p3); }
+    .crp-mitigation-list {
+        margin: 6px 0 6px 20px;
+        font-size: 0.85rem;
+    }
+    .crp-mitigation-list li { margin: 2px 0; }
 
-        .action-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); margin-bottom: 8px; }
-        .action-meta span { display: inline-flex; align-items: center; gap: 4px; }
+    .crp-project-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin: 6px 0;
+    }
+    /* Project tag — uses --accent-blue token for text (tokens.css:59).
+       Background derived from accent token via color-mix so it tracks
+       theme changes (light/dark) automatically. */
+    .crp-project-tag {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 3px;
+        background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
+        color: var(--accent-blue);
+        font-size: 0.8rem;
+    }
 
-        .tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 0.75rem; font-weight: 600; }
-        .tag-zero-day { background: #f3e8ff; color: #6b21a8; }
+    .crp-ai-guidance-block {
+        margin-top: 12px;
+        padding: 12px;
+        background: var(--sev-low-bg);
+        border-left: 3px solid var(--sev-low-text);
+        border-radius: 4px;
+    }
+    .crp-ai-guidance-title {
+        color: var(--sev-low-text);
+        font-weight: 600;
+    }
+    .crp-ai-guidance-content {
+        margin-top: 8px;
+        white-space: pre-wrap;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        color: var(--ink-body);
+    }
 
-        .cve-item { display: inline-block; margin: 2px 4px 2px 0; padding: 1px 6px; border-radius: 3px;
-                    background: var(--code-bg); font-family: monospace; font-size: 0.8rem; }
-        .cve-item.critical { background: #fee2e2; color: #991b1b; }
-        .cve-item.high { background: #ffedd5; color: #9a3412; }
+    .crp-prompt-block {
+        background: var(--surface-muted);
+        border: 1px solid var(--hairline);
+        border-radius: 4px;
+        padding: 12px;
+        margin: 8px 0;
+        max-height: 200px;
+        overflow-y: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.8rem;
+        white-space: pre-wrap;
+        color: var(--ink-body);
+    }
 
-        .guidance { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 4px;
-                    padding: 10px 12px; margin: 8px 0; font-size: 0.85rem; }
+    .crp-suppressed-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+        color: var(--ink-body);
+    }
+    .crp-suppressed-table th,
+    .crp-suppressed-table td {
+        padding: 6px 10px;
+        text-align: left;
+        border-bottom: 1px solid var(--hairline);
+    }
+    .crp-suppressed-table th {
+        background: var(--surface-muted);
+        font-weight: 600;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--ink-mute);
+    }
 
-        .mitigation-list { margin: 6px 0 6px 20px; font-size: 0.85rem; }
-        .mitigation-list li { margin: 2px 0; }
+</style>
 
-        .project-list { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
-        .project-tag { display: inline-block; padding: 1px 8px; border-radius: 3px;
-                       background: #dbeafe; color: #1e40af; font-size: 0.8rem; }
-
-        .prompt-block { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px;
-                       padding: 12px; margin: 8px 0; max-height: 200px; overflow-y: auto;
-                       font-family: monospace; font-size: 0.8rem; white-space: pre-wrap; }
-
-        .suppressed-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-        .suppressed-table th, .suppressed-table td {
-            padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); }
-        .suppressed-table th {
-            background: var(--code-bg); font-weight: 600; font-size: 0.8rem;
-            text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
-
-        .footer { text-align: center; margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border);
-                  font-size: 0.75rem; color: var(--muted); }
-        .finite-state-logo { color: #007bff; font-weight: bold; }
-
-        @media print { body { padding: 12px; } }
-    </style>
+{% if render_mode != 'fragment' %}
 </head>
-<body data-nav-category="{{ nav_category_slug }}">
-    <span id="fsConnectionBadge"></span>
-    <div>
-        <!-- Header -->
-        <div class="header">
-            {% include "_default_logo.html" %}
-            <h1>Component Remediation Package</h1>
-            <div class="subtitle">
-                {{ summary.component_name | default('Unknown Component') }}{% if summary.version_range %} &middot; {{ summary.version_range }}{% endif %}
-            </div>
-        </div>
+<body class="console">
+{% endif %}
 
-        <!-- Metadata -->
-        <div class="metadata">
-            <strong>Report:</strong> Component Remediation Package |
-            <strong>Generated:</strong> {{ generated_at }} |
-            <strong>Scope:</strong> {{ scope_label | default('All Projects') }} |
-            <strong>Component:</strong> {{ summary.component_name | default('Unknown') }}
-        </div>
+{% import "_console_macros.html" as fs with context %}
 
-        <!-- KPI Cards -->
-        <div class="kpi-row">
-            <div class="kpi-card">
-                <div class="kpi-title">Total Actions</div>
-                <div class="kpi-value">{{ summary.total_actions | default(0) }}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Critical</div>
-                <div class="kpi-value" {% if summary.critical_actions | default(0) > 0 %}style="color: var(--p0);"{% endif %}>{{ summary.critical_actions | default(0) }}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">High</div>
-                <div class="kpi-value" {% if summary.high_actions | default(0) > 0 %}style="color: var(--p1);"{% endif %}>{{ summary.high_actions | default(0) }}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Affected Projects</div>
-                <div class="kpi-value">{{ summary.affected_project_count | default(0) }}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Zero-Day</div>
-                <div class="kpi-value" {% if summary.zero_day_actions | default(0) > 0 %}style="color: #7c3aed;"{% endif %}>{{ summary.zero_day_actions | default(0) }}</div>
-            </div>
-        </div>
+{# Build topbar meta items conditionally. #}
+{% set crp_meta = [{"label": "Domain", "value": domain or "—"}] %}
+{% set _ = crp_meta.append({"label": "Scope", "value": scope_label or "All Projects"}) %}
+{% if summary.get('component_name') %}
+    {% set _ = crp_meta.append({"label": "Component", "value": summary.component_name}) %}
+{% endif %}
+{% if summary.get('version_range') %}
+    {% set _ = crp_meta.append({"label": "Version range", "value": summary.version_range}) %}
+{% endif %}
+{% set _ = crp_meta.append({"label": "Generated", "value": generated_at or "—"}) %}
 
-        <!-- Action Cards -->
-        {% if actions %}
-        <div class="section">
-            <div class="section-header">
-                <h2>Action Cards</h2>
-                <span class="section-count">{{ actions | length }}</span>
-            </div>
+{% if render_mode != 'fragment' %}
 
+{{ fs.topbar(
+    crumbs=["Finite State", "Component Remediation Package"],
+    meta=crp_meta,
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>Component Remediation Package</h1>
+        <p class="subtitle">{{ summary.get('component_name', 'Unknown Component') }}{% if summary.get('version_range') %} &middot; {{ summary.version_range }}{% endif %}</p>
+    </div>
+
+    {# 5 KPI cells via fs.kpi_cell. #}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell("Total Actions", summary.get('total_actions', 0)) }}
+        {{ fs.kpi_cell(
+            "Critical",
+            summary.get('critical_actions', 0),
+            dot=("critical" if summary.get('critical_actions', 0) > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "High",
+            summary.get('high_actions', 0),
+            dot=("high" if summary.get('high_actions', 0) > 0 else None),
+        ) }}
+        {{ fs.kpi_cell("Affected Projects", summary.get('affected_project_count', 0)) }}
+        {{ fs.kpi_cell(
+            "Zero-Day",
+            summary.get('zero_day_actions', 0),
+        ) }}
+    </div>
+
+    {% if actions %}
+    <div class="panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Action cards", meta=((actions | length) | string) ~ " action" ~ ("s" if (actions | length) != 1 else "")) }}
+        <div class="body" style="padding: 16px;">
             {% for action in actions %}
-            {% set sev = action.max_severity | default('MEDIUM') | lower %}
-            <div class="action-card {{ sev }}">
-                <div class="action-header">
-                    <span class="action-title">{{ action.component_name }} {{ action.component_version_name }}</span>
-                    <span class="action-priority {{ sev }}">{{ action.max_severity | default('MEDIUM') }}</span>
+            {% if action is mapping %}
+            {% set sev = (action.get('max_severity', 'MEDIUM') | upper) %}  {# Matches pre-migration default (round-1 M1-13) — actions with absent severity render as medium-styled, not unknown-styled. #}
+            {% set sev_lc = sev | lower %}
+            <div class="crp-action-card crp-action-card-{{ sev_lc if sev_lc in ('critical','high','medium','low') else 'unknown' }}">
+                <div class="crp-action-header">
+                    <span class="crp-action-title">{{ action.get('component_name', '') }} {{ action.get('component_version_name', '') }}</span>
+                    <span class="crp-priority-{{ sev_lc if sev_lc in ('critical','high','medium','low') else 'unknown' }}">{{ sev }}</span>
                 </div>
 
-                <div class="action-meta">
-                    <span>{{ action.finding_count | default(0) }} finding{{ 's' if action.finding_count | default(0) != 1 }}</span>
-                    <span>{{ action.open_count | default(0) }} open</span>
-                    <span>{{ action.affected_projects | default([]) | length }} project{{ 's' if action.affected_projects | default([]) | length != 1 }}</span>
-                    <span>Priority: {{ '%.1f' | format(action.priority_score | default(0)) }}</span>
+                <div class="crp-action-meta">
+                    <span>{{ action.get('finding_count', 0) }} finding{{ 's' if action.get('finding_count', 0) != 1 }}</span>
+                    <span>{{ action.get('open_count', 0) }} open</span>
+                    <span>{{ (action.get('affected_projects', []) | length) }} project{{ 's' if (action.get('affected_projects', []) | length) != 1 }}</span>
+                    <span>Priority: {{ '%.1f' | format(action.get('priority_score', 0) | float) }}</span>
                 </div>
 
-                <!-- CVE IDs or Zero-day badge -->
-                {% if action.is_zero_day %}
+                {% if action.get('is_zero_day') %}
                 <div style="margin: 6px 0;">
-                    <span class="tag tag-zero-day">Zero-day — no CVE assigned</span>
+                    <span class="crp-tag-zero-day">Zero-day — no CVE assigned</span>
                 </div>
                 {% endif %}
-                {% if action.cve_ids %}
+
+                {% if action.get('cve_ids') %}
                 <div style="margin: 6px 0;">
+                    {% set chip_class = 'crp-cve-item-critical' if sev == 'CRITICAL' else ('crp-cve-item-high' if sev == 'HIGH' else '') %}
                     {% for cve in action.cve_ids %}
-                    <span class="cve-item{% if action.max_severity | default('') == 'CRITICAL' %} critical{% elif action.max_severity | default('') == 'HIGH' %} high{% endif %}">{{ cve }}</span>
+                    <span class="crp-cve-item {{ chip_class }}">{{ cve }}</span>
                     {% endfor %}
                 </div>
                 {% endif %}
 
-                <!-- Affected projects -->
-                {% if action.affected_projects %}
+                {% if action.get('affected_projects') %}
                 <div style="margin: 8px 0;">
                     <strong style="font-size: 0.85rem;">Affected projects:</strong>
-                    <div class="project-list">
+                    <div class="crp-project-list">
                         {% for proj in action.affected_projects %}
-                        <span class="project-tag">{{ proj }}</span>
+                        <span class="crp-project-tag">{{ proj }}</span>
                         {% endfor %}
                     </div>
                 </div>
                 {% endif %}
 
-                <!-- Upgrade recommendation -->
-                {% if action.upgrade_recommendation %}
-                <div class="guidance">
+                {% if action.get('upgrade_recommendation') %}
+                <div class="crp-guidance">
                     <strong>Upgrade recommendation:</strong> {{ action.upgrade_recommendation }}
                 </div>
                 {% endif %}
 
-                <!-- Interim mitigations -->
-                {% if action.interim_mitigations %}
+                {% if action.get('interim_mitigations') %}
                 <div style="margin: 8px 0;">
                     <strong style="font-size: 0.85rem;">Interim mitigations:</strong>
-                    <ul class="mitigation-list">
+                    <ul class="crp-mitigation-list">
                         {% for m in action.interim_mitigations %}
                         <li>{{ m }}</li>
                         {% endfor %}
@@ -216,75 +323,69 @@
                 </div>
                 {% endif %}
 
-                <!-- AI guidance (LLM response) -->
-                {% if action.ai_guidance %}
-                <div style="margin-top: 12px; padding: 12px; background: #f0fdf4; border-left: 3px solid #16a34a; border-radius: 4px;">
-                    <strong style="color: #16a34a;">AI Remediation Guidance</strong>
-                    <div class="ai-guidance-content" style="margin-top: 8px; white-space: pre-wrap; font-size: 0.9rem; line-height: 1.5;">{{ action.ai_guidance }}</div>
+                {% if action.get('ai_guidance') %}
+                <div class="crp-ai-guidance-block">
+                    <span class="crp-ai-guidance-title">AI Remediation Guidance</span>
+                    <div class="crp-ai-guidance-content">{{ action.ai_guidance }}</div>
                 </div>
                 {% endif %}
 
-                <!-- AI prompt (expandable) -->
-                {% if action.ai_prompt %}
+                {% if action.get('ai_prompt') %}
                 <details style="margin-top: 8px;">
-                    <summary style="cursor: pointer; font-size: 0.85rem; color: var(--muted);">AI Prompt</summary>
+                    <summary style="cursor: pointer; font-size: 0.85rem; color: var(--ink-mute);">AI Prompt</summary>
                     {% if action.ai_prompt.system %}
-                    <div class="prompt-block"><strong>System:</strong>
+                    <div class="crp-prompt-block"><strong>System:</strong>
 {{ action.ai_prompt.system }}</div>
                     {% endif %}
                     {% if action.ai_prompt.user %}
-                    <div class="prompt-block"><strong>User:</strong>
+                    <div class="crp-prompt-block"><strong>User:</strong>
 {{ action.ai_prompt.user }}</div>
                     {% endif %}
                     {% if action.ai_prompt.context %}
-                    <div class="prompt-block"><strong>Context:</strong>
-{{ action.ai_prompt.context }}</div>
+                    <div class="crp-prompt-block"><strong>Context:</strong>
+{{ action.ai_prompt.context | tojson(indent=2) }}</div>
                     {% endif %}
                 </details>
                 {% endif %}
             </div>
+            {% endif %}
             {% endfor %}
         </div>
-        {% endif %}
+    </div>
+    {% endif %}
 
-        <!-- AI Prompts section (standalone prompts not tied to actions) -->
-        {% if ai_prompts %}
-        <div class="section">
-            <div class="section-header">
-                <h2>AI Prompts</h2>
-                <span class="section-count">{{ ai_prompts | length }}</span>
-            </div>
+    {% if ai_prompts %}
+    <div class="panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("AI Prompts", meta=((ai_prompts | length) | string) ~ " prompt" ~ ("s" if (ai_prompts | length) != 1 else "")) }}
+        <div class="body" style="padding: 16px;">
             {% for prompt in ai_prompts %}
             <details style="margin-bottom: 8px;">
-                <summary style="cursor: pointer; font-size: 0.9rem; font-weight: 600;">{{ prompt.id | default('Prompt ' ~ loop.index) }}</summary>
-                {% if prompt.system %}
-                <div class="prompt-block"><strong>System:</strong>
+                <summary style="cursor: pointer; font-size: 0.9rem; font-weight: 600;">{{ prompt.get('id', 'Prompt ' ~ loop.index) }}</summary>
+                {% if prompt.get('system') %}
+                <div class="crp-prompt-block"><strong>System:</strong>
 {{ prompt.system }}</div>
                 {% endif %}
-                {% if prompt.user %}
-                <div class="prompt-block"><strong>User:</strong>
+                {% if prompt.get('user') %}
+                <div class="crp-prompt-block"><strong>User:</strong>
 {{ prompt.user }}</div>
                 {% endif %}
-                {% if prompt.context %}
-                <div class="prompt-block"><strong>Context:</strong>
-{{ prompt.context }}</div>
+                {% if prompt.get('context') %}
+                <div class="crp-prompt-block"><strong>Context:</strong>
+{{ prompt.context | tojson(indent=2) }}</div>
                 {% endif %}
             </details>
             {% endfor %}
         </div>
-        {% endif %}
+    </div>
+    {% endif %}
 
-        <!-- Suppressed Findings -->
-        {% if suppressed %}
-        <div class="section">
+    {% if suppressed %}
+    <div class="panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Suppressed Findings", meta=((suppressed | length) | string) ~ " row" ~ ("s" if (suppressed | length) != 1 else "")) }}
+        <div class="body" style="padding: 16px;">
             <details>
-                <summary style="cursor: pointer;">
-                    <div class="section-header" style="display: inline-flex;">
-                        <h2 style="margin: 0;">Suppressed Findings</h2>
-                        <span class="section-count">{{ suppressed | length }}</span>
-                    </div>
-                </summary>
-                <table class="suppressed-table" style="margin-top: 12px;">
+                <summary style="cursor: pointer; font-size: 0.9rem; color: var(--ink-mute);">Show suppressed findings</summary>
+                <table class="crp-suppressed-table" style="margin-top: 12px;">
                     <thead>
                         <tr>
                             <th>Component</th>
@@ -298,24 +399,35 @@
                     <tbody>
                         {% for row in suppressed %}
                         <tr>
-                            <td>{{ row.component_name }}</td>
-                            <td>{{ row.component_version_name }}</td>
-                            <td><code>{{ row.cve_id }}</code></td>
-                            <td>{{ row.severity }}</td>
-                            <td>{{ row.status }}</td>
-                            <td>{{ row.project_name }}</td>
+                            <td>{{ row.get('component_name', '') }}</td>
+                            <td>{{ row.get('component_version_name', '') }}</td>
+                            <td><code>{{ row.get('cve_id', '') }}</code></td>
+                            <td>{{ row.get('severity', '') }}</td>
+                            <td>{{ row.get('status', '') }}</td>
+                            <td>{{ row.get('project_name', '') }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </details>
         </div>
-        {% endif %}
-
-        <!-- Footer -->
-        {% include "_default_footer.html" %}
     </div>
+    {% endif %}
+</main>
 
-    {% include '_action_buttons.html' %}
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Component Remediation Package",
+    "Actions: " ~ ((summary.get('total_actions', 0)) | string),
+    "Affected projects: " ~ ((summary.get('affected_project_count', 0)) | string),
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+{% if render_mode != 'fragment' %}
+{% include '_action_buttons.html' %}
 </body>
 </html>
+{% endif %}

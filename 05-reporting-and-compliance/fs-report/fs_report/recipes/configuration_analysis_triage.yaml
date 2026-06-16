@@ -1,6 +1,8 @@
 name: "Configuration Analysis Triage"
 category: assessment
+card_description: "Triage credential, config, and crypto findings with tiered-gate scoring."
 nav_category: Investigation
+chart_libraries: ["echarts"]
 template: "configuration_analysis_triage.html"
 description: >
   Triages CREDENTIALS, CONFIG_ISSUES, and CRYPTO_MATERIAL findings using a tiered-gates
@@ -78,16 +80,5 @@ output:
     - html
     - json
     - md
-  charts:
-    - name: band_distribution
-      chart: bar
-      title: "Priority Band Distribution"
-      description: "Distribution of findings across risk priority bands."
-      x_column: priority_band
-      y_column: count
-    - name: gate_funnel
-      chart: bar
-      title: "Gate Classification Funnel"
-      description: "How findings flow through Gate 1 (Private Keys), Gate 2 (Credentials), Gate 3 (Config Issues), and additive scoring."
-      x_column: gate
-      y_column: count
+  has_inline_charts: true
+  charts: []

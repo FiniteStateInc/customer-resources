@@ -1,0 +1,700 @@
+/* ============================================================
+   fs-report Phase 2 — command-center.css
+   Command-Center CONTENT widgets: KPI band, grids, panels,
+   posture ring, live queue, sparklines, bar list, activity feed,
+   workflow launcher, run bar, and density/glow CC overrides.
+   Chrome layout (topbar/sidebar/shell/main base/status-bar/btn/
+   overlay) → shell.css
+   Design tokens → tokens.css
+   Tweaks panel chrome + body.light → tweaks.css
+   ============================================================ */
+
+/* ---- KPI HERO BAND ---- */
+.kpi-band{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--hairline-soft);
+  border:1px solid var(--hairline);border-radius:var(--r-lg);overflow:hidden;margin-bottom:18px;
+  box-shadow:0 8px 40px rgba(0,0,0,.4)}
+.kpi{background:var(--surface-card);padding:16px 18px;position:relative;overflow:hidden}
+.kpi.feature{background:linear-gradient(160deg,rgba(var(--accent-rgb),.10),var(--surface-card) 55%)}
+.kpi .klabel{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-mute);
+  font-weight:700;margin-bottom:9px;display:flex;align-items:center;gap:7px}
+.kpi .klabel .dot{width:7px;height:7px;border-radius:50%}
+.kpi .kval{font-family:var(--font-mono);font-size:30px;font-weight:600;color:var(--ink);line-height:1;
+  letter-spacing:-.01em}
+.kpi .kval .unit{font-size:16px;color:var(--ink-mute);font-weight:500}
+.kpi .kdelta{margin-top:8px;font-family:var(--font-mono);font-size:11px;display:flex;align-items:center;gap:5px}
+.kpi .kdelta.up{color:var(--sev-low)} .kpi .kdelta.down{color:var(--sev-critical)}
+.kpi .kdelta.warn{color:var(--sev-high)}
+.kpi .kdelta svg{width:13px;height:13px}
+.kpi .ksub{margin-top:8px;font-size:11px;color:var(--ink-faint)}
+.dot-critical{background:var(--sev-critical)} .dot-high{background:var(--sev-high)}
+.dot-medium{background:var(--sev-medium)} .dot-low{background:var(--sev-low)}
+.dot-accent{background:var(--accent)} .dot-info{background:var(--sev-info)}
+
+/* ---- GRID + PANELS ---- */
+.grid{display:grid;gap:16px;margin-bottom:16px}
+.grid.g-main{grid-template-columns:300px 1fr 1fr}
+.panel{background:var(--surface-card);border:1px solid var(--hairline);border-radius:var(--r-lg);
+  padding:16px 18px;position:relative;overflow:hidden}
+.panel .phead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:14px}
+.panel h2{font-family:var(--font-display);font-size:13px;font-weight:700;color:var(--ink);
+  letter-spacing:.01em;display:flex;align-items:center;gap:9px;margin:0;white-space:nowrap}
+.panel h2::before{content:'';width:3px;height:13px;background:var(--accent);border-radius:1px;
+  box-shadow:0 0 8px rgba(var(--accent-rgb),.5)}
+.panel .pmeta{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-mute)}
+.panel .plink{font-size:11px;color:var(--accent);text-decoration:none;font-weight:600;display:inline-flex;align-items:center;gap:4px}
+.panel .plink svg{width:12px;height:12px}
+
+/* ---- POSTURE SCORE RING ---- */
+.posture{display:flex;flex-direction:column;align-items:center;text-align:center}
+.ring-wrap{position:relative;width:172px;height:172px;margin:6px 0 4px}
+.ring-wrap svg{transform:rotate(-90deg);overflow:visible}
+.ring-wrap circle{shape-rendering:geometricPrecision}
+.ring-wrap .score{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.ring-wrap .score .grade{font-family:var(--font-display);font-size:46px;font-weight:800;color:var(--ink);line-height:.9;
+  letter-spacing:-.03em}
+.ring-wrap .score .num{font-family:var(--font-mono);font-size:13px;color:var(--accent);margin-top:4px;font-weight:600}
+.streak{display:flex;align-items:center;gap:8px;margin-top:10px;padding:7px 13px;border-radius:var(--r-md);
+  background:var(--sev-low-bg);border:1px solid rgba(74,222,128,.22);color:var(--sev-low);
+  font-size:11.5px;font-weight:600}
+.streak svg{width:14px;height:14px}
+.posture .ptags{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap;justify-content:center}
+.ptag{font-family:var(--font-mono);font-size:10px;padding:3px 8px;border-radius:var(--r-sm);
+  background:var(--surface-subtle);border:1px solid var(--hairline);color:var(--ink-body);white-space:nowrap}
+
+/* ---- LIVE SCAN QUEUE ---- */
+.q-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
+.q-metric{background:var(--surface-subtle);border:1px solid var(--hairline);border-radius:var(--r-md);
+  padding:11px 12px}
+.q-metric .qv{font-family:var(--font-mono);font-size:21px;font-weight:600;color:var(--ink);line-height:1}
+.q-metric .ql{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-mute);margin-top:5px;
+  display:flex;align-items:center;gap:5px}
+.q-metric .ql .mdot{width:6px;height:6px;border-radius:50%}
+.qgroup{padding:9px 0;border-bottom:1px solid var(--hairline-soft)}
+.qgroup:last-child{border-bottom:none}
+.qgroup-top{display:flex;align-items:center;gap:9px}
+.qgroup .qname{color:var(--ink-strong);font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qgroup .qver{font-family:var(--font-mono);font-size:10px;color:var(--ink-mute);background:var(--surface-subtle);
+  padding:1px 6px;border-radius:3px;flex-shrink:0}
+.qgroup .qwait{margin-left:auto;font-family:var(--font-mono);font-size:10.5px;color:var(--ink-faint);flex-shrink:0}
+.qdots{display:flex;gap:4px;margin-top:7px;align-items:center}
+/* B8 #2: hue = scan TYPE (qt-*), status = motion/opacity. err overrides hue
+   (it's source-ordered after qt-* so it wins the specificity tie). */
+.qdot{width:9px;height:9px;border-radius:2px;flex-shrink:0;background:var(--scan-other)}
+.qdot.qt-sca{background:var(--scan-sca)}
+.qdot.qt-config{background:var(--scan-config)}
+.qdot.qt-vuln{background:var(--scan-vuln)}
+.qdot.qt-sast{background:var(--scan-sast)}
+.qdot.qt-source-sca{background:var(--scan-source-sca)}
+.qdot.qt-sbom{background:var(--scan-sbom)}
+.qdot.init{opacity:.4}
+/* Cascade the running pulses (B8 #2): stagger by paint order via inline --i. */
+.qdot.run{animation:proc 1.4s var(--ease-out) infinite;animation-delay:calc(var(--i,0)*.12s)}
+.qdot.err{background:var(--sev-critical)}
+@keyframes proc{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:1;transform:scale(1.1)}}
+.qbar{flex:1;height:4px;background:var(--surface-muted);border-radius:2px;margin-left:6px;overflow:hidden;position:relative}
+.qbar > i{position:absolute;inset:0;width:40%;border-radius:2px;
+  background:linear-gradient(90deg,transparent,rgba(var(--accent-rgb),.9),transparent);
+  animation:sweep 2.4s linear infinite}
+@keyframes sweep{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}
+.qdone-badge{font-family:var(--font-mono);font-size:9.5px;color:var(--sev-low);margin-left:auto}
+.qgroup-more{border-bottom:none;padding-top:10px}
+.qmore{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-faint)}
+@keyframes qrender{from{opacity:.3;transform:translateY(3px)}to{opacity:1;transform:none}}
+#scan-queue .q-metrics,#scan-queue .qgroup{animation:qrender .45s var(--ease-out)}
+
+/* ---- RUNNING REPORTS MONITOR ---- */
+.run-row{padding:9px 0;border-bottom:1px solid var(--hairline-soft)}
+.run-row:last-child{border-bottom:none}
+.run-row-link{border-radius:var(--r-sm);transition:background .15s}
+.run-row-link:hover{background:rgba(var(--accent-rgb),.06)}
+.run-row-top{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+.run-name{color:var(--ink-strong);font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:1;min-width:0}
+.run-more{font-family:var(--font-mono);font-size:10px;color:var(--ink-mute);background:var(--surface-subtle);padding:1px 5px;border-radius:3px}
+.run-scope{font-family:var(--font-mono);font-size:10px;color:var(--ink-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:1;min-width:0}
+.run-elapsed{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-faint);flex-shrink:0}
+/* B2 #21: per-row Stop on the monitor — quiet by default, danger-tinted on
+   hover; disabled while cancelling. Sits after the elapsed badge. */
+.run-stop{flex-shrink:0;margin-left:6px;width:18px;height:18px;line-height:1;padding:0;border:1px solid var(--hairline);border-radius:var(--r-sm);background:none;color:var(--ink-faint);font-size:10px;cursor:pointer;transition:color .15s,border-color .15s,background .15s}
+.run-stop:hover{color:var(--danger,#e5484d);border-color:var(--danger,#e5484d);background:rgba(229,72,77,.08)}
+.run-stop:disabled{opacity:.5;cursor:default}
+.run-bar{height:4px;background:var(--surface-muted);border-radius:2px;overflow:hidden;margin-bottom:4px;position:relative}
+.run-bar-done{background:rgba(74,222,128,.15)}
+.run-fill{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-grad-end,var(--accent)));border-radius:2px;transition:width .3s var(--ease-out);box-shadow:0 0 8px rgba(var(--accent-rgb),.5)}
+.run-fill-done{background:var(--sev-low);box-shadow:none}
+/* Indeterminate sweep bar for single-recipe runs (mirrors .qbar > i) */
+.run-sweep{position:absolute;inset:0;width:40%;border-radius:2px;
+  background:linear-gradient(90deg,transparent,rgba(var(--accent-rgb),.9),transparent);
+  animation:sweep 2.4s linear infinite}
+.run-status-text{font-family:var(--font-mono);font-size:10px;color:var(--ink-faint)}
+.run-empty{display:flex;flex-direction:column;padding:8px 0;gap:4px}
+#running-reports .q-metrics,#running-reports .run-row{animation:qrender .45s var(--ease-out)}
+
+/* ── Workflow run-progress sparkline (Running Reports row) ───────────
+   One .seg per workflow step: done (filled) / now (pulsing) / pending (dim).
+   The template renders all segments; the poller only toggles classes (no
+   rebuild → no drift). Pulse/shimmer auto-disable under body.no-motion. */
+.wf-spark{display:flex;align-items:flex-end;gap:3px;height:18px;margin:6px 0 2px}
+.wf-spark .seg{flex:1 1 0;min-width:0;height:100%;border-radius:2px;
+  background:var(--surface-muted);transition:background .3s var(--ease-out),opacity .3s}
+.wf-spark .seg.done{background:linear-gradient(180deg,rgba(var(--accent-rgb),.95),rgba(var(--accent-rgb),.45))}
+.wf-spark .seg.pending{opacity:.45}
+.wf-spark .seg.now{background:linear-gradient(180deg,rgba(var(--accent-rgb),.95),rgba(var(--accent-rgb),.5));
+  animation:wf-seg-pulse 1.1s var(--ease-out) infinite}
+@keyframes wf-seg-pulse{0%,100%{opacity:.5;box-shadow:0 0 0 0 rgba(var(--accent-rgb),0)}
+  50%{opacity:1;box-shadow:0 0 8px 0 rgba(var(--accent-rgb),.6)}}
+.wf-spark-label{margin-top:2px}
+/* Finished tints — all segments filled, colored by result. Target `.seg.done`
+   (finished segments are all .done) so these win the specificity tie against
+   `.wf-spark .seg.done` above via source order. */
+.wf-spark--success .seg.done{background:linear-gradient(180deg,rgba(var(--sev-low-rgb,52,211,153),.95),rgba(var(--sev-low-rgb,52,211,153),.4))}
+.wf-spark--success{filter:drop-shadow(0 0 6px rgba(var(--sev-low-rgb,52,211,153),.35))}
+.wf-spark--error .seg.done{background:linear-gradient(180deg,rgba(var(--sev-critical-rgb,248,113,113),.95),rgba(var(--sev-critical-rgb,248,113,113),.4))}
+.wf-spark--cancelled .seg.done{background:var(--surface-muted);opacity:.55}
+.wf-spark--neutral .seg.done{background:var(--surface-muted);opacity:.7}
+/* One-time completion shimmer (the poller adds .wf-spark--shimmer on finish). */
+.wf-spark--shimmer{position:relative;overflow:hidden}
+.wf-spark--shimmer::after{content:'';position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.18),transparent);
+  transform:translateX(-100%);animation:wf-shimmer .9s var(--ease-out) 1}
+@keyframes wf-shimmer{to{transform:translateX(100%)}}
+
+/* ---- SEVERITY / TREND ---- */
+.spark-row{display:flex;align-items:flex-end;gap:4px;height:90px;margin:4px 0 2px}
+.spark-row .bar{flex:1;border-radius:3px 3px 0 0;background:linear-gradient(180deg,rgba(var(--accent-rgb),.85),rgba(var(--accent-rgb),.25));
+  position:relative;min-height:6px;transition:height .6s var(--ease-out)}
+.spark-axis{display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:9px;color:var(--ink-faint);margin-top:6px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:10.5px;color:var(--ink-body);margin-top:12px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend .sw{width:9px;height:9px;border-radius:2px}
+
+/* ---- BAR LIST (leaderboard) ---- */
+.bar-list .row{display:grid;grid-template-columns:1fr 130px 46px;align-items:center;gap:12px;
+  padding:8px 0;border-bottom:1px solid var(--hairline-soft)}
+.bar-list .row:last-child{border-bottom:none}
+.bar-list .nm{display:flex;align-items:center;gap:9px;min-width:0}
+.bar-list .nm .rank{font-family:var(--font-mono);font-size:10px;color:var(--ink-faint);width:16px;flex-shrink:0}
+.bar-list .nm .t{color:var(--ink-strong);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar-list .nm .ver{font-family:var(--font-mono);font-size:9.5px;color:var(--ink-faint)}
+.stack{height:8px;background:var(--surface-muted);border-radius:3px;overflow:hidden;display:flex}
+.stack i{height:100%;display:block}
+.bar-list .vnum{font-family:var(--font-mono);font-size:12px;color:var(--ink);text-align:right;font-weight:600}
+.seg-critical{background:var(--sev-critical)} .seg-high{background:var(--sev-high)}
+.seg-medium{background:var(--sev-medium)} .seg-low{background:var(--sev-low)}
+
+
+/* ---- WORKFLOW LAUNCHER ---- */
+.launcher-head{display:flex;align-items:center;justify-content:space-between;margin:24px 0 14px}
+.launcher-head h2{font-family:var(--font-display);font-size:15px;font-weight:700;color:var(--ink);
+  display:flex;align-items:center;gap:10px;white-space:nowrap}
+.launcher-head .filters{display:flex;gap:6px}
+.chip{font-size:11px;font-weight:600;padding:5px 12px;border-radius:var(--r-sm);cursor:pointer;
+  background:var(--surface-subtle);border:1px solid var(--hairline);color:var(--ink-body);transition:.15s;
+  display:inline-flex;align-items:center;gap:6px}
+.chip .cdot{width:7px;height:7px;border-radius:50%}
+.chip:hover{color:var(--ink);border-color:var(--ink-faint)}
+.chip.on{background:rgba(var(--accent-rgb),.12);border-color:rgba(var(--accent-rgb),.4);color:var(--accent)}
+/* align-items:start so a tall FLIPPED card (see .wf-card.flipped) does NOT
+   stretch its row-neighbors via the grid's default stretch. Each card instead
+   carries its own definite height (.wf-card min-height + flex chain below), so
+   flipping one card grows only that card — its row siblings stay compact. */
+.wf-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:13px;align-items:start}
+
+/* ---- FLIP CARD SHELL ---- */
+/* .wf-card is the perspective host + visible chrome (border/background/top-bar).
+   .wf-inner is the rotating element; .wf-front / .wf-back are the two faces. */
+/* .wf-card carries its OWN definite height instead of borrowing one from grid
+   row-stretch (the grid is align-items:start). The flex column + min-height give
+   .wf-inner a concrete box to fill, so the .wf-front/.wf-back height chain
+   resolves WITHOUT depending on neighbors. min-height = the compact front's
+   natural height; flipping grows only this card (see .wf-card.flipped). */
+.wf-card{background:var(--surface-card);border:1px solid var(--hairline);border-radius:var(--r-lg);
+  cursor:pointer;transition:border-color .18s var(--ease-out),transform .18s var(--ease-out),box-shadow .18s var(--ease-out);
+  position:relative;overflow:hidden;perspective:1400px;
+  display:flex;flex-direction:column;min-height:200px}
+/* Link-variant: an <a> wrapper that looks identical to a .wf-card but navigates.
+   Reset anchor defaults so the card chrome is unaffected.
+   .wf-body mirrors the layout of .wf-front for the link-card variant (no back face). */
+a.wf-card--link{text-decoration:none;color:inherit}
+a.wf-card--link:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+a.wf-card--link .wf-body{padding:16px;display:flex;flex-direction:column;gap:11px;flex:1 1 auto}
+.wf-card::after{content:'';position:absolute;left:0;top:0;height:3px;width:100%;background:var(--cat,var(--accent));
+  opacity:0;transition:opacity .18s;z-index:3}
+.wf-card:hover{border-color:rgba(var(--accent-rgb),.4);transform:translateY(-3px);
+  box-shadow:0 14px 40px rgba(0,0,0,.5),0 0 0 1px rgba(var(--accent-rgb),.15)}
+.wf-card:hover::after{opacity:1}
+/* transient "launching" cue (double-launch guard, ~2s) — accent ring + glow */
+.wf-card.launching{border-color:var(--accent);box-shadow:0 0 0 1px rgba(var(--accent-rgb),.45),0 0 18px rgba(var(--accent-rgb),.22)}
+.wf-card.launching::after{opacity:1}
+/* Flipped state (consolidated — was previously split across two rules):
+   cursor/hover reset, AND the card grows to give the config back room. The
+   back's field area scrolls internally while the footer stays pinned, so
+   footers never clip. Because the grid is align-items:start (see .wf-grid),
+   this 340px growth affects ONLY this card, not its row-neighbors. */
+.wf-card.flipped{cursor:default;min-height:340px}
+.wf-card.flipped:hover{transform:none}
+
+/* .wf-inner fills the card via flex (flex:1) so it has a concrete height to
+   size the 3-D faces against — no reliance on percentage-vs-min-height. */
+.wf-inner{position:relative;flex:1 1 auto;width:100%;display:flex;flex-direction:column;
+  transform-style:preserve-3d;transition:transform .5s var(--ease-out)}
+.wf-card.flipped .wf-inner{transform:rotateY(180deg)}
+
+.wf-front,.wf-back{backface-visibility:hidden;-webkit-backface-visibility:hidden}
+/* Front is the flow face: flex:1 makes it fill .wf-inner's height. */
+.wf-front{padding:16px;display:flex;flex-direction:column;gap:11px;flex:1 1 auto}
+/* Back overlays the front (absolute + inset:0 resolves against .wf-inner's
+   established height), rotated so it faces out when the card is flipped. */
+.wf-back{position:absolute;inset:0;transform:rotateY(180deg);
+  display:flex;flex-direction:column;overflow:hidden;border-radius:var(--r-lg)}
+/* Back is inert (pointer + visibility) until flipped, so the front stays clickable. */
+.wf-card:not(.flipped) .wf-back{pointer-events:none}
+.wf-card.flipped .wf-front{pointer-events:none}
+
+.wf-top{display:flex;align-items:center;justify-content:space-between}
+.wf-ic{width:38px;height:38px;border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;
+  background:color-mix(in srgb,var(--cat,var(--accent)) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--cat,var(--accent)) 30%,transparent);color:var(--cat,var(--accent))}
+.wf-ic svg{width:19px;height:19px}
+/* Gear: an unobtrusive button sitting in the icon-chip; no default button chrome. */
+.wf-gear{appearance:none;-webkit-appearance:none;background:none;border:none;padding:0;margin:0;
+  width:100%;height:100%;display:flex;align-items:center;justify-content:center;
+  color:inherit;cursor:pointer;border-radius:inherit;transition:color .15s,transform .15s var(--ease-out)}
+.wf-gear svg{width:19px;height:19px}
+.wf-gear:hover{color:var(--ink);transform:rotate(35deg)}
+.wf-gear:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wf-cat{font-family:var(--font-mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-faint);padding:3px 7px;border-radius:3px;background:var(--surface-subtle)}
+/* B10 #23: clamp title (2 lines) + description (3 lines) so a long recipe
+   description can't balloon one card taller than its row-neighbours. The
+   description is NOT flex-grown (T1: flex:0 1 auto on .wf-card p below — a
+   grown clamp box sliced a partial 4th line); .wf-foot's margin-top:auto pins
+   the footer to the bottom instead. The grid stays align-items:start so a
+   FLIPPED card grows alone (see .wf-grid / .wf-card). */
+.wf-card h3{font-family:var(--font-display);font-size:14px;font-weight:700;color:var(--ink);letter-spacing:-.01em;line-height:1.3;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+/* T1: do NOT flex-grow the clamped description.  flex:1 stretched this box
+   past its 3-line clamp height inside the 200px card, so overflow:hidden sliced
+   a partial 4th line ("4th line cut off").  flex:0 1 auto keeps it at the
+   natural -webkit-line-clamp:3 height (exactly 3 lines, clean ellipsis); the
+   footer's margin-top:auto fills the remaining card height instead. */
+.wf-card p{font-size:11.5px;color:var(--ink-mute);line-height:1.5;flex:0 1 auto;padding-bottom:2px;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+.wf-foot{margin-top:auto;display:flex;align-items:center;gap:7px;font-family:var(--font-mono);font-size:10px;color:var(--ink-faint)}
+.wf-foot .go{margin-left:auto;color:var(--accent);display:inline-flex;align-items:center;gap:4px;opacity:0;transform:translateX(-4px);transition:.18s}
+.wf-foot .go svg{width:12px;height:12px}
+.wf-card:not(.flipped):hover .wf-foot .go{opacity:1;transform:translateX(0)}
+/* Kind badge (compound / comparison) on launcher grid cards.  The .wf-foot
+   scope keeps these rules sandboxed to the launcher grid; runs-page.css defines
+   the same colour tokens for .rk-compound / .rk-comparison on the Runs page.
+   The colours are intentionally duplicated because the two stylesheets serve
+   different pages that are never co-loaded on the dashboard. */
+.wf-foot .rk-badge{font-family:var(--font-mono);font-size:8px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:3px 6px;border-radius:3px;flex:0 0 auto;border:1px solid var(--hairline);background:var(--surface-subtle);color:var(--ink-faint)}
+.wf-foot .rk-compound{color:#fbbf24;border-color:rgba(251,191,36,.35)}
+.wf-foot .rk-comparison{color:var(--nav-investigation,#a78bfa);border-color:color-mix(in srgb,var(--nav-investigation,#a78bfa) 35%,transparent)}
+
+/* ---- CARD BACK: CONFIG SURFACE (_card_config.html fragment) ---- */
+.wf-cfg{display:flex;flex-direction:column;height:100%;background:var(--surface-card)}
+/* Pinned header */
+.wf-cfg-head{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:14px 16px 10px;border-bottom:1px solid var(--hairline-soft);flex:none}
+.wf-cfg-title{font-family:var(--font-display);font-size:13px;font-weight:700;color:var(--ink);
+  letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wf-cfg-close{appearance:none;-webkit-appearance:none;background:none;border:none;padding:0;margin:0;
+  width:24px;height:24px;flex:none;display:flex;align-items:center;justify-content:center;
+  font-size:18px;line-height:1;color:var(--ink-faint);cursor:pointer;border-radius:var(--r-sm);transition:.15s}
+.wf-cfg-close:hover{color:var(--ink);background:var(--surface-subtle)}
+.wf-cfg-close:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+/* Inline validation banner */
+.wf-cfg-error{margin:10px 16px 0;padding:7px 10px;border-radius:var(--r-sm);font-size:11.5px;
+  color:var(--sev-critical-strong);background:var(--sev-critical-bg);
+  border:1px solid color-mix(in srgb,var(--sev-critical) 40%,transparent)}
+
+/* Segmented tab control.
+   HANDOFF (Task-4 JS): tab state lives in TWO places that must stay in sync —
+   switching tabs MUST toggle BOTH the `.wf-tab[aria-selected]` flag on the tab
+   buttons AND the matching `.wf-cfg-panel` `.active` / `[hidden]` on the panels. */
+.wf-tabs{display:flex;gap:3px;margin:10px 16px 0;padding:3px;flex:none;
+  background:var(--surface-subtle);border:1px solid var(--hairline);border-radius:var(--r-md)}
+.wf-tab{flex:1;appearance:none;-webkit-appearance:none;border:none;cursor:pointer;
+  font-family:var(--font-body);font-size:11px;font-weight:600;padding:5px 10px;border-radius:var(--r-sm);
+  background:transparent;color:var(--ink-mute);transition:.15s}
+.wf-tab:hover{color:var(--ink-strong)}
+.wf-tab[aria-selected="true"]{background:rgba(var(--accent-rgb),.14);color:var(--accent);
+  box-shadow:inset 0 0 0 1px rgba(var(--accent-rgb),.35)}
+.wf-tab:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+/* Form: header/tabs/footer are flex-none; the panels scroll. */
+.wf-cfg-form{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;overflow:hidden}
+.wf-cfg-panel{flex:1 1 auto;min-height:0;overflow-y:auto;padding:12px 16px}
+/* Tab panels: inactive hidden by default (sane even before JS wires switching). */
+.wf-cfg-panel[data-tabpanel]{display:none}
+.wf-cfg-panel[data-tabpanel].active{display:block}
+/* The fragment ships [data-tabpanel="report"] visible (aria-selected) and the
+   advanced panel with the `hidden` attribute; honor that before JS toggles. */
+.wf-cfg-panel[data-tabpanel="report"]{display:block}
+.wf-cfg-panel[data-tabpanel][hidden]{display:none}
+.wf-cfg-panel[data-tabpanel].active[hidden]{display:block}
+/* Compact the reused app.css form rows inside the small card back. */
+.wf-cfg-panel .form-group{margin:0 0 11px}
+.wf-cfg-panel .form-group:last-child{margin-bottom:0}
+
+/* Inherit indicator — muted "Settings: <value>" hint (matches Settings page). */
+.wf-cfg-inherit{display:block;margin-top:4px;font-family:var(--font-mono);font-size:9.5px;
+  letter-spacing:.02em;color:var(--ink-faint)}
+
+/* Pinned footer actions */
+.wf-cfg-actions{display:flex;flex-wrap:wrap;gap:7px;flex:none;
+  padding:11px 16px;border-top:1px solid var(--hairline-soft);background:var(--surface-card)}
+.wf-cfg-actions .btn{flex:1 1 auto;font-size:11.5px;padding:7px 10px;white-space:nowrap}
+.wf-cfg-actions .cardcfg-reset{flex-basis:100%}
+
+/* ---- REDUCED MOTION: instant face swap, no 3-D transform ---- */
+body.no-motion .wf-inner{transition:none;transform:none}
+body.no-motion .wf-card.flipped .wf-inner{transform:none}
+body.no-motion .wf-front,body.no-motion .wf-back{backface-visibility:visible;-webkit-backface-visibility:visible}
+body.no-motion .wf-back{position:absolute;inset:0;transform:none;visibility:hidden}
+body.no-motion .wf-card.flipped .wf-front{visibility:hidden}
+body.no-motion .wf-card.flipped .wf-back{visibility:visible}
+
+/* ---- RUN BAR ---- */
+/* B9 #17: two-row layout (row 1 = scope cascade, row 2 = report + actions) +
+   sticky. The run bar lives inside .main (the scroll container, which already
+   starts below the fixed .topbar), so position:sticky;top:0 parks it just under
+   the topbar; the solid card bg keeps scrolling content from bleeding through. */
+.runbar{display:flex;flex-direction:column;gap:10px;background:var(--surface-card);border:1px solid var(--hairline);border-radius:var(--r-lg);padding:12px 16px;margin-bottom:16px;box-shadow:0 8px 30px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.03);position:sticky;top:0;z-index:20}
+.rb-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.rb-group{display:flex;align-items:center;gap:8px;min-width:0}
+.rb-lbl{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint);flex-shrink:0}
+/* Overflow cap (B9 #17): cascade selects could run off the right edge — clamp
+   width and ellipsize the selected label (mirrors .run-name / .run-scope). */
+.rb-sel{background:var(--surface-subtle);border:1px solid var(--hairline);border-radius:var(--r-sm);color:var(--ink);font-family:var(--font-body);font-size:12.5px;padding:7px 10px;cursor:pointer;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rb-sel:focus{outline:none;border-color:var(--accent)}
+.rb-sel.rb-wide{min-width:230px;max-width:360px}
+.rb-period{max-width:130px;font-family:var(--font-mono);cursor:text}
+.rb-div{width:1px;height:26px;background:var(--hairline)}
+/* B11 #19a: the VC baseline/current pickers stay visible but dimmed when the
+   "All versions" toggle is on (the `inert` attr blocks interaction). Makes the
+   version pickers discoverable instead of hidden. */
+.vc-pair-inert{opacity:.5;transition:opacity .15s var(--ease-out)}
+.runbar .rb-pinned{margin-left:auto;font-size:11px;color:var(--ink-mute);display:inline-flex;align-items:center;gap:6px;font-family:var(--font-mono);white-space:nowrap}
+.runbar .rb-pinned svg{width:12px;height:12px;color:var(--accent)}
+.runbar .rb-pinned b{color:var(--ink-strong);font-weight:600}
+/* × unpin control — used in both the run-bar readout and the sidebar pinned item */
+.rb-unpin{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
+  padding:0;margin-left:4px;border:none;border-radius:var(--r-sm);background:transparent;
+  color:var(--ink-faint);cursor:pointer;transition:.15s;flex:0 0 auto}
+.rb-unpin:hover{background:rgba(var(--accent-rgb),.12);color:var(--accent)}
+.rb-unpin svg{width:11px!important;height:11px!important;color:inherit!important}
+
+/* ---- SORT CHIPS ---- */
+.sort{display:flex;gap:6px;align-items:center}
+.sort .sl{font-family:var(--font-mono);font-size:9.5px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.1em;margin-right:2px}
+.sort .sc{font-size:11px;font-weight:600;padding:4px 10px;border-radius:var(--r-sm);cursor:pointer;background:var(--surface-subtle);border:1px solid var(--hairline);color:var(--ink-body)}
+.sort .sc.on{background:rgba(var(--accent-rgb),.12);border-color:rgba(var(--accent-rgb),.4);color:var(--accent)}
+
+/* ---- PANEL REFRESH ---- */
+.prefresh{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-family:var(--font-mono);color:var(--ink-mute);border:1px solid var(--hairline);background:var(--surface-subtle);border-radius:var(--r-sm);padding:4px 9px;cursor:pointer}
+.prefresh:hover{border-color:var(--accent);color:var(--accent)}
+.prefresh svg{width:12px;height:12px}
+.prefresh.spin svg{animation:rfspin .8s linear}
+@keyframes rfspin{to{transform:rotate(360deg)}}
+
+/* ---- MAIN REORDER (launcher + secondary grid below KPIs) ---- */
+.main{display:flex;flex-direction:column}
+.launcher-head,.wf-grid{order:1}
+
+/* ---- GLOW / DENSITY — CC-class overrides ---- */
+/* glow: flat */
+.glow-flat .kpi-band{box-shadow:0 2px 10px rgba(0,0,0,.3)}
+/* glow: cinematic */
+.glow-cinematic .panel{box-shadow:0 8px 30px rgba(0,0,0,.5),0 0 26px rgba(var(--accent-rgb),.07)}
+.glow-cinematic .kpi-band{box-shadow:0 8px 50px rgba(var(--accent-rgb),.13),0 8px 40px rgba(0,0,0,.5)}
+.glow-cinematic #ring{filter:drop-shadow(0 0 15px rgba(var(--accent-rgb),.85))!important}
+.glow-cinematic .kpi.feature{box-shadow:inset 0 0 34px rgba(var(--accent-rgb),.07)}
+.glow-cinematic .ring-wrap .score .grade{text-shadow:0 0 18px rgba(var(--accent-rgb),.4)}
+/* density: calm */
+.density-calm .kpi{padding:20px 22px}
+.density-calm .panel{padding:20px 22px}
+.density-calm .grid{gap:20px}
+.density-calm .kpi-band{margin-bottom:22px}
+/* density: cockpit */
+.density-cockpit .kpi{padding:11px 13px}
+.density-cockpit .kpi .kval{font-size:25px}
+.density-cockpit .panel{padding:12px 14px}
+.density-cockpit .grid{gap:11px;margin-bottom:11px}
+.density-cockpit .kpi-band{margin-bottom:12px}
+
+/* ---- CONFIGURE MODAL (prerun form in a centered modal) ---- */
+/* Separate backdrop so it stacks above #ov without competing */
+.cfg-ov{position:fixed;inset:0;z-index:78;background:rgba(5,8,16,.60);
+  backdrop-filter:blur(4px);display:none}
+.cfg-ov.open{display:block}
+/* Modal wrapper: centered, scrollable, tall-enough for the prerun panel */
+#cfg-modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  z-index:79;width:min(600px,94vw);max-height:90vh;overflow-y:auto;
+  background:var(--surface-card);border:1px solid var(--hairline);
+  border-radius:var(--r-lg);box-shadow:0 30px 80px rgba(0,0,0,.65),
+  0 0 0 1px rgba(var(--accent-rgb),.1);display:none}
+#cfg-modal.open{display:block;animation:palin .2s var(--ease-out)}
+/* Bridge Phase-2 tokens → legacy prerun CSS variables */
+#cfg-modal{
+  --color-bg-card:var(--surface-card);
+  --color-border:var(--hairline);
+  --color-border-subtle:var(--hairline-soft);
+  --color-text-primary:var(--ink);
+  --color-text-heading:var(--ink-strong);
+  --color-text-muted:var(--ink-mute);
+  --color-text-label:var(--ink-body);
+  --color-input-bg:var(--surface-subtle);
+  --color-input-border:var(--hairline);
+  --color-input-focus:var(--accent);
+  --color-btn-primary-bg:var(--accent);
+  --color-btn-primary-text:#0A0E1A;
+  --color-btn-default-bg:var(--surface-muted);
+  --color-btn-default-text:var(--ink-body);
+  --color-prerun-error-bg:rgba(248,113,113,.12);
+  --color-prerun-error-border:#f87171;
+  --color-prerun-error-text:#f87171;
+  --shadow-overlay:0 8px 40px rgba(0,0,0,.5);
+  font-family:var(--font-body);
+  font-size:14px;
+  color:var(--ink-body);
+}
+/* Inner spacing — the prerun panel ships with no padding of its own in the
+   shell (app.css's .prerun-panel rule is not loaded on cockpit pages), so its
+   content otherwise reads flush to the modal edges. Inset the panel on the
+   Precision Noir rhythm (between .set-card's 18px and the legacy 24px). */
+#cfg-modal .prerun-panel{padding:20px}
+/* Even out the header / inline-error gutters so they line up with the padded
+   panel edges instead of carrying their own asymmetric margins. */
+#cfg-modal .prerun-header{display:flex;align-items:flex-start;
+  justify-content:space-between;gap:12px;margin-bottom:18px}
+/* (the inline-error gutter is set to 14px on its dedicated rule below) */
+/* Ensure form inputs look right in the Phase-2 shell.
+   Shared field chrome for the config surfaces: card backs
+   (.wf-cfg-form — per-recipe .cardcfg-form) AND the prerun modal (#cfg-modal).
+   Closes the card-back "another app" gap + the modal's missing input[type=date]
+   in one block. (config-surface-visual-cohesion spec §5 #1) */
+.wf-cfg-form .form-group input[type="text"],
+.wf-cfg-form .form-group input[type="number"],
+.wf-cfg-form .form-group input[type="date"],
+.wf-cfg-form .form-group textarea,
+.wf-cfg-form .form-group select,
+#cfg-modal input[type="text"],
+#cfg-modal input[type="number"],
+#cfg-modal input[type="date"],
+#cfg-modal textarea,
+#cfg-modal select{
+  background:var(--surface-subtle);border:1px solid var(--hairline);
+  border-radius:var(--r-sm);color:var(--ink);padding:7px 10px;
+  font-family:var(--font-body);font-size:13px;width:100%;box-sizing:border-box}
+.wf-cfg-form .form-group input:focus,
+.wf-cfg-form .form-group textarea:focus,
+.wf-cfg-form .form-group select:focus,
+#cfg-modal input:focus,#cfg-modal textarea:focus,#cfg-modal select:focus{
+  outline:none;border-color:var(--accent)}
+#cfg-modal label{font-size:12px;color:var(--ink-mute);display:block;margin-bottom:5px}
+/* Card-back field labels (the modal keeps #cfg-modal label above). Direct-child
+   + :not(.toggle) so this never clobbers a .toggle switch or a .finding-type-cb
+   chip (chips aren't direct children of .form-group). (spec §5 #2) */
+.wf-cfg-form .form-group > label:not(.toggle){
+  font-size:12px;color:var(--ink-mute);display:block;margin-bottom:5px}
+.wf-cfg-form .form-row > label:not(.toggle){margin-bottom:0}
+#cfg-modal .form-group{margin-bottom:14px}
+.wf-cfg-form .form-row,
+#cfg-modal .form-row{display:flex;align-items:center;justify-content:space-between}
+#cfg-modal .btn.btn-primary{
+  background:var(--accent);color:#0A0E1A;border:none;
+  padding:9px 18px;border-radius:var(--r-md);font-weight:700;
+  font-size:13px;cursor:pointer}
+#cfg-modal .btn.btn-default{
+  background:var(--surface-muted);color:var(--ink-body);border:1px solid var(--hairline);
+  padding:9px 18px;border-radius:var(--r-md);font-size:13px;cursor:pointer}
+#cfg-modal details.form-section{
+  border:1px solid var(--hairline);border-radius:var(--r-md);
+  margin-bottom:12px;overflow:hidden}
+#cfg-modal details.form-section summary{
+  padding:10px 14px;cursor:pointer;font-weight:600;font-size:12px;
+  color:var(--ink-body);background:var(--surface-subtle)}
+#cfg-modal details.form-section>div{padding:12px 14px}
+#cfg-modal .form-section-static{margin-bottom:12px}
+#cfg-modal .form-section-static-title{
+  font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--ink-faint);margin-bottom:10px}
+.wf-cfg-form small.form-hint,
+#cfg-modal small.form-hint{font-size:11px;color:var(--ink-faint);display:block;margin-top:3px}
+.wf-cfg-form small.form-hint-warning,
+#cfg-modal small.form-hint-warning{font-size:11px;color:var(--sev-medium);display:block;margin-top:3px}
+.wf-cfg-form small.form-hint-info,
+#cfg-modal small.form-hint-info{font-size:11px;color:var(--sev-info);display:block;margin-bottom:8px}
+/* deployment-notes counter — command-center.css had no .char-counter rule
+   (only legacy app.css / settings-page.css, neither loaded here); author one.
+   It also carries .form-hint above for color/size; this just right-aligns it.
+   (spec §5 #6) */
+.wf-cfg-form .char-counter,#cfg-modal .char-counter{text-align:right}
+#cfg-modal .prerun-header h2{font-family:var(--font-display);font-size:16px;color:var(--ink);margin:0}
+#cfg-modal .prerun-recipes{font-size:12px;color:var(--ink-mute);margin-top:3px}
+#cfg-modal .btn-close{
+  background:none;border:none;font-size:20px;color:var(--ink-faint);
+  cursor:pointer;padding:0;line-height:1;margin-left:auto}
+#cfg-modal .btn-close:hover{color:var(--ink)}
+#cfg-modal .prerun-actions{display:flex;gap:8px;margin-top:20px;
+  padding-top:14px;border-top:1px solid var(--hairline)}
+.wf-cfg-form .version-picker-row,
+#cfg-modal .version-picker-row{display:flex;gap:8px;margin-bottom:6px}
+/* picker selects must GROW to fill the row (flex-basis:0 governs over the
+   field rule's width:100%), so the constrain-select carve-outs never catch
+   them. (spec §5 #1) */
+.wf-cfg-form .version-picker-select,
+#cfg-modal .version-picker-select{flex:1 1 0;min-width:0}
+#cfg-modal .input-with-btn{display:flex;gap:6px}
+#cfg-modal .btn.btn-sm{padding:4px 10px;font-size:12px}
+/* Toggle switch — shared across card backs + modal (spec §5 #3) */
+.wf-cfg-form .toggle,
+#cfg-modal .toggle{position:relative;display:inline-block;width:38px;height:22px}
+.wf-cfg-form .toggle input,
+#cfg-modal .toggle input{opacity:0;width:0;height:0}
+.wf-cfg-form .toggle-slider,
+#cfg-modal .toggle-slider{position:absolute;inset:0;background:var(--surface-muted);
+  border-radius:22px;cursor:pointer;transition:.2s}
+.wf-cfg-form .toggle input:checked+.toggle-slider,
+#cfg-modal .toggle input:checked+.toggle-slider{background:var(--accent)}
+.wf-cfg-form .toggle-slider:before,
+#cfg-modal .toggle-slider:before{content:'';position:absolute;width:16px;height:16px;
+  left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s}
+.wf-cfg-form .toggle input:checked+.toggle-slider:before,
+#cfg-modal .toggle input:checked+.toggle-slider:before{transform:translateX(16px)}
+/* Checkbox groups — orderly grid of token chips, replacing the ragged
+   flex-wrap. Cells are sized to fit the longest token (no truncation/overflow,
+   no markup change). The short-token finding-type group (ft_cb) gets tighter
+   cells / more columns. Checked tint via :has() (CSS-only parent-label styling;
+   degrades to the tokenized-but-untinted chip on engines without :has()).
+   Covers card backs + modal; the Builder's .wfb-checkgroup mirror is in
+   builder-page.css. (spec §5 #4) */
+.wf-cfg-form .finding-type-checkboxes,
+#cfg-modal .finding-type-checkboxes{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:7px}
+.wf-cfg-form .finding-type-checkboxes:has(input[name="ft_cb"]),
+#cfg-modal .finding-type-checkboxes:has(input[name="ft_cb"]){
+  grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
+.wf-cfg-form .finding-type-cb,
+#cfg-modal .finding-type-cb{
+  display:flex;align-items:center;gap:6px;min-width:0;
+  padding:6px 9px;border-radius:var(--r-sm);
+  background:var(--surface-subtle);border:1px solid var(--hairline);
+  color:var(--ink-body);font-size:12px;line-height:1.3;cursor:pointer;
+  transition:background .15s,border-color .15s}
+.wf-cfg-form .finding-type-cb:hover,
+#cfg-modal .finding-type-cb:hover{background:var(--surface-hover)}
+.wf-cfg-form .finding-type-cb input,
+#cfg-modal .finding-type-cb input{
+  accent-color:var(--accent);width:13px;height:13px;flex:0 0 auto;margin:0}
+.wf-cfg-form .finding-type-cb:has(input:checked),
+#cfg-modal .finding-type-cb:has(input:checked){
+  background:rgba(var(--accent-rgb),.12);
+  border-color:rgba(var(--accent-rgb),.45);color:var(--ink)}
+/* ---- Field sizing carve-outs — placed AFTER the full-width base rule so they
+   win by source order. Short controls don't stretch; selectors match each
+   field's ACTUAL tag/type/name (period & cache_ttl are type=text, not number,
+   so they are carved by name). regulatory stays full-width on purpose.
+   (config-surface-visual-cohesion spec §5 #1) ---- */
+.wf-cfg-form .form-group input[type="date"],
+#cfg-modal input[type="date"]{width:auto;max-width:170px}
+.wf-cfg-form .form-group input[type="number"],
+#cfg-modal input[type="number"]{width:90px}
+.wf-cfg-form .form-group input[name="period"],
+.wf-cfg-form .form-group input[name="cache_ttl"],
+#cfg-modal input[name="period"],
+#cfg-modal input[name="cache_ttl"]{width:auto;max-width:150px}
+.wf-cfg-form .form-group select[name="tp_gate"],
+.wf-cfg-form .form-group select[name="component_match"],
+.wf-cfg-form .form-group select[name="ai_depth"],
+#cfg-modal select[name="tp_gate"],
+#cfg-modal select[name="component_match"],
+#cfg-modal select[name="ai_depth"]{width:auto;max-width:220px}
+/* ---- Custom date-range row: one "From → To" control, dates at natural width,
+   wraps to stacked on a very narrow card. (spec §5 #5) ---- */
+.wf-cfg-range,
+#cfg-modal .prerun-range{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.wf-cfg-range input[type="date"],
+#cfg-modal .prerun-range input[type="date"]{flex:0 1 auto;margin:0}
+.wf-cfg-range-sep,
+#cfg-modal .prerun-range-sep{color:var(--ink-mute);font-size:12px;flex:0 0 auto}
+/* ---- Native control theming: dark pickers/calendar glyphs in the (default)
+   dark cockpit; follow the theme under body.light so a light cockpit doesn't
+   get forced-dark native controls. (spec §5 #7) ---- */
+/* ---- SP3 file-upload control ---- */
+.fs-upload{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.fs-upload .fs-upload-input{font-size:11px;color:var(--ink-body);flex:1 1 auto;min-width:0}
+.fs-upload .fs-upload-name{font-size:11px;color:var(--ink-mute);font-family:var(--font-mono);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px}
+.fs-upload .fs-upload-clear{appearance:none;background:none;border:none;cursor:pointer;
+  color:var(--ink-faint);font-size:14px;line-height:1;padding:0 2px;flex:0 0 auto}
+.fs-upload .fs-upload-clear:hover{color:var(--ink)}
+
+/* ---- APPLY VEX FILE MODAL (SP3 §7) — mirrors the configure-modal chrome ---- */
+#vexfile-modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  z-index:79;width:min(480px,94vw);max-height:90vh;overflow-y:auto;
+  background:var(--surface-card);border:1px solid var(--hairline);
+  border-radius:var(--r-lg);box-shadow:0 30px 80px rgba(0,0,0,.65),
+  0 0 0 1px rgba(var(--accent-rgb),.1);display:none;color-scheme:dark;
+  font-family:var(--font-body);font-size:14px;color:var(--ink-body)}
+body.light #vexfile-modal{color-scheme:light}
+#vexfile-modal.open{display:block;animation:palin .2s var(--ease-out)}
+#vexfile-modal .prerun-panel{padding:20px}
+#vexfile-modal .prerun-header{display:flex;align-items:flex-start;
+  justify-content:space-between;gap:12px;margin-bottom:18px}
+#vexfile-modal .prerun-header h2{font-family:var(--font-display);font-size:16px;
+  color:var(--ink);margin:0;display:flex;align-items:center;gap:8px}
+#vexfile-modal .prerun-recipes{font-size:12px;color:var(--ink-mute);margin-top:4px}
+#vexfile-modal .prerun-recipes code{font-family:var(--font-mono);font-size:11px;color:var(--ink-body)}
+#vexfile-modal .btn-close{background:none;border:none;font-size:20px;color:var(--ink-faint);
+  cursor:pointer;padding:0;line-height:1;margin-left:auto}
+#vexfile-modal .btn-close:hover{color:var(--ink)}
+#vexfile-modal .form-group{margin-bottom:14px}
+#vexfile-modal label{font-size:12px;color:var(--ink-mute);display:block;margin-bottom:5px}
+#vexfile-modal .form-row{display:flex;align-items:center;justify-content:space-between}
+#vexfile-modal small.form-hint{font-size:11px;color:var(--ink-faint);display:block;margin-top:3px}
+#vexfile-modal small.form-hint-warning{font-size:11px;color:var(--sev-medium);display:block;margin-top:3px}
+#vexfile-modal .prerun-actions{display:flex;gap:8px;margin-top:18px;
+  padding-top:14px;border-top:1px solid var(--hairline)}
+#vexfile-modal .btn.btn-primary{background:var(--accent);color:#0A0E1A;border:none;
+  padding:9px 18px;border-radius:var(--r-md);font-weight:700;font-size:13px;cursor:pointer}
+#vexfile-modal .btn.btn-default{background:var(--surface-muted);color:var(--ink-body);
+  border:1px solid var(--hairline);padding:9px 18px;border-radius:var(--r-md);
+  font-size:13px;cursor:pointer}
+#vexfile-modal .btn:disabled{opacity:.5;cursor:not-allowed}
+#vexfile-modal .wf-cfg-error{background:rgba(248,113,113,.12);border:1px solid #f87171;
+  color:#f87171;border-radius:var(--r-sm);padding:8px 10px;font-size:12px;margin-bottom:12px}
+/* Toggle switch — self-contained (the shared #cfg-modal/.wf-cfg-form toggle
+   rules are id/class scoped and don't reach this modal). */
+#vexfile-modal .toggle{position:relative;display:inline-block;width:38px;height:22px}
+#vexfile-modal .toggle input{opacity:0;width:0;height:0}
+#vexfile-modal .toggle-slider{position:absolute;inset:0;background:var(--surface-muted);
+  border-radius:22px;cursor:pointer;transition:.2s}
+#vexfile-modal .toggle input:checked+.toggle-slider{background:var(--accent)}
+#vexfile-modal .toggle-slider:before{content:'';position:absolute;width:16px;height:16px;
+  left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s}
+#vexfile-modal .toggle input:checked+.toggle-slider:before{transform:translateX(16px)}
+.vexfile-summary{background:var(--surface-subtle);border:1px solid var(--hairline);
+  border-radius:var(--r-md);padding:12px 14px;margin-bottom:4px}
+.vexfile-summary-head{font-size:11px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.08em;color:var(--ink-faint);margin-bottom:8px}
+.vexfile-summary-row{display:flex;justify-content:space-between;font-size:12px;
+  color:var(--ink-body);padding:2px 0}
+.vexfile-summary-row.sub{color:var(--ink-mute);padding-left:10px;
+  font-family:var(--font-mono);font-size:11px}
+.vexfile-summary-row b{color:var(--ink)}
+
+.wf-cfg-form,#cfg-modal,.wfb-inspector{color-scheme:dark}
+body.light .wf-cfg-form,
+body.light #cfg-modal,
+body.light .wfb-inspector{color-scheme:light}
+#cfg-modal details.form-subsection{border:1px solid var(--hairline-soft);
+  border-radius:var(--r-sm);margin-top:8px;overflow:hidden}
+#cfg-modal details.form-subsection summary{padding:7px 12px;font-size:11px;
+  cursor:pointer;background:var(--surface-subtle);color:var(--ink-mute)}
+#cfg-modal details.form-subsection>div{padding:10px 12px}
+#cfg-modal .prerun-error{margin:0 0 14px;padding:10px 14px;
+  background:var(--sev-critical-bg);border:1px solid var(--sev-critical);
+  border-radius:var(--r-sm);color:var(--sev-critical);font-size:12px}

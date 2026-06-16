@@ -1,0 +1,762 @@
+{# Finite State Console Shell — layout chrome + dense panel/table/KPI
+   classes ported from the Operations Console mockup. Every color flows
+   through design tokens in tokens.css (included via _design_system.html
+   → _tokens_inline.html), so dark/light switching is automatic.
+
+   Usage (include pattern — console is NOT a full-document template
+   like _briefing_shell.html; recipes own their <!DOCTYPE>/<head>/<body>):
+
+     {% if render_mode != 'fragment' %}
+     <!DOCTYPE html>
+     <html lang="en">
+     <head>
+         {% include "_design_system.html" %}
+         {% include "_console_shell.html" %}
+         {% include "_echarts_ready.html" %}   (or _chart_ready.html)
+     </head>
+     <body class="console">
+     {% endif %}
+     ...content...
+     {% if render_mode != 'fragment' %}
+     </body>
+     </html>
+     {% endif %}
+
+   Include order matters: _design_system.html supplies tokens + the
+   shared class library; this shell adds the console-specific layout
+   on top. Then _console_macros.html (imported, not included) for
+   chrome macros (topbar, status_bar, panel_head, kpi_cell). See
+   triage_prioritization.html for a full example.
+
+   Templates can include this even if they aren't using every section — the
+   classes are independent. Inter + JetBrains Mono fonts are loaded here so
+   templates don't need to add a separate Google Fonts link tag.
+
+   Fragment-mode contract (T0b § item 3):
+   - Console recipes own the {% if render_mode != 'fragment' %} wrapper
+     around their full document chrome (shown above). This is the CRA
+     pattern (cra_compliance.html). The wrapper strips DOCTYPE/<head>/<body>
+     in fragment mode so the fragment_extractor can scope styles + the
+     compound assembler can supply chrome at bundle level.
+   - Chart container IDs use {{ fragment_scope_class }} as a prefix:
+       <div id="{{ fragment_scope_class }}-bandDistribution" ...>
+     fragment_scope_class is set by HTMLRenderer._prepare_template_data
+     for EVERY render mode (T0b), so the same ID scheme works in
+     standalone HTML, PDF, and fragment-mode renders.
+   - Chart init code does direct getElementById:
+       document.getElementById('{{ fragment_scope_class }}-bandDistribution')
+     The namespaced ID is globally unique within a compound document, so
+     no wrapper-scoped queries are needed.
+   - No global JS state; chart init wrapped in IIFEs or section-scoped
+     functions so two console recipes can coexist in one compound bundle. #}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+    /* =========================================================
+       Console body base — override the design system's defaults
+       so the page sits flush with the topbar / status bar.
+       ========================================================= */
+    html, body { height: 100%; }
+    body.console {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--ink-strong);
+        background: var(--surface-page);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+    .mono    { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace; }
+    .tabular { font-variant-numeric: tabular-nums; }
+
+    /* =========================================================
+       TOP BAR
+       ========================================================= */
+    .topbar {
+        height: 44px;
+        background: var(--surface-card);
+        border-bottom: 1px solid var(--hairline);
+        display: flex;
+        align-items: center;
+        padding: 0 16px;
+        gap: 12px;
+        font-size: 12px;
+        color: var(--ink-body);
+    }
+    .topbar .brand {
+        display: inline-flex; align-items: center; gap: 4px;
+        color: var(--ink); font-weight: 600;
+        letter-spacing: 0.01em;
+    }
+    .topbar .brand-mark {
+        width: 16px; height: 16px;
+        display: inline-block;
+        flex-shrink: 0;
+    }
+    /* E1: configured logo (config.logo) rendered in the topbar brand
+       slot in place of the SVG mark. Capped so it sits on the topbar row. */
+    .topbar .brand-logo {
+        height: 18px; max-height: 18px; width: auto;
+        display: inline-block; flex-shrink: 0;
+        object-fit: contain;
+    }
+    /* E1: print-only brand block. Hidden on screen (the topbar is the
+       screen chrome); revealed in @media print since the topbar goes
+       display:none there — mirrors customer_brief.html's screen-hide /
+       print-show toggle for its PDF cover. */
+    .print-brand { display: none; }
+    .print-brand .brand-logo { height: 22px; max-height: 22px; width: auto; object-fit: contain; }
+    .print-brand .brand-mark { width: 18px; height: 18px; vertical-align: middle; }
+    .topbar .crumb { color: var(--ink-body); }
+    .topbar .crumb::before { content: ' / '; color: var(--ink-faint); margin: 0 4px; }
+    .topbar .crumb.active { color: var(--ink); }
+    .topbar .pill {
+        margin-left: 12px;
+        padding: 2px 8px;
+        border-radius: var(--r-sm);
+        background: rgba(var(--accent-rgb), 0.12);
+        color: var(--accent-teal);
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+        border: 1px solid rgba(var(--accent-rgb), 0.30);
+    }
+    .topbar .spacer { flex: 1; }
+    .topbar .meta {
+        color: var(--ink-mute);
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+    }
+    .topbar .meta strong { color: var(--ink-strong); font-weight: 500; }
+    /* _action_buttons.html sets #fsConnectionBadge to position: fixed at
+       top-right when fs-report is serving. In the console layout we host it
+       inside the topbar's flex row instead so it doesn't overlap the theme
+       toggle / controls. */
+    .topbar #fsConnectionBadge {
+        position: static !important;
+        top: auto !important;
+        right: auto !important;
+        z-index: auto !important;
+        display: inline-flex;
+        align-items: center;
+    }
+    .topbar .btn {
+        padding: 4px 10px;
+        background: var(--surface-subtle);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-sm);
+        color: var(--ink-strong);
+        font-size: 11px;
+        text-decoration: none;
+        transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    .topbar .btn:hover {
+        background: var(--surface-hover);
+        border-color: var(--accent-teal);
+        color: var(--accent-teal);
+    }
+
+    /* =========================================================
+       LAYOUT — sidebar + main
+       ========================================================= */
+    .layout {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        min-height: calc(100vh - 44px - 24px); /* minus topbar + statusbar */
+    }
+    @media (max-width: 900px) {
+        .layout { grid-template-columns: 1fr; }
+        .sidebar { display: none; }
+    }
+
+    /* =========================================================
+       SIDEBAR
+       ========================================================= */
+    .sidebar {
+        background: var(--surface-card);
+        border-right: 1px solid var(--hairline);
+        padding: 20px 12px;
+        font-size: 12px;
+        position: sticky; top: 44px; align-self: start;
+        height: calc(100vh - 44px); overflow-y: auto;
+    }
+    .sidebar .group { margin-bottom: 24px; }
+    .sidebar .group-label {
+        font-size: 10px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        padding: 0 10px 8px;
+        font-weight: 600;
+    }
+    .sidebar a, .sidebar .row {
+        display: flex; align-items: center; gap: 10px;
+        padding: 6px 10px;
+        border-radius: var(--r-sm);
+        color: var(--ink-body);
+        text-decoration: none;
+        margin-bottom: 1px;
+    }
+    /* .row is informational only — no hover/cursor, slightly muted, no pointer */
+    .sidebar .row {
+        color: var(--ink-mute);
+        cursor: default;
+    }
+    .sidebar a:hover { background: var(--surface-subtle); color: var(--ink); }
+    .sidebar a.active { background: var(--surface-hover); color: var(--ink); }
+    .sidebar a.active::before {
+        content: '';
+        width: 2px; height: 14px;
+        background: var(--accent-teal);
+        border-radius: 2px;
+        margin-right: -3px; margin-left: -10px;
+    }
+    .sidebar a .num,
+    .sidebar .row .num {
+        margin-left: auto;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 10px;
+        color: var(--ink-body);
+        font-weight: 500;
+    }
+    .sidebar a.active .num { color: var(--ink); }
+    .sidebar .dot-glyph {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+    }
+
+    /* =========================================================
+       MAIN
+       ========================================================= */
+    .main { padding: 20px 24px 60px; min-width: 0; }
+
+    .page-head {
+        display: flex; align-items: flex-end; justify-content: space-between;
+        padding-bottom: 16px; margin-bottom: 20px;
+        border-bottom: 1px solid var(--hairline);
+        gap: 16px;
+        flex-wrap: wrap;
+    }
+    .page-head h1 {
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--ink);
+        letter-spacing: -0.01em;
+        display: flex; align-items: center; gap: 12px;
+        margin: 0;
+    }
+    .page-head h1 .badge {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+        padding: 3px 8px;
+        background: var(--surface-subtle);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-sm);
+        color: var(--ink-body);
+        font-weight: 500;
+    }
+    .page-head .subtitle {
+        color: var(--ink-mute);
+        font-size: 12px;
+        margin-top: 4px;
+    }
+    .page-head .controls {
+        display: flex; gap: 6px;
+    }
+    .page-head .controls button,
+    .page-head .controls a.btn-link {
+        padding: 5px 10px;
+        background: var(--surface-subtle);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-sm);
+        color: var(--ink-strong);
+        font-size: 11px;
+        cursor: pointer;
+        font-family: inherit;
+        text-decoration: none;
+    }
+    .page-head .controls button:hover,
+    .page-head .controls a.btn-link:hover {
+        border-color: var(--accent-teal);
+        color: var(--accent-teal);
+    }
+    .page-head .controls button.primary {
+        background: var(--accent-teal);
+        color: var(--surface-card);
+        border-color: var(--accent-teal);
+        font-weight: 500;
+    }
+
+    /* =========================================================
+       KPI BAR — compact single row
+       ========================================================= */
+    .kpi-bar {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 1px;
+        background: var(--hairline-soft);
+        border: 1px solid var(--hairline);
+        border-radius: 6px;
+        overflow: hidden;
+        margin-bottom: 20px;
+    }
+    .kpi-cell {
+        background: var(--surface-card);
+        padding: 14px 16px;
+    }
+    .kpi-cell .label {
+        font-size: 10px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink-mute);
+        margin-bottom: 4px;
+        font-weight: 600;
+        display: flex; align-items: center; gap: 6px;
+    }
+    .kpi-cell .label .dot {
+        width: 6px; height: 6px; border-radius: 50%;
+        display: inline-block;
+    }
+    .kpi-cell .value {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 22px;
+        font-weight: 500;
+        color: var(--ink);
+        font-variant-numeric: tabular-nums;
+        line-height: 1.1;
+    }
+    .kpi-cell .delta {
+        font-size: 10px;
+        color: var(--ink-mute);
+        font-family: 'JetBrains Mono', monospace;
+        margin-top: 2px;
+    }
+    .kpi-cell .delta.up   { color: var(--sev-low); }
+    .kpi-cell .delta.down { color: var(--sev-critical); }
+
+    /* Severity dot colors — used in kpi labels, sidebar rows, etc. */
+    .dot-critical { background: var(--sev-critical); }
+    .dot-high     { background: var(--sev-high); }
+    .dot-medium   { background: var(--sev-medium); }
+    .dot-low      { background: var(--sev-low); }
+    .dot-info     { background: var(--ink-mute); }
+    .dot-total    { background: var(--accent-teal); }
+
+    /* =========================================================
+       GRID — multi-panel rows
+       ========================================================= */
+    .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 16px;
+        margin-bottom: 20px;
+    }
+    .grid .span-2 { grid-column: span 2; }
+    .grid .span-3 { grid-column: span 3; }
+    @media (max-width: 1100px) {
+        .grid { grid-template-columns: 1fr 1fr; }
+        .grid .span-3, .grid .span-2 { grid-column: 1 / -1; }
+    }
+    @media (max-width: 700px) {
+        .grid { grid-template-columns: 1fr; }
+        .grid .span-2 { grid-column: 1; }
+    }
+
+    /* =========================================================
+       PANEL — generic dense card with accent bar on h2
+       ========================================================= */
+    .panel {
+        background: var(--surface-card);
+        border: 1px solid var(--hairline);
+        border-radius: 6px;
+        padding: 16px 18px;
+    }
+    .panel .head {
+        display: flex; align-items: center; justify-content: space-between;
+        margin-bottom: 14px;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+    .panel h2 {
+        font-size: 12px;
+        color: var(--ink);
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        display: flex; align-items: center; gap: 8px;
+        margin: 0;
+    }
+    .panel h2::before {
+        content: '';
+        width: 3px; height: 12px;
+        background: var(--accent-teal);
+        border-radius: 1px;
+    }
+    .panel .head .meta {
+        font-size: 10px;
+        color: var(--ink-mute);
+        font-family: 'JetBrains Mono', monospace;
+    }
+    .panel p {
+        color: var(--ink-body);
+        font-size: 12px;
+        line-height: 1.55;
+        margin-bottom: 12px;
+    }
+    .panel p:last-child { margin-bottom: 0; }
+
+    /* =========================================================
+       BAR LIST — stacked bars for component/project rankings
+       ========================================================= */
+    .bar-list { font-size: 12px; }
+    .bar-list .row {
+        display: grid;
+        grid-template-columns: 140px 1fr 40px;
+        align-items: center;
+        gap: 12px;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--hairline-soft);
+    }
+    .bar-list .row:last-child { border-bottom: none; }
+    .bar-list .row .name {
+        color: var(--ink-strong);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .bar-list .row .value {
+        font-family: 'JetBrains Mono', monospace;
+        text-align: right;
+        color: var(--ink);
+        font-variant-numeric: tabular-nums;
+        font-weight: 500;
+    }
+    .bar-list .bar {
+        height: 6px;
+        background: var(--surface-muted);
+        border-radius: 2px;
+        overflow: hidden;
+        display: flex;
+    }
+    .bar .seg { height: 100%; }
+    .seg-critical { background: var(--sev-critical); }
+    .seg-high     { background: var(--sev-high); }
+    .seg-medium   { background: var(--sev-medium); }
+    .seg-low      { background: var(--sev-low); }
+    .seg-info     { background: var(--ink-mute); }
+
+    /* =========================================================
+       FUNNEL — compact horizontal gate funnel
+       ========================================================= */
+    .funnel { font-size: 12px; }
+    .funnel .step {
+        display: grid;
+        grid-template-columns: 220px 1fr 50px;
+        gap: 12px;
+        align-items: center;
+        padding: 7px 0;
+        border-bottom: 1px solid var(--hairline-soft);
+    }
+    .funnel .step:last-child { border-bottom: none; }
+    .funnel .step .name {
+        color: var(--ink-strong);
+        display: flex; align-items: center; gap: 8px;
+    }
+    .funnel .step .name .marker {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 10px;
+        color: var(--ink-mute);
+    }
+    .funnel .step .bar {
+        height: 14px;
+        background: var(--surface-muted);
+        border-radius: 2px;
+        overflow: hidden;
+    }
+    .funnel .step .value {
+        text-align: right;
+        font-family: 'JetBrains Mono', monospace;
+        color: var(--ink);
+        font-weight: 500;
+    }
+    .funnel .step .bar > div {
+        height: 100%;
+        border-radius: 2px;
+    }
+
+    /* =========================================================
+       TABLE PANEL
+       ========================================================= */
+    .table-panel {
+        background: var(--surface-card);
+        border: 1px solid var(--hairline);
+        border-radius: 6px;
+        overflow: hidden;
+        margin-bottom: 20px;
+    }
+    .table-panel .head {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--hairline);
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    .table-panel h2 {
+        font-size: 12px; color: var(--ink); font-weight: 600;
+        display: flex; align-items: center; gap: 8px;
+        margin: 0;
+    }
+    .table-panel h2::before {
+        content: '';
+        width: 3px; height: 12px;
+        background: var(--accent-teal);
+        border-radius: 1px;
+    }
+    .table-panel .actions {
+        display: flex; gap: 6px;
+        font-size: 11px;
+    }
+    .table-panel .actions input {
+        background: var(--surface-subtle);
+        border: 1px solid var(--hairline);
+        color: var(--ink-strong);
+        padding: 4px 10px;
+        border-radius: var(--r-sm);
+        font-size: 11px;
+        width: 200px;
+        font-family: inherit;
+    }
+    .table-panel .actions input::placeholder { color: var(--ink-faint); }
+    .table-panel .actions button {
+        background: var(--surface-subtle);
+        border: 1px solid var(--hairline);
+        color: var(--ink-strong);
+        padding: 4px 10px;
+        border-radius: var(--r-sm);
+        font-size: 11px;
+        cursor: pointer;
+        font-family: inherit;
+    }
+    .table-panel .actions button:hover {
+        border-color: var(--accent-teal);
+        color: var(--accent-teal);
+    }
+    .table-panel .body { overflow-x: auto; }
+    .table-panel table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .table-panel thead th {
+        text-align: left;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--ink-mute);
+        padding: 10px 14px;
+        background: var(--surface-card);
+        border-bottom: 1px solid var(--hairline);
+        white-space: nowrap;
+    }
+    .table-panel thead th.num { text-align: right; }
+    .table-panel tbody td {
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--hairline-soft);
+        color: var(--ink-strong);
+        vertical-align: middle;
+    }
+    .table-panel tbody tr:hover { background: var(--surface-subtle); }
+    .table-panel td.num {
+        text-align: right;
+        font-family: 'JetBrains Mono', monospace;
+        font-variant-numeric: tabular-nums;
+        color: var(--ink);
+    }
+    .table-panel td.mono {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+    }
+    .table-panel td a { color: var(--accent-teal); text-decoration: none; }
+    .table-panel td a:hover { text-decoration: underline; }
+
+    /* =========================================================
+       STATUS PILLS — band / reach / signal chips
+       ========================================================= */
+    .band {
+        display: inline-flex; align-items: center; gap: 5px;
+        padding: 2px 7px;
+        border-radius: 3px;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        font-family: 'JetBrains Mono', monospace;
+    }
+    .band::before {
+        content: '';
+        width: 5px; height: 5px; border-radius: 50%;
+    }
+    .band-CRITICAL { background: var(--sev-critical-bg); color: var(--sev-critical-strong); }
+    .band-CRITICAL::before { background: var(--sev-critical); }
+    .band-HIGH     { background: var(--sev-high-bg); color: var(--sev-high-strong); }
+    .band-HIGH::before { background: var(--sev-high); }
+    .band-MEDIUM   { background: var(--sev-medium-bg); color: var(--sev-medium-text); }
+    .band-MEDIUM::before { background: var(--sev-medium); }
+    .band-LOW      { background: var(--sev-low-bg); color: var(--sev-low-text); }
+    .band-LOW::before { background: var(--sev-low); }
+    .band-INFO     { background: var(--surface-muted); color: var(--ink-mute); }
+    .band-INFO::before { background: var(--ink-mute); }
+
+    .reach {
+        display: inline-flex; align-items: center; gap: 4px;
+        font-size: 10px;
+        font-family: 'JetBrains Mono', monospace;
+        letter-spacing: 0.04em;
+    }
+    .reach .glyph { width: 6px; height: 6px; border-radius: 50%; }
+    .reach-REACHABLE   { color: var(--sev-critical); }
+    .reach-REACHABLE .glyph { background: var(--sev-critical); }
+    .reach-UNREACHABLE { color: var(--sev-low); }
+    .reach-UNREACHABLE .glyph { background: var(--sev-low); }
+    .reach-INCONCLUSIVE{ color: var(--ink-body); }
+    .reach-INCONCLUSIVE .glyph { background: var(--ink-body); }
+    .reach-UNKNOWN     { color: var(--ink-faint); }
+    .reach-UNKNOWN .glyph { background: var(--ink-faint); border: 1px solid var(--ink-mute); }
+
+    .signal {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 10px;
+        padding: 1px 5px;
+        border-radius: 3px;
+        letter-spacing: 0.04em;
+    }
+    .signal-exploit { background: rgba(123, 31, 162, 0.10); color: var(--link-cve); }
+    .signal-kev     { background: var(--sev-critical-bg); color: var(--sev-critical-strong); }
+    .signal-none    { color: var(--ink-faint); }
+    .signal-triage  { background: var(--sev-medium-bg); color: var(--sev-medium-text); }
+    .signal-ok      { background: var(--sev-low-bg); color: var(--sev-low-text); }
+
+    /* =========================================================
+       SCORE CELL — inline bar + number, right aligned
+       ========================================================= */
+    .score-cell {
+        display: flex; align-items: center; gap: 8px;
+        justify-content: flex-end;
+    }
+    .score-cell .bar {
+        width: 40px; height: 4px;
+        background: var(--surface-muted);
+        border-radius: 2px;
+        overflow: hidden;
+    }
+    .score-cell .bar > div { height: 100%; }
+    .score-cell .v {
+        font-family: 'JetBrains Mono', monospace;
+        color: var(--ink);
+        font-variant-numeric: tabular-nums;
+        min-width: 24px; text-align: right;
+    }
+
+    /* =========================================================
+       HEATMAP — grid of intensity cells
+       ========================================================= */
+    .heatmap {
+        display: grid;
+        grid-template-columns: 60px repeat(5, 1fr);
+        gap: 2px;
+        font-size: 10px;
+        font-family: 'JetBrains Mono', monospace;
+    }
+    .heatmap .hcell {
+        padding: 8px 6px;
+        background: var(--surface-subtle);
+        border-radius: 3px;
+        text-align: center;
+        color: var(--ink-strong);
+        position: relative;
+    }
+    .heatmap .hcell.label,
+    .heatmap .hcell.col-label {
+        background: transparent;
+        color: var(--ink-mute);
+    }
+    .heatmap .hcell.label { text-align: right; padding-right: 10px; }
+    .heatmap .hcell.col-label { padding: 4px; }
+    .heatmap .hcell .n {
+        font-size: 13px;
+        color: var(--ink);
+        font-weight: 500;
+        display: block;
+    }
+    .h-0 { background: var(--surface-subtle); }
+    .h-1 { background: rgba(var(--accent-rgb), 0.10); }
+    .h-2 { background: rgba(var(--accent-rgb), 0.22); }
+    .h-3 { background: rgba(var(--accent-rgb), 0.38); }
+    .h-4 { background: rgba(var(--accent-rgb), 0.55); }
+
+    /* =========================================================
+       RADAR — SVG class hooks
+       ========================================================= */
+    .radar-grid  { fill: none; stroke: var(--hairline); stroke-width: 1; }
+    .radar-spoke { stroke: var(--hairline); }
+    .radar-label {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 9px;
+        fill: var(--ink-body);
+    }
+    .radar-legend {
+        display: flex; gap: 14px; flex-wrap: wrap;
+        font-size: 10px;
+        font-family: 'JetBrains Mono', monospace;
+        color: var(--ink-body);
+        margin-top: 8px;
+    }
+    .radar-legend .sw {
+        display: inline-block; width: 8px; height: 8px;
+        border-radius: 2px; margin-right: 4px;
+        vertical-align: middle;
+    }
+
+    /* =========================================================
+       STATUS BAR
+       ========================================================= */
+    .status-bar {
+        height: 24px;
+        background: var(--surface-card);
+        border-top: 1px solid var(--hairline);
+        display: flex;
+        align-items: center;
+        padding: 0 16px;
+        gap: 16px;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+        color: var(--ink-mute);
+        position: sticky; bottom: 0;
+    }
+    .status-bar .item { display: flex; align-items: center; gap: 6px; }
+    .status-bar .item.muted { color: var(--ink-faint); }
+    .status-bar .spacer { flex: 1; }
+
+    /* =========================================================
+       SCROLLBARS
+       ========================================================= */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: var(--surface-card); }
+    ::-webkit-scrollbar-thumb { background: var(--surface-muted); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--hairline); }
+
+    /* =========================================================
+       PRINT — collapse to single column, drop chrome
+       ========================================================= */
+    @media print {
+        body.console { background: white; }
+        .topbar, .sidebar, .status-bar { display: none !important; }
+        /* E1: surface the brand in PDF (topbar is hidden above). */
+        .print-brand {
+            display: flex; align-items: center; gap: 6px;
+            margin: 0 0 12px; font-weight: 600;
+        }
+        .layout { grid-template-columns: 1fr; }
+        .main { padding: 16px 0; }
+        .page-head .controls { display: none; }
+        .panel, .table-panel, .kpi-bar { page-break-inside: avoid; box-shadow: none; }
+        .grid { display: block; }
+        .grid > .panel { margin-bottom: 16px; }
+        .table-panel .actions { display: none; }
+    }
+</style>

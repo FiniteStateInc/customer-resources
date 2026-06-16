@@ -1,6 +1,8 @@
 name: "Executive Dashboard"
 category: assessment  # Current state: shows today's security posture regardless of time period
+card_description: "Single-page security posture overview for leadership."
 nav_category: Executive
+chart_libraries: ["echarts"]
 template: "executive_dashboard.html"
 description: >
   Executive-level security dashboard for senior leadership.
@@ -37,46 +39,5 @@ output:
     - html
     - csv
     - xlsx
-  charts:
-    - name: findings_by_folder
-      chart: bar
-      stacked: true
-      title: "Findings by Folder"
-      description: "Distribution of findings across folders by severity"
-    - name: findings_by_project
-      chart: bar
-      stacked: true
-      title: "Findings by Project"
-      description: "Distribution of findings across projects by severity"
-    - name: severity_trends
-      chart: line
-      title: "Severity Trends (Last 12 Months)"
-      description: "Critical and High severity findings over the last 12 months"
-    - name: risk_donut
-      chart: pie
-      title: "Risk Distribution"
-      description: "Projects bucketed by highest severity finding"
-    - name: open_issues_pie
-      chart: pie
-      title: "Open Issues by Severity"
-      description: "Distribution of unresolved findings by severity level"
-    - name: license_bar
-      chart: bar
-      title: "License Distribution"
-      description: "Top 10 licenses by component count"
-    - name: policy_health
-      chart: bar
-      title: "Policy Health"
-      description: "Security and license policy violations and warnings"
-    - name: exploit_intel
-      chart: bar
-      title: "Exploit Intelligence"
-      description: "Breakdown of exploit-related indicators across CVEs"
-    - name: findings_by_type
-      chart: bar
-      title: "Findings by Type"
-      description: "Finding counts categorized by type"
-    - name: finding_age
-      chart: bar
-      title: "Finding Age Distribution"
-      description: "Open findings bucketed by age since detection"
+  charts: []
+  has_inline_charts: true

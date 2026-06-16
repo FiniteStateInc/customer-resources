@@ -1,280 +1,344 @@
+{# Defensive defaults — placed BEFORE the render-mode gate. #}
+{% set portfolio_summary = portfolio_summary | default({}) %}
+{% if portfolio_summary is string or portfolio_summary is not mapping %}{% set portfolio_summary = {} %}{% endif %}
+{% set findings_df = findings_df | default([]) %}
+{% set project_summary_df = project_summary_df | default([]) %}
+{% set gate_funnel = gate_funnel | default({}) %}
+{% if gate_funnel is string or gate_funnel is not mapping %}{% set gate_funnel = {} %}{% endif %}
+{% set vex_recommendations = vex_recommendations | default([]) %}
+{% if vex_recommendations is mapping or vex_recommendations is string or vex_recommendations is not iterable %}{% set vex_recommendations = [] %}{% endif %}
+
+{% import "_console_macros.html" as fs with context %}
+
+{% if render_mode != 'fragment' %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
-    <title>Configuration Analysis Triage - Finite State Report</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+    <title>Configuration Analysis Triage — {{ recipe_name }}</title>
 
-        {% include "_standalone_shell.html" %}
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+    {% include "_echarts_ready.html" %}
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+{% endif %}
+
+{# Recipe-local styles — OUTSIDE the render-mode gate so
+   fragment_extractor auto-scopes under
+   .fs-section-configuration-analysis-triage. Hex literals migrated to
+   design tokens; SEMANTIC class names from the pre-migration template
+   (.cat-CRYPTO_MATERIAL, .band-CRITICAL, .vex-rec-IN_TRIAGE, .pk-yes,
+   etc.) preserved verbatim. NEW layout/structural classes added by
+   the migration use a `.cat-section-*` prefix to disambiguate from
+   the semantic enum classes. #}
 <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            line-height: 1.6; color: #333; background-color: #f8f9fa;
-        }
-        .container { margin: 0 auto; padding: 20px; background-color: white; border: 1px solid #dee2e6; min-height: 100%; }
-        .header { text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid #e9ecef; }
-        .company-logo { max-height: 50px; width: auto; margin: 0 auto; display: block; }
-        .header h1 { color: #2c3e50; font-size: 2.5em; margin-bottom: 10px; }
-        .header .subtitle { color: #6c757d; font-size: 1.1em; }
-        .metadata { background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 30px; font-size: 0.9em; color: #6c757d; }
+    /* NEW layout/structural classes (recipe-scoped, won't collide with
+       .cat-{ENUM} semantic classes since those are followed by an
+       UPPERCASE_UNDERSCORE name). */
+    .cat-section { margin-bottom: var(--sp-5); }
+    .cat-section h2 {
+        font-size: 1.15em; color: var(--ink-strong);
+        border-bottom: 2px solid var(--hairline);
+        padding-bottom: 6px; margin-bottom: 14px;
+    }
+    .cat-chart-wrapper {
+        width: 100%; height: 320px;
+        background: var(--surface-card);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-md);
+        padding: var(--sp-3);
+        margin-bottom: var(--sp-4);
+    }
+    .cat-chart-row {
+        display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4);
+        margin-bottom: var(--sp-5);
+    }
+    @media (max-width: 900px) {
+        .cat-chart-row { grid-template-columns: 1fr; }
+    }
+    .cat-table {
+        width: 100%; border-collapse: collapse; font-size: 0.85em;
+        background: var(--surface-card);
+        border: 1px solid var(--hairline);
+        border-radius: var(--r-md);
+        overflow: hidden;
+    }
+    .cat-table td code {
+        word-break: break-all;
+        display: inline-block;
+        max-width: 280px;
+        font-size: 0.8em;
+    }
+    .cat-table th {
+        background: var(--surface-muted);
+        font-weight: 600; padding: 8px 10px;
+        text-align: left; font-size: 0.78em;
+        text-transform: uppercase; letter-spacing: 0.3px;
+        color: var(--ink-body);
+        border-bottom: 1px solid var(--hairline);
+        position: sticky; top: 0;
+    }
+    .cat-table td {
+        padding: 7px 10px; border-bottom: 1px solid var(--hairline);
+    }
+    .cat-table tr:hover { background: var(--surface-muted); }
+    .cat-table-wrap {
+        max-height: 540px; overflow-y: auto;
+        border-radius: var(--r-md);
+    }
+    .cat-scoring-callout {
+        background: var(--surface-muted);
+        border-radius: var(--r-md);
+        padding: var(--sp-4);
+        margin-bottom: var(--sp-5);
+        font-size: 0.9em;
+        color: var(--ink-body);
+        line-height: 1.6;
+    }
+    .cat-scoring-callout h3 {
+        margin: 0 0 8px;
+        font-size: 1em;
+        color: var(--ink-strong);
+        border-bottom: none;
+        padding-bottom: 0;
+    }
 
-        /* Summary Cards */
-        .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 30px; }
-        .summary-card {
-            padding: 20px; border-radius: 8px; text-align: center;
-            color: white; font-weight: bold;
-        }
-        .summary-card .count { font-size: 2.5em; line-height: 1; }
-        .summary-card .label { font-size: 0.9em; margin-top: 5px; opacity: 0.9; }
-        .card-critical { background-color: #dc3545; }
-        .card-high { background-color: #fd7e14; }
-        .card-medium { background-color: #ffc107; color: #333; }
-        .card-low { background-color: #28a745; }
-        .card-info { background-color: #6c757d; }
-        .card-total { background-color: #2c3e50; }
+    /* SEMANTIC class names preserved from the pre-migration template
+       (configuration_analysis_triage.html:75-101). The class NAMES
+       stay the same; only hex literals → design tokens. */
+    .cat-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; color: white; }
+    .cat-CRYPTO_MATERIAL { background-color: var(--accent-purple); }
+    .cat-CREDENTIALS     { background-color: var(--accent-rose); }
+    .cat-CONFIG_ISSUES   { background-color: var(--accent-teal); }
 
-        /* Chart containers */
-        .chart-container { background-color: white; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #dee2e6; }
-        .chart-wrapper { position: relative; height: 400px; margin: 20px 0; }
-        .chart-wrapper-tall { position: relative; height: 500px; margin: 20px 0; }
-        .chart-title { color: #2c3e50; font-size: 1.5em; margin-bottom: 10px; }
-        .chart-description { color: #6c757d; font-size: 0.95em; margin-bottom: 20px; }
+    .band-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }
+    .band-CRITICAL { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .band-HIGH     { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .band-MEDIUM   { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .band-LOW      { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .band-INFO     { background: color-mix(in srgb, var(--accent-blue) 15%, transparent); color: var(--accent-blue); }
 
-        /* Two-column layout */
-        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px; }
-        @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+    /* Private-key indicator. */
+    .pk-yes { color: var(--sev-critical-text); font-weight: 600; }
+    .pk-no  { color: var(--sev-low-text); }
 
-        /* Narrative */
-        .narrative-section { background-color: white; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #dee2e6; }
-        .narrative-section h3 { color: #2c3e50; margin-bottom: 15px; }
-        .narrative-section h4 { color: #495057; margin: 20px 0 10px 0; }
-        .narrative-section ul { margin-left: 20px; margin-bottom: 15px; }
-        .narrative-section li { margin-bottom: 8px; }
+    /* VEX status badges (set statuses — solid border).
+       The recipe's findings_df rows can have any of these in `status`. */
+    .vex-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; white-space: nowrap; }
+    .vex-IN_TRIAGE { background: color-mix(in srgb, var(--sev-medium-text) 12%, transparent); color: var(--sev-medium-text); border: 1px solid var(--sev-medium-text); }
+    .vex-NOT_AFFECTED, .vex-FALSE_POSITIVE { background: color-mix(in srgb, var(--sev-low-text) 12%, transparent); color: var(--sev-low-text); border: 1px solid var(--sev-low-text); }
+    .vex-EXPLOITABLE { background: color-mix(in srgb, var(--sev-critical-text) 12%, transparent); color: var(--sev-critical-text); border: 1px solid var(--sev-critical-text); }
+    .vex-RESOLVED, .vex-RESOLVED_WITH_PEDIGREE { background: color-mix(in srgb, var(--sev-low-text) 12%, transparent); color: var(--sev-low-text); border: 1px solid var(--sev-low-text); }
 
-        /* Tables */
-        .table-container { background-color: white; border-radius: 8px; padding: 20px; margin-bottom: 30px; border: 1px solid #dee2e6; overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #dee2e6; }
-        th { background-color: #f8f9fa; font-weight: 600; color: #495057; position: sticky; top: 0; z-index: 10; }
-        td code { word-break: break-all; white-space: pre-wrap; display: inline-block; max-width: 280px; font-size: 0.85em; }
-        tr:hover { background-color: #f8f9fa; }
+    /* VEX recommendation badges (dashed border = not yet applied).
+       The transform emits ONLY .vex-rec-IN_TRIAGE and
+       .vex-rec-NOT_AFFECTED — those are the only 2 possible
+       recommended_vex_status values. */
+    .vex-rec-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; border: 1.5px dashed; white-space: nowrap; }
+    .vex-rec-NOT_AFFECTED { background: color-mix(in srgb, var(--sev-low-text) 12%, transparent); color: var(--sev-low-text); border-color: var(--sev-low-text); }
+    .vex-rec-IN_TRIAGE { background: color-mix(in srgb, var(--sev-medium-text) 12%, transparent); color: var(--sev-medium-text); border-color: var(--sev-medium-text); }
 
-        /* Band badges */
-        .band-badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.8em; font-weight: 600; color: white; }
-        .band-CRITICAL { background-color: #dc3545; }
-        .band-HIGH { background-color: #fd7e14; }
-        .band-MEDIUM { background-color: #ffc107; color: #333; }
-        .band-LOW { background-color: #28a745; }
-        .band-INFO { background-color: #6c757d; }
+    /* Entity links (project / version / component / finding deep links into the FS web UI). */
+    a.entity-link { color: var(--accent-blue); text-decoration: none; font-weight: 500; }
+    a.entity-link:hover { text-decoration: underline; }
+    a.entity-link-component { color: var(--accent-blue); }
+    a.entity-link-component:hover { text-decoration: underline; }
 
-        /* Category badges */
-        .cat-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; color: white; }
-        .cat-CRYPTO_MATERIAL { background-color: #6f42c1; }
-        .cat-CREDENTIALS { background-color: #e83e8c; }
-        .cat-CONFIG_ISSUES { background-color: #17a2b8; }
+    /* Row-hiding for table pagination (preserved from pre-migration; .hidden-row + toggleRows(tableId)). */
+    .hidden-row { display: none; }
 
-        /* Private key indicator */
-        .pk-yes { color: #dc3545; font-weight: 600; }
-        .pk-no { color: #28a745; }
+    .chart-server-svg { padding: var(--sp-4); }
+    .chart-unavailable {
+        color: var(--ink-mute);
+        text-align: center;
+        font-style: italic;
+        padding: var(--sp-4);
+    }
 
-        /* VEX status badges (set statuses — solid border) */
-        .vex-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; white-space: nowrap; }
-        .vex-IN_TRIAGE { background: #fff8e1; color: #856404; border: 1px solid #e6a817; }
-        .vex-NOT_AFFECTED, .vex-FALSE_POSITIVE { background: #e6ffe6; color: #166534; border: 1px solid #28a745; }
-        .vex-EXPLOITABLE { background: #fef2f2; color: #991b1b; border: 1px solid #dc3545; }
-        .vex-RESOLVED, .vex-RESOLVED_WITH_PEDIGREE { background: #e6ffe6; color: #166534; border: 1px solid #28a745; }
+    @media print {
+        .hidden-row { display: table-row; }
+        .show-more-row { display: none; }
+    }
+</style>
 
-        /* VEX recommendation badges (dashed border = not yet applied) */
-        .vex-rec-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; border: 1.5px dashed; white-space: nowrap; }
-        .vex-rec-NOT_AFFECTED { background: #f0fdf4; color: #166534; border-color: #86efac; }
-        .vex-rec-IN_TRIAGE { background: #fefce8; color: #854d0e; border-color: #fde047; }
-
-        /* Entity links */
-        a.entity-link { color: #007bff; text-decoration: none; font-weight: 500; }
-        a.entity-link:hover { text-decoration: underline; color: #0056b3; }
-        a.entity-link-component { color: #0d6efd; }
-        a.entity-link-component:hover { color: #0a58ca; }
-
-        .footer { text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e9ecef; color: #6c757d; font-size: 0.9em; }
-        .finite-state-logo { color: #007bff; font-weight: bold; }
-        .no-data { text-align: center; color: #6c757d; font-style: italic; padding: 40px; }
-
-        .show-more-btn {
-            background: none;
-            border: 1px solid #dee2e6;
-            border-radius: 6px;
-            padding: 6px 16px;
-            color: #495057;
-            cursor: pointer;
-            font-size: 0.9em;
-        }
-        .show-more-btn:hover { background-color: #f8f9fa; }
-        .hidden-row { display: none; }
-
-        @media print {
-            body { background-color: white; }
-            .container { max-width: none; }
-            .chart-container, .narrative-section, .table-container { border: 1px solid #dee2e6; }
-            .hidden-row { display: table-row; }
-            .show-more-row { display: none; }
-        }
-    </style>
+{% if render_mode != 'fragment' %}
 </head>
-<body data-nav-category="{{ nav_category_slug }}">
-    <span id="fsConnectionBadge"></span>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            {% include "_default_logo.html" %}
-            <h1>Configuration Analysis Triage Report</h1>
-            <div class="subtitle">
-                {% if folder_path %}
-                Folder: {{ folder_path }}{% if is_single_project and single_project_name %} / Project: {{ single_project_name }}{% endif %} — Config, Secrets &amp; Crypto Triage
-                {% elif is_single_project and single_project_name %}
-                Project: {{ single_project_name }} — Config, Secrets &amp; Crypto Triage
-                {% else %}
-                Config, Secrets &amp; Crypto Triage
-                {% endif %}
-            </div>
-        </div>
+<body class="console" data-nav-category="{{ nav_category_slug | default('investigation') }}">
+{% endif %}
 
-        <!-- Metadata -->
-        <div class="metadata">
-            <strong>Report:</strong> {{ recipe_name }} |
-            <strong>Generated:</strong> {{ generated_at }} |
-            {% if metadata and metadata.start_date and metadata.end_date %}
-            <strong>Period:</strong> {{ metadata.start_date }} to {{ metadata.end_date }} |
+{# Build topbar meta items. #}
+{% set cat_meta = [{"label": "Domain", "value": domain or "—"}] %}
+{% if portfolio_summary is mapping %}
+{% set _ = cat_meta.append({"label": "Total Findings", "value": (portfolio_summary.get('total', 0)) | string}) %}
+{% endif %}
+{% if metadata is mapping and metadata.get('start_date') and metadata.get('end_date') %}
+{% set _ = cat_meta.append({"label": "Period", "value": metadata.start_date ~ " → " ~ metadata.end_date}) %}
+{% endif %}
+{% if metadata is mapping and metadata.get('transformed_count') is not none %}
+{% set _ = cat_meta.append({"label": "Records", "value": metadata.transformed_count | string}) %}
+{% endif %}
+{% set _ = cat_meta.append({"label": "Generated", "value": generated_at or "—"}) %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "Configuration Analysis Triage"],
+    meta=cat_meta,
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>Configuration Analysis Triage Report</h1>
+        {# Subtitle preserves the pre-migration 3-branch conditional
+           (configuration_analysis_triage.html:135-143) so folder/
+           project scope appears under the title. #}
+        <p class="subtitle">
+            {% if folder_path %}
+            Folder: {{ folder_path }}{% if is_single_project and single_project_name %} / Project: {{ single_project_name }}{% endif %} — Config, Secrets &amp; Crypto Triage
+            {% elif is_single_project and single_project_name %}
+            Project: {{ single_project_name }} — Config, Secrets &amp; Crypto Triage
+            {% else %}
+            Config, Secrets &amp; Crypto Triage
             {% endif %}
-            <strong>Records:</strong> {{ metadata.transformed_count if metadata and metadata.transformed_count else 'N/A' }}
-        </div>
+        </p>
+    </div>
 
-        <!-- Summary Cards -->
-        {% if portfolio_summary %}
-        <div class="summary-cards">
-            <div class="summary-card card-critical">
-                <div class="count">{{ portfolio_summary.CRITICAL|default(0) }}</div>
-                <div class="label">CRITICAL</div>
-            </div>
-            <div class="summary-card card-high">
-                <div class="count">{{ portfolio_summary.HIGH|default(0) }}</div>
-                <div class="label">HIGH</div>
-            </div>
-            <div class="summary-card card-medium">
-                <div class="count">{{ portfolio_summary.MEDIUM|default(0) }}</div>
-                <div class="label">MEDIUM</div>
-            </div>
-            <div class="summary-card card-low">
-                <div class="count">{{ portfolio_summary.LOW|default(0) }}</div>
-                <div class="label">LOW</div>
-            </div>
-            <div class="summary-card card-info">
-                <div class="count">{{ portfolio_summary.INFO|default(0) }}</div>
-                <div class="label">INFO</div>
-            </div>
-            <div class="summary-card card-total">
-                <div class="count">{{ portfolio_summary.total|default(0) }}</div>
-                <div class="label">TOTAL</div>
-            </div>
+    {# 6 KPI cells via fs.kpi_cell. #}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell(
+            "Critical",
+            portfolio_summary.get('CRITICAL', 0) if portfolio_summary is mapping else 0,
+            dot=("critical" if (portfolio_summary is mapping and portfolio_summary.get('CRITICAL', 0) > 0) else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "High",
+            portfolio_summary.get('HIGH', 0) if portfolio_summary is mapping else 0,
+            dot=("high" if (portfolio_summary is mapping and portfolio_summary.get('HIGH', 0) > 0) else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "Medium",
+            portfolio_summary.get('MEDIUM', 0) if portfolio_summary is mapping else 0,
+            dot=("medium" if (portfolio_summary is mapping and portfolio_summary.get('MEDIUM', 0) > 0) else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "Low",
+            portfolio_summary.get('LOW', 0) if portfolio_summary is mapping else 0,
+            dot=("low" if (portfolio_summary is mapping and portfolio_summary.get('LOW', 0) > 0) else None),
+        ) }}
+        {{ fs.kpi_cell("Info", portfolio_summary.get('INFO', 0) if portfolio_summary is mapping else 0) }}
+        {{ fs.kpi_cell("Total", portfolio_summary.get('total', 0) if portfolio_summary is mapping else 0) }}
+    </div>
+
+    {# Two-column chart row: band distribution + gate funnel. #}
+    <div class="cat-chart-row">
+        <div class="cat-section">
+            <h2>Priority Band Distribution</h2>
+            {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg"><div class="chart-unavailable">Chart unavailable in fragment view</div></div>
+            {% else %}
+                <div id="{{ fragment_scope_class }}-bandDistributionChart" class="cat-chart-wrapper"></div>
+            {% endif %}
         </div>
+        <div class="cat-section">
+            <h2>Gate Classification Funnel</h2>
+            {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg"><div class="chart-unavailable">Chart unavailable in fragment view</div></div>
+            {% else %}
+                <div id="{{ fragment_scope_class }}-gateFunnelChart" class="cat-chart-wrapper"></div>
+            {% endif %}
+        </div>
+    </div>
+
+    {# Category breakdown chart (full-width). #}
+    <div class="cat-section">
+        <h2>Category Breakdown</h2>
+        {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+            <div class="chart-server-svg"><div class="chart-unavailable">Chart unavailable in fragment view</div></div>
+        {% else %}
+            <div id="{{ fragment_scope_class }}-categoryChart" class="cat-chart-wrapper"></div>
+        {% endif %}
+    </div>
+
+    {# Project summary chart — conditional on multi-project data. #}
+    {% if project_summary_df is iterable and project_summary_df is not string and project_summary_df is not mapping and (project_summary_df | length) > 1 %}
+    <div class="cat-section">
+        <h2>Project Risk Summary</h2>
+        {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+            <div class="chart-server-svg"><div class="chart-unavailable">Chart unavailable in fragment view</div></div>
+        {% else %}
+            <div id="{{ fragment_scope_class }}-projectSummaryChart" class="cat-chart-wrapper" style="height: 380px;"></div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {# Scoring methodology callout — DYNAMIC content driven by
+       scoring_config.gates and scoring_config.weights (NOT static
+       prose). Mirrors configuration_analysis_triage.html:225-255
+       so gate thresholds and weight values stay accurate when the
+       recipe YAML parameters change. #}
+    <div class="cat-scoring-callout">
+        <h3>Scoring Methodology</h3>
+        <p>This report uses a <strong>tiered-gates scoring model</strong> that prioritizes configuration, credential, and cryptographic material findings based on their risk characteristics.</p>
+
+        {% if scoring_config and scoring_config.gates %}
+        {% for gate in scoring_config.gates %}
+        <h4>{{ gate.name | replace('_', ' ') | title }} — {{ gate.band }} (score={{ gate.score }})</h4>
+        <ul>
+            {% if gate.name == 'GATE_1' %}
+            <li>CRYPTO_MATERIAL findings with <strong>private_key=True</strong></li>
+            {% elif gate.name == 'GATE_2' %}
+            <li>CREDENTIALS with severity <strong>CRITICAL</strong> or <strong>HIGH</strong></li>
+            {% elif gate.name == 'GATE_3' %}
+            <li>CONFIG_ISSUES with severity <strong>CRITICAL</strong> or <strong>HIGH</strong></li>
+            {% else %}
+            <li>{{ gate.description | default(gate.name) }}</li>
+            {% endif %}
+        </ul>
+        {% endfor %}
         {% endif %}
 
-        <!-- Row 1: Band Distribution + Gate Funnel (side by side) -->
-        <div class="two-col">
-            <div class="chart-container">
-                <h2 class="chart-title">Priority Band Distribution</h2>
-                <p class="chart-description">Distribution of findings across risk priority bands.</p>
-                <div class="chart-wrapper">
-                    <canvas id="bandDistributionChart"></canvas>
-                </div>
-            </div>
-            <div class="chart-container">
-                <h2 class="chart-title">Gate Classification Funnel</h2>
-                <p class="chart-description">How findings flow through Gate 1 (Private Keys), Gate 2 (Credentials), Gate 3 (Config Issues), and additive scoring.</p>
-                <div class="chart-wrapper">
-                    <canvas id="gateFunnelChart"></canvas>
-                </div>
-            </div>
-        </div>
-
-        <!-- Category Breakdown Chart -->
-        <div class="chart-container">
-            <h2 class="chart-title">Category Breakdown</h2>
-            <p class="chart-description">Finding counts by category: cryptographic material, credentials, and configuration issues.</p>
-            <div class="chart-wrapper">
-                <canvas id="categoryChart"></canvas>
-            </div>
-        </div>
-
-        <!-- Row 2: Project Summary Chart (if multi-project) -->
-        {% if project_summary_df is defined and project_summary_df|length > 1 %}
-        <div class="chart-container">
-            <h2 class="chart-title">Project Risk Summary</h2>
-            <p class="chart-description">Per-project breakdown showing band counts. Projects sorted by CRITICAL count descending.</p>
-            <div class="chart-wrapper-tall">
-                <canvas id="projectSummaryChart"></canvas>
-            </div>
-        </div>
+        {% if scoring_config and scoring_config.weights %}
+        <h4>Additive Scoring (Remaining Findings)</h4>
+        <ul>
+            <li><strong>Severity</strong>: critical={{ scoring_config.weights.severity_critical|default(0) }}, high={{ scoring_config.weights.severity_high|default(0) }}, medium={{ scoring_config.weights.severity_medium|default(0) }}, low={{ scoring_config.weights.severity_low|default(0) }}</li>
+            <li><strong>Risk</strong>: 0–{{ scoring_config.weights.risk_max|default(0) }} points (scaled from API risk score)</li>
+            <li><strong>VEX resolved</strong>: {{ scoring_config.weights.vex_resolved|default(0) }} points</li>
+        </ul>
+        <p>Bands: HIGH &ge; {{ scoring_config.weights.band_high_threshold|default(0) }}, MEDIUM &ge; {{ scoring_config.weights.band_medium_threshold|default(0) }}, LOW &ge; {{ scoring_config.weights.band_low_threshold|default(0) }}, INFO &lt; {{ scoring_config.weights.band_low_threshold|default(0) }}</p>
         {% endif %}
+    </div>
 
-        <!-- Scoring Methodology -->
-        <div class="narrative-section">
-            <h3>Scoring Methodology</h3>
-            <p>This report uses a <strong>tiered-gates scoring model</strong> that prioritizes configuration, credential, and cryptographic material findings based on their risk characteristics.</p>
-
-            {% if scoring_config and scoring_config.gates %}
-            {% for gate in scoring_config.gates %}
-            <h4>{{ gate.name | replace('_', ' ') | title }} — {{ gate.band }} (score={{ gate.score }})</h4>
-            <ul>
-                {% if gate.name == 'GATE_1' %}
-                <li>CRYPTO_MATERIAL findings with <strong>private_key=True</strong></li>
-                {% elif gate.name == 'GATE_2' %}
-                <li>CREDENTIALS with severity <strong>CRITICAL</strong> or <strong>HIGH</strong></li>
-                {% elif gate.name == 'GATE_3' %}
-                <li>CONFIG_ISSUES with severity <strong>CRITICAL</strong> or <strong>HIGH</strong></li>
-                {% else %}
-                <li>{{ gate.description | default(gate.name) }}</li>
-                {% endif %}
-            </ul>
-            {% endfor %}
-            {% endif %}
-
-            {% if scoring_config and scoring_config.weights %}
-            <h4>Additive Scoring (Remaining Findings)</h4>
-            <ul>
-                <li><strong>Severity</strong>: critical={{ scoring_config.weights.severity_critical|default(0) }}, high={{ scoring_config.weights.severity_high|default(0) }}, medium={{ scoring_config.weights.severity_medium|default(0) }}, low={{ scoring_config.weights.severity_low|default(0) }}</li>
-                <li><strong>Risk</strong>: 0–{{ scoring_config.weights.risk_max|default(0) }} points (scaled from API risk score)</li>
-                <li><strong>VEX resolved</strong>: {{ scoring_config.weights.vex_resolved|default(0) }} points</li>
-            </ul>
-            <p>Bands: HIGH &ge; {{ scoring_config.weights.band_high_threshold|default(0) }}, MEDIUM &ge; {{ scoring_config.weights.band_medium_threshold|default(0) }}, LOW &ge; {{ scoring_config.weights.band_low_threshold|default(0) }}, INFO &lt; {{ scoring_config.weights.band_low_threshold|default(0) }}</p>
-            {% endif %}
-        </div>
-
-        <!-- Project Summary Table (if multi-project) -->
-        {% if project_summary_df is defined and project_summary_df|length > 0 and not is_single_project %}
-        <div class="table-container">
-            <h2>Project Risk Summary</h2>
-            <table id="tbl-project-summary">
+    {# Project Risk Summary table — preserves pre-migration
+       (configuration_analysis_triage.html:257-303) conditional
+       (`length > 0 and not is_single_project`; the single-project
+       case is conveyed by the subtitle), entity-link wrapping on
+       project_name, band-badge spans for CRITICAL/HIGH/MEDIUM
+       severity columns, and toggleRows('tbl-project-summary')
+       pagination. #}
+    {% if project_summary_df is defined and project_summary_df is iterable and project_summary_df is not string and project_summary_df is not mapping and (project_summary_df | length) > 0 and not is_single_project %}
+    <div class="cat-section">
+        <h2>Project Risk Summary</h2>
+        <div class="cat-table-wrap">
+            <table class="cat-table" id="tbl-project-summary">
                 <thead>
                     <tr>
                         <th>Project</th>
-                        <th>CRITICAL</th>
-                        <th>HIGH</th>
-                        <th>MEDIUM</th>
-                        <th>LOW</th>
-                        <th>INFO</th>
-                        <th>Total</th>
+                        <th>CRITICAL</th><th>HIGH</th><th>MEDIUM</th>
+                        <th>LOW</th><th>INFO</th><th>Total</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for row in project_summary_df %}
-                    <tr class="{% if loop.index > 10 %}hidden-row{% endif %}">
+                    <tr class="{% if loop.index > 10 and render_mode != 'fragment' %}hidden-row{% endif %}">
                         <td>
                             {% if domain and row.project_id is defined and row.project_id %}
-                            <a href="https://{{ domain }}/projects/{{ row.project_id }}/" target="_blank" class="entity-link" title="View project in Finite State">{{ row.project_name }}</a>
+                            <a href="https://{{ domain }}/projects/{{ row.project_id }}/" target="_blank" rel="noopener" class="entity-link" title="View project in Finite State">{{ row.project_name }}</a>
                             {% else %}
                             {{ row.project_name }}
                             {% endif %}
@@ -287,10 +351,10 @@
                         <td><strong>{{ row.total|default(0) }}</strong></td>
                     </tr>
                     {% endfor %}
-                    {% if project_summary_df|length > 10 %}
+                    {% if render_mode != 'fragment' and project_summary_df|length > 10 %}
                     <tr class="show-more-row">
                         <td colspan="7">
-                            <button class="show-more-btn" onclick="toggleRows('tbl-project-summary')">
+                            <button onclick="toggleRows('tbl-project-summary')" style="padding: 6px 14px; border: 1px solid var(--hairline); background: var(--surface-card); color: var(--ink-strong); border-radius: 4px; cursor: pointer;">
                                 Show {{ project_summary_df|length - 10 }} more...
                             </button>
                         </td>
@@ -299,13 +363,20 @@
                 </tbody>
             </table>
         </div>
-        {% endif %}
+    </div>
+    {% endif %}
 
-        <!-- Findings Detail Table (top 100) -->
-        {% if findings_df is defined and findings_df|length > 0 %}
-        <div class="table-container">
-            <h2>Findings Detail (Top 100 by Priority)</h2>
-            <table id="tbl-findings-detail">
+    {# Findings detail table — only render when there's data; pre-migration matched.
+       Preserves pre-migration .hidden-row pagination (first 10 visible;
+       toggleRows('tbl-findings-detail') reveals the rest), entity-link
+       deep-linking, semantic .cat-badge + .band-badge + .pk-yes/no +
+       .vex-badge classes, and the :100 row cap from the pre-migration
+       template. #}
+    {% if findings_df is defined and findings_df is iterable and findings_df is not string and findings_df is not mapping and (findings_df | length) > 0 %}
+    <div class="cat-section">
+        <h2>Findings Detail (Top 100 by Priority)</h2>
+        <div class="cat-table-wrap">
+            <table class="cat-table" id="tbl-findings-detail">
                 <thead>
                     <tr>
                         <th>Title</th>
@@ -323,11 +394,12 @@
                     </tr>
                 </thead>
                 <tbody>
+                    {% if findings_df is iterable and findings_df is not string and findings_df is not mapping %}
                     {% for row in findings_df[:100] %}
-                    <tr class="{% if loop.index > 10 %}hidden-row{% endif %}">
+                    <tr class="{% if loop.index > 10 and render_mode != 'fragment' %}hidden-row{% endif %}">
                         <td>
                             {% if domain and row.project_id and row.version_id and row.id %}
-                            <a href="https://{{ domain }}/projects/{{ row.project_id }}/versions/{{ row.version_id }}/findings?findingId={{ row.id }}" target="_blank" class="entity-link" title="View finding in Finite State">{{ row.title|default('—') }}</a>
+                            <a href="https://{{ domain }}/projects/{{ row.project_id }}/versions/{{ row.version_id }}/findings?findingId={{ row.id }}" target="_blank" rel="noopener" class="entity-link" title="View finding in Finite State">{{ row.title|default('—') }}</a>
                             {% else %}
                             {{ row.title|default('—') }}
                             {% endif %}
@@ -346,7 +418,7 @@
                         <td>
                             {% if row.detail_private_key is defined and row.detail_private_key is not none and row.detail_private_key|string not in ('', 'None', 'nan') %}
                                 {% if row.detail_private_key == true or row.detail_private_key|string|lower == 'true' %}
-                                <span class="pk-yes">&#x1F511; Yes</span>
+                                <span class="pk-yes">🔑 Yes</span>
                                 {% else %}
                                 <span class="pk-no">No</span>
                                 {% endif %}
@@ -359,14 +431,14 @@
                         </td>
                         <td>
                             {% if domain and row.project_id and row.version_id and row.component_id %}
-                            <a href="https://{{ domain }}/projects/{{ row.project_id }}/versions/{{ row.version_id }}/bill-of-materials?view=list&componentId={{ row.component_id }}" target="_blank" class="entity-link entity-link-component" title="View component in Finite State">{{ row.component_name|default('—') }}{% if row.component_version|default('') %} {{ row.component_version }}{% endif %}</a>
+                            <a href="https://{{ domain }}/projects/{{ row.project_id }}/versions/{{ row.version_id }}/bill-of-materials?view=list&componentId={{ row.component_id }}" target="_blank" rel="noopener" class="entity-link entity-link-component" title="View component in Finite State">{{ row.component_name|default('—') }}{% if row.component_version|default('') %} {{ row.component_version }}{% endif %}</a>
                             {% else %}
                             {{ row.component_name|default('—') }}{% if row.component_version|default('') %} {{ row.component_version }}{% endif %}
                             {% endif %}
                         </td>
                         <td>
                             {% if domain and row.project_id %}
-                            <a href="https://{{ domain }}/projects/{{ row.project_id }}/" target="_blank" class="entity-link" title="View project in Finite State">{{ row.project_name|default('—') }}</a>
+                            <a href="https://{{ domain }}/projects/{{ row.project_id }}/" target="_blank" rel="noopener" class="entity-link" title="View project in Finite State">{{ row.project_name|default('—') }}</a>
                             {% else %}
                             {{ row.project_name|default('—') }}
                             {% endif %}
@@ -380,26 +452,34 @@
                         </td>
                     </tr>
                     {% endfor %}
-                    {% if findings_df[:100]|length > 10 %}
+                    {% if render_mode != 'fragment' and findings_df[:100]|length > 10 %}
                     <tr class="show-more-row">
                         <td colspan="12">
-                            <button class="show-more-btn" onclick="toggleRows('tbl-findings-detail')">
+                            <button onclick="toggleRows('tbl-findings-detail')" style="padding: 6px 14px; border: 1px solid var(--hairline); background: var(--surface-card); color: var(--ink-strong); border-radius: 4px; cursor: pointer;">
                                 Show {{ findings_df[:100]|length - 10 }} more...
                             </button>
                         </td>
                     </tr>
                     {% endif %}
+                    {% endif %}
                 </tbody>
             </table>
         </div>
-        {% endif %}
+    </div>
+    {% endif %}
 
-        <!-- VEX Recommendations Table -->
-        {% if vex_recommendations is defined and vex_recommendations|length > 0 %}
-        <div class="table-container">
-            <h2>VEX Recommendations</h2>
-            <p style="color: #6c757d; margin-bottom: 10px;">Recommended VEX triage actions for un-triaged findings. Apply with <code>fs-report apply-vex</code>.</p>
-            <table id="tbl-vex-recs">
+    {# VEX recommendations table — semantic .cat-badge / .band-badge /
+       .vex-rec-badge classes preserved from pre-migration. The
+       transform emits ONLY recommended_vex_status of "IN_TRIAGE" or
+       "NOT_AFFECTED" (configuration_analysis_triage.py:565-575) — do
+       NOT fabricate other statuses. finding_common_id falls back to
+       finding_id (pre-migration safety fallback at line 419). #}
+    {% if vex_recommendations and (vex_recommendations | length) > 0 %}
+    <div class="cat-section">
+        <h2>VEX Recommendations</h2>
+        <p style="color: var(--ink-mute); margin-bottom: 10px;">Recommended VEX triage actions for un-triaged findings. Apply with <code>fs-report apply-vex</code>.</p>
+        <div class="cat-table-wrap">
+            <table class="cat-table" id="tbl-vex-recs">
                 <thead>
                     <tr>
                         <th>Finding ID</th>
@@ -414,7 +494,8 @@
                 </thead>
                 <tbody>
                     {% for rec in vex_recommendations %}
-                    <tr class="{% if loop.index > 10 %}hidden-row{% endif %}">
+                    {% if rec is mapping %}
+                    <tr class="{% if loop.index > 10 and render_mode != 'fragment' %}hidden-row{% endif %}">
                         <td>{{ rec.finding_common_id|default(rec.finding_id)|default('—') }}</td>
                         <td>
                             {% set rcat = rec.category|default('') %}
@@ -437,11 +518,12 @@
                         </td>
                         <td>{{ rec.reason|default('—') }}</td>
                     </tr>
+                    {% endif %}
                     {% endfor %}
-                    {% if vex_recommendations|length > 10 %}
+                    {% if render_mode != 'fragment' and vex_recommendations|length > 10 %}
                     <tr class="show-more-row">
                         <td colspan="8">
-                            <button class="show-more-btn" onclick="toggleRows('tbl-vex-recs')">
+                            <button onclick="toggleRows('tbl-vex-recs')" style="padding: 6px 14px; border: 1px solid var(--hairline); background: var(--surface-card); color: var(--ink-strong); border-radius: 4px; cursor: pointer;">
                                 Show {{ vex_recommendations|length - 10 }} more...
                             </button>
                         </td>
@@ -450,251 +532,201 @@
                 </tbody>
             </table>
         </div>
-        {% endif %}
-
-        {% include "_default_footer.html" %}
     </div>
+    {% endif %}
+</main>
 
-    <script>
-        function toggleRows(tableId) {
-            const table = document.getElementById(tableId);
-            if (!table) return;
-            const hiddenRows = table.querySelectorAll('.hidden-row');
-            const showMoreRow = table.querySelector('.show-more-row');
-            hiddenRows.forEach(row => row.classList.toggle('hidden-row'));
-            if (showMoreRow) showMoreRow.style.display = 'none';
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Configuration Analysis Triage",
+    "Findings: " ~ ((portfolio_summary.get('total', 0) if portfolio_summary is mapping else 0) | string),
+    "Critical: " ~ ((portfolio_summary.get('CRITICAL', 0) if portfolio_summary is mapping else 0) | string),
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+{% if render_mode != 'fragment' or fragment_scripts_enabled %}
+<script>
+(function() {
+    if (typeof echarts === 'undefined') {
+        if (typeof console !== 'undefined' && console.error) {
+            console.error('ECharts library not loaded — Configuration Analysis Triage charts will be blank');
         }
+        return;
+    }
 
-        document.addEventListener('DOMContentLoaded', function() {
-            const BAND_COLORS = {
-                'CRITICAL': '#dc3545',
-                'HIGH': '#fd7e14',
-                'MEDIUM': '#ffc107',
-                'LOW': '#28a745',
-                'INFO': '#6c757d'
-            };
-            const BAND_ORDER = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
+    function _tokens() {
+        var cs = getComputedStyle(document.documentElement);
+        return {
+            inkBody:     cs.getPropertyValue('--ink-body').trim() || '#374151',
+            inkMute:     cs.getPropertyValue('--ink-mute').trim() || '#6c757d',
+            surfaceCard: cs.getPropertyValue('--surface-card').trim() || '#ffffff',
+            hairline:    cs.getPropertyValue('--hairline').trim() || '#dee2e6',
+            sevCritical: cs.getPropertyValue('--sev-critical-text').trim() || '#dc3545',
+            sevHigh:     cs.getPropertyValue('--sev-high-text').trim() || '#fd7e14',
+            sevMedium:   cs.getPropertyValue('--sev-medium-text').trim() || '#ffc107',
+            sevLow:      cs.getPropertyValue('--sev-low-text').trim() || '#28a745',
+            accentBlue:  cs.getPropertyValue('--accent-blue').trim() || '#1d4ed8',
+            accentTeal:  cs.getPropertyValue('--accent-teal').trim() || '#0d9488',
+        };
+    }
 
-            // =============================================
-            // 1. Band Distribution Chart (Doughnut)
-            // =============================================
-            {% if portfolio_summary %}
-            (function() {
-                const ctx = document.getElementById('bandDistributionChart');
-                if (!ctx) return;
-                const data = {{ portfolio_summary | tojson }};
-                const counts = BAND_ORDER.map(b => data[b] || 0);
-                const colors = BAND_ORDER.map(b => BAND_COLORS[b]);
-
-                if (counts.every(c => c === 0)) { ctx.parentElement.innerHTML = '<p class="no-data">No data available</p>'; return; }
-                new Chart(ctx.getContext('2d'), {
-                    type: 'doughnut',
-                    data: {
-                        labels: BAND_ORDER,
-                        datasets: [{
-                            data: counts,
-                            backgroundColor: colors,
-                            borderWidth: 2,
-                            borderColor: '#fff'
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                            legend: { position: 'right' },
-                            datalabels: {
-                                color: '#fff',
-                                font: { weight: 'bold', size: 14 },
-                                formatter: function(value, ctx) {
-                                    if (value === 0) return '';
-                                    const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
-                                    const pct = ((value / total) * 100).toFixed(1);
-                                    return value + '\n(' + pct + '%)';
-                                }
-                            }
-                        }
-                    },
-                    plugins: [ChartDataLabels]
-                });
-            })();
-            {% endif %}
-
-            // =============================================
-            // 2. Gate Funnel Chart (Horizontal Bar)
-            // =============================================
-            {% if gate_funnel %}
-            (function() {
-                const ctx = document.getElementById('gateFunnelChart');
-                if (!ctx) return;
-                const funnel = {{ gate_funnel | tojson }};
-                const labels = [
-                    'Gate 1 (Private Keys)',
-                    'Gate 2 (Credentials)',
-                    'Gate 3 (Config Issues)',
-                    'Additive (No Gate)'
-                ];
-                const values = [
-                    funnel['GATE_1'] || 0,
-                    funnel['GATE_2'] || 0,
-                    funnel['GATE_3'] || 0,
-                    funnel['NONE'] || 0
-                ];
-                const bgColors = [
-                    BAND_COLORS.CRITICAL,
-                    BAND_COLORS.HIGH,
-                    BAND_COLORS.MEDIUM,
-                    BAND_COLORS.INFO
-                ];
-
-                if (values.every(v => v === 0)) { ctx.parentElement.innerHTML = '<p class="no-data">No data available</p>'; return; }
-                new Chart(ctx.getContext('2d'), {
-                    type: 'bar',
-                    data: {
-                        labels: labels,
-                        datasets: [{
-                            data: values,
-                            backgroundColor: bgColors,
-                            borderWidth: 1,
-                            borderColor: bgColors
-                        }]
-                    },
-                    options: {
-                        indexAxis: 'y',
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                            legend: { display: false },
-                            datalabels: {
-                                anchor: 'end',
-                                align: 'right',
-                                font: { weight: 'bold' },
-                                color: '#333',
-                                formatter: function(v) { return v > 0 ? v : ''; }
-                            }
-                        },
-                        scales: {
-                            x: { title: { display: true, text: 'Number of Findings' } },
-                            y: { ticks: { font: { size: 11 } } }
-                        }
-                    },
-                    plugins: [ChartDataLabels]
-                });
-            })();
-            {% endif %}
-
-            // =============================================
-            // 3. Category Breakdown Chart (Horizontal Bar)
-            // =============================================
-            {% if findings_df is defined and findings_df|length > 0 %}
-            (function() {
-                const ctx = document.getElementById('categoryChart');
-                if (!ctx) return;
-
-                // Compute category counts from Jinja
-                const categoryCounts = {};
-                {% for row in findings_df %}
-                {% set cat = row.category|default('') %}
-                {% if cat %}
-                categoryCounts['{{ cat }}'] = (categoryCounts['{{ cat }}'] || 0) + 1;
-                {% endif %}
-                {% endfor %}
-
-                const catLabels = Object.keys(categoryCounts);
-                const catValues = catLabels.map(k => categoryCounts[k]);
-                const catColors = {
-                    'CRYPTO_MATERIAL': '#6f42c1',
-                    'CREDENTIALS': '#e83e8c',
-                    'CONFIG_ISSUES': '#17a2b8'
-                };
-                const bgColors = catLabels.map(k => catColors[k] || '#6c757d');
-
-                if (catLabels.length === 0) { ctx.parentElement.innerHTML = '<p class="no-data">No data available</p>'; return; }
-                new Chart(ctx.getContext('2d'), {
-                    type: 'bar',
-                    data: {
-                        labels: catLabels,
-                        datasets: [{
-                            data: catValues,
-                            backgroundColor: bgColors,
-                            borderWidth: 1,
-                            borderColor: bgColors
-                        }]
-                    },
-                    options: {
-                        indexAxis: 'y',
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                            legend: { display: false },
-                            datalabels: {
-                                anchor: 'end',
-                                align: 'right',
-                                font: { weight: 'bold' },
-                                color: '#333',
-                                formatter: function(v) { return v > 0 ? v : ''; }
-                            }
-                        },
-                        scales: {
-                            x: { title: { display: true, text: 'Number of Findings' } },
-                            y: { ticks: { font: { size: 12 } } }
-                        }
-                    },
-                    plugins: [ChartDataLabels]
-                });
-            })();
-            {% endif %}
-
-            // =============================================
-            // 4. Project Summary Chart (Stacked Bar)
-            // =============================================
-            {% if project_summary_df is defined and project_summary_df|length > 1 %}
-            (function() {
-                const ctx = document.getElementById('projectSummaryChart');
-                if (!ctx) return;
-                const projects = {{ project_summary_df | tojson }};
-
-                // Sort projects by total risk: highest risk (most CRITICAL/HIGH) first
-                projects.sort((a, b) => {
-                    const riskScore = (p) =>
-                        (p['CRITICAL'] || 0) * 10000 +
-                        (p['HIGH'] || 0) * 1000 +
-                        (p['MEDIUM'] || 0) * 100 +
-                        (p['LOW'] || 0) * 10 +
-                        (p['INFO'] || 0);
-                    return riskScore(b) - riskScore(a);
-                });
-
-                const labels = projects.map(p => p.project_name);
-                const datasets = BAND_ORDER.map(band => ({
-                    label: band,
-                    data: projects.map(p => p[band] || 0),
-                    backgroundColor: BAND_COLORS[band]
-                }));
-
-                new Chart(ctx.getContext('2d'), {
-                    type: 'bar',
-                    data: { labels: labels, datasets: datasets },
-                    options: {
-                        indexAxis: 'y',
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                            legend: { position: 'top' },
-                            datalabels: { display: false }
-                        },
-                        scales: {
-                            x: { stacked: true, title: { display: true, text: 'Finding Count' } },
-                            y: { stacked: true }
-                        }
-                    }
-                });
-            })();
-            {% endif %}
-
+    function _initChart(elId, optsFactory) {
+        var el = document.getElementById(elId);
+        if (!el) return null;
+        var inst = fsEChartsInit(el, { renderer: 'canvas' });
+        try {
+            inst.setOption(optsFactory());
+        } catch (e) {
+            window.fsBeaconRelease();
+            throw e;
+        }
+        var obs = new MutationObserver(function(mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+                if (mutations[i].attributeName === 'data-theme') {
+                    inst.setOption(optsFactory());
+                    break;
+                }
+            }
         });
-    </script>
+        obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+        window.addEventListener('resize', function() { inst.resize(); });
+        return inst;
+    }
 
-    {% include '_action_buttons.html' %}
+    // Band Distribution doughnut — driven by portfolio_summary
+    // (already aggregated by the transform; no need to re-select from
+    // findings_df). priority_band values are
+    // CRITICAL/HIGH/MEDIUM/LOW/INFO (BAND_ORDER at
+    // configuration_analysis_triage.py:129).
+    _initChart('{{ fragment_scope_class }}-bandDistributionChart', function() {
+        var t = _tokens();
+        var bandData = [
+            {name: 'CRITICAL', value: {{ portfolio_summary.get('CRITICAL', 0) if portfolio_summary is mapping else 0 }}, itemStyle: {color: t.sevCritical}},
+            {name: 'HIGH',     value: {{ portfolio_summary.get('HIGH', 0)     if portfolio_summary is mapping else 0 }}, itemStyle: {color: t.sevHigh}},
+            {name: 'MEDIUM',   value: {{ portfolio_summary.get('MEDIUM', 0)   if portfolio_summary is mapping else 0 }}, itemStyle: {color: t.sevMedium}},
+            {name: 'LOW',      value: {{ portfolio_summary.get('LOW', 0)      if portfolio_summary is mapping else 0 }}, itemStyle: {color: t.sevLow}},
+            {name: 'INFO',     value: {{ portfolio_summary.get('INFO', 0)     if portfolio_summary is mapping else 0 }}, itemStyle: {color: t.inkMute}},
+        ].filter(function(d) { return d.value > 0; });
+        return {
+            tooltip: {trigger: 'item'},
+            legend: {orient: 'horizontal', bottom: 0, textStyle: {color: t.inkBody}},
+            series: [{
+                type: 'pie', radius: ['40%', '70%'],
+                data: bandData,
+                label: {
+                    show: true, position: 'outside',
+                    formatter: '{b}: {c}', color: t.inkBody,
+                },
+            }],
+        };
+    });
+
+    // Gate Funnel — horizontal bar in fixed funnel order. gate_funnel
+    // is a SPARSE dict (per configuration_analysis_triage.py:773-780)
+    // with a "total" key. We render all 4 gates in funnel order
+    // (GATE_1 → GATE_2 → GATE_3 → NONE/Additive) with human labels so
+    // the narrative is preserved even when gate_funnel skips keys.
+    // Missing keys default to 0.
+    _initChart('{{ fragment_scope_class }}-gateFunnelChart', function() {
+        var t = _tokens();
+        var gates = {{ gate_funnel | tojson }};
+        var fixedOrder = [
+            ['GATE_1', 'Gate 1 (Private Keys)'],
+            ['GATE_2', 'Gate 2 (Credentials)'],
+            ['GATE_3', 'Gate 3 (Config Issues)'],
+            ['NONE',   'Additive'],
+        ];
+        var cats = fixedOrder.map(function(p) { return p[1]; });
+        var vals = fixedOrder.map(function(p) { return gates[p[0]] || 0; });
+        var colors = [t.sevCritical, t.sevHigh, t.sevMedium, t.accentBlue];
+        return {
+            tooltip: {trigger: 'axis', axisPointer: {type: 'shadow'}},
+            grid: {left: 80, right: 24, top: 12, bottom: 24},
+            xAxis: {type: 'value', axisLabel: {color: t.inkBody}},
+            yAxis: {type: 'category', data: cats, axisLabel: {color: t.inkBody}},
+            series: [{
+                type: 'bar',
+                data: vals.map(function(v, i) { return {value: v, itemStyle: {color: colors[i]}}; }),
+                label: {show: true, position: 'right', color: t.inkBody},
+            }],
+        };
+    });
+
+    // Category breakdown — horizontal bar.
+    _initChart('{{ fragment_scope_class }}-categoryChart', function() {
+        var t = _tokens();
+        var cats = {};
+        {% if findings_df is iterable and findings_df is not string and findings_df is not mapping %}
+        {% for row in findings_df %}
+        cats[{{ (row.category or 'Unknown') | tojson }}] = (cats[{{ (row.category or 'Unknown') | tojson }}] || 0) + 1;
+        {% endfor %}
+        {% endif %}
+        var entries = Object.keys(cats).map(function(k) { return [k, cats[k]]; });
+        entries.sort(function(a, b) { return b[1] - a[1]; });
+        entries = entries.slice(0, 10);
+        return {
+            tooltip: {trigger: 'axis', axisPointer: {type: 'shadow'}},
+            grid: {left: 160, right: 24, top: 12, bottom: 24},
+            xAxis: {type: 'value', axisLabel: {color: t.inkBody}},
+            yAxis: {type: 'category', data: entries.map(function(e) { return e[0]; }), axisLabel: {color: t.inkBody}},
+            series: [{
+                type: 'bar', data: entries.map(function(e) { return e[1]; }),
+                itemStyle: {color: t.accentTeal},
+                label: {show: true, position: 'right', color: t.inkBody},
+            }],
+        };
+    });
+
+    {% if project_summary_df is iterable and project_summary_df is not string and project_summary_df is not mapping and (project_summary_df | length) > 1 %}
+    // Project Summary — stacked bar. Sort by CRITICAL count descending
+    // so high-critical projects appear at the top (matches pre-migration
+    // chart sort; transform default is total-desc which can hide high-
+    // critical projects behind higher-total rows).
+    _initChart('{{ fragment_scope_class }}-projectSummaryChart', function() {
+        var t = _tokens();
+        var projects = [
+            {% for row in project_summary_df %}
+            {name: {{ row.project_name | tojson }}, critical: {{ row.CRITICAL }}, high: {{ row.HIGH }}, medium: {{ row.MEDIUM }}, low: {{ row.LOW }}, info: {{ row.INFO }}}{{ "," if not loop.last }}
+            {% endfor %}
+        ];
+        projects.sort(function(a, b) { return b.critical - a.critical; });
+        return {
+            tooltip: {trigger: 'axis', axisPointer: {type: 'shadow'}},
+            legend: {data: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'], textStyle: {color: t.inkBody}},
+            grid: {left: 120, right: 24, top: 32, bottom: 24},
+            xAxis: {type: 'value', axisLabel: {color: t.inkBody}},
+            yAxis: {type: 'category', data: projects.map(function(p) { return p.name; }), axisLabel: {color: t.inkBody}},
+            series: [
+                {name: 'CRITICAL', type: 'bar', stack: 'total', data: projects.map(function(p) { return p.critical; }), itemStyle: {color: t.sevCritical}},
+                {name: 'HIGH',     type: 'bar', stack: 'total', data: projects.map(function(p) { return p.high; }),     itemStyle: {color: t.sevHigh}},
+                {name: 'MEDIUM',   type: 'bar', stack: 'total', data: projects.map(function(p) { return p.medium; }),   itemStyle: {color: t.sevMedium}},
+                {name: 'LOW',      type: 'bar', stack: 'total', data: projects.map(function(p) { return p.low; }),      itemStyle: {color: t.sevLow}},
+                {name: 'INFO',     type: 'bar', stack: 'total', data: projects.map(function(p) { return p.info; }),     itemStyle: {color: t.accentBlue}},
+            ],
+        };
+    });
+    {% endif %}
+})();
+
+// toggleRows(tableId): preserved verbatim from the pre-migration
+// template at configuration_analysis_triage.html:460-467. Takes a
+// tableId argument and toggles the `.hidden-row` class on all hidden
+// rows of that specific table — works for both the Findings Detail
+// table (tbl-findings-detail) and the VEX Recommendations table
+// (tbl-vex-recs).
+function toggleRows(tableId) {
+    const table = document.getElementById(tableId);
+    if (!table) return;
+    const hiddenRows = table.querySelectorAll('.hidden-row');
+    const showMoreRow = table.querySelector('.show-more-row');
+    hiddenRows.forEach(row => row.classList.toggle('hidden-row'));
+    if (showMoreRow) showMoreRow.style.display = 'none';
+}
+</script>
+{% include '_action_buttons.html' %}
 </body>
 </html>
+{% endif %}

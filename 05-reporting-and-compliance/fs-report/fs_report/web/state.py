@@ -35,6 +35,26 @@ DEFAULTS: dict[str, Any] = {
     "network_exposure": "unknown",
     "regulatory": "",
     "deployment_notes": "",
+    # SP3: uploaded-file path globals (empty = none); route through the
+    # diff-vs-default branch (NOT _NO_GLOBAL_KEYS), mirroring regulatory.
+    "scoring_file": "",
+    "context_file": "",
+    "pinned_report": "",
+    "pinned_project": "",
+    "pinned_version": "",
+    # Folder-targeting (design §4): stores the pinned folder's ID (consistent
+    # with the ID-keyed scope cascade). shell_context resolves its display name
+    # at render time and clears the pin if the ID is no longer a known folder.
+    "pinned_folder": "",
+    "open_only": False,
+    "detailed": False,
+    "standalone": False,
+    "vex_override": False,
+    # SP2: auto-apply VEX toggle. Baseline False (off) so a card override stores
+    # only when toggled on, mirroring vex_override. Not a Settings-page field;
+    # destructive autotriage is configured per-run on the TP surfaces only.
+    "autotriage": False,
+    "component_match": "contains",
 }
 
 
@@ -144,3 +164,89 @@ class WebAppState:
     def has_config(self) -> bool:
         """True if the user has a domain and token configured."""
         return bool(self.token) and bool(self.domain)
+
+
+# ── Per-recipe override helpers (Command Center card config) ──────────
+#
+# ``recipe_overrides`` is a new top-level config key (NOT in DEFAULTS): a map
+# of *lowercase* recipe name -> a sparse dict of fields that differ from the
+# global config / supply a recipe's required card input.  It round-trips via
+# ``WebAppState.reload``'s ``{**DEFAULTS, **config_file}`` merge; absent ->
+# ``{}`` via ``state.get("recipe_overrides", {})``.
+#
+# Canonical key rule: every lookup uses ``recipe_name.lower()``.  Display names
+# stay title-case in the UI; the key is lowercase.
+
+
+def recipe_override(state: WebAppState, recipe_name: str) -> dict[str, Any]:
+    """Return the saved override dict for ``recipe_name`` (canonical key).
+
+    Guarded so a malformed (non-dict) ``recipe_overrides`` map, or a non-dict
+    recipe value, degrades to ``{}`` and never raises.
+    """
+    overrides = state.get("recipe_overrides", {})
+    if not isinstance(overrides, dict):
+        return {}
+    value = overrides.get(recipe_name.lower())
+    if not isinstance(value, dict):
+        return {}
+    return value
+
+
+def effective_value(state: WebAppState, recipe_name: str, key: str) -> Any:
+    """Resolve a field's *effective* value for a recipe.
+
+    The recipe's override value if present, else the global ``state.get(key)``.
+    """
+    override = recipe_override(state, recipe_name)
+    if key in override:
+        return override[key]
+    return state.get(key)
+
+
+def needs_setup(state: WebAppState, recipe: Any) -> bool:
+    """Whether ``recipe`` declares a card-suppliable required input not yet met.
+
+    True iff the recipe declares a card-suppliable required input — ``requires_cve``
+    (→ ``cve_filter``) or ``requires_component`` (→ ``component_filter``, B4 #25) —
+    and that input has no effective value (neither a per-card override nor the
+    global ``state.get(<key>)``).  The scope gate (``requires_project*``) is
+    run-bar-suppliable and is deliberately NOT part of this computation.
+
+    Strip before the truthiness check so a whitespace-only effective value (e.g.
+    ``"   "``) is treated as unset — matching missing_card_inputs and the engine's
+    requires_* checks (all strip). Without this, a whitespace-only global value
+    would make needs_setup return False, let the card run, then fail the engine's
+    stripped check — a doomed run (PR #117 review Fix 3).
+    """
+    for flag, key in (
+        ("requires_cve", "cve_filter"),
+        ("requires_component", "component_filter"),
+    ):
+        if (
+            getattr(recipe, flag, False)
+            and not str(effective_value(state, recipe.name, key) or "").strip()
+        ):
+            return True
+    return False
+
+
+def missing_card_inputs(recipe: Any, override: dict[str, Any]) -> list[str]:
+    """Card-suppliable required inputs missing from ``override``, driven by flags.
+
+    ``requires_cve`` -> require a non-empty ``cve_filter``; ``requires_component``
+    -> require a non-empty ``component_filter`` (B4 #25 — Component Impact /
+    Component Remediation Package, whose component IS the primary input). A
+    ``component_filter`` is NOT required for recipes that don't declare
+    ``requires_component`` (it stays an optional narrowing there).
+    ``requires_project*`` is run-bar-suppliable, not a card input, so it is not
+    checked here.
+    """
+    missing: list[str] = []
+    if getattr(recipe, "requires_cve", False):
+        if not str(override.get("cve_filter", "")).strip():
+            missing.append("cve_filter")
+    if getattr(recipe, "requires_component", False):
+        if not str(override.get("component_filter", "")).strip():
+            missing.append("component_filter")
+    return missing

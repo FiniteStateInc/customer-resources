@@ -10,7 +10,7 @@ A powerful, stand-alone reporting utility for Finite State customers that genera
 - **Custom Data Processing**: Advanced data manipulation and analysis
 - **Standalone Operation**: Runs entirely outside the Finite State SaaS platform
 - **CLI Interface**: Command-line tool for easy automation and integration
-- **Data Comparison Tools**: Utilities for comparing XLSX files and analyzing differences
+- **Comparison Reports**: Diff components, findings, licenses, and triage status between two versions, projects, or folders
 
 ## Available Reports
 
@@ -32,7 +32,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Component Vulnerability Analysis | Riskiest components across the portfolio |
 | Findings by Project | Complete findings inventory per project with CVE details, severity, and platform links |
 | Component List | Software inventory (SBOM) for compliance |
-| CVE Component Evidence | For a project version, lists CVE-bearing components with their associated CVE IDs and the firmware file paths where each was detected; intended for per-version triage *(on-demand, requires `--project` + `--version`)* |
+| CVE Component Evidence | For a project version, lists CVE-bearing components with their associated CVE IDs and the firmware file paths where each was detected; intended for per-version triage *(on-demand, requires `--project`; `--version` optional — defaults to the current version)* |
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
 | Configuration Analysis Triage | Config/secrets/crypto triage — private keys, hardcoded credentials, insecure configs *(on-demand)* |
 | License Report | Component license risk classification (Permissive, Copyleft, Proprietary) with policy analysis |
@@ -92,6 +92,8 @@ You can also install manually with pipx:
 pipx install fs-report
 ```
 
+> **PDF output** requires the Chromium rendering engine — install it once with `fs-report install-engine` (the setup scripts print a reminder to run this).
+
 Once installed, set up API credentials (the setup script will prompt for these, or you can set them yourself):
 
 ```bash
@@ -126,6 +128,8 @@ The CLI is organized into subcommands for better discoverability:
 |---------|-------------|
 | `fs-report` | Launch the web UI (default, no arguments) |
 | `fs-report run` | Generate reports (all existing flags preserved) |
+| `fs-report bundle` | Build a compound report bundle (multiple recipes in one document) and save it for `run` |
+| `fs-report compare` | Run a comparison report between two scopes (`--left` / `--right`) |
 | `fs-report list {recipes,projects,folders,versions}` | Explore available resources |
 | `fs-report cache {clear,status}` | Manage cached data |
 | `fs-report config {init,show}` | Manage configuration |
@@ -133,7 +137,7 @@ The CLI is organized into subcommands for better discoverability:
 | `fs-report help periods` | Show period format help |
 | `fs-report serve [directory]` | Serve reports via local HTTP server |
 
-> **Backwards compatibility:** Old command names (`list-recipes`, `list-projects`, `show-periods`, bare `fs-report --recipe ...`) still work but emit deprecation warnings.
+> **Backwards compatibility:** Old hyphenated command names (`list-recipes`, `list-projects`, `show-periods`) still work but emit deprecation warnings. The bare `fs-report --recipe ...` invocation is **no longer supported** — use `fs-report run --recipe ...`.
 
 ### Config File
 
@@ -210,7 +214,7 @@ fs-report run --recipe "Remediation Package" --project "MyProject" --ai
 fs-report run --recipe "Remediation Package" --folder "Product Line A"
 ```
 
-**CVE Component Evidence** — per-version triage: every CVE-bearing component with its CVE IDs and the firmware file paths where it was detected. Scoped to a single project version; uses the same `affected==<componentId>` findings join the platform UI uses. The `Evidence File Paths` column comes from an internal endpoint (`/api/fs/v1/.../evidence`) — the existing X-Authorization token works against it. Per-component calls are parallelized and cached; lower `FS_REPORT_EVIDENCE_WORKERS` (default 5) if the internal endpoint starts returning 500s.
+**CVE Component Evidence** — per-version triage: every CVE-bearing component with its CVE IDs and the firmware file paths where it was detected. Scoped to a single project version; uses the same `affected==<componentId>` findings join the platform UI uses. The `Evidence File Paths` column is fetched from the platform using your existing API credentials. Per-component lookups are parallelized and cached; if you hit rate limits or errors, lower `FS_REPORT_EVIDENCE_WORKERS` (default 5) to tune concurrency.
 
 ```bash
 fs-report run --recipe "CVE Component Evidence" \
@@ -435,36 +439,40 @@ docker run --rm \
   fs-report run
 ```
 
-## Data Comparison Tools
+## Comparison Reports
 
-### XLSX File Comparison
-
-Compare two XLSX files by CVE ID for a specific project:
+`fs-report compare` runs a comparison ("diff") report between two scopes — two
+project versions, two projects, or two folders. Each `--left` / `--right` scope
+is a reference like `project:My Device@v3.2.1`, `project:My Device` (latest
+version), or `folder:EU-Routers`.
 
 ```bash
-# Basic comparison
-python scripts/compare_xlsx_files.py customer_file.xlsx generated_file.xlsx I421GLGD
+# Diff the components between two versions of a project
+fs-report compare component_diff --left "project:My Device@v3.2.1" --right "project:My Device@v3.3.0"
 
-# With custom output file
-python scripts/compare_xlsx_files.py customer_file.xlsx generated_file.xlsx I421GLGD --output comparison_report.xlsx
+# Diff findings between two projects
+fs-report compare "Finding Diff" --left "project:Router A" --right "project:Router B"
 
-# If column names are different
-python scripts/compare_xlsx_files.py customer_file.xlsx generated_file.xlsx I421GLGD --cve-column "CVE_ID" --project-column "Project_ID"
+# Add a cover title/logo for a customer-ready deliverable
+fs-report compare "License Diff" --left "folder:EU-Routers" --right "folder:US-Routers" --title "License Drift"
 ```
 
-The comparison tool generates:
-- **Summary statistics** in console output
-- **Detailed Excel report** with multiple sheets:
-  - Summary of differences
-  - CVEs only in customer file
-  - CVEs only in generated file
-  - Side-by-side comparison of matching CVEs
+Available comparison recipes (run `fs-report list recipes` to see the Comparison group):
+
+| Recipe | Description |
+|--------|-------------|
+| Component Diff | Components added, removed, and version-changed between the two scopes |
+| Finding Diff | Findings (CVEs) introduced, resolved, and carried over |
+| License Diff | License classification changes across the two scopes |
+| Triage Status Diff | VEX/triage status changes per finding |
+
+Comparison reports render to HTML. For version-over-version trends within a
+single project, see the **Version Comparison** report under `fs-report run` instead.
 
 ## Exit Codes
 - `0`: Success
-- `1`: Usage/validation error
-- `2`: API authentication failure
-- `3`: API rate-limit/connectivity failure
+- `1`: Runtime error — report generation failed, or an API/data/file/validation error during the run
+- `2`: Usage error — missing or invalid arguments (e.g. no token/domain, an invalid `--left`/`--right` scope, or an unsupported bare-flag invocation)
 
 ## Security
 
@@ -474,7 +482,7 @@ The comparison tool generates:
 - In CI/CD pipelines, only use recipes from version-controlled sources
 - Never download and execute recipes from untrusted sources
 
-For detailed security guidance, see [Security Considerations](docs/recipes/CUSTOM_REPORT_GUIDE.md#security-considerations) in the Custom Report Guide.
+**Authoring your own recipe:** start from the bundled template at `fs_report/recipes/_TEMPLATE.yaml` (and the shipped recipe YAML files as worked examples), then run it with `fs-report run --recipes <your-dir> --recipe "<Name>"`.
 
 ## Contributing
 
@@ -487,7 +495,7 @@ For detailed security guidance, see [Security Considerations](docs/recipes/CUSTO
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+This project is licensed under the Functional Source License, Version 1.1, with MIT Future License (FSL-1.1-MIT). Each release converts to the MIT License two years after its publication. See the LICENSE file for details.
 
 ## Support
 

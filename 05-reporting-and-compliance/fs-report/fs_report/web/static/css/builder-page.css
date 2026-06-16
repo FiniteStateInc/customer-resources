@@ -1,0 +1,876 @@
+/* ===================================================================
+   Workflow Builder page (Pass 3 · Task 6) — authoring shell.
+
+   Tokens (colors / spacing / type / radii / motion) are lifted from the
+   prototype `Phase 2 Workflow Builder.html` + the repo `tokens.css`. The
+   prototype used a fixed full-viewport 3-column grid; here the builder
+   fills the shell's `.main` content area instead (the shared topbar /
+   sidebar / status-bar come from `_cc_shell.html`).
+   =================================================================== */
+
+[x-cloak] { display: none !important; }
+
+/* The builder fills the main content area edge-to-edge: kill the default
+   .main padding/scroll so the rail + canvas + inspector own their scroll. */
+.main:has(.wfb) { padding: 0; overflow: hidden; }
+
+.wfb {
+  /* Page-local tokens lifted from the prototype. The repo tokens.css doesn't
+     define these accent/rail names (it uses --nav-* / --sev-*), so we scope
+     the prototype values here. --purple/--blue/--rose match the prototype +
+     handoff §3 category accents (Remediation / tool / error). */
+  --rail-w: 300px;
+  --insp-w: 340px;
+  --purple: #a78bfa;
+  --blue: #60a5fa;
+  --cyan: #22d3ee;
+  --rose: #fb7185;
+  --green: #4ade80;
+
+  height: 100%;
+  display: grid;
+  /* The inspector is the 3rd column — collapsed to 0 (and hidden) until a step
+     is selected, so an empty inspector never squeezes the canvas. `insp-open`
+     is bound on .wfb via Alpine (:class) from inspStep(). */
+  grid-template-columns: var(--rail-w) 1fr 0;
+  transition: grid-template-columns .22s var(--ease-out);
+  min-height: 0;
+}
+.wfb.insp-open { grid-template-columns: var(--rail-w) 1fr var(--insp-w); }
+.wfb:not(.insp-open) .wfb-inspector { display: none; }
+body.no-motion .wfb { transition: none; }
+
+/* ===================== left rail ===================== */
+.wfb-rail {
+  border-right: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--surface-card) 55%, transparent);
+  overflow-y: auto;
+  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+}
+.wfb-sec-label {
+  font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--ink-faint); font-weight: 700; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 7px;
+}
+.wfb-sec-label svg { width: 13px; height: 13px; color: var(--accent); }
+
+.wfb-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
+.wfb-field label {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink-mute); font-weight: 600;
+}
+.wfb-inp, .wfb-sel {
+  background: var(--surface-subtle); border: 1px solid var(--hairline);
+  border-radius: var(--r-sm); color: var(--ink);
+  font-family: var(--font-body, inherit); font-size: 12.5px; padding: 7px 9px;
+  width: 100%;
+}
+.wfb-inp:focus, .wfb-sel:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .12);
+}
+.wfb-inp::placeholder { color: var(--ink-faint); }
+
+.wfb-name-row { display: flex; gap: 7px; }
+.wfb-saved-row { display: flex; gap: 7px; align-items: stretch; }
+.wfb-saved-row .wfb-sel { flex: 1; min-width: 0; }
+
+/* buttons */
+.wfb-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 8px 12px; border-radius: var(--r-sm);
+  font-family: var(--font-body, inherit); font-weight: 600; font-size: 12px;
+  cursor: pointer; border: 1px solid var(--hairline);
+  background: var(--surface-subtle); color: var(--ink-strong);
+  transition: .15s; white-space: nowrap;
+}
+.wfb-btn:hover { border-color: var(--accent); color: var(--accent); }
+.wfb-btn svg { width: 14px; height: 14px; }
+.wfb-btn.primary { background: var(--accent); color: #06231F; border-color: var(--accent); }
+.wfb-btn.primary:hover { box-shadow: 0 6px 20px rgba(var(--accent-rgb), .3); color: #06231F; }
+.wfb-btn.sm { padding: 6px 9px; font-size: 11px; }
+.wfb-btn.danger:hover { border-color: var(--rose, #fb7185); color: var(--rose, #fb7185); }
+.wfb-btn:disabled { opacity: .4; cursor: not-allowed; }
+.wfb-btn:disabled:hover { border-color: var(--hairline); color: var(--ink-strong); box-shadow: none; }
+
+.wfb-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* Grid items default to min-width:auto (= min-content); input[type=date] has a
+   wide intrinsic min-content (date fields + picker icon) that overflows the 1fr
+   track, so the .wfb-field cells must be allowed to shrink. (min-width:0 on the
+   input below isn't enough — the constraint is on the grid item.) */
+.wfb-row2 > * { min-width: 0; }
+.wfb-row2 .wfb-inp, .wfb-row2 .wfb-sel { min-width: 0; width: 100%; }
+
+/* toggle switch */
+.wfb-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; }
+.wfb-toggle .tl { font-size: 12px; color: var(--ink-body, var(--ink-dim)); }
+.wfb-sw {
+  position: relative; width: 34px; height: 19px; border-radius: 999px;
+  background: var(--surface-muted); border: 1px solid var(--hairline);
+  cursor: pointer; flex: 0 0 auto; transition: .2s;
+}
+.wfb-sw::after {
+  content: ''; position: absolute; top: 1px; left: 1px; width: 15px; height: 15px;
+  border-radius: 50%; background: var(--ink-mute); transition: .2s var(--ease-out);
+}
+.wfb-sw.on { background: rgba(var(--accent-rgb), .25); border-color: var(--accent); }
+.wfb-sw.on::after { left: 16px; background: var(--accent); box-shadow: 0 0 8px rgba(var(--accent-rgb), .6); }
+
+.wfb-global-box {
+  background: rgba(var(--accent-rgb), .04);
+  border: 1px solid rgba(var(--accent-rgb), .16);
+  border-radius: var(--r-md); padding: 12px;
+}
+.wfb-foot-note { font-size: 10.5px; color: var(--ink-faint); margin-top: 4px; }
+
+/* library */
+.wfb-lib-label {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--ink-faint); margin: 12px 0 7px;
+}
+.wfb-lib-note { font-size: 10px; color: var(--ink-faint); margin-top: 4px; }
+.wfb-libitem {
+  display: flex; align-items: center; gap: 9px; padding: 8px 10px;
+  border-radius: var(--r-md); border: 1px solid var(--hairline);
+  background: var(--surface-subtle); margin-bottom: 6px; cursor: grab;
+  transition: .15s; border-left: 3px solid var(--lc, var(--purple));
+}
+.wfb-libitem:hover {
+  border-color: var(--accent); transform: translateX(2px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .3);
+}
+.wfb-libitem:active { cursor: grabbing; }
+.wfb-libitem.sortable-chosen { opacity: .9; }
+.wfb-libitem.sortable-ghost { opacity: .4; }
+.wfb-libitem .li-ic {
+  width: 26px; height: 26px; border-radius: var(--r-sm);
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  background: color-mix(in srgb, var(--lc, var(--purple)) 14%, transparent);
+  color: var(--lc, var(--purple));
+}
+.wfb-libitem .li-ic svg { width: 14px; height: 14px; }
+.wfb-libitem .li-tx { min-width: 0; }
+.wfb-libitem .li-t {
+  font-size: 12px; font-weight: 600; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wfb-libitem .li-s { font-family: var(--font-mono); font-size: 9px; color: var(--ink-faint); }
+.wfb-libitem .li-grip { margin-left: auto; color: var(--ink-faint); flex: 0 0 auto; }
+.wfb-libitem .li-grip svg { width: 13px; height: 13px; }
+
+/* ===================== canvas ===================== */
+.wfb-canvas { position: relative; overflow-y: auto; padding: 0; min-height: 0; }
+.wfb-canvas-head {
+  position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 14px;
+  padding: 14px 26px;
+  background: color-mix(in srgb, var(--surface-page) 60%, transparent);
+  backdrop-filter: blur(14px); border-bottom: 1px solid var(--hairline);
+}
+.wfb-canvas-head h1 {
+  font-family: var(--font-display); font-size: 18px; font-weight: 700;
+  color: var(--ink); letter-spacing: -.01em; display: flex; align-items: center; gap: 10px;
+}
+.wfb-cnt {
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-mute);
+  padding: 3px 9px; border: 1px solid var(--hairline); border-radius: 999px;
+}
+.wfb-scope-pill {
+  display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px;
+  border-radius: 999px; border: 1px solid rgba(var(--accent-rgb), .35);
+  background: rgba(var(--accent-rgb), .08); color: var(--accent);
+  font-size: 11.5px; font-weight: 600; white-space: nowrap;
+}
+.wfb-scope-pill svg { width: 12px; height: 12px; }
+.wfb-scope-pill .v { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-body, var(--ink-dim)); }
+.wfb-ch-actions { margin-left: auto; display: flex; gap: 8px; }
+.wfb-btn.run {
+  background: linear-gradient(135deg, rgba(167, 139, 250, .34), rgba(34, 211, 238, .34));
+  border-color: rgba(167, 139, 250, .55); color: #fff;
+}
+.wfb-btn.run:hover { box-shadow: 0 8px 26px rgba(167, 139, 250, .3); color: #fff; }
+.wfb-btn.run:disabled:hover { box-shadow: none; }
+
+.wfb-pipeline {
+  max-width: 560px; margin: 26px auto 80px; padding: 0 24px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 0; min-height: 300px;
+  position: relative; /* anchors the centered drop-hint overlay */
+}
+.wfb-pipe-start {
+  align-self: center; font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint);
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.wfb-pipe-start .dot {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 10px rgba(var(--accent-rgb), .6);
+}
+
+/* SortableJS receiver — the step list. It is a flex column so the rendered
+   .wfb-step-wrap children (card + connector) stack vertically. */
+/* Grow to fill the canvas below the source node so the whole area is the drop
+   target (was min-height:8px — an 8px strip, which made dropping land only just
+   under "Portfolio snapshot"). */
+.wfb-steps { display: flex; flex-direction: column; gap: 0; flex: 1 1 auto; min-height: 220px; }
+.wfb-step-wrap { display: flex; flex-direction: column; align-items: stretch; }
+
+.wfb-step {
+  position: relative;
+  background: linear-gradient(180deg, rgba(20, 28, 60, .7), rgba(12, 18, 40, .78));
+  border: 1px solid var(--hairline); border-radius: var(--r-lg);
+  padding: 13px 14px 13px 16px; cursor: pointer;
+  transition: border-color .18s, box-shadow .18s, transform .12s;
+  border-left: 3px solid var(--sc, var(--purple));
+}
+.wfb-step:hover {
+  border-color: rgba(var(--accent-rgb), .42); transform: translateY(-1px);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, .42),
+              0 0 22px color-mix(in srgb, var(--sc, var(--accent)) 26%, transparent);
+}
+.wfb-step.sel {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), .4), 0 0 26px rgba(var(--accent-rgb), .16);
+}
+.wfb-step.sortable-ghost { opacity: .45; }
+.wfb-step .s-top { display: flex; align-items: center; gap: 10px; }
+.wfb-step .s-grip { color: var(--ink-faint); cursor: grab; flex: 0 0 auto; }
+.wfb-step .s-grip svg { width: 14px; height: 14px; }
+.wfb-step .s-idx { font-family: var(--font-mono); font-size: 10px; color: var(--ink-faint); width: 18px; flex: 0 0 auto; }
+.wfb-step .s-ic {
+  width: 30px; height: 30px; border-radius: var(--r-sm);
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  background: color-mix(in srgb, var(--sc, var(--purple)) 14%, transparent);
+  color: var(--sc, var(--purple));
+}
+.wfb-step .s-ic svg { width: 16px; height: 16px; }
+.wfb-step .s-tx { flex: 1; min-width: 0; }
+.wfb-step .s-t {
+  font-family: var(--font-display); font-size: 13.5px; font-weight: 700; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wfb-step .s-tool { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-mute); }
+.wfb-step .s-rm {
+  color: var(--ink-faint); flex: 0 0 auto; width: 24px; height: 24px;
+  border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; cursor: pointer;
+}
+.wfb-step .s-rm:hover { color: var(--rose, #fb7185); border-color: rgba(251, 113, 133, .4); background: rgba(251, 113, 133, .08); }
+.wfb-step .s-rm svg { width: 14px; height: 14px; }
+.wfb-step .s-chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 9px; margin-left: 58px; }
+
+.chip {
+  font-family: var(--font-mono); font-size: 9px; font-weight: 600; letter-spacing: .04em;
+  padding: 2px 7px; border-radius: 999px; border: 1px solid var(--hairline);
+  background: rgba(0, 0, 0, .25); color: var(--ink-mute);
+  display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+}
+.chip.ov { border-color: rgba(var(--accent-rgb), .45); color: var(--accent); background: rgba(var(--accent-rgb), .08); }
+.chip.ai { color: var(--purple); border-color: rgba(167, 139, 250, .4); }
+.chip.export-only { color: var(--blue, #60a5fa); border-color: rgba(96, 165, 250, .4); }
+
+/* connector */
+.wfb-conn {
+  align-self: center; width: 2px; height: 26px;
+  background: linear-gradient(180deg, rgba(var(--accent-rgb), .55), rgba(167, 139, 250, .4));
+  position: relative; flex: 0 0 auto;
+}
+.wfb-conn::after {
+  content: ''; position: absolute; left: 50%; bottom: -1px; transform: translateX(-50%);
+  width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent;
+  border-top: 5px solid rgba(167, 139, 250, .6);
+}
+
+/* drop zone */
+.wfb-dropzone {
+  /* A centered, non-blocking hint overlaying the (now full-height) .wfb-steps
+     receiver — pointer-events:none so the drag/drop reaches the receiver
+     beneath it, anywhere in the canvas. */
+  position: absolute; left: 50%; top: 54%; transform: translate(-50%, -50%);
+  width: min(420px, 86%); pointer-events: none;
+  border: 1.5px dashed var(--hairline);
+  border-radius: var(--r-lg); padding: 22px; text-align: center;
+  color: var(--ink-faint); font-size: 12.5px; transition: .15s;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+}
+.wfb-dropzone svg { width: 20px; height: 20px; opacity: .6; }
+.wfb-dropzone.over { border-color: var(--accent); background: rgba(var(--accent-rgb), .06); color: var(--accent); }
+
+/* ===================== inspector (§5.4) ===================== */
+.wfb-inspector {
+  border-left: 1px solid var(--hairline);
+  background: color-mix(in srgb, var(--surface-card) 60%, transparent);
+  overflow-y: auto; padding: 16px 16px 40px; min-height: 0;
+}
+.wfb-insp-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; text-align: center; color: var(--ink-faint); gap: 12px; padding: 40px 20px;
+}
+.wfb-insp-empty svg { width: 34px; height: 34px; opacity: .5; }
+.wfb-insp-empty .ie-t { font-size: 13px; color: var(--ink-mute); }
+
+/* inspector head */
+.insp-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
+.insp-head .ih-ic {
+  width: 34px; height: 34px; border-radius: var(--r-md);
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  background: color-mix(in srgb, var(--sc, var(--purple)) 14%, transparent);
+  color: var(--sc, var(--purple));
+}
+.insp-head .ih-ic svg { width: 18px; height: 18px; }
+.insp-head .ih-tx { flex: 1; min-width: 0; }
+.insp-head .ih-t {
+  font-size: 15px; font-weight: 700; color: var(--ink-strong); line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.insp-head .ih-s { font-size: 10px; color: var(--ink-mute); margin-top: 2px; }
+.insp-head .ih-close { margin-left: auto; cursor: pointer; color: var(--ink-faint); flex: 0 0 auto; }
+.insp-head .ih-close:hover { color: var(--ink-strong); }
+.insp-head .ih-close svg { width: 15px; height: 15px; }
+
+.insp-note {
+  font-size: 11.5px; color: var(--ink-mute);
+  background: rgba(0, 0, 0, .2); border: 1px solid var(--hairline);
+  border-radius: var(--r-md); padding: 10px 12px; margin-bottom: 14px; line-height: 1.5;
+}
+.insp-note b { color: var(--accent); }
+.insp-note.export-only-note { border-color: rgba(96, 165, 250, .35); }
+.insp-note.export-only-note b { color: var(--blue); }
+.wfb-inspector .wfb-field { margin-bottom: 11px; }
+.with-global { color: var(--ink-faint); font-weight: 400; font-size: 9.5px; }
+
+/* Scan-type / scan-status checkbox chips — mirror the card/modal grid + chip
+   treatment (command-center.css §5 #4) so the inspector Filters don't render as
+   ragged native checkboxes. The .wfb-chk label text is a <span> (an element),
+   so it ellipsis-truncates as a backstop; cells are still sized to fit the
+   longest token (no overflow). Checked tint via :has() (CSS-only).
+   (config-surface-visual-cohesion spec §5 #8) */
+.wfb-inspector .wfb-checkgroup,
+.wfb-rail .wfb-checkgroup {
+  /* 175px min matches the card/modal so the longest token
+     (VULNERABILITY_ANALYSIS) fits in full — fitting the token beats column
+     count (the span ellipsis below is only a pathological backstop, since the
+     <span> has no title to reveal hidden text). */
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 7px;
+}
+.wfb-chk {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  padding: 6px 9px; border-radius: var(--r-sm);
+  background: var(--surface-subtle); border: 1px solid var(--hairline);
+  color: var(--ink-body); font-size: 12px; line-height: 1.3; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.wfb-chk:hover { background: var(--surface-hover); }
+.wfb-chk input {
+  accent-color: var(--accent); width: 13px; height: 13px; flex: 0 0 auto; margin: 0;
+}
+.wfb-chk span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wfb-chk:has(input:checked) {
+  background: rgba(var(--accent-rgb), .12);
+  border-color: rgba(var(--accent-rgb), .45); color: var(--ink);
+}
+
+/* ===================== run view (§6.3) ===================== */
+.wfb-run-banner {
+  display: none; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--cyan);
+  padding: 3px 11px; border-radius: 999px;
+  border: 1px solid rgba(34, 211, 238, .3); background: rgba(34, 211, 238, .08);
+}
+.wfb-run-banner.show { display: inline-flex; }
+.wfb-run-banner .rb-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--cyan); box-shadow: 0 0 8px var(--cyan);
+  animation: wfb-rbpulse 1.4s ease-in-out infinite;
+}
+.wfb-run-banner.done { color: var(--green); border-color: rgba(74, 222, 128, .3); background: rgba(74, 222, 128, .08); }
+.wfb-run-banner.done .rb-dot { background: var(--green); box-shadow: 0 0 8px var(--green); animation: none; }
+@keyframes wfb-rbpulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+
+/* run-mode pipeline: cards are read-only (no grip/remove, no hover lift) */
+.wfb-pipeline.run-mode .wfb-step { cursor: default; }
+.wfb-pipeline.run-mode .wfb-step:hover { transform: none; }
+
+/* per-step run states */
+.wfb-step.run-queued { opacity: .5; }
+.wfb-step.run-running {
+  border-color: rgba(34, 211, 238, .5) !important;
+  box-shadow: 0 0 26px rgba(34, 211, 238, .3), 0 0 64px rgba(34, 211, 238, .12) !important;
+}
+.wfb-step.run-done { border-color: rgba(74, 222, 128, .3) !important; }
+.wfb-step.run-error { border-color: rgba(251, 113, 133, .5) !important; box-shadow: 0 0 22px rgba(251, 113, 133, .18) !important; }
+.wfb-step.run-skipped { opacity: .55; }
+
+/* run status badge (spinner / check / error) */
+.s-status { display: flex; align-items: center; flex: 0 0 auto; margin-left: 4px; }
+.s-status .spin {
+  width: 15px; height: 15px; border-radius: 50%;
+  border: 2px solid rgba(34, 211, 238, .25); border-top-color: var(--cyan);
+  animation: wfb-spin360 .8s linear infinite;
+}
+.s-status .chk {
+  display: flex; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--green); align-items: center; justify-content: center;
+  box-shadow: 0 0 10px rgba(74, 222, 128, .55);
+}
+.s-status .chk svg { width: 11px; height: 11px; color: #06231f; }
+.s-status .err {
+  display: flex; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--rose); align-items: center; justify-content: center;
+}
+.s-status .err svg { width: 11px; height: 11px; color: #2a0a10; }
+@keyframes wfb-spin360 { to { transform: rotate(360deg); } }
+
+/* live run line — running message + indeterminate progress fill */
+.s-runline { display: flex; flex-direction: column; gap: 7px; margin-top: 9px; margin-left: 58px; }
+.s-runline .rmsg {
+  font-size: 10.5px; font-style: italic; color: #d6f7ff;
+  text-shadow: 0 0 8px rgba(34, 211, 238, .25);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.s-runline .rtrack { position: relative; height: 5px; border-radius: 999px; background: rgba(148, 168, 220, .16); overflow: hidden; }
+.s-runline .rfill {
+  position: absolute; inset: 0 60% 0 0; border-radius: 999px;
+  background: linear-gradient(90deg, rgba(45, 212, 191, .95), var(--cyan) 70%, #bef0ff);
+  box-shadow: 0 0 8px rgba(34, 211, 238, .7);
+  animation: wfb-rfill 1.3s ease-in-out infinite;
+}
+@keyframes wfb-rfill { 0% { inset: 0 80% 0 0; } 50% { inset: 0 20% 0 10%; } 100% { inset: 0 0 0 80%; } }
+.s-runline.skipped .rmsg, .s-runline.error .rmsg { font-style: normal; color: var(--ink-mute); text-shadow: none; }
+.s-runline.error .rmsg { color: var(--rose); }
+.s-runline.done .r-open {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--green); text-decoration: none;
+  border: 1px solid rgba(74, 222, 128, .35); border-radius: var(--r-sm);
+  padding: 4px 9px; align-self: flex-start; background: rgba(74, 222, 128, .06);
+}
+.s-runline.done .r-open:hover { background: rgba(74, 222, 128, .14); }
+.s-runline.done .r-open svg { width: 12px; height: 12px; }
+
+/* connectors light up behind the run cursor */
+.wfb-conn.lit { background: linear-gradient(180deg, rgba(74, 222, 128, .7), rgba(74, 222, 128, .45)); }
+.wfb-conn.lit::after { border-top-color: rgba(74, 222, 128, .7); }
+.wfb-conn.flow {
+  background: linear-gradient(180deg, rgba(34, 211, 238, .9), rgba(34, 211, 238, .4));
+  background-size: 100% 40px; animation: wfb-connflow .9s linear infinite;
+}
+.wfb-conn.flow::after { border-top-color: rgba(34, 211, 238, .8); }
+@keyframes wfb-connflow { from { background-position: 0 0; } to { background-position: 0 -40px; } }
+
+/* ===================== export modal (§7) ===================== */
+.wfb-modal-ov {
+  position: fixed; inset: 0; z-index: 80;
+  background: rgba(5, 8, 16, .62); backdrop-filter: blur(4px);
+  display: none; align-items: center; justify-content: center;
+}
+.wfb-modal-ov.open { display: flex; }
+.wfb-modal {
+  width: min(700px, 92vw); max-height: 84vh; display: flex; flex-direction: column;
+  background: var(--surface-card); border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .6), 0 0 0 1px rgba(var(--accent-rgb), .08);
+  overflow: hidden;
+}
+.wfb-modal .modal-head { display: flex; align-items: center; gap: 10px; padding: 15px 18px; border-bottom: 1px solid var(--hairline); }
+.wfb-modal .modal-head h2 { font-size: 15px; font-weight: 700; color: var(--ink-strong); display: flex; align-items: center; gap: 9px; margin: 0; }
+.wfb-modal .modal-head h2 svg { width: 16px; height: 16px; color: var(--accent); }
+.wfb-modal .modal-head .x { margin-left: auto; cursor: pointer; color: var(--ink-faint); display: flex; }
+.wfb-modal .modal-head .x:hover { color: var(--ink-strong); }
+.wfb-modal .modal-head .x svg { width: 16px; height: 16px; }
+.ex-tabs { display: flex; gap: 4px; padding: 12px 18px 0; flex-wrap: wrap; }
+.ex-tab {
+  font-family: var(--font-mono); font-size: 11px; padding: 7px 11px;
+  border-radius: var(--r-sm) var(--r-sm) 0 0; color: var(--ink-mute); cursor: pointer;
+  border: 1px solid transparent; display: inline-flex; align-items: center; gap: 6px;
+}
+.ex-tab svg { width: 13px; height: 13px; }
+.ex-tab.on { color: var(--accent); background: rgba(0, 0, 0, .25); border-color: var(--hairline); border-bottom-color: transparent; }
+.ex-body { padding: 0 18px; overflow: auto; flex: 1; min-height: 160px; }
+.ex-code {
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55;
+  color: var(--ink); white-space: pre-wrap; word-break: break-word;
+  background: rgba(0, 0, 0, .28); border: 1px solid var(--hairline);
+  border-radius: var(--r-md); padding: 14px; margin: 14px 0; min-height: 120px;
+}
+.ex-foot { display: flex; align-items: center; gap: 9px; padding: 12px 18px; border-top: 1px solid var(--hairline); }
+.ex-foot .hint { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); }
+.ex-foot .sp { flex: 1; }
+
+/* ===================== kind stub panels (PR1.5 scaffold) ===================== */
+/* Centered placeholder for compound/comparison editors (PR2/PR3 replace). */
+.wfb-kind-stub {
+  display: flex; align-items: center; justify-content: center;
+  flex: 1; min-height: 300px;
+}
+.wfb-stub-inner {
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  padding: 48px 32px; text-align: center;
+  border: 1.5px dashed var(--hairline); border-radius: var(--r-lg);
+  color: var(--ink-faint);
+}
+.wfb-stub-title {
+  font-size: 15px; font-weight: 600; color: var(--ink-mute); max-width: 320px;
+  word-break: break-word;
+}
+.wfb-stub-msg { font-size: 13px; color: var(--ink-faint); }
+
+/* ===================== + New ▾ menu (PR1.5) ===================== */
+.wfb-new-menu { position: relative; }
+/* #4 (B5): the dropdown lived in .wfb-rail (overflow-y:auto, which forces
+   overflow-x:auto) and was clipped away — the "+ New ▾" button looked dead.
+   Render it as a viewport-fixed layer so it escapes every scroll/overflow
+   clipping ancestor; toggleNewMenu() sets top/left inline from the trigger
+   button's bounding rect on open (no static top/right here). */
+.wfb-new-menu-drop {
+  position: fixed; top: 0; left: 0; z-index: 1200;
+  background: var(--surface-card); border: 1px solid var(--hairline);
+  border-radius: var(--r-md); box-shadow: 0 4px 18px rgba(0,0,0,.28);
+  min-width: 140px; padding: 4px 0;
+}
+.wfb-new-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 14px;
+  background: none; border: none; cursor: pointer; font-size: 13px;
+  color: var(--ink); text-align: left;
+}
+.wfb-new-menu-item:hover { background: rgba(255,255,255,.07); color: var(--ink-strong); }
+.wfb-new-menu-item svg { width: 13px; height: 13px; opacity: .7; }
+
+/* ===================== Run control group (#5, B5) =====================
+   Operational knobs (cache TTL, on-error) grouped + visually set apart from
+   the report-config fields, in both the per-step inspector and the global
+   rail.  Theme-aware tokens so it reads correctly under body.light too. */
+.wfb-runctl {
+  margin-top: 12px; padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+.wfb-runctl > .wfb-sec-label { margin-top: 0; margin-bottom: 8px; }
+.wfb-runctl > .wfb-field:last-child,
+.wfb-runctl > .wfb-row2:last-child { margin-bottom: 0; }
+
+/* #9 (B6): inert note for a control that has no effect in this context
+   (vex_override on a workflow TP step) — shown, not hidden, so the user sees
+   why it does nothing instead of a misleading interactive toggle. */
+.wfb-inert-note { margin-top: 10px; opacity: .85; }
+.wfb-inert-note .tl {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--ink-body);
+}
+.wfb-inert-note .chip {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  padding: 1px 6px; border-radius: 999px;
+  background: var(--surface-muted); color: var(--ink-mute);
+  border: 1px solid var(--hairline);
+}
+.wfb-inert-text { margin: 4px 0 0; font-size: 12px; line-height: 1.4; color: var(--ink-mute); }
+
+/* ===================== responsive ===================== */
+@media (max-width: 1100px) {
+  .wfb { grid-template-columns: var(--rail-w) 1fr; }
+  .wfb-inspector { display: none; }
+}
+
+/* ===================== compound editor (PR2.2a) ===================== */
+
+/* The compound section-list canvas fills the center column like the pipeline. */
+.wfb-compound-canvas {
+  max-width: 560px; margin: 26px auto 80px; padding: 0 24px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+
+.wfb-comp-count { margin-bottom: 4px; }
+
+/* Section list receiver — flex column matching the workflow .wfb-steps. */
+.wfb-section-list {
+  display: flex; flex-direction: column; gap: 8px; min-height: 48px;
+}
+
+/* Individual section row card. */
+.wfb-section-row {
+  display: flex; align-items: center; gap: 10px;
+  background: linear-gradient(180deg, rgba(20, 28, 60, .7), rgba(12, 18, 40, .78));
+  border: 1px solid var(--hairline); border-radius: var(--r-lg);
+  padding: 11px 14px 11px 12px; cursor: pointer;
+  border-left: 3px solid var(--purple);
+  transition: border-color .18s, box-shadow .18s, transform .12s;
+}
+.wfb-section-row:hover {
+  border-color: rgba(var(--accent-rgb), .42); transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .38);
+}
+/* Task C: selected section row — click-to-select opens the per-section
+   override inspector (mirrors .wfb-step.sel). */
+.wfb-section-row.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), .4), 0 0 26px rgba(var(--accent-rgb), .16);
+}
+.wfb-section-row.sortable-ghost { opacity: .4; }
+
+.sec-grip { color: var(--ink-faint); cursor: grab; flex: 0 0 auto; }
+.sec-grip svg { width: 14px; height: 14px; }
+.sec-idx { font-family: var(--font-mono); font-size: 10px; color: var(--ink-faint); width: 18px; flex: 0 0 auto; }
+.sec-ic {
+  width: 28px; height: 28px; border-radius: var(--r-sm);
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  background: color-mix(in srgb, var(--purple) 14%, transparent);
+  color: var(--purple);
+}
+.sec-ic svg { width: 14px; height: 14px; }
+.sec-tx { flex: 1; min-width: 0; }
+.sec-t {
+  font-family: var(--font-display); font-size: 13px; font-weight: 700; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Task C: per-section override-count line under the section title. */
+.sec-tool { font-family: var(--font-mono); font-size: 9.5px; color: var(--accent); margin-top: 2px; }
+.sec-rm {
+  color: var(--ink-faint); flex: 0 0 auto; width: 24px; height: 24px;
+  border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; cursor: pointer;
+}
+.sec-rm:hover { color: var(--rose, #fb7185); border-color: rgba(251, 113, 133, .4); background: rgba(251, 113, 133, .08); }
+.sec-rm svg { width: 14px; height: 14px; }
+
+/* Empty state for the section list. */
+.wfb-sec-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 40px 24px; text-align: center;
+  border: 1.5px dashed var(--hairline); border-radius: var(--r-lg);
+  color: var(--ink-faint); min-height: 180px;
+}
+.sec-empty-t { font-size: 14px; font-weight: 600; color: var(--ink-mute); }
+.sec-empty-s { font-size: 12px; color: var(--ink-faint); max-width: 280px; }
+.sec-empty-s b { color: var(--ink-mute); }
+
+/* ===================== comparison editor (PR3.1) ===================== */
+
+/* Outer canvas — mirrors .wfb-compound-canvas width/margin conventions. */
+.wfb-comparison-canvas {
+  max-width: 720px; margin: 26px auto 80px; padding: 0 24px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+
+/* Baked-scope banner — subtle info strip at the top of the canvas. */
+.wfb-cmp-banner {
+  font-size: 12px; color: var(--ink-faint);
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--surface-card) 60%, transparent);
+  border: 1px solid var(--hairline); border-radius: var(--r-md);
+}
+
+/* Two-column Left | vs | Right scope selector layout. */
+.wfb-cmp-scopes {
+  display: flex; align-items: flex-start; gap: 16px;
+}
+
+/* Each side panel (Left / Right) takes equal remaining width. */
+.wfb-cmp-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+
+/* Heading label above each cascade ("Left scope" / "Right scope"). */
+.wfb-cmp-side-label {
+  font-size: 11px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-mute);
+}
+
+/* VS divider pillar between the two sides. */
+.wfb-cmp-vs {
+  align-self: center; flex: 0 0 auto;
+  font-size: 11px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-faint);
+  padding: 0 4px;
+}
+
+/* Scope preview line below the cascade — shows resolved "project version" or "folder: name". */
+.wfb-cmp-scope-preview {
+  font-size: 11px; color: var(--ink-faint);
+  min-height: 16px; font-style: italic;
+}
+
+/* ===================== Task D: inline RUN drawer ===================== */
+/* The compound/comparison run surface is a right-side drawer that slides in
+   OVER the editor (NOT a centered modal, NOT a push-down).  The wrapper is an
+   absolute overlay inside .wfb-canvas (position:relative); a translucent scrim
+   dims the editor and the panel docks to the right edge.  x-show toggles the
+   wrapper's display; we animate the panel's transform for the slide-in. */
+.cpd-run-wrap {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; justify-content: flex-end;
+}
+.cpd-run-scrim {
+  position: absolute; inset: 0;
+  background: rgba(5, 8, 16, .55);
+  backdrop-filter: blur(3px);
+  animation: cpd-run-fade .18s var(--ease-out, ease-out);
+}
+.cpd-run-drawer {
+  position: relative; z-index: 1;
+  width: min(560px, 92%); height: 100%;
+  overflow-y: auto;
+  background: var(--surface-card);
+  border-left: 1px solid var(--hairline);
+  box-shadow: -24px 0 60px rgba(0, 0, 0, .5);
+  animation: cpd-run-slide .22s var(--ease-out, ease-out);
+  /* Bridge Phase-2 tokens → legacy prerun CSS variables (mirrors #cfg-modal). */
+  --color-bg-card: var(--surface-card);
+  --color-border: var(--hairline);
+  --color-border-subtle: var(--hairline-soft);
+  --color-text-primary: var(--ink);
+  --color-text-heading: var(--ink-strong);
+  --color-text-muted: var(--ink-mute);
+  --color-text-label: var(--ink-body);
+  --color-input-bg: var(--surface-subtle);
+  --color-input-border: var(--hairline);
+  --color-input-focus: var(--accent);
+  --color-btn-primary-bg: var(--accent);
+  --color-btn-primary-text: #0A0E1A;
+  --color-btn-default-bg: var(--surface-muted);
+  --color-btn-default-text: var(--ink-body);
+  color-scheme: dark;
+  font-family: var(--font-body); font-size: 14px; color: var(--ink-body);
+}
+body.light .cpd-run-drawer { color-scheme: light; }
+@keyframes cpd-run-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cpd-run-slide { from { transform: translateX(24px); opacity: .4; } to { transform: translateX(0); opacity: 1; } }
+
+/* ---- prerun-fragment field chrome, scoped to the drawer host ----
+   The shared #cfg-modal field rules (command-center.css) are id-scoped and
+   don't reach the drawer; re-declare the field chrome here scoped under
+   #cpd-run-panel so the injected fragment renders identically.  Kept in sync
+   with the #cfg-modal block — same tokens, same spacing.  (Deliberately NOT
+   touching command-center.css, to keep the single-recipe modal byte-for-byte
+   unchanged — the #1 regression guard.) */
+#cpd-run-panel .prerun-panel { padding: 20px; }
+#cpd-run-panel .prerun-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; margin-bottom: 18px;
+}
+#cpd-run-panel .prerun-header h2 {
+  font-family: var(--font-display); font-size: 16px; color: var(--ink); margin: 0;
+}
+#cpd-run-panel .prerun-recipes { font-size: 12px; color: var(--ink-mute); margin-top: 3px; }
+#cpd-run-panel .btn-close {
+  background: none; border: none; font-size: 20px; color: var(--ink-faint);
+  cursor: pointer; padding: 0; line-height: 1; margin-left: auto;
+}
+#cpd-run-panel .btn-close:hover { color: var(--ink); }
+#cpd-run-panel input[type="text"],
+#cpd-run-panel input[type="number"],
+#cpd-run-panel input[type="date"],
+#cpd-run-panel textarea,
+#cpd-run-panel select {
+  background: var(--surface-subtle); border: 1px solid var(--hairline);
+  border-radius: var(--r-sm); color: var(--ink); padding: 7px 10px;
+  font-family: var(--font-body); font-size: 13px; width: 100%; box-sizing: border-box;
+}
+#cpd-run-panel input:focus,
+#cpd-run-panel textarea:focus,
+#cpd-run-panel select:focus { outline: none; border-color: var(--accent); }
+#cpd-run-panel label { font-size: 12px; color: var(--ink-mute); display: block; margin-bottom: 5px; }
+#cpd-run-panel .form-group { margin-bottom: 14px; }
+#cpd-run-panel .form-row { display: flex; align-items: center; justify-content: space-between; }
+#cpd-run-panel .form-section-static { margin-bottom: 12px; }
+#cpd-run-panel .form-section-static-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ink-faint); margin-bottom: 10px;
+}
+#cpd-run-panel details.form-section {
+  border: 1px solid var(--hairline); border-radius: var(--r-md);
+  margin-bottom: 12px; overflow: hidden;
+}
+#cpd-run-panel details.form-section summary {
+  padding: 10px 14px; cursor: pointer; font-weight: 600; font-size: 12px;
+  color: var(--ink-body); background: var(--surface-subtle);
+}
+#cpd-run-panel details.form-section > div { padding: 12px 14px; }
+#cpd-run-panel details.form-subsection {
+  border: 1px solid var(--hairline-soft); border-radius: var(--r-sm);
+  margin-top: 8px; overflow: hidden;
+}
+#cpd-run-panel details.form-subsection summary {
+  padding: 7px 12px; font-size: 11px; cursor: pointer;
+  background: var(--surface-subtle); color: var(--ink-mute);
+}
+#cpd-run-panel details.form-subsection > div { padding: 10px 12px; }
+#cpd-run-panel small.form-hint { font-size: 11px; color: var(--ink-faint); display: block; margin-top: 3px; }
+#cpd-run-panel small.form-hint-warning { font-size: 11px; color: var(--sev-medium); display: block; margin-top: 3px; }
+#cpd-run-panel small.form-hint-info { font-size: 11px; color: var(--sev-info); display: block; margin-bottom: 8px; }
+#cpd-run-panel .char-counter { text-align: right; }
+#cpd-run-panel .btn.btn-primary {
+  background: var(--accent); color: #0A0E1A; border: none;
+  padding: 9px 18px; border-radius: var(--r-md); font-weight: 700; font-size: 13px; cursor: pointer;
+}
+#cpd-run-panel .btn.btn-default {
+  background: var(--surface-muted); color: var(--ink-body); border: 1px solid var(--hairline);
+  padding: 9px 18px; border-radius: var(--r-md); font-size: 13px; cursor: pointer;
+}
+#cpd-run-panel .btn.btn-sm { padding: 4px 10px; font-size: 12px; }
+#cpd-run-panel .input-with-btn { display: flex; gap: 6px; }
+#cpd-run-panel .prerun-actions {
+  display: flex; gap: 8px; margin-top: 20px;
+  padding-top: 14px; border-top: 1px solid var(--hairline);
+}
+#cpd-run-panel .prerun-error {
+  margin: 0 0 14px; padding: 10px 14px;
+  background: var(--sev-critical-bg); border: 1px solid var(--sev-critical);
+  border-radius: var(--r-sm); color: var(--sev-critical); font-size: 12px;
+}
+/* Toggle switch (mirror of #cfg-modal .toggle). */
+#cpd-run-panel .toggle { position: relative; display: inline-block; width: 38px; height: 22px; }
+#cpd-run-panel .toggle input { opacity: 0; width: 0; height: 0; }
+#cpd-run-panel .toggle-slider {
+  position: absolute; inset: 0; background: var(--surface-muted);
+  border-radius: 22px; cursor: pointer; transition: .2s;
+}
+#cpd-run-panel .toggle input:checked + .toggle-slider { background: var(--accent); }
+#cpd-run-panel .toggle-slider:before {
+  content: ''; position: absolute; width: 16px; height: 16px;
+  left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .2s;
+}
+#cpd-run-panel .toggle input:checked + .toggle-slider:before { transform: translateX(16px); }
+/* Version-picker + finding-type rows (mirror of #cfg-modal). */
+#cpd-run-panel .version-picker-row { display: flex; gap: 8px; margin-bottom: 6px; }
+#cpd-run-panel .version-picker-select { flex: 1 1 0; min-width: 0; }
+#cpd-run-panel .finding-type-checkboxes {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 7px;
+}
+#cpd-run-panel .finding-type-checkboxes:has(input[name="ft_cb"]) {
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+}
+#cpd-run-panel .finding-type-cb {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  padding: 6px 9px; border-radius: var(--r-sm);
+  background: var(--surface-subtle); border: 1px solid var(--hairline);
+  color: var(--ink-body); font-size: 12px; line-height: 1.3; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+#cpd-run-panel .finding-type-cb:hover { background: var(--surface-hover); }
+#cpd-run-panel .finding-type-cb input { accent-color: var(--accent); width: 13px; height: 13px; flex: 0 0 auto; margin: 0; }
+#cpd-run-panel .finding-type-cb:has(input:checked) {
+  background: rgba(var(--accent-rgb), .12);
+  border-color: rgba(var(--accent-rgb), .45); color: var(--ink);
+}
+/* Field sizing carve-outs (mirror of #cfg-modal). */
+#cpd-run-panel input[type="date"] { width: auto; max-width: 170px; }
+#cpd-run-panel input[type="number"] { width: 90px; }
+#cpd-run-panel input[name="period"],
+#cpd-run-panel input[name="cache_ttl"] { width: auto; max-width: 150px; }
+#cpd-run-panel select[name="tp_gate"],
+#cpd-run-panel select[name="component_match"],
+#cpd-run-panel select[name="ai_depth"] { width: auto; max-width: 220px; }
+#cpd-run-panel .prerun-range { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#cpd-run-panel .prerun-range input[type="date"] { flex: 0 1 auto; margin: 0; }
+#cpd-run-panel .prerun-range-sep { color: var(--ink-mute); font-size: 12px; flex: 0 0 auto; }
+
+/* ===================== reduced motion ===================== */
+/* Disable all infinite animations for users who prefer reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .wfb-run-banner .rb-dot { animation: none; }
+  .s-status .spin { animation: none; border-top-color: var(--cyan); }
+  .s-runline .rfill { animation: none; inset: 0 20% 0 0; }
+  .wfb-conn.flow { animation: none; }
+  .cpd-run-scrim, .cpd-run-drawer { animation: none; }
+}

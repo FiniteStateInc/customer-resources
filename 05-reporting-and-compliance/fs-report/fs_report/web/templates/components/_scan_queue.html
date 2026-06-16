@@ -1,108 +1,97 @@
 {% if not connected %}
-<div class="queue-disconnected">
-    <span class="queue-disconnected-icon">⚡</span>
-    <span>Not connected</span>
+<div class="panel" id="scan-queue">
+  <div class="phead">
+    <h2>Live Scan Queue</h2>
+  </div>
+  <div style="display:flex;align-items:center;gap:9px;color:var(--ink-mute);font-size:12px;padding:8px 0">
+    <span style="color:var(--sev-high)">⚡</span> Not connected
+  </div>
 </div>
 
 {% elif error %}
-<div class="queue-error">
-    <span class="queue-error-icon">⚠</span>
-    <span>{{ error }}</span>
+<div class="panel" id="scan-queue">
+  <div class="phead">
+    <h2>Live Scan Queue</h2>
+  </div>
+  <div style="display:flex;align-items:center;gap:9px;color:var(--ink-mute);font-size:12px;padding:8px 0">
+    <span style="color:var(--sev-high)">⚠</span> {{ error }}
+  </div>
 </div>
 
 {% elif queue and queue.groups %}
-<div class="queue-summary">
-    <div class="queue-metric">
-        <span class="queue-metric-icon scan-initial-icon">⏳</span>
-        <span class="queue-metric-value">{{ queue.total_queued }}</span>
-        <span class="queue-metric-label">queued</span>
+<div class="panel" id="scan-queue">
+  <div class="phead">
+    <h2>Live Scan Queue</h2>
+    <div style="display:flex;gap:8px;align-items:center">
+      <a class="plink" href="/queue">more →</a>
+      <span class="pmeta">auto 5m</span>
+      <button class="prefresh" id="q-refresh"
+              hx-get="/api/queue?force=1"
+              hx-target="#scan-queue-container"
+              hx-swap="innerHTML"
+              onclick="this.classList.add('spin');setTimeout(()=>this.classList.remove('spin'),900)">
+        ↻ Refresh
+      </button>
     </div>
-    <div class="queue-metric">
-        <span class="queue-metric-icon scan-started-icon">⚙</span>
-        <span class="queue-metric-value">{{ queue.total_processing }}</span>
-        <span class="queue-metric-label">processing</span>
+  </div>
+  <div class="q-metrics">
+    <div class="q-metric">
+      <div class="qv">{{ queue.total_queued }}</div>
+      <div class="ql"><span class="mdot" style="background:var(--ink-faint)"></span> Queued</div>
     </div>
-    {% if queue.oldest_wait %}
-    <div class="queue-metric">
-        <span class="queue-metric-icon">⏱</span>
-        <span class="queue-metric-value">{{ queue.oldest_wait }}</span>
-        <span class="queue-metric-label">oldest</span>
+    <div class="q-metric">
+      <div class="qv" style="color:var(--accent)">{{ queue.total_processing }}</div>
+      <div class="ql"><span class="mdot" style="background:var(--accent)"></span> Processing</div>
     </div>
-    {% endif %}
+    <div class="q-metric">
+      <div class="qv mono">{{ queue.oldest_wait if queue.oldest_wait else '—' }}</div>
+      <div class="ql"><span class="mdot" style="background:var(--sev-high)"></span> Oldest</div>
+    </div>
+  </div>
+  {% for group in queue.groups[:4] %}
+  <div class="qgroup">
+    <div class="qgroup-top">
+      <span class="qname" title="{{ group.project_name }}">{{ group.project_name }}</span>
+      {% if group.version_name %}<span class="qver" title="{{ group.version_name }}">{{ group.version_name | truncate(20, True, '…') }}</span>{% endif %}
+      {% if group.all_done %}
+      <span class="qdone-badge">✓ done</span>
+      {% else %}
+      <span class="qwait">{{ group.oldest_wait_display }}</span>
+      {% endif %}
+    </div>
+    <div class="qdots">
+      {%- for scan in group.scans -%}
+        {%- if scan.is_error -%}{% set st = 'err' %}
+        {%- elif scan.is_done -%}{% set st = 'done' %}
+        {%- elif scan.status == 'STARTED' -%}{% set st = 'run' %}
+        {%- else -%}{% set st = 'init' %}{%- endif -%}
+        <span class="qdot {{ st }} qt-{{ scan.type_slug }}" style="--i:{{ loop.index0 }}" title="{{ scan.type }} — {{ scan.status }}"></span>
+      {%- endfor -%}
+      {% if not group.all_done %}<span class="qbar"><i></i></span>{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  {% if queue.groups | length > 4 %}
+  <div class="qgroup qgroup-more">
+    <span class="qmore">+{{ queue.groups | length - 4 }} more in queue</span>
+  </div>
+  {% endif %}
 </div>
-
-<div class="queue-groups">
-    {% for group in queue.groups %}
-    <details class="queue-group{% if group.has_stuck %} queue-group-stuck{% elif group.all_done %} queue-group-done{% endif %}">
-        <summary class="queue-group-header">
-            <div class="queue-group-info">
-                {% if platform_domain and group.project_id and group.version_id %}
-                <a class="queue-group-project queue-project-link"
-                   href="https://{{ platform_domain }}/projects/{{ group.project_id }}/versions/{{ group.version_id }}"
-                   target="_blank" rel="noopener"
-                   onclick="event.stopPropagation()"
-                   title="Open in Finite State Platform">{{ group.project_name }}</a>
-                {% elif platform_domain and group.project_id %}
-                <a class="queue-group-project queue-project-link"
-                   href="https://{{ platform_domain }}/projects/{{ group.project_id }}"
-                   target="_blank" rel="noopener"
-                   onclick="event.stopPropagation()"
-                   title="Open in Finite State Platform">{{ group.project_name }}</a>
-                {% else %}
-                <span class="queue-group-project">{{ group.project_name }}</span>
-                {% endif %}
-                {% if group.version_name %}
-                <span class="queue-group-version">{{ group.version_name }}</span>
-                {% endif %}
-                {% if group.has_stuck %}
-                <span class="queue-stuck-badge" title="SCA scan processing for over 1 hour — likely failed">⚠ stuck</span>
-                {% elif group.all_done and group.error_count == 0 %}
-                <span class="queue-done-badge">✓ done</span>
-                {% elif group.all_done and group.error_count > 0 %}
-                <span class="queue-error-badge">{{ group.error_count }} failed</span>
-                {% endif %}
-            </div>
-            {% if group.created_by %}
-            <div class="queue-group-user">{{ group.created_by | join(', ') }}</div>
-            {% endif %}
-            <div class="queue-group-meta">
-                <span class="queue-group-indicators">
-                    {%- for scan in group.scans -%}
-                    <span class="queue-dot {% if scan.likely_stuck %}scan-stuck{% elif scan.is_error %}scan-error{% elif scan.is_done %}scan-done{% elif scan.status == 'INITIAL' %}scan-initial{% else %}scan-started{% endif %}"
-                          title="{{ scan.type }} — {{ scan.status }}{% if scan.likely_stuck %} (likely failed){% endif %}">
-                        {%- if scan.likely_stuck -%}⚠{%- elif scan.is_error -%}✕{%- elif scan.is_done -%}✓{%- elif scan.status == 'INITIAL' -%}⏳{%- else -%}⚙{%- endif -%}
-                    </span>
-                    {%- endfor -%}
-                </span>
-                <span class="queue-group-count">{{ group.scans | length }} scan{{ 's' if group.scans | length != 1 else '' }}</span>
-                <span class="queue-group-wait">{{ group.oldest_wait_display }}</span>
-            </div>
-        </summary>
-        <div class="queue-group-body">
-            {% for scan in group.scans %}
-            <div class="queue-scan-row{% if scan.likely_stuck %} queue-scan-stuck{% elif scan.is_done %} queue-scan-done{% endif %}">
-                <span class="queue-scan-type">{{ scan.type }}</span>
-                <span class="queue-scan-status {% if scan.likely_stuck %}scan-stuck{% elif scan.is_error %}scan-error{% elif scan.is_done %}scan-done{% elif scan.status == 'INITIAL' %}scan-initial{% else %}scan-started{% endif %}">
-                    {%- if scan.likely_stuck -%}⚠ STUCK
-                    {%- elif scan.is_error -%}✕ ERROR
-                    {%- elif scan.is_done -%}✓ DONE
-                    {%- elif scan.status == 'INITIAL' -%}⏳ INITIAL
-                    {%- else -%}⚙ STARTED
-                    {%- endif -%}
-                </span>
-                <span class="queue-scan-wait">{{ scan.wait_display }}</span>
-            </div>
-            {% endfor %}
-        </div>
-    </details>
-    {% endfor %}
-</div>
-
-<div class="queue-footer">Updates every 30s</div>
 
 {% else %}
-<div class="queue-empty">
-    <span class="queue-empty-icon">✓</span>
-    <span>No scans in queue</span>
+<div class="panel" id="scan-queue">
+  <div class="phead">
+    <h2>Live Scan Queue</h2>
+    <button class="prefresh" id="q-refresh"
+            hx-get="/api/queue?force=1"
+            hx-target="#scan-queue-container"
+            hx-swap="innerHTML"
+            onclick="this.classList.add('spin');setTimeout(()=>this.classList.remove('spin'),900)">
+      ↻ Refresh
+    </button>
+  </div>
+  <div style="display:flex;align-items:center;gap:9px;color:var(--sev-low);font-size:12px;padding:8px 0">
+    ✓ No scans in queue
+  </div>
 </div>
 {% endif %}

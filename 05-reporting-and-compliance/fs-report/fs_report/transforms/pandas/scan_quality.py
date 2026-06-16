@@ -746,9 +746,12 @@ def scan_quality_transform(
     # Build scope label for template subtitle/metadata
     scope_label = "All Projects"
     cfg = additional_data.get("config") or config if additional_data else config
+    # Prefer the engine-resolved human-readable name: cfg.project_filter
+    # holds the numeric ID by transform time (2026-06-06 visual QA).
+    _project_name = (additional_data or {}).get("project_name")
     if cfg is not None:
         if hasattr(cfg, "project_filter") and cfg.project_filter:
-            scope_label = cfg.project_filter
+            scope_label = _project_name or cfg.project_filter
         elif hasattr(cfg, "folder_filter") and cfg.folder_filter:
             scope_label = f"Folder: {cfg.folder_filter}"
 

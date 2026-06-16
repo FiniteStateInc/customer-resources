@@ -249,8 +249,8 @@ class ColumnSchema(BaseModel):
 
     Renderers (xlsx Schema sheet, HTML/MD column-reference banner) source
     these descriptions so customers can answer "what does this column
-    mean?" without leaving the report file. Added 2026-05-26 after the
-    Netgear column-confusion incident showed the meta-bug: report-output
+    mean?" without leaving the report file. Added 2026-05-26 after a
+    customer column-confusion incident showed the meta-bug: report-output
     semantics shouldn't require reading fs-report source.
     """
 
@@ -291,6 +291,68 @@ class OutputConfig(BaseModel):
             "sheet and HTML/MD output gains a column-reference banner."
         ),
     )
+    has_inline_charts: bool = Field(
+        False,
+        description=(
+            "True if the template emits <canvas> + new Chart(...) calls "
+            "outside the output.charts declaration list. Read by the "
+            "Playwright PDFRenderer to decide whether to wait on the "
+            "window.fsReportReady beacon before page.pdf()."
+        ),
+    )
+    pdf_footer_template: str | None = Field(
+        None,
+        description=(
+            "Optional HTML snippet injected into the PDF as a page footer "
+            "via Playwright's footer_template parameter. Recipes that "
+            "previously relied on CSS @page @bottom-center { content: ... } "
+            "must migrate that content here — Chromium does not honor "
+            "the CSS margin-box property. The snippet is plain HTML; "
+            "Chromium supports a small set of substitution tokens like "
+            "<span class='pageNumber'></span> and <span class='date'></span>."
+        ),
+    )
+    pdf_header_template_id: str | None = Field(
+        None,
+        description=(
+            "DOM id of a <template> element in the rendered HTML "
+            "containing the PDF header HTML. PDFRenderer extracts the "
+            "innerHTML via page.evaluate() and passes it to Chromium's "
+            "page.pdf(header_template=...). Lets the recipe template's "
+            "Jinja context populate header content (project name, "
+            "version, date, base64 logo) — Chromium's header_template "
+            "parameter has no template engine, so we render through "
+            "Jinja inside the page first, then extract."
+        ),
+    )
+    pdf_margin: dict[str, str] | None = Field(
+        None,
+        description=(
+            "Optional per-recipe PDF page-margin override (dict with keys "
+            "'top'/'right'/'bottom'/'left', values as CSS lengths). When "
+            "set, Playwright applies these margins via page.pdf(margin=...) "
+            "and overrides CSS @page margins. When unset, Chromium honors "
+            "CSS @page { margin: ... } declarations from the template. "
+            "Use sparingly — the default (CSS @page) is correct for most "
+            "recipes."
+        ),
+    )
+
+    @field_validator("pdf_margin")
+    @classmethod
+    def _validate_pdf_margin_keys(
+        cls, v: dict[str, str] | None
+    ) -> dict[str, str] | None:
+        if v is None:
+            return v
+        allowed = {"top", "right", "bottom", "left"}
+        bad = set(v.keys()) - allowed
+        if bad:
+            raise ValueError(
+                f"pdf_margin keys must be subset of {sorted(allowed)}; "
+                f"got unknown keys {sorted(bad)}"
+            )
+        return v
 
 
 class Recipe(BaseModel):
@@ -299,8 +361,10 @@ class Recipe(BaseModel):
     name: str = Field(..., description="Recipe name")
     category: str | None = Field(
         None,
-        description="Report category: 'assessment' (current state, period ignored) "
-        "or 'operational' (period-bound, shows trends over time).",
+        description="Report category: 'assessment' (current state, period ignored), "
+        "'operational' (period-bound, shows trends over time), or 'compound' "
+        "(reserved — must be constructed as a CompoundRecipe; see the "
+        "compound-reports design spec § 3).",
     )
     execution_order: int = Field(
         50,
@@ -329,8 +393,34 @@ class Recipe(BaseModel):
         "Distinct from `audience` (consumer subdir) and `category` "
         "(assessment | operational | compound).",
     )
+    chart_libraries: list[
+        Literal["chartjs", "datalabels", "echarts", "marked", "dompurify"]
+    ] = Field(
+        default_factory=list,
+        description="Third-party JS libraries the recipe's template loads "
+        "from a CDN via <head> <script src=...> tags. Consumed by the "
+        "compound assembler's _compound_libs.html partial, which emits the "
+        "deduplicated union of these libraries across all children in a "
+        "bundle. Per the compound-reports design spec § 2, derivation is "
+        "explicit (not inferred from output.charts) so template-only deps "
+        "like `marked` / `dompurify` are captured. Empty default — B1's "
+        "per-template audit populates the field for every existing recipe "
+        "by inspecting the template's <script src=...> tags. "
+        "NOT a place to declare first-party readiness helpers "
+        "(fsEChartsInit, fsReportNewChart, window.fsReportReady beacon) — "
+        "those live in template-resident partials (_chart_ready.html, "
+        "_echarts_ready.html) that the compound shell includes directly "
+        "per spec § 5; they are not CDN-loaded.",
+    )
     template: str | None = Field(None, description="HTML template to use for rendering")
     description: str | None = Field(None, description="Recipe description")
+    card_description: str | None = Field(
+        None,
+        description="Short one-line summary for the --serve launcher card front "
+        "face (B10 #23). Keeps the full `description` for report subtitles, "
+        "tooltips, and `list recipes` while the card stays compact. Falls back "
+        "to `description` when unset.",
+    )
     parameters: dict[str, Any] | None = Field(
         None, description="Recipe parameters for customization"
     )
@@ -357,6 +447,12 @@ class Recipe(BaseModel):
     scan_frequency_transform: list[Transform] | None = Field(
         None, description="Transforms for scan frequency chart"
     )
+    exploit_signals_transform: list[Transform] | None = Field(
+        None, description="Transforms for the Exploit Signals gauge chart"
+    )
+    exploits_over_time_transform: list[Transform] | None = Field(
+        None, description="Transforms for the Exploits Over Time line chart"
+    )
     requires_project: bool = Field(
         False,
         description="Whether this recipe requires a --project filter. "
@@ -371,6 +467,13 @@ class Recipe(BaseModel):
         False,
         description="Whether this recipe requires --project or --folder to be set.",
     )
+    requires_component: bool = Field(
+        False,
+        description="Whether this recipe requires a --component filter. "
+        "When true, the engine refuses to run (and the web launcher routes to "
+        "configure) without one — e.g. Component Impact / Component Remediation "
+        "Package, whose component IS the primary input.",
+    )
     output: OutputConfig = Field(..., description="Output configuration")
 
     @field_validator("name")
@@ -380,6 +483,544 @@ class Recipe(BaseModel):
         if not v.strip():
             raise ValueError("Recipe name cannot be empty")
         return v.strip()
+
+    @field_validator("chart_libraries")
+    @classmethod
+    def _dedupe_chart_libraries(cls, v: list[str]) -> list[str]:
+        """Drop duplicates while preserving declaration order.
+
+        The compound assembler's _compound_libs.html partial emits one
+        <script> tag per library; duplicates here would produce duplicate
+        <script src=...> tags downstream. Dedup at the model layer keeps
+        every downstream consumer simple.
+        """
+        seen: set[str] = set()
+        out: list[str] = []
+        for lib in v:
+            if lib not in seen:
+                seen.add(lib)
+                out.append(lib)
+        return out
+
+    @field_validator("category")
+    @classmethod
+    def _validate_category(cls, v: str | None) -> str | None:
+        """Constrain category to a known value.
+
+        Allowed values on the base ``Recipe``: ``assessment``, ``operational``.
+        The ``compound`` value is reserved for ``CompoundRecipe`` (which
+        overrides this field with a ``Literal["compound"]`` type). A bare
+        ``Recipe`` cannot declare ``category: compound`` because it
+        lacks the required compound-specific fields (title, sections).
+        The ``comparison`` value is reserved for ``ComparisonRecipe`` (which
+        overrides this field with a ``Literal["comparison"]`` type). A bare
+        ``Recipe`` cannot declare ``category: comparison`` because it lacks
+        the required comparison-specific fields (needs_component_inventory).
+        Empty (``None``) is tolerated so legacy recipes without an
+        explicit category still load.
+
+        See the compound-reports design spec § 3 and the meta-compare design
+        spec § 1.
+        """
+        if v is None:
+            return v
+        # CompoundRecipe overrides this field with Literal["compound"], so
+        # Pydantic still enforces that level for subclasses; this validator
+        # runs to also reject `category="compound"` on the bare Recipe
+        # itself, which lacks the compound-only fields (`title`, `sections`).
+        # Structural check (does this class declare `title` as a field?)
+        # is robust against renames or class hierarchy changes — the only
+        # invariant is that subclasses meant to be compound-capable add
+        # the compound fields.
+        is_compound_capable = (
+            "title" in cls.model_fields and "sections" in cls.model_fields
+        )
+        # ComparisonRecipe overrides this field with Literal["comparison"].
+        # A bare Recipe lacking `needs_component_inventory` cannot declare
+        # category: comparison.
+        is_comparison_capable = "needs_component_inventory" in cls.model_fields
+        allowed_on_base = {"assessment", "operational"}
+        if not is_compound_capable and v == "compound":
+            raise ValueError(
+                "Recipe.category='compound' is not valid on the base Recipe; "
+                "use CompoundRecipe (the loader dispatches YAML with "
+                "category: compound to the right subclass automatically)."
+            )
+        if not is_comparison_capable and v == "comparison":
+            raise ValueError(
+                "Recipe.category='comparison' is not valid on the base Recipe; "
+                "use ComparisonRecipe (the loader dispatches YAML with "
+                "category: comparison to the right subclass automatically)."
+            )
+        if v not in allowed_on_base and v not in {"compound", "comparison"}:
+            raise ValueError(
+                f"Recipe.category must be one of "
+                f"{sorted(allowed_on_base | {'compound', 'comparison'})}; "
+                f"got {v!r}"
+            )
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Compound Recipe model — B1.3
+# ---------------------------------------------------------------------------
+#
+# CoverConfig, SectionRef, CompoundOutputConfig, CompoundRecipe, and
+# SectionResult implement the compound-recipe contract from the
+# compound-reports design spec § 3-5. CompoundRecipe is a Pydantic
+# subclass of Recipe, dispatched by the loader on category == "compound".
+
+
+class CoverConfig(BaseModel):
+    """Cover-page metadata for a compound recipe.
+
+    Substitution variables (``{{project_name}}``, ``{{period}}``,
+    ``{{title}}``, ``{{generated_at}}``) are resolved by the compound
+    assembler at render time — this model just holds the literal field
+    values from YAML.
+
+    All fields are optional. Field-level absence has explicit semantics:
+    ``subtitle`` falls back to the assembler's default template prose;
+    ``logo`` falls back to no logo image on the cover; ``classification``
+    falls back to an empty badge. The cover page itself only appears
+    when ``CompoundRecipe.cover`` is not ``None`` — see that field's
+    docstring for the cover-omission contract.
+    """
+
+    subtitle: str | None = Field(
+        None,
+        description=(
+            "Subtitle line under the cover title. Whitelisted substitution "
+            "variables: {{project_name}}, {{period}}, {{title}}, {{generated_at}}."
+        ),
+    )
+    logo: str | None = Field(
+        None,
+        description=(
+            "Logo image path. Bare filenames resolve under "
+            "~/.fs-report/logos/ via the existing report_engine helper; "
+            "absolute paths are honored as-is. PNG (≥144dpi for crisp "
+            "PDF) or SVG."
+        ),
+    )
+    classification: str | None = Field(
+        None,
+        description=(
+            "Classification text — appears in the cover badge (lower-right) "
+            "and in the @page footer of subsequent pages."
+        ),
+    )
+
+
+class SectionRef(BaseModel):
+    """One entry in a compound recipe's ``sections:`` list.
+
+    The minimal shape is ``{recipe: "<recipe-name>"}`` referencing a
+    child recipe by its canonical ``name`` value (e.g.,
+    ``"Executive Summary"``). The optional ``overrides`` dict carries
+    per-section engine-config overrides (scope, finding-types, AI, date),
+    restricted to the whitelist enforced at the Builder save-route and
+    applied at execution by ``_process_compound``. A bare YAML string
+    section parses to ``{recipe: ...}`` with ``overrides=None``.
+    """
+
+    recipe: str = Field(
+        ...,
+        description=(
+            "The canonical ``recipe.name`` of the child recipe to include "
+            '(e.g., "Executive Summary"). The compound assembler resolves '
+            "this against the loaded recipe corpus by slug; argv tokens "
+            "from the CLI go through the same normalization."
+        ),
+    )
+    overrides: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "Optional per-section engine-config overrides applied to THIS "
+            "child only (e.g. ``{project_filter: 'BN85', ai_depth: 'full'}``). "
+            "Keys are restricted to a safe whitelist "
+            "(``fs_report.compound_overrides.COMPOUND_OVERRIDE_WHITELIST``) "
+            "enforced by the Builder save-route; destructive / workflow-only "
+            "keys are rejected. None ⇒ the child runs under the bundle's "
+            "effective config unchanged."
+        ),
+    )
+
+
+class CompoundOutputConfig(OutputConfig):
+    """Output config for compound recipes.
+
+    Adds compound-specific fields the assembler reads (``toc``,
+    ``page_numbers``). Inherits ``pdf_header_template_id`` /
+    ``pdf_footer_template`` so a compound recipe can opt into a custom
+    PDF header/footer the same way a standalone recipe does (the shell
+    template ships a sensible default — see compound-reports design
+    spec § 5).
+    """
+
+    toc: bool = Field(
+        True,
+        description=(
+            "Whether to emit the TOC block at compound assembly. Defaults "
+            "True; set False for a cover-then-sections deliverable without "
+            "an index page."
+        ),
+    )
+    page_numbers: bool = Field(
+        True,
+        description=(
+            "Whether the default <template id='compound-footer'> includes "
+            "the <span class='pageNumber'></span> / <span class='totalPages'></span> "
+            "placeholders. Defaults True; set False for cover-only "
+            "deliverables that suppress the footer entirely."
+        ),
+    )
+    # Override OutputConfig.formats: CSV / XLSX make no sense for a
+    # compound bundle (it has no tabular data of its own), and YAML
+    # authors should not have to remember to set formats explicitly for
+    # the common case. A compound that omits ``formats`` gets HTML+PDF
+    # by default. Setting ``formats: []`` is still respected as "no
+    # deliverables, just run the children" — the dispatch logs a
+    # warning in that case so the YAML choice is visible. (PR #100
+    # round-2 multi-review M2-1 / M1-3.)
+    formats: list[str] | None = Field(
+        default_factory=lambda: ["html", "pdf"],
+        description=(
+            "Output formats — defaults to ['html', 'pdf'] for compounds "
+            "(unlike OutputConfig which defaults to None and lets each "
+            "renderer pick). Explicit ``formats: []`` is honored and "
+            "produces no deliverables."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# AxisConfig — B3.1
+# ---------------------------------------------------------------------------
+#
+# Defined BEFORE CompoundRecipe so the type annotation on
+# CompoundRecipe.axis can reference it without a forward reference.
+
+
+class AxisConfig(BaseModel):
+    """Optional pinned scope-references for the two sides of a comparison.
+
+    Both fields are optional.  When ``left`` / ``right`` are ``None``, the
+    engine expects the caller to supply the scope at run time via the
+    ``--left`` / ``--right`` CLI flags (wired on both ``fs-report compare``
+    and ``fs-report run``). Runtime flags override any pinned axis value.
+
+    A ``CompoundRecipe`` with ``axis`` present is a **meta-compare bundle**;
+    a compound without ``axis`` is a plain bundle.  The loader enforces the
+    invariant that all children of an axis-bearing compound are
+    ``ComparisonRecipe`` instances (and that non-axis compounds contain no
+    ``ComparisonRecipe`` children).
+
+    Values are raw strings — parse/resolve via :mod:`fs_report.scope_ref`
+    at engine dispatch time.
+    """
+
+    left: str | None = Field(
+        None,
+        description=(
+            "Scope-ref string for the left/baseline side of the comparison "
+            "(e.g., 'project:My Device@v1'). None = caller supplies at run time."
+        ),
+    )
+    right: str | None = Field(
+        None,
+        description=(
+            "Scope-ref string for the right/current side of the comparison "
+            "(e.g., 'project:My Device@v2'). None = caller supplies at run time."
+        ),
+    )
+
+
+class CompoundRecipe(Recipe):
+    """A compound recipe — composes multiple child recipes into one bundle.
+
+    See the compound-reports design spec § 3 for the full contract.
+    Constructed by ``RecipeLoader`` when a YAML declares
+    ``category: compound``.
+
+    Differences from plain ``Recipe``:
+
+    - ``category`` is constrained to the literal ``"compound"``.
+    - ``title`` and ``sections`` are required.
+    - ``cover`` is optional (compound can ship without a cover page).
+    - ``output`` is typed as ``CompoundOutputConfig`` (carries TOC +
+      page-numbers fields).
+    - ``auto_run`` defaults to ``False`` so a bare ``fs-report run``
+      does not implicitly execute saved bundles.
+    - Fields that don't apply to compounds (``transform_function``,
+      ``query``, ``project_list_query``, ``chart_libraries``, etc.) are
+      rejected at validation time — those concepts belong to the child
+      recipes, not the bundle.
+    """
+
+    category: Literal["compound"] = Field(
+        "compound",
+        description="Always 'compound' for a CompoundRecipe.",
+    )
+    title: str = Field(
+        ...,
+        description="Cover-page title for the compound deliverable.",
+    )
+    cover: CoverConfig | None = Field(
+        None,
+        description="Cover-page metadata; if omitted, the assembler emits no cover.",
+    )
+    sections: list[SectionRef] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Ordered list of child recipes to include. Each entry "
+            "references a recipe by its canonical name (see SectionRef)."
+        ),
+    )
+    output: CompoundOutputConfig = Field(
+        default_factory=CompoundOutputConfig,
+        description="Compound-specific output configuration.",
+    )
+    auto_run: bool = Field(
+        False,
+        description=(
+            "Compounds default to False so bare `fs-report run` doesn't "
+            "implicitly execute saved bundles; they only run when named "
+            "explicitly via --recipe."
+        ),
+    )
+    axis: AxisConfig | None = Field(
+        None,
+        description=(
+            "When present, marks this compound as a meta-compare bundle. "
+            "Optionally pins the left/right scope-ref strings for both "
+            "sides of the comparison (see AxisConfig). If absent, this "
+            "compound is a plain (non-comparison) bundle."
+        ),
+    )
+    global_: dict[str, Any] | None = Field(
+        None,
+        alias="global",
+        description=(
+            "Optional authored bundle-wide config block. A normalized dict "
+            "mirroring the workflow global "
+            "(``fs_report.compound_overrides.normalize_compound_global``): "
+            "scope, finding-types, current-version-only, AI, and date mode "
+            "(period XOR start/end, with the period_touched / range_touched / "
+            "target_agnostic intent flags). None ⇒ the bundle inherits the "
+            "run-level config with no authored global. Stored as a normalized "
+            "dict (not a typed model) so it shares the workflow's date-mode "
+            "semantics verbatim. The YAML key is ``global`` (a Python keyword), "
+            "exposed here as ``global_`` via the field alias."
+        ),
+    )
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def _reject_recipe_only_fields(self) -> "CompoundRecipe":
+        """Reject fields that don't apply to a compound recipe.
+
+        The compound recipe has no data of its own — query, transform,
+        chart-library, and template declarations all belong to the child
+        recipes. Pydantic accepts these fields because we inherit from
+        Recipe, so a post-init check rejects any non-empty/non-default
+        values. ``output.chart`` and ``output.charts`` on the compound's
+        own ``output`` block are also rejected.
+        """
+        forbidden = {
+            "transform_function": self.transform_function,
+            "query": self.query,
+            "project_list_query": self.project_list_query,
+            "chart_libraries": self.chart_libraries,
+            "transform": self.transform,
+            "template": self.template,
+            "additional_queries": self.additional_queries,
+            "portfolio_transform": self.portfolio_transform,
+            "open_issues_transform": self.open_issues_transform,
+            "scan_frequency_transform": self.scan_frequency_transform,
+            "exploit_signals_transform": self.exploit_signals_transform,
+            "exploits_over_time_transform": self.exploits_over_time_transform,
+        }
+        bad: dict[str, Any] = {
+            k: v for k, v in forbidden.items() if v not in (None, [], {}, "")
+        }
+        # output.chart / output.charts on the compound's own output block
+        # are equally invalid — charts belong on children, not the bundle.
+        if self.output.chart is not None:
+            bad["output.chart"] = self.output.chart
+        if self.output.charts:
+            bad["output.charts"] = self.output.charts
+        if bad:
+            raise ValueError(
+                f"CompoundRecipe cannot declare {sorted(bad)} — those fields "
+                "belong on child recipes. Move them to the relevant child "
+                "in the `sections:` list."
+            )
+        return self
+
+
+# ---------------------------------------------------------------------------
+# ComparisonRecipe — B3.1
+# ---------------------------------------------------------------------------
+#
+# A comparison recipe fetches data for ONE side (left or right) of a
+# meta-compare bundle.  The compound assembler runs it twice — once per side
+# — and diffs the results.  The loader dispatches YAML with
+# category: comparison to this subclass.
+
+
+class ComparisonRecipe(Recipe):
+    """A comparison recipe — fetches one side of a meta-compare report.
+
+    See the meta-compare design spec § 1, § 2.  Constructed by
+    ``RecipeLoader`` when a YAML declares ``category: comparison``.
+
+    Differences from plain ``Recipe``:
+
+    - ``category`` is constrained to the literal ``"comparison"``.
+    - ``query`` and ``transform_function`` are required.
+    - ``additional_queries`` is rejected (v1: one query per side).
+    - ``query.endpoint`` must be ``/public/v0/findings`` or
+      ``/public/v0/components`` (v1 scope-injection contract).
+    - ``auto_run`` defaults to ``False`` so bare ``fs-report run`` does not
+      execute comparison recipes outside of a meta-compare bundle.
+    - ``needs_component_inventory`` enables the engine to also fetch each
+      side's component inventory for fix-evidence classification.
+    """
+
+    category: Literal["comparison"] = Field(
+        "comparison",
+        description="Always 'comparison' for a ComparisonRecipe.",
+    )
+    auto_run: bool = Field(
+        False,
+        description=(
+            "Comparison recipes default to False so bare `fs-report run` "
+            "doesn't implicitly run them outside a meta-compare bundle; "
+            "they only run when named explicitly via --recipe or invoked "
+            "as a child of an axis-bearing CompoundRecipe."
+        ),
+    )
+    needs_component_inventory: bool = Field(
+        False,
+        description=(
+            "When True, the engine also fetches each side's component "
+            "inventory for fix-evidence classification alongside the "
+            "primary findings/components query."
+        ),
+    )
+
+    _ALLOWED_ENDPOINTS: frozenset[str] = frozenset(
+        {"/public/v0/findings", "/public/v0/components"}
+    )
+
+    @model_validator(mode="after")
+    def _validate_comparison_fields(self) -> "ComparisonRecipe":
+        """Enforce comparison-specific field contracts."""
+        # query is required
+        if self.query is None:
+            raise ValueError(
+                "ComparisonRecipe requires 'query' to be set "
+                "(the endpoint that fetches one side's data)."
+            )
+        # transform_function is required
+        if not self.transform_function:
+            raise ValueError(
+                "ComparisonRecipe requires 'transform_function' to be set "
+                "(the function that diffs the two sides' data)."
+            )
+        # additional_queries is rejected: v1 is one query per side
+        if self.additional_queries:
+            raise ValueError(
+                "ComparisonRecipe cannot declare 'additional_queries'; "
+                "v1 supports exactly one query per side. "
+                "Remove additional_queries from this recipe."
+            )
+        # endpoint must be findings or components
+        if self.query.endpoint not in self._ALLOWED_ENDPOINTS:
+            raise ValueError(
+                f"ComparisonRecipe.query.endpoint must be one of "
+                f"{sorted(self._ALLOWED_ENDPOINTS)} (v1 scope-injection "
+                f"contract); got {self.query.endpoint!r}."
+            )
+        return self
+
+
+# ---------------------------------------------------------------------------
+# SectionResult — the engine→assembler contract
+# ---------------------------------------------------------------------------
+#
+# ``_process_compound`` builds a list of these per-child during dispatch.
+# The compound assembler iterates the list to produce TOC entries +
+# body blocks. Both variants carry ``slug`` (bare recipe slug; the
+# section id is always ``fs-section-{slug}`` computed where needed)
+# and ``title`` (recipe.name or output.slide_title).
+
+
+class RenderedFragment(BaseModel):
+    """A successfully-rendered child recipe fragment."""
+
+    slug: str = Field(
+        ...,
+        description=(
+            "Bare recipe slug (e.g., 'executive-summary'). The section id "
+            "and CSS scope class are computed as ``fs-section-{slug}``."
+        ),
+    )
+    title: str = Field(
+        ...,
+        description="Display title for the TOC + section divider.",
+    )
+    html: str = Field(
+        ...,
+        description="Pre-assembled fragment HTML (output of render_fragment).",
+    )
+    summary: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Child transform summary dict (comparison facets), for the "
+            "compound exec overview. None for non-comparison children."
+        ),
+    )
+    rows: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Per-facet row lists from the child transform (comparison facets), "
+            "for the compound exec Action Plan. Carries the keys "
+            "``port_fixes_left_to_right``, ``port_fixes_right_to_left``, "
+            "``version_skew``, ``triaged_left_untriaged_right``, "
+            "``triaged_right_untriaged_left``, ``status_divergence`` when the "
+            "child emits them. None for non-comparison children."
+        ),
+    )
+
+
+class FailedSection(BaseModel):
+    """A child recipe that failed to render — placeholder for the assembler."""
+
+    slug: str = Field(
+        ...,
+        description=(
+            "Bare recipe slug. Same id-computation rule as RenderedFragment "
+            "so TOC links to a failed section still resolve."
+        ),
+    )
+    title: str = Field(
+        ...,
+        description="Display title for the TOC entry + failure callout.",
+    )
+    error: str = Field(
+        ...,
+        description=(
+            "Human-readable error message (exception str, or "
+            "'no report data' for a None return from _process_recipe)."
+        ),
+    )
+
+
+SectionResult = RenderedFragment | FailedSection
 
 
 class Config(BaseModel):
@@ -454,6 +1095,15 @@ class Config(BaseModel):
     current_version_only: bool = Field(
         True,
         description="Only include latest version per project (default for performance). Use --all-versions for full history.",
+    )
+    # Theme for HTML output
+    theme: Literal["light", "dark", "auto"] = Field(
+        "auto",
+        description="HTML theme: 'auto' (default — defer to the viewer's "
+        "localStorage / ?theme= override / prefers-color-scheme, falling "
+        "back to light), 'light', or 'dark'. Explicit 'light' or 'dark' is "
+        "authoritative on initial render and skips viewer preference. "
+        "PDF exports always render in light theme regardless of this value.",
     )
     # SQLite cache options
     cache_ttl: int = Field(
@@ -689,6 +1339,31 @@ class Config(BaseModel):
     compare_version: str | None = Field(
         None,
         description="Version ID on the secondary server (optional; defaults to latest).",
+    )
+
+    # ---- Meta-compare axis scopes (B3.6) ----
+    # Runtime scope-ref strings for the two sides of a comparison. When set
+    # they override any pinned axis.left / axis.right on a saved meta-compare
+    # CompoundRecipe. Parsed via fs_report.scope_ref.parse and resolved by
+    # ReportEngine._resolve_scope at dispatch time. CLI flag wiring
+    # (--left / --right on run/compare) lands in B3.7.
+    # See docs/superpowers/specs/2026-05-11-meta-compare-design.md § 4-5,
+    # decisions #1, #14.
+    left_scope: str | None = Field(
+        None,
+        description=(
+            "Scope-ref string for the left/baseline side of a meta-compare "
+            "(e.g. 'project:BN85@v3'). Overrides a saved bundle's pinned "
+            "axis.left. None = use the pinned value or fail fast if neither."
+        ),
+    )
+    right_scope: str | None = Field(
+        None,
+        description=(
+            "Scope-ref string for the right/current side of a meta-compare "
+            "(e.g. 'project:BE65@v2'). Overrides a saved bundle's pinned "
+            "axis.right. None = use the pinned value or fail fast if neither."
+        ),
     )
 
     # ---- CRA Compliance morning-queue (added 2026-05-24, spec step 3) ----

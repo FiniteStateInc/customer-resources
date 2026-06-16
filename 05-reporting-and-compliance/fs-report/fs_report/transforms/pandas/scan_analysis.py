@@ -452,17 +452,6 @@ def generate_scan_metrics(
     # Ensure duration is properly calculated and filled
     raw_data_df["duration_minutes"] = raw_data_df["duration_minutes"].fillna(0)
 
-    # Helix v2 renamed errorMessage → bssMessage. Cached records are normalized
-    # at the cache boundary (sqlite_cache._trim_record), but direct API
-    # responses may still arrive with only bssMessage — coalesce here too, and
-    # treat empty-string errorMessage as missing so it falls through.
-    if "bssMessage" in raw_data_df.columns:
-        if "errorMessage" in raw_data_df.columns:
-            em = raw_data_df["errorMessage"].replace("", pd.NA)
-            raw_data_df["errorMessage"] = em.fillna(raw_data_df["bssMessage"])
-        else:
-            raw_data_df["errorMessage"] = raw_data_df["bssMessage"]
-
     # Clean up error messages (replace NaN with "-")
     if "errorMessage" in raw_data_df.columns:
         raw_data_df["errorMessage"] = raw_data_df["errorMessage"].fillna("-")

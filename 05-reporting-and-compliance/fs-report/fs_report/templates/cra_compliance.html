@@ -1,264 +1,414 @@
-{% if not fragment_mode %}
+{# Defensive defaults block — placed before the render-mode gate per
+   C.1 round-2 multi-review M1-2. Mirrors all prior Phase 1b
+   migrations. #}
+{% set cra_sections = cra_sections | default([]) %}
+{# Collection-level guard (C.2 round-2 M1-2): coerce non-list values
+   to [] so the loop doesn't crash on upstream data drift. #}
+{% if cra_sections is mapping or cra_sections is string or cra_sections is not iterable %}{% set cra_sections = [] %}{% endif %}
+{% set sla_breach_count = sla_breach_count | default(0) %}
+{% set kpi_period = kpi_period | default('—') %}
+{% set kpi_total = kpi_total | default(0) %}
+{% set kpi_overdue = kpi_overdue | default(0) %}
+{% set kpi_due_soon = kpi_due_soon | default(0) %}
+{% set kpi_unknown_clock = kpi_unknown_clock | default(0) %}
+{% set kpi_in_triage = kpi_in_triage | default(0) %}
+{% set has_reachability = has_reachability | default(false) %}
+{% set kpi_reachable = kpi_reachable | default(0) %}
+{% set scope_label = scope_label | default('All projects') %}
+{% set threshold_label = threshold_label | default('—') %}
+{% set since_label = since_label | default('24h') %}
+
+{% import "_console_macros.html" as fs with context %}
+
+{% if render_mode != 'fragment' %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
-{% include "_standalone_shell.html" %}
-{% include "_design_system.html" %}
-<style>
-/* ── CRA-specific additions (all scoped under .fs-section-cra-compliance) ── */
-.fs-section-cra-compliance .cra-banner {
-  border-radius: 6px;
-  padding: 14px 18px;
-  margin-bottom: 24px;
-  font-size: 1em;
-  line-height: 1.5;
-}
-.fs-section-cra-compliance .cra-banner-warn {
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  border-left: 4px solid #dc2626;
-  color: #991b1b;
-}
-.fs-section-cra-compliance .cra-banner-ok {
-  background: #f0fdf4;
-  border: 1px solid #bbf7d0;
-  border-left: 4px solid #16a34a;
-  color: #15803d;
-}
-.fs-section-cra-compliance .cra-section-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-bottom: 4px;
-  font-size: 0.88em;
-  overflow-x: auto;
-  display: block;
-}
-.fs-section-cra-compliance .cra-section-table th,
-.fs-section-cra-compliance .cra-section-table td {
-  padding: 7px 10px;
-  text-align: left;
-  border-bottom: 1px solid #e9ecef;
-  white-space: nowrap;
-}
-.fs-section-cra-compliance .cra-section-table th {
-  background: #f8f9fa;
-  font-weight: 600;
-  color: #495057;
-  font-size: 0.82em;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  position: sticky;
-  top: 0;
-}
-.fs-section-cra-compliance .cra-section-table tbody tr:hover {
-  background: #f8f9fa;
-}
-.fs-section-cra-compliance .cra-empty-section {
-  color: #6c757d;
-  font-size: 0.9em;
-  margin: 4px 0 20px;
-}
-.fs-section-cra-compliance .cra-truncation-note {
-  color: #6c757d;
-  font-size: 0.82em;
-  margin: 4px 0 20px;
-  font-style: italic;
-}
-.fs-section-cra-compliance .cra-footnote {
-  border-top: 1px solid #e9ecef;
-  padding-top: 16px;
-  margin-top: 32px;
-  font-size: 0.85em;
-  color: #6c757d;
-}
-.fs-section-cra-compliance .cra-footnote p {
-  margin: 0;
-}
-.fs-section-cra-compliance .section-callout {
-  color: #6c757d;
-  font-size: 0.9em;
-  margin: 0 0 12px;
-  font-style: italic;
-}
-.fs-section-cra-compliance .how-to-use {
-  background: #f8f9fa;
-  border-radius: 6px;
-  padding: 14px 18px;
-  margin-bottom: 24px;
-  font-size: 0.9em;
-  color: #495057;
-  line-height: 1.6;
-}
-.fs-section-cra-compliance .how-to-use h2 {
-  margin: 0 0 8px;
-  font-size: 1em;
-  color: #2c3e50;
-}
-.fs-section-cra-compliance .how-to-use ol {
-  margin: 8px 0 8px 20px;
-}
-/* Severity-colored KPI cards — matching Customer Brief palette */
-.fs-section-cra-compliance .border-critical { border-top: 4px solid #d32f2f; }
-.fs-section-cra-compliance .border-high     { border-top: 4px solid #f57c00; }
-.fs-section-cra-compliance .border-blue     { border-top: 4px solid #1976d2; }
-.fs-section-cra-compliance .border-kev      { border-top: 4px solid #6a1b9a; }
-.fs-section-cra-compliance .kpi-critical .kpi-value { color: #d32f2f; }
-.fs-section-cra-compliance .kpi-high     .kpi-value { color: #f57c00; }
-.fs-section-cra-compliance .kpi-blue     .kpi-value { color: #1976d2; }
-.fs-section-cra-compliance .kpi-kev      .kpi-value { color: #6a1b9a; }
-/* Badge overrides (solid-bg matching Customer Brief) */
-.fs-section-cra-compliance .badge-CRITICAL { background: #d32f2f; color: #fff; }
-.fs-section-cra-compliance .badge-HIGH     { background: #f57c00; color: #fff; }
-.fs-section-cra-compliance .badge-MEDIUM   { background: #fbc02d; color: #333; }
-.fs-section-cra-compliance .badge-LOW      { background: #388e3c; color: #fff; }
-.fs-section-cra-compliance .badge-INFO     { background: #0288d1; color: #fff; }
-.fs-section-cra-compliance .badge-UNKNOWN  { background: #9e9e9e; color: #fff; }
-@media print {
-  .fs-section-cra-compliance .cra-section-table {
-    display: table;
-  }
-}
-</style>
-</head>
-<body data-nav-category="{{ nav_category_slug | default('compliance') }}">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>CRA Compliance Report - Finite State Report</title>
+
+    {# Recipe is chart-free — no ECharts CDN. #}
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
 {% endif %}
 
-<section class="fs-section-cra-compliance">
-<div class="container">
+{# Recipe-local styles — render in BOTH standalone and fragment modes
+   so fragment_extractor (_STYLE_RE) collects them, scopes under
+   .fs-section-cra-compliance, and re-emits at the top of the
+   fragment. All hex literals migrated to design tokens where
+   available; the .fs-section-cra-compliance prefix on each rule is
+   DROPPED (auto-scoping handles it in fragment mode; .cra-* class
+   names are unique in standalone HTML). #}
+<style>
+    .cra-banner {
+        border-radius: 6px;
+        padding: 14px 18px;
+        margin-bottom: 24px;
+        font-size: 1em;
+        line-height: 1.5;
+    }
+    .cra-banner-warn {
+        background: color-mix(in srgb, var(--sev-critical-text) 12%, transparent);
+        border: 1px solid var(--sev-critical-text);
+        border-left: 4px solid var(--sev-critical-text);
+        color: var(--sev-critical-text);
+    }
+    .cra-banner-ok {
+        background: color-mix(in srgb, var(--sev-low-text) 12%, transparent);
+        border: 1px solid var(--sev-low-text);
+        border-left: 4px solid var(--sev-low-text);
+        color: var(--sev-low-text);
+    }
 
-  {# ── Header block ── #}
-  <div class="header">
-    {% include "_default_logo.html" %}
-    <h1>CRA Compliance Report</h1>
-    <div class="subtitle">EU Cyber Resilience Act Article 14 — Exploit Advancement Notification</div>
-  </div>
+    .cra-how-to-use {
+        background: var(--surface-muted);
+        border-radius: 6px;
+        padding: 14px 18px;
+        margin-bottom: 24px;
+        font-size: 0.9em;
+        color: var(--ink-body);
+        line-height: 1.6;
+    }
+    .cra-how-to-use h2 {
+        margin: 0 0 8px;
+        font-size: 1em;
+        color: var(--ink-strong);
+    }
+    .cra-how-to-use ol {
+        margin: 8px 0 8px 20px;
+    }
 
-  {# ── Metadata block ── #}
-  <div class="metadata">
-    <strong>Domain:</strong> {{ domain | default('—') }} &nbsp;|&nbsp;
-    <strong>Scope:</strong> {{ scope_label | default('All projects') }} &nbsp;|&nbsp;
-    <strong>Generated:</strong> {{ generated_at | default('—') }} &nbsp;|&nbsp;
-    <strong>Threshold:</strong> {{ threshold_label | default('—') }} &nbsp;|&nbsp;
-    <strong>Since:</strong> {{ since_label | default('24h') }}
-  </div>
+    .cra-section-callout {
+        color: var(--ink-mute);
+        font-size: 0.9em;
+        margin: 0 0 12px;
+        font-style: italic;
+    }
 
-  {# ── How to use this report ── #}
-  <div class="how-to-use">
-    <h2>How to use this report</h2>
-    <p>This report alerts you when exploits for vulnerabilities in your portfolio advance in maturity — newly added to CISA KEV, becoming weaponized, or gaining ransomware/threat-actor attribution. Use it to:</p>
-    <ol>
-      <li>Identify which of your products contain the affected components.</li>
-      <li>Test those products to verify exposure.</li>
-    </ol>
-    <p>Under EU CRA Article 14, manufacturers must notify ENISA within 24 hours of becoming aware of an actively exploited vulnerability in a product with digital elements. The 🔥 SLA-Breach Risk section flags findings where that clock applies.</p>
-  </div>
+    .cra-section-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 4px;
+        font-size: 0.88em;
+        overflow-x: auto;
+        display: block;
+    }
+    .cra-section-table th,
+    .cra-section-table td {
+        padding: 7px 10px;
+        text-align: left;
+        border-bottom: 1px solid var(--hairline);
+        white-space: nowrap;
+    }
+    .cra-section-table th {
+        background: var(--surface-muted);
+        font-weight: 600;
+        color: var(--ink-body);
+        font-size: 0.82em;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        position: sticky;
+        top: 0;
+    }
+    .cra-section-table tbody tr:hover {
+        background: var(--surface-muted);
+    }
+    .cra-empty-section {
+        color: var(--ink-mute);
+        font-size: 0.9em;
+        margin: 4px 0 20px;
+    }
+    .cra-truncation-note {
+        color: var(--ink-mute);
+        font-size: 0.82em;
+        margin: 4px 0 20px;
+        font-style: italic;
+    }
+    .cra-footnote {
+        border-top: 1px solid var(--hairline);
+        padding-top: 16px;
+        margin-top: 32px;
+        font-size: 0.85em;
+        color: var(--ink-mute);
+    }
+    .cra-footnote p {
+        margin: 0;
+    }
 
-  {# ── CRA Notification Obligation banner ── #}
-  {% if sla_breach_count and sla_breach_count > 0 %}
-    <div class="cra-banner cra-banner-warn">
-      ⚠️ {{ sla_breach_count }} actively-exploited vulnerabilit{% if sla_breach_count == 1 %}y{% else %}ies{% endif %} detected.
-      EU CRA Article 14 requires notification to ENISA within 24 hours of becoming aware.
-    </div>
-  {% else %}
-    <div class="cra-banner cra-banner-ok">
-      ✅ No CRA-relevant findings requiring immediate notification.
-    </div>
-  {% endif %}
+    /* Severity badges — recipe-local prefix to avoid global
+       .badge-* collisions. Token-driven. */
+    .cra-badge-CRITICAL { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .cra-badge-HIGH     { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .cra-badge-MEDIUM   { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .cra-badge-LOW      { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .cra-badge-INFO     { background: color-mix(in srgb, var(--accent-blue) 15%, transparent); color: var(--accent-blue); }
+    .cra-badge-UNKNOWN  { background: var(--surface-muted); color: var(--ink-mute); }
+    .cra-badge-CRITICAL,
+    .cra-badge-HIGH,
+    .cra-badge-MEDIUM,
+    .cra-badge-LOW,
+    .cra-badge-INFO,
+    .cra-badge-UNKNOWN {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.75em;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
 
-  {# ── KPI row (action-driven design-system cards) ── #}
-  <div class="kpi-row">
-    <div class="kpi-card">
-      <div class="kpi-title">Period</div>
-      <div class="kpi-value">{{ kpi_period | default('—') }}</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-title">Total Findings</div>
-      <div class="kpi-value">{{ kpi_total | default(0) }}</div>
-    </div>
-    <div class="kpi-card border-critical kpi-critical">
-      <div class="kpi-title">🔥 OVERDUE</div>
-      <div class="kpi-value">{{ kpi_overdue | default(0) }}</div>
-    </div>
-    <div class="kpi-card border-high kpi-high">
-      <div class="kpi-title">DUE_SOON</div>
-      <div class="kpi-value">{{ kpi_due_soon | default(0) }}</div>
-    </div>
-    <div class="kpi-card border-high kpi-high">
-      <div class="kpi-title">Unknown Clock</div>
-      <div class="kpi-value">{{ kpi_unknown_clock | default(0) }}</div>
-    </div>
-    {% if has_reachability %}
-    <div class="kpi-card border-kev kpi-kev">
-      <div class="kpi-title">Reachable</div>
-      <div class="kpi-value">{{ kpi_reachable | default(0) }}</div>
-    </div>
-    {% endif %}
-    <div class="kpi-card border-blue kpi-blue">
-      <div class="kpi-title">In Triage</div>
-      <div class="kpi-value">{{ kpi_in_triage | default(0) }}</div>
-    </div>
-  </div>
+    /* Print-only blocks — surface the metadata + footer content that
+       _console_shell.html's @media print hides (.topbar and .status-bar
+       both go display:none in print, taking the Domain/Scope/Threshold/
+       Since/Generated chips and the "Generated by Finite State" footer
+       with them). These blocks live in the document flow so they print
+       inside <main> and re-introduce the content the legacy
+       .metadata div + _default_footer.html used to provide. Hidden on
+       screen so the topbar/status_bar remain the screen chrome. */
+    .cra-print-meta,
+    .cra-print-footer {
+        display: none;
+    }
+    /* Page margins for PDF — uses CSS paged-media @page rule (matches
+       customer_brief.html pattern). pdf_renderer.py passes
+       `prefer_css_page_size: True` to Playwright, so these size/margin
+       declarations are authoritative. */
+    @page {
+        size: letter;
+        margin: 0.75in 0.75in 0.9in 0.75in;
+    }
+    @media print {
+        .cra-section-table {
+            display: table;
+        }
+        .cra-print-meta {
+            display: block;
+            background-color: var(--surface-subtle);
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin: 0 0 16px;
+            font-size: 0.85em;
+            color: var(--ink-mute);
+            line-height: 1.5;
+        }
+        .cra-print-meta strong { color: var(--ink-strong); }
+        .cra-print-footer {
+            display: block;
+            text-align: center;
+            margin-top: 24px;
+            padding-top: 12px;
+            border-top: 1px solid var(--hairline);
+            font-size: 0.8em;
+            color: var(--ink-mute);
+        }
+        .cra-print-footer p { margin: 0; }
+        .cra-print-footer .finite-state-logo {
+            color: var(--link-default);
+            font-weight: bold;
+        }
+        /* E1: configured logo in the CRA PDF footer. */
+        .cra-print-footer .cra-footer-logo {
+            height: 20px; max-height: 20px; width: auto;
+            margin-bottom: 6px;
+        }
+        /* Encourage Full Snapshot to land on its own page so dense
+           multi-section content paginates closer to the legacy 2-page
+           layout. `page-break-before: always` is too aggressive when
+           upstream sections are short, so we use `auto` + an avoid hint
+           on the per-section tables. */
+        .cra-full-snapshot-anchor { page-break-before: always; }
+        .cra-section-table { page-break-inside: avoid; }
+        h2 { page-break-after: avoid; }
+    }
+</style>
 
-  {# ── Per-section callout texts ── #}
-  {% set _section_callouts = {
-    "sla_breach": "These vulnerabilities are flagged as actively exploited by the FS platform. The <code>KEV Source</code> column shows which platform signal triggered: <code>CISA</code> means the platform marked the CVE as CISA-listed, <code>VcKEV</code> means FS's verified-compromise signal (exploitation observed in the wild beyond what CISA tracks), <code>CISA+VcKEV</code> means both. The 24-hour CRA notification clock anchors on the later of CISA's <code>dateAdded</code> (when the CISA catalog join succeeds for this row) and the platform's <code>detected_date</code> (when FS first observed this finding). If <code>Notification Deadline</code> is empty, neither timestamp was available — the row is flagged <em>Unknown Clock</em> and the 24-hour clock cannot be computed. Identify which of your products contain the listed components and either confirm a mitigation or file the ENISA notification.",
-    "newly_above": "Exploit signals for these CVEs advanced in maturity during the report window. They weren't CRA-relevant before, but a new KEV listing / weaponization / ransomware or threat-actor attribution puts them in scope now. Treat as the 'what changed today' list — identify affected products and start the triage.",
-    "re_emerged": "CVEs you previously marked resolved or not-affected that have gained a new exploit signal. Reverify the mitigation still holds. The <code>previous_resolution</code> column shows how the finding was originally closed.",
-    "still_in_triage": "Open triage items not yet decided. <code>triage_age_days</code> shows how long each has been pending. The risk: if exploit maturity advances on any of these, they jump to 🆕 or 🔥 and the 24-hour clock starts.",
-    "full_snapshot": "Complete inventory of CRA-relevant findings in scope. Reference list, not action items — the 🔥/🆕/🔁/⏰ sections above contain the rows that need attention this run."
-  } %}
+{% if render_mode != 'fragment' %}
+</head>
+<body class="console" data-nav-category="{{ nav_category_slug | default('compliance') }}">
+{% endif %}
 
-  {# ── Five morning-queue sections ── #}
-  {% for section in cra_sections | default([]) %}
-    <h2>{{ section.label }} ({{ section.count }})</h2>
-    {% if _section_callouts[section.key] is defined %}
-      <p class="section-callout"><em>{{ _section_callouts[section.key] | safe }}</em></p>
-    {% endif %}
-    {% if section.count > 0 %}
-      <table class="cra-section-table">
-        <thead>
-          <tr>{% for col in section.columns %}<th>{{ col.display }}</th>{% endfor %}</tr>
-        </thead>
-        <tbody>
-          {% for row in section.rows %}
-            <tr>
-              {% for col in section.columns %}
-                {% set cell_val = row[col.key] %}
-                {% if col.key == "severity" and cell_val and cell_val not in ("", "None", "nan") %}
-                  <td><span class="badge badge-{{ cell_val }}">{{ cell_val }}</span></td>
-                {% elif cell_val is none or cell_val == "None" or cell_val == "nan" or cell_val == "" %}
-                  <td></td>
-                {% else %}
-                  <td>{{ cell_val }}</td>
-                {% endif %}
-              {% endfor %}
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% if section.truncated %}
-        <p class="cra-truncation-note">Showing top {{ section.shown }} of {{ section.count }} — see CSV/XLSX for full set.</p>
-      {% endif %}
+{# Build topbar meta items. #}
+{% set cra_meta = [{"label": "Domain", "value": domain or "—"}] %}
+{% set _ = cra_meta.append({"label": "Scope", "value": scope_label}) %}
+{% set _ = cra_meta.append({"label": "Threshold", "value": threshold_label}) %}
+{% set _ = cra_meta.append({"label": "Since", "value": since_label}) %}
+{% set _ = cra_meta.append({"label": "Generated", "value": generated_at or "—"}) %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "CRA Compliance"],
+    meta=cra_meta,
+    controls=[],
+    print_brand=false,
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>CRA Compliance Report</h1>
+        <p class="subtitle">EU Cyber Resilience Act Article 14 — Exploit Advancement Notification</p>
+    </div>
+
+    {# Print-only metadata block — the topbar is display:none in print so
+       this restores the Domain/Scope/Threshold/Since/Generated chips that
+       the legacy `.metadata` div used to provide. Hidden on screen
+       (topbar handles that there). #}
+    <div class="cra-print-meta">
+        <strong>Domain:</strong> {{ domain | default('—') }} &nbsp;|&nbsp;
+        <strong>Scope:</strong> {{ scope_label | default('All projects') }} &nbsp;|&nbsp;
+        <strong>Generated:</strong> {{ generated_at | default('—') }} &nbsp;|&nbsp;
+        <strong>Threshold:</strong> {{ threshold_label | default('—') }} &nbsp;|&nbsp;
+        <strong>Since:</strong> {{ since_label | default('24h') }}
+    </div>
+
+    {# How to use this report callout — preserved verbatim. #}
+    <div class="cra-how-to-use">
+        <h2>How to use this report</h2>
+        <p>This report alerts you when exploits for vulnerabilities in your portfolio advance in maturity — newly added to CISA KEV, becoming weaponized, or gaining ransomware/threat-actor attribution. Use it to:</p>
+        <ol>
+            <li>Identify which of your products contain the affected components.</li>
+            <li>Test those products to verify exposure.</li>
+        </ol>
+        <p>Under EU CRA Article 14, manufacturers must notify ENISA within 24 hours of becoming aware of an actively exploited vulnerability in a product with digital elements. The 🔥 SLA-Breach Risk section flags findings carrying platform exploitation signals — potential candidates to investigate and disposition (confirm affected, or mark NOT_AFFECTED / VEX) before that 24-hour clock is treated as running.</p>
+    </div>
+
+    {# Warning / OK banner. #}
+    {% if sla_breach_count and sla_breach_count > 0 %}
+        <div class="cra-banner cra-banner-warn">
+            ⚠️ {{ sla_breach_count }} potential actively-exploited vulnerabilit{% if sla_breach_count == 1 %}y{% else %}ies{% endif %} detected.
+            These are platform KEV / known-exploit signals — investigate and disposition each one (confirm affected, or mark NOT_AFFECTED / VEX) before treating the EU CRA Article 14 24-hour ENISA notification clock as running.
+        </div>
     {% else %}
-      <p class="cra-empty-section"><em>No findings in this section.</em></p>
+        <div class="cra-banner cra-banner-ok">
+            ✅ No CRA-relevant findings requiring immediate notification.
+        </div>
     {% endif %}
-  {% endfor %}
 
-  {# ── CISA-vs-CRA footnote ── #}
-  <hr/>
-  <div class="cra-footnote">
-    <p><strong>Note on SLA columns:</strong> The CRA notification clock
-      (<code>cra_notification_at</code> + 24h) is independent of CISA's US federal BOD 22-01
-      remediation deadline (<code>cisa_remediation_due</code>). The two SLAs serve different regulators.</p>
-  </div>
+    {# 7 KPI cells via fs.kpi_cell. #}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell("Period", kpi_period) }}
+        {{ fs.kpi_cell("Total Findings", kpi_total) }}
+        {{ fs.kpi_cell(
+            "🔥 OVERDUE",
+            kpi_overdue,
+            dot=("critical" if kpi_overdue > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "DUE_SOON",
+            kpi_due_soon,
+            dot=("high" if kpi_due_soon > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "Unknown Clock",
+            kpi_unknown_clock,
+            dot=("high" if kpi_unknown_clock > 0 else None),
+        ) }}
+        {% if has_reachability %}
+        {{ fs.kpi_cell("Reachable", kpi_reachable) }}
+        {% endif %}
+        {{ fs.kpi_cell("In Triage", kpi_in_triage) }}
+    </div>
 
-  {# ── Footer ── #}
-  {% include "_default_footer.html" %}
+    {# Per-section callout texts (preserved verbatim from pre-migration
+       template lines 203-209). #}
+    {% set _section_callouts = {
+        "sla_breach": "These vulnerabilities carry platform exploitation signals and are flagged as <em>potentially</em> actively exploited — investigate and disposition each (confirm affected, or mark NOT_AFFECTED / VEX) before treating the 24-hour clock as running. The <code>KEV Source</code> column shows which platform signal triggered: <code>CISA</code> means the CVE is in the public CISA KEV catalog, <code>VcKEV</code> means the CVE is in VulnCheck's KEV catalog (broader than CISA's), <code>CISA+VcKEV</code> means both. The 24-hour CRA notification clock anchors on the later of CISA's <code>dateAdded</code> (when the CISA catalog join succeeds for this row) and the platform's <code>detected_date</code> (when FS first observed this finding). If <code>Notification Deadline</code> is empty, neither timestamp was available — the row is flagged <em>Unknown Clock</em> and the 24-hour clock cannot be computed. Identify which of your products contain the listed components and either confirm a mitigation or file the ENISA notification.",
+        "newly_above": "Exploit signals for these CVEs advanced in maturity during the report window. They weren't CRA-relevant before, but a new KEV listing / weaponization / ransomware or threat-actor attribution puts them in scope now. Treat as the 'what changed today' list — identify affected products and start the triage.",
+        "re_emerged": "CVEs you previously marked resolved or not-affected that have gained a new exploit signal. Reverify the mitigation still holds. The <code>previous_resolution</code> column shows how the finding was originally closed.",
+        "still_in_triage": "Open triage items not yet decided. <code>triage_age_days</code> shows how long each has been pending. The risk: if exploit maturity advances on any of these, they jump to 🆕 or 🔥 and the 24-hour clock starts.",
+        "full_snapshot": "Complete inventory of CRA-relevant findings in scope. Reference list, not action items — the 🔥/🆕/🔁/⏰ sections above contain the rows that need attention this run."
+    } %}
 
-</div>
-</section>
+    {# 5 morning-queue sections. The Full Snapshot section gets a
+       page-break anchor in print so dense multi-section output paginates
+       to ~2 pages, restoring legacy layout (the @media print rule on
+       .cra-full-snapshot-anchor sets page-break-before: always). #}
+    {% for section in cra_sections %}
+        {% if section is mapping %}
+        <h2{% if section.key == 'full_snapshot' %} class="cra-full-snapshot-anchor"{% endif %}>{{ section.label }} ({{ section.count }})</h2>
+        {% if _section_callouts[section.key] is defined %}
+            <p class="cra-section-callout"><em>{{ _section_callouts[section.key] | safe }}</em></p>
+        {% endif %}
+        {% if section.count and section.count > 0 %}
+            <table class="cra-section-table">
+                <thead>
+                    <tr>{% for col in section.columns %}<th>{{ col.display }}</th>{% endfor %}</tr>
+                </thead>
+                <tbody>
+                    {% for row in section.rows %}
+                        {# Per-row mapping guard (D round-1 PR multi-review
+                           M1-2 / M2-2 / M3-1): silently skip non-dict rows
+                           so upstream data drift renders cleanly instead
+                           of crashing or producing broken cells. #}
+                        {% if row is mapping %}
+                        <tr>
+                            {% for col in section.columns %}
+                                {% set cell_val = row[col.key] %}
+                                {% if col.key == "severity" and cell_val and cell_val not in ("", "None", "nan") %}
+                                    <td><span class="cra-badge-{{ cell_val }}">{{ cell_val }}</span></td>
+                                {% elif cell_val is none or cell_val == "None" or cell_val == "nan" or cell_val == "" %}
+                                    <td></td>
+                                {% else %}
+                                    <td>{{ cell_val }}</td>
+                                {% endif %}
+                            {% endfor %}
+                        </tr>
+                        {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if section.truncated %}
+                <p class="cra-truncation-note">Showing top {{ section.shown }} of {{ section.count }} — see CSV/XLSX for full set.</p>
+            {% endif %}
+        {% else %}
+            <p class="cra-empty-section"><em>No findings in this section.</em></p>
+        {% endif %}
+        {% endif %}
+    {% endfor %}
 
-{% if not fragment_mode %}
+    {# CISA-vs-CRA footnote — preserved verbatim. #}
+    <hr/>
+    <div class="cra-footnote">
+        <p><strong>Note on SLA columns:</strong> The CRA notification clock
+            (<code>cra_notification_at</code> + 24h) is independent of CISA's US federal BOD 22-01
+            remediation deadline (<code>cisa_remediation_due</code>). The two SLAs serve different regulators.</p>
+    </div>
+
+    {# Print-only footer — the status_bar is display:none in print so this
+       restores the "Generated by Finite State | <timestamp>" line + the
+       copyright that the legacy _default_footer.html used to provide.
+       Hidden on screen (status_bar handles that there). #}
+    {% set _year = (generated_at[:4] if generated_at and generated_at[:4].isdigit() else '2026') %}
+    <div class="cra-print-footer">
+        {# E1: configured logo (config.logo → logo_path) in the print
+           footer when set. The screen topbar + print-brand (via
+           fs.topbar) already carry it in the header; this surfaces it in
+           the CRA-specific PDF footer too. Text wordmark stays as the
+           attribution either way. #}
+        {% if logo_path %}<p><img src="{{ logo_path }}" alt="Logo" class="cra-footer-logo"></p>{% endif %}
+        <p>Generated by <span class="finite-state-logo">Finite State</span>{% if generated_at %} | {{ generated_at }}{% endif %}</p>
+        <p style="font-size: 0.8em; margin-top: 4px;">Copyright &copy; {{ _year }} Finite State, Inc.</p>
+    </div>
+</main>
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: CRA Compliance",
+    "Findings: " ~ (kpi_total | string),
+    "SLA-Breach: " ~ (sla_breach_count | string),
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+{% if render_mode != 'fragment' %}
+{% include '_action_buttons.html' %}
 </body>
 </html>
 {% endif %}

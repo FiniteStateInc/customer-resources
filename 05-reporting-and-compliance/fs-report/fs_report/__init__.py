@@ -27,4 +27,4 @@ try:
 except Exception:  # installed in editable mode or not installed
     __version__ = "dev"
 __author__ = "Finite State, Inc."
-__license__ = "MIT"
+__license__ = "FSL-1.1-MIT"

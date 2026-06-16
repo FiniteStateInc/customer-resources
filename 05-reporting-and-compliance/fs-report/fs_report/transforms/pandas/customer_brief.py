@@ -751,22 +751,20 @@ def customer_brief_transform(
     # ---- total_components for summary ----
     summary["total_components"] = sbom_stats.get("total_components", 0)
 
-    # ---- Base64-encoded brand assets for PDF cover ----
+    # ---- Base64-encoded cover background for PDF cover ----
+    # E1: the brand LOGO is no longer loaded here. The template resolves
+    # it centrally from logo_path (config.logo data-URI) with the shared
+    # bundled wordmark (fs.default_logo_data_uri()) as fallback — a single
+    # resolution path that honors the user-configured logo. We still load
+    # the JPEG cover BACKGROUND, which is not a brand-logo concern.
     _assets_dir = Path(__file__).resolve().parent.parent.parent / "templates" / "assets"
     cover_image_b64 = ""
-    logo_image_b64 = ""
     try:
         cover_path = _assets_dir / "cover.jpg"
         if cover_path.is_file():
             cover_image_b64 = base64.b64encode(cover_path.read_bytes()).decode("ascii")
     except Exception:
         logger.debug("Could not load cover.jpg for PDF cover", exc_info=True)
-    try:
-        logo_path = _assets_dir / "fs-logo.png"
-        if logo_path.is_file():
-            logo_image_b64 = base64.b64encode(logo_path.read_bytes()).decode("ascii")
-    except Exception:
-        logger.debug("Could not load fs-logo.png for PDF cover", exc_info=True)
 
     # ---- Mode (summary vs detailed) ----
     recipe_params = additional_data.get("recipe_parameters", {})
@@ -783,7 +781,6 @@ def customer_brief_transform(
         "domain": domain,
         "organization": organization,
         "cover_image_b64": cover_image_b64,
-        "logo_image_b64": logo_image_b64,
         "severity_distribution": severity_distribution,
         "component_license_distribution": component_license_distribution,
         "components_missing_license": components_missing_license,

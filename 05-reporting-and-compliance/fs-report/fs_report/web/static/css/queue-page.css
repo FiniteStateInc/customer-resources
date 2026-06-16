@@ -1,0 +1,80 @@
+/* ============================================================
+   fs-report Phase 2 — queue-page.css
+   Standalone Scan Queue page (/queue) body styles.
+   Tokens → tokens.css | Chrome (.page-head/.btn/etc.) → shell.css
+   NOTE: @keyframes pulse lives in shell.css — do NOT redefine here.
+   ============================================================ */
+
+/* ── Filter chips ─────────────────────────────────────────── */
+/* .chip/.chip:hover/.chip.on come from command-center.css (shell-loaded);
+   only the .chips container is page-local. */
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+/* Refresh button spin affordance — rfspin keyframes live in command-center.css. */
+.btn.spin svg{animation:rfspin .8s linear}
+
+/* ── KPI strip ────────────────────────────────────────────── */
+.kpi-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--hairline-soft);border:1px solid var(--hairline);border-radius:var(--r-lg);overflow:hidden;margin-bottom:18px}
+.kc{background:var(--surface-card);padding:14px 16px}
+.kc .kl{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-mute);font-weight:700;margin-bottom:7px;display:flex;align-items:center;gap:6px}
+.kc .kl .d{width:7px;height:7px;border-radius:50%}
+.kc .kv{font-family:var(--font-mono);font-size:24px;font-weight:600;color:var(--ink);line-height:1}
+
+/* ── Panel ────────────────────────────────────────────────── */
+/* Scoped under #queue-body so it doesn't re-declare the shell's global
+   .panel (command-center.css). The queue panel has zero padding — its .phd
+   header and .qg rows carry their own. */
+#queue-body .panel{padding:0;margin-bottom:14px}
+.panel .phd{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--hairline)}
+.panel .phd h2{font-family:var(--font-display);font-size:13px;font-weight:700;color:var(--ink);display:flex;align-items:center;gap:9px;margin:0}
+.panel .phd h2::before{content:'';width:3px;height:13px;background:var(--accent);border-radius:1px}
+.panel .phd .meta{margin-left:auto;font-family:var(--font-mono);font-size:10.5px;color:var(--ink-mute)}
+.q-capped{color:var(--sev-high);border-bottom:1px dotted var(--sev-high);cursor:help}
+
+/* ── Error / empty states ─────────────────────────────────── */
+.q-notice{display:flex;align-items:center;gap:9px;color:var(--ink-mute);font-size:12.5px;padding:14px 16px;background:var(--surface-card);border:1px solid var(--hairline);border-radius:var(--r-lg)}
+.q-notice .q-notice-ic{color:var(--sev-high)}
+.q-empty{display:flex;align-items:center;gap:9px;color:var(--sev-low);font-size:12.5px;padding:14px 16px;background:var(--surface-card);border:1px solid var(--hairline);border-radius:var(--r-lg)}
+
+/* ── Scan queue groups ────────────────────────────────────── */
+.qg{padding:13px 16px;border-bottom:1px solid var(--hairline-soft);position:relative;padding-left:24px;transition:background .15s}
+.qg:last-child{border-bottom:none}
+.qg:hover{background:rgba(255,255,255,.015)}
+.qg-top{display:flex;align-items:center;gap:10px}
+.qg-name{color:var(--ink);font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.qg-ver{font-family:var(--font-mono);font-size:10px;color:var(--ink-mute);background:var(--surface-subtle);padding:1px 7px;border-radius:3px;white-space:nowrap;flex:none}
+.qg-by{font-family:var(--font-mono);font-size:10px;color:var(--ink-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;flex:none}
+.badge{font-family:var(--font-mono);font-size:9px;font-weight:700;letter-spacing:.06em;padding:2px 8px;border-radius:999px;text-transform:uppercase;white-space:nowrap}
+.badge.stuckb{background:var(--sev-high-bg);color:var(--sev-high)}
+.qg-ratio{font-family:var(--font-mono);font-size:9.5px;color:var(--ink-faint);padding:1px 8px;border:1px solid var(--hairline);border-radius:999px;white-space:nowrap}
+.qg-wait{margin-left:auto;font-family:var(--font-mono);font-size:11px;color:var(--ink-faint)}
+.qg-scans{display:flex;gap:6px;margin-top:10px;align-items:center;flex-wrap:wrap}
+.scan{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:var(--r-sm);background:var(--surface-subtle);border:1px solid var(--hairline);font-family:var(--font-mono);font-size:10px;color:var(--ink-body);white-space:nowrap}
+/* B8 #2: hue = scan TYPE (qt-*); status = motion/opacity; stuck/err override
+   the hue (source-ordered after qt-* to win the specificity tie). */
+.scan .sd{width:8px;height:8px;border-radius:2px;background:var(--scan-other)}
+.sd.qt-sca{background:var(--scan-sca)}
+.sd.qt-config{background:var(--scan-config)}
+.sd.qt-vuln{background:var(--scan-vuln)}
+.sd.qt-sast{background:var(--scan-sast)}
+.sd.qt-source-sca{background:var(--scan-source-sca)}
+.sd.qt-sbom{background:var(--scan-sbom)}
+.sd.init{opacity:.45}
+/* Cascade the running pulses: stagger by paint order via inline --i. */
+.sd.run{animation:pulse 1.4s var(--ease-out) infinite;animation-delay:calc(var(--i,0)*.12s)}
+.sd.stuck{background:var(--sev-high)}
+.sd.err{background:var(--sev-critical)}
+.no-motion .sd.run{animation:none}
+.scan.is-run{border-color:rgba(var(--accent-rgb),.4);box-shadow:0 0 12px rgba(var(--accent-rgb),.14)}
+.scan.is-stuck{border-color:rgba(251,191,36,.35);color:var(--sev-high)}
+
+/* ── Left strip color via --qc (single-class adaptation) ──── */
+.qg::before{content:'';position:absolute;left:8px;top:13px;bottom:13px;width:3px;border-radius:2px;background:var(--qc,var(--hairline));box-shadow:0 0 8px var(--qc,transparent);opacity:.9}
+.qg-run{--qc:var(--accent)}
+.qg-done{--qc:var(--sev-low)}
+.qg-stuck{--qc:var(--sev-high)}
+.qg-err{--qc:var(--sev-critical)}
+.qg-queued{--qc:var(--ink-faint)}  /* muted strip — matches the Queued KPI dot */
+.qg-stuck{background:rgba(251,191,36,.04)}
+.qg-run::after{content:'';position:absolute;inset:0;pointer-events:none;background:linear-gradient(90deg,transparent,rgba(var(--accent-rgb),.06),transparent);background-size:42% 100%;background-repeat:no-repeat;animation:qsweep 2.8s linear infinite}
+.no-motion .qg-run::after{animation:none;opacity:0}
+@keyframes qsweep{0%{background-position:-42% 0}100%{background-position:142% 0}}

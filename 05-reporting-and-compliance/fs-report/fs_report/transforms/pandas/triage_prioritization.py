@@ -17,6 +17,10 @@ from typing import Any
 
 import pandas as pd
 
+from fs_report.transforms.pandas.comparison._shared import (
+    VEX_RESOLVED_STATUSES as _VEX_RESOLVED_STATUSES_SHARED,
+)
+
 logger = logging.getLogger(__name__)
 
 # =============================================================================
@@ -54,7 +58,9 @@ POINTS_VEX_RESOLVED = -50  # NOT_AFFECTED, RESOLVED, RESOLVED_WITH_PEDIGREE
 # VEX statuses that indicate a finding has been resolved — these are excluded
 # from gate eligibility so that previously-triaged findings don't keep appearing
 # as GATE_1/GATE_2 on subsequent runs.
-VEX_RESOLVED_STATUSES = {"NOT_AFFECTED", "RESOLVED", "RESOLVED_WITH_PEDIGREE"}
+# Source of truth: comparison._shared.VEX_RESOLVED_STATUSES (re-exported here
+# for backward compatibility with existing callers that import from this module).
+VEX_RESOLVED_STATUSES = _VEX_RESOLVED_STATUSES_SHARED
 
 # Band thresholds for additive scoring
 BAND_HIGH_THRESHOLD = 70
@@ -662,6 +668,7 @@ def triage_prioritization_transform(
     portfolio_summary = build_portfolio_summary(df)
     cvss_band_matrix = build_cvss_vs_band_matrix(df)
     gate_funnel = build_gate_funnel_data(df)
+    factor_by_band = build_factor_by_band_data(df, gates=gates, weights=weights)
     top_components = build_top_components(df)
     factor_radar = build_factor_radar_data(df)
 
@@ -1286,6 +1293,21 @@ def triage_prioritization_transform(
         else None
     )
 
+    # Determine if this is a single-version report so the template can surface
+    # the version in the header chrome (topbar pill + subtitle). Only set
+    # when ALSO single-project — multiple projects that happen to share a
+    # version string (e.g. several products tagged "v1.0") must not display
+    # a version pill as if the report were scoped to one project version.
+    unique_versions: list[str] = []
+    if is_single_project and "version_name" in df.columns:
+        unique_versions = [
+            str(v)
+            for v in df["version_name"].dropna().unique()
+            if str(v).strip() and str(v).strip().lower() != "nan"
+        ]
+    is_single_version = is_single_project and len(unique_versions) == 1
+    single_version_name = unique_versions[0] if is_single_version else None
+
     # Build finding prompt lookup dict (finding_id -> prompt text) for template use
     ai_finding_prompts: dict[str, str] = {
         p["finding_id"]: p["prompt"] for p in ai_triage_prompts
@@ -1307,12 +1329,15 @@ def triage_prioritization_transform(
         "portfolio_summary": portfolio_summary,
         "cvss_band_matrix": cvss_band_matrix,
         "gate_funnel": gate_funnel,
+        "factor_by_band": factor_by_band,
         "top_components": top_components,
         "factor_radar": factor_radar,
         "vex_recommendations": vex_recommendations,
         "band_colors": BAND_COLORS,
         "is_single_project": is_single_project,
         "single_project_name": single_project_name,
+        "is_single_version": is_single_version,
+        "single_version_name": single_version_name,
         "ai_portfolio_summary": ai_portfolio_summary,
         "ai_project_summaries": ai_project_summaries,
         "ai_component_guidance": ai_component_guidance,
@@ -1973,11 +1998,22 @@ def build_portfolio_summary(df: pd.DataFrame) -> dict[str, Any]:
 
 def build_cvss_vs_band_matrix(df: pd.DataFrame) -> dict[str, Any]:
     """
-    Build CVSS severity × priority band cross-tabulation for bubble chart.
+    Build CVSS severity × priority band cross-tabulation.
 
-    Layout:
-      X-axis = CVSS severity (CRITICAL → NONE, left to right)
-      Y-axis = Priority band (CRITICAL at top → INFO at bottom)
+    Used by the HTML report's stacked horizontal bar (rows = CVSS tiers,
+    segments = priority bands). Rows enumerate CVSS tiers (one stacked bar
+    each); cols enumerate priority bands (the stack series). Off-diagonal
+    segments — e.g. CRITICAL CVSS bars with non-CRITICAL band segments —
+    visualize where CVSS alone disagrees with the triage band.
+
+    Returns:
+        ``rows``: priority bands in canonical ``CRITICAL → INFO`` order
+            (legend + stack series order, matching the rest of the report).
+        ``cols``: CVSS severity labels in ``CRITICAL → NONE`` order.
+        ``data``: per-cell ``{x, y, v, severity, band}`` entries (preserved
+            for any consumer that still wants a bubble/heatmap layout —
+            ``y`` is the row index, inverted so ``CRITICAL`` sits at the
+            top).
     """
     if df.empty:
         return {"rows": BAND_ORDER, "cols": SEVERITY_ORDER, "data": []}
@@ -1985,7 +2021,6 @@ def build_cvss_vs_band_matrix(df: pd.DataFrame) -> dict[str, Any]:
     ct = pd.crosstab(df["severity"], df["priority_band"])
     ct = ct.reindex(index=SEVERITY_ORDER, columns=BAND_ORDER, fill_value=0)
 
-    # Invert band index so CRITICAL=top (highest y value)
     num_bands = len(BAND_ORDER)
 
     matrix_data = []
@@ -1997,8 +2032,8 @@ def build_cvss_vs_band_matrix(df: pd.DataFrame) -> dict[str, Any]:
             if value > 0:
                 matrix_data.append(
                     {
-                        "x": sev_idx,  # CVSS on x-axis
-                        "y": (num_bands - 1) - band_idx,  # Invert: CRITICAL=top
+                        "x": sev_idx,
+                        "y": (num_bands - 1) - band_idx,
                         "v": value,
                         "severity": sev,
                         "band": band,
@@ -2006,11 +2041,191 @@ def build_cvss_vs_band_matrix(df: pd.DataFrame) -> dict[str, Any]:
                 )
 
     return {
-        "rows": list(
-            reversed(BAND_ORDER)
-        ),  # y-axis labels top-to-bottom: CRITICAL, HIGH, ...
-        "cols": SEVERITY_ORDER,  # x-axis labels: CRITICAL, HIGH, MEDIUM, LOW, NONE
+        "rows": list(BAND_ORDER),
+        "cols": SEVERITY_ORDER,
         "data": matrix_data,
+    }
+
+
+def build_factor_by_band_data(
+    df: pd.DataFrame,
+    gates: list[dict[str, Any]] | None = None,
+    weights: dict[str, int | float] | None = None,
+) -> dict[str, Any]:
+    """Aggregate per-factor point contributions per priority band, averaged
+    per finding.
+
+    Each finding's triage score breaks down into factor-specific point columns
+    (`_pts_reachability`, `_pts_exploit`, `_pts_vector`, `_pts_epss`,
+    `_pts_cvss`) plus a gate bonus applied to gate-assigned findings. Sum each
+    factor's contributions across all findings in the band, then divide by the
+    band's finding count, so the chart reads as *average factor points per
+    finding in this tier* — cross-band magnitude comparisons aren't biased by
+    band size.
+
+    All bands in ``BAND_ORDER`` are present in the output even when empty
+    (`finding_count=0`, all factor values `0.0`), so chart category baselines
+    remain stable across reports.
+
+    Args:
+        df: Scored findings with ``_pts_*`` columns and ``priority_band``.
+        gates: Gate definitions (DSL) used to attribute the gate bonus per
+            band. Defaults to ``DEFAULT_GATES``. Each gate's ``score`` is
+            credited to findings whose ``gate_assignment`` matches the gate
+            ``name``.
+        weights: Resolved additive-scoring weights. Used to attribute the
+            VEX-resolved demotion penalty (``weights['vex_resolved']``) per
+            band. Defaults to ``DEFAULT_WEIGHTS``.
+
+    Returns:
+        Dict shape::
+
+            {
+                "bands": [...],
+                "factors": [
+                    "unreachable", "vex", "reach", "exploit", "kev",
+                    "vector", "epss", "cvss", "gate_bonus"
+                ],
+                "normalize": "per_finding",
+                "data": [
+                    {"band": "CRITICAL", "finding_count": N,
+                     "reach": x, "exploit": y, "kev": z,
+                     "vector": ..., "epss": ..., "cvss": ...,
+                     "gate_bonus": ..., "unreachable": <≤ 0>, "vex": <≤ 0>},
+                    ...
+                ],
+            }
+
+        ``unreachable`` is a non-positive number representing the average
+        unreachable-penalty contribution per finding (e.g. −15 × share of
+        unreachable findings). ``vex`` is the matching non-positive value
+        for VEX-demoted findings (e.g. ``status in {NOT_AFFECTED, RESOLVED,
+        RESOLVED_WITH_PEDIGREE}`` → −50 × share). Renderers stack both as
+        negative segments to the left of the x-axis origin so the visual
+        disagreement between "drivers" and "demoters" is visible.
+    """
+    factors = [
+        "unreachable",
+        "vex",
+        "reach",
+        "exploit",
+        "kev",
+        "vector",
+        "epss",
+        "cvss",
+        "gate_bonus",
+    ]
+    gates = gates if gates is not None else DEFAULT_GATES
+    weights = weights if weights is not None else DEFAULT_WEIGHTS
+    gate_score_by_name: dict[str, float] = {
+        str(g.get("name", "")): float(g.get("score", 0)) for g in gates
+    }
+    vex_penalty = float(weights.get("vex_resolved", POINTS_VEX_RESOLVED))
+
+    empty_row = lambda band: {  # noqa: E731
+        "band": band,
+        "finding_count": 0,
+        **dict.fromkeys(factors, 0.0),
+    }
+
+    if df.empty:
+        return {
+            "bands": BAND_ORDER,
+            "factors": factors,
+            "normalize": "per_finding",
+            "data": [empty_row(b) for b in BAND_ORDER],
+        }
+
+    def _pos_avg(series: pd.Series, count: int) -> float:
+        return float(series.clip(lower=0).sum()) / count if count else 0.0
+
+    def _neg_avg(series: pd.Series, count: int) -> float:
+        return float(series.clip(upper=0).sum()) / count if count else 0.0
+
+    data: list[dict[str, Any]] = []
+    for band in BAND_ORDER:
+        mask = df["priority_band"] == band
+        if not mask.any():
+            data.append(empty_row(band))
+            continue
+        sub = df[mask]
+        count = int(len(sub))
+
+        # Split _pts_exploit into exploit (has_exploit=True) vs kev-only
+        # (has_exploit=False AND in_kev=True) so the chart distinguishes them.
+        exploit_avg = 0.0
+        kev_avg = 0.0
+        if "_pts_exploit" in sub.columns:
+            if "has_exploit" in sub.columns:
+                exploit_mask = sub["has_exploit"].fillna(False).astype(bool)
+                exploit_avg = _pos_avg(sub.loc[exploit_mask, "_pts_exploit"], count)
+                if "in_kev" in sub.columns:
+                    kev_only = (~exploit_mask) & sub["in_kev"].fillna(False).astype(
+                        bool
+                    )
+                    kev_avg = _pos_avg(sub.loc[kev_only, "_pts_exploit"], count)
+            else:
+                exploit_avg = _pos_avg(sub["_pts_exploit"], count)
+
+        # Gate bonus: per-finding-averaged score added to gate-assigned
+        # findings (so a band where every finding hit GATE_1 shows ~100 of
+        # gate-bonus contribution; mixed bands show a fractional value).
+        gate_bonus_avg = 0.0
+        if "gate_assignment" in sub.columns and gate_score_by_name:
+            gate_bonuses = sub["gate_assignment"].map(gate_score_by_name).fillna(0.0)
+            gate_bonus_avg = float(gate_bonuses.sum()) / count
+
+        # VEX-resolved demotion: applied to triage_score during scoring, but
+        # no `_pts_vex` column is materialized. Recompute per-band by
+        # counting findings whose `status` is in VEX_RESOLVED_STATUSES and
+        # crediting them the configured `vex_resolved` weight (negative).
+        vex_avg = 0.0
+        if "status" in sub.columns and vex_penalty:
+            vex_mask = sub["status"].astype(str).isin(VEX_RESOLVED_STATUSES)
+            vex_count = int(vex_mask.sum())
+            vex_avg = (vex_count * vex_penalty) / count
+
+        data.append(
+            {
+                "band": band,
+                "finding_count": count,
+                "reach": (
+                    _pos_avg(sub["_pts_reachability"], count)
+                    if "_pts_reachability" in sub.columns
+                    else 0.0
+                ),
+                "unreachable": (
+                    _neg_avg(sub["_pts_reachability"], count)
+                    if "_pts_reachability" in sub.columns
+                    else 0.0
+                ),
+                "exploit": exploit_avg,
+                "kev": kev_avg,
+                "vector": (
+                    _pos_avg(sub["_pts_vector"], count)
+                    if "_pts_vector" in sub.columns
+                    else 0.0
+                ),
+                "epss": (
+                    _pos_avg(sub["_pts_epss"], count)
+                    if "_pts_epss" in sub.columns
+                    else 0.0
+                ),
+                "cvss": (
+                    _pos_avg(sub["_pts_cvss"], count)
+                    if "_pts_cvss" in sub.columns
+                    else 0.0
+                ),
+                "gate_bonus": gate_bonus_avg,
+                "vex": vex_avg,
+            }
+        )
+
+    return {
+        "bands": BAND_ORDER,
+        "factors": factors,
+        "normalize": "per_finding",
+        "data": data,
     }
 
 
@@ -3532,7 +3747,7 @@ def _empty_result() -> dict[str, Any]:
         "findings_df": pd.DataFrame(),
         "project_summary_df": pd.DataFrame(),
         "portfolio_summary": dict.fromkeys(BAND_ORDER, 0),
-        "cvss_band_matrix": {"rows": SEVERITY_ORDER, "cols": BAND_ORDER, "data": []},
+        "cvss_band_matrix": {"rows": BAND_ORDER, "cols": SEVERITY_ORDER, "data": []},
         "gate_funnel": {
             "gate_1_critical": 0,
             "gate_2_high": 0,
@@ -3542,12 +3757,45 @@ def _empty_result() -> dict[str, Any]:
             "additive_info": 0,
             "total": 0,
         },
+        "factor_by_band": {
+            "bands": BAND_ORDER,
+            "factors": [
+                "unreachable",
+                "vex",
+                "reach",
+                "exploit",
+                "kev",
+                "vector",
+                "epss",
+                "cvss",
+                "gate_bonus",
+            ],
+            "normalize": "per_finding",
+            "data": [
+                {
+                    "band": b,
+                    "finding_count": 0,
+                    "unreachable": 0.0,
+                    "vex": 0.0,
+                    "reach": 0.0,
+                    "exploit": 0.0,
+                    "kev": 0.0,
+                    "vector": 0.0,
+                    "epss": 0.0,
+                    "cvss": 0.0,
+                    "gate_bonus": 0.0,
+                }
+                for b in BAND_ORDER
+            ],
+        },
         "top_components": pd.DataFrame(),
         "factor_radar": {"labels": [], "datasets": []},
         "vex_recommendations": [],
         "band_colors": BAND_COLORS,
         "is_single_project": False,
         "single_project_name": None,
+        "is_single_version": False,
+        "single_version_name": None,
         "ai_portfolio_summary": "",
         "ai_project_summaries": {},
         "ai_component_guidance": {},

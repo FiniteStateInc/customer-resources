@@ -1,124 +1,271 @@
+{% if render_mode != 'fragment' %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
     <title>Component List - Finite State Report</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 
-    {% include '_design_system.html' %}
+    {# ECharts library — replaces Chart.js v4.4.1 + chartjs-plugin-datalabels
+       from the pre-migration template. ECharts has native series.label.formatter
+       for the count + percentage labels the datalabels plugin used to provide. #}
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
 
-        {% include "_standalone_shell.html" %}
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+    {% include "_echarts_ready.html" %}
+{% endif %}
+
+{# Recipe-local styles — render in BOTH standalone and fragment modes so
+   fragment_extractor (_STYLE_RE) collects them, scopes under
+   .fs-section-component-list, and re-emits at the top of the fragment. #}
 <style>
-        /* Report-specific overrides */
-        .license-link {
-            color: #007bff;
-            text-decoration: none;
-            font-size: 0.85em;
-        }
-        .license-link:hover { text-decoration: underline; }
-    </style>
+    .cl-chart-wrapper {
+        width: 100%;
+        height: 360px;
+    }
+
+    .cl-two-col {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+    }
+    @media (max-width: 900px) {
+        .cl-two-col { grid-template-columns: 1fr; }
+    }
+
+    .cl-no-data {
+        text-align: center;
+        color: var(--ink-mute);
+        font-style: italic;
+        padding: 40px;
+    }
+
+    .cl-truncated {
+        text-align: center;
+        padding: 16px;
+        color: var(--ink-mute);
+        font-style: italic;
+    }
+
+    .cl-license-link {
+        color: var(--accent-teal);
+        text-decoration: none;
+        font-size: 0.85em;
+    }
+    .cl-license-link:hover { text-decoration: underline; }
+
+    .cl-project-group-row td {
+        background: var(--surface-muted);
+        color: var(--ink-strong);
+        font-weight: 600;
+        padding: 10px 12px;
+    }
+
+    /* Status / policy / copyleft / type badges — all token-driven. */
+    .cl-status-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.8em;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+    .cl-status-active     { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .cl-status-inactive   { background: var(--surface-muted);   color: var(--ink-mute); }
+    .cl-status-confirmed  { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+
+    .cl-policy-permitted  { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .cl-policy-warning    { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .cl-policy-violation  { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+
+    .cl-copyleft-permissive       { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .cl-copyleft-weak-copyleft    { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .cl-copyleft-strong-copyleft  { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+
+    .cl-type-library      { background: var(--surface-muted);   color: var(--ink-body); }
+    .cl-type-application  { background: var(--accent-teal);     color: #fff; }
+    .cl-type-framework    { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .cl-type-operating-system { background: var(--sev-medium-bg); color: var(--sev-medium-text); }
+    .cl-type-firmware     { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .cl-type-file         { background: var(--surface-muted);   color: var(--ink-mute); }
+    .cl-type-container    { background: var(--surface-muted);   color: var(--ink-body); }
+    .cl-type-device       { background: var(--surface-muted);   color: var(--ink-body); }
+    .cl-type-default      { background: var(--surface-muted);   color: var(--ink-mute); }
+
+    /* Severity-badged Findings cell. */
+    .cl-finding-critical  { background: var(--sev-critical-bg); color: var(--sev-critical-text); padding: 2px 8px; border-radius: 4px; font-weight: 600; }
+    .cl-finding-high      { background: var(--sev-high-bg);     color: var(--sev-high-text);     padding: 2px 8px; border-radius: 4px; font-weight: 600; }
+    .cl-finding-medium    { background: var(--sev-medium-bg);   color: var(--sev-medium-text);   padding: 2px 8px; border-radius: 4px; font-weight: 600; }
+    .cl-finding-zero      { color: var(--sev-low-text); font-weight: 600; }
+    .cl-dash              { color: var(--ink-mute); }
+
+    .cl-truncate {
+        max-width: 280px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* Server-SVG / fragment chart slot wrapper. */
+    .cl-chart-fragment-slot {
+        width: 100%;
+        min-height: 120px;
+    }
+</style>
+
+{% if render_mode != 'fragment' %}
 </head>
-<body data-nav-category="{{ nav_category_slug }}">
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            {% include "_default_logo.html" %}
-            <h1>Component List</h1>
-            <p class="subtitle">Software Component Inventory &amp; License Analysis</p>
+<body class="console">
+{% endif %}
+
+{% import "_console_macros.html" as fs with context %}
+
+{# Defensive defaults — mirrors B.1 cve_component_evidence + license_report.
+
+   `component_summary` is reachable via two paths:
+     - top-level `component_summary` (promoted by report_engine.py:5619-5620)
+     - nested transform_result.component_summary (preserved by the
+       data_transformer dict-storage path)
+   Round-1 multi-review M1-9: fall back to the top-level key when the
+   nested path is missing so paths that populate only one side still
+   render KPIs + charts. #}
+{% set transform_result = transform_result | default({}) %}
+{% if not transform_result is mapping %}{% set transform_result = {} %}{% endif %}
+{% set summary = transform_result.get('component_summary') %}
+{% if not summary %}{% set summary = component_summary | default({}) %}{% endif %}
+{% if not summary is mapping %}{% set summary = {} %}{% endif %}
+{% set data = data | default([]) %}
+
+{# Build topbar meta items preserving the pre-migration context that the
+   legacy template surfaced in its .metadata block (period, folder,
+   project) — round-1 multi-review M1-4 / M1-15. #}
+{% set cl_meta = [{"label": "Domain", "value": domain or "—"}] %}
+{% if metadata and metadata.get('start_date') and metadata.get('end_date') %}
+    {% set _ = cl_meta.append({"label": "Period", "value": (metadata.start_date | string) ~ " → " ~ (metadata.end_date | string)}) %}
+{% endif %}
+{% if folder_path %}
+    {% set _ = cl_meta.append({"label": "Folder", "value": folder_path}) %}
+{% endif %}
+{% if project_label %}
+    {% set _ = cl_meta.append({"label": "Project", "value": project_label}) %}
+{% endif %}
+{% set _ = cl_meta.append({"label": "Components", "value": (summary.get('total_components', data | length)) | string}) %}
+{% set _ = cl_meta.append({"label": "Generated", "value": generated_at or "—"}) %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "Component List"],
+    meta=cl_meta,
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>Component List</h1>
+        <p class="subtitle">Software Component Inventory &amp; License Analysis</p>
+    </div>
+
+    {# Applied Filter panel — preserved from pre-migration template
+       (component_list.html:44-51). Surfaces folder + project scope when
+       either is set. Round-1 multi-review M1-4. #}
+    {% if folder_path or project_label %}
+    <div class="panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Applied filter", meta="scope") }}
+        <div class="body" style="padding: 12px 16px;">
+            {% if folder_path %}<p style="margin: 4px 0;"><strong>Folder:</strong> {{ folder_path }}</p>{% endif %}
+            {% if project_label %}<p style="margin: 4px 0;"><strong>Project filter:</strong> {{ project_label }}</p>{% endif %}
+            <p style="margin: 4px 0; color: var(--ink-mute);">Showing components for the specified scope only.</p>
         </div>
+    </div>
+    {% endif %}
 
-        <!-- Metadata -->
-        <div class="metadata">
-            <strong>Report:</strong> Component List |
-            <strong>Generated:</strong> {{ generated_at | default('N/A') }}
-            {% if metadata and metadata.start_date %} | <strong>Period:</strong> {{ metadata.start_date }} to {{ metadata.end_date }}{% endif %}
-            {% if folder_path %} | <strong>Folder:</strong> {{ folder_path }}{% endif %}
-            {% if project_filter %} | <strong>Project:</strong> {{ project_filter }}{% endif %}
-            {% if metadata %} | <strong>Components:</strong> {{ metadata.transformed_count | default('N/A') }}{% endif %}
-        </div>
+    {% if summary %}
+    {# 5 KPI cells. #}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell("Total Components", summary.get('total_components', 0)) }}
+        {{ fs.kpi_cell("Unique Licenses", summary.get('unique_licenses', 0)) }}
+        {{ fs.kpi_cell(
+            "No License",
+            summary.get('no_license_count', 0),
+            dot=("high" if (summary.get('no_license_count', 0)) > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "Policy Violations",
+            summary.get('violation_count', 0),
+            dot=("critical" if (summary.get('violation_count', 0)) > 0 else None),
+        ) }}
+        {% set cl_total = (summary.get('copyleft_strong', 0) | int) + (summary.get('copyleft_weak', 0) | int) %}
+        {{ fs.kpi_cell(
+            "Copyleft Components",
+            cl_total,
+            dot=("high" if cl_total > 0 else None),
+        ) }}
+    </div>
 
-        <!-- Filter Information -->
-        {% if folder_path or project_filter %}
-        <div class="chart-container">
-            <h3>Applied Filter</h3>
-            {% if folder_path %}<p><strong>Folder:</strong> {{ folder_path }}</p>{% endif %}
-            {% if project_filter %}<p><strong>Project Filter:</strong> {{ project_filter }}</p>{% endif %}
-            <p>Showing components for the specified scope only.</p>
-        </div>
-        {% endif %}
-
-        {% if transform_result and transform_result.component_summary %}
-        {% set summary = transform_result.component_summary %}
-
-        <!-- KPI Cards -->
-        <div class="kpi-row">
-            <div class="kpi-card">
-                <div class="kpi-title">Total Components</div>
-                <div class="kpi-value">{{ summary.total_components }}</div>
+    {# Charts row 1: License Distribution + Policy Status. #}
+    <div class="panel" style="margin-bottom: 20px;">
+        <div class="cl-two-col">
+            <div>
+                {{ fs.panel_head("License distribution", meta="top licenses by count") }}
+                {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                    <div class="chart-server-svg cl-chart-fragment-slot">
+                        <div class="chart-unavailable">Chart unavailable in fragment view</div>
+                    </div>
+                {% else %}
+                    <div id="{{ fragment_scope_class }}-licenseDistChart" class="cl-chart-wrapper"></div>
+                {% endif %}
             </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Unique Licenses</div>
-                <div class="kpi-value">{{ summary.unique_licenses }}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">No License</div>
-                <div class="kpi-value" {% if (summary.no_license_count|default(0)) > 0 %}style="color: #ef6c00;"{% endif %}>{{ summary.no_license_count|default(0) }}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Policy Violations</div>
-                <div class="kpi-value" {% if (summary.violation_count|default(0)) > 0 %}style="color: #c62828;"{% endif %}>{{ summary.violation_count|default(0) }}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Copyleft Components</div>
-                <div class="kpi-value" {% if (summary.copyleft_strong|default(0)) + (summary.copyleft_weak|default(0)) > 0 %}style="color: #ef6c00;"{% endif %}>{{ (summary.copyleft_strong|default(0)) + (summary.copyleft_weak|default(0)) }}</div>
-            </div>
-        </div>
-
-        <!-- Charts Row 1: License Distribution + Policy Status -->
-        <div class="two-col">
-            <div class="chart-container">
-                <h2 class="chart-title">License Distribution</h2>
-                <p class="chart-description">Top licenses by component count</p>
-                <div class="chart-wrapper-tall">
-                    <canvas id="licenseDistChart"></canvas>
-                </div>
-            </div>
-            <div class="chart-container">
-                <h2 class="chart-title">Policy Status</h2>
-                <p class="chart-description">License policy compliance breakdown</p>
-                <div class="chart-wrapper-tall">
-                    <canvas id="policyChart"></canvas>
-                </div>
+            <div>
+                {{ fs.panel_head("Policy status", meta="license policy compliance") }}
+                {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                    <div class="chart-server-svg cl-chart-fragment-slot">
+                        <div class="chart-unavailable">Chart unavailable in fragment view</div>
+                    </div>
+                {% else %}
+                    <div id="{{ fragment_scope_class }}-policyChart" class="cl-chart-wrapper"></div>
+                {% endif %}
             </div>
         </div>
+    </div>
 
-        <!-- Charts Row 2: Copyleft Classification + Source Type -->
-        <div class="two-col">
-            <div class="chart-container">
-                <h2 class="chart-title">Copyleft Classification</h2>
-                <p class="chart-description">License copyleft obligation breakdown</p>
-                <div class="chart-wrapper-tall">
-                    <canvas id="copyleftChart"></canvas>
-                </div>
+    {# Charts row 2: Copyleft + Source. #}
+    <div class="panel" style="margin-bottom: 20px;">
+        <div class="cl-two-col">
+            <div>
+                {{ fs.panel_head("Copyleft classification", meta="copyleft obligation breakdown") }}
+                {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                    <div class="chart-server-svg cl-chart-fragment-slot">
+                        <div class="chart-unavailable">Chart unavailable in fragment view</div>
+                    </div>
+                {% else %}
+                    <div id="{{ fragment_scope_class }}-copyleftChart" class="cl-chart-wrapper"></div>
+                {% endif %}
             </div>
-            <div class="chart-container">
-                <h2 class="chart-title">Source Type</h2>
-                <p class="chart-description">How components were discovered</p>
-                <div class="chart-wrapper-tall">
-                    <canvas id="sourceChart"></canvas>
-                </div>
+            <div>
+                {{ fs.panel_head("Source type", meta="how components were discovered") }}
+                {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                    <div class="chart-server-svg cl-chart-fragment-slot">
+                        <div class="chart-unavailable">Chart unavailable in fragment view</div>
+                    </div>
+                {% else %}
+                    <div id="{{ fragment_scope_class }}-sourceChart" class="cl-chart-wrapper"></div>
+                {% endif %}
             </div>
         </div>
-        {% endif %}
+    </div>
+    {% endif %}
 
-        <!-- Data Table -->
-        <div class="table-container">
-            <h2>Component Inventory</h2>
-            <p>Comprehensive software component inventory with license details</p>
-
-            {% if data %}
+    {# Component inventory table. #}
+    <div class="table-panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Component inventory", meta=((data | length) | string) ~ " component" ~ ("s" if (data | length) != 1 else "")) }}
+        <p class="subtitle" style="padding: 0 16px;">Comprehensive software component inventory with license details.</p>
+        <div class="body" style="overflow-x: auto;">
+            {% if data and (data | length) > 0 %}
             <table class="data-table">
                 <thead>
                     <tr>
@@ -135,7 +282,7 @@
                         <th>Project</th>
                         <th>Project Version</th>
                         <th>BOM Reference</th>
-                        <th>Findings</th>
+                        <th class="num">Findings</th>
                         <th>Status</th>
                         <th>License URL</th>
                         <th>Release Date</th>
@@ -146,318 +293,300 @@
                     {% for row in data[:2000] %}
                         {% if row['Project Name'] != current_project.value %}
                             {% set current_project.value = row['Project Name'] %}
-                            <tr class="project-group-row">
+                            <tr class="cl-project-group-row">
                                 <td colspan="{% if folder_path %}17{% else %}16{% endif %}">{{ row['Project Name'] }}</td>
                             </tr>
                         {% endif %}
+                        {% set ttype_slug = (row.get('Type', '') | string | lower | replace(' ', '-')) or 'default' %}
+                        {% set cs = row.get('Copyleft Status', '') %}
+                        {% set pol = (row.get('Policy Status', '') | string | lower) %}
+                        {% set cstatus = row.get('Component Status', '') %}
+                        {% set findings = row.get('Findings', 0) | int %}
                         <tr>
                             <td>{{ row.get('Group', '') }}</td>
                             <td><strong>{{ row['Component'] }}</strong></td>
                             <td>{{ row['Version'] }}</td>
-                            <td>
-                                <span class="status-badge type-{{ row.get('Type', '') | lower | replace(' ', '-') | default('default') }}">
-                                    {{ row['Type'] }}
-                                </span>
-                            </td>
+                            <td><span class="cl-status-badge cl-type-{{ ttype_slug }}">{{ row.get('Type', '') }}</span></td>
                             <td>{{ row.get('Source', '') }}</td>
-                            <td class="truncate" title="{{ row.get('Declared License', '') }}">
-                                {{ row.get('Declared License', '') }}
-                            </td>
-                            <td class="truncate" title="{{ row.get('Concluded License', '') }}">
+                            <td class="cl-truncate" title="{{ row.get('Declared License', '') }}">{{ row.get('Declared License', '') }}</td>
+                            <td class="cl-truncate" title="{{ row.get('Concluded License', '') }}">
                                 {% if row.get('Concluded License') %}
-                                    <span class="status-badge status-CONFIRMED">{{ row['Concluded License'] }}</span>
+                                    <span class="cl-status-badge cl-status-confirmed">{{ row['Concluded License'] }}</span>
                                 {% endif %}
                             </td>
                             <td>
-                                {% set copyleft = row.get('Copyleft Status', '') %}
-                                {% if copyleft %}
-                                    <span class="status-badge copyleft-{{ copyleft }}">
-                                        {% if copyleft == 'STRONG_COPYLEFT' %}Strong
-                                        {% elif copyleft == 'WEAK_COPYLEFT' %}Weak
-                                        {% elif copyleft == 'PERMISSIVE' %}Permissive
-                                        {% else %}{{ copyleft }}{% endif %}
-                                    </span>
-                                {% else %}
-                                    <span style="color: #9e9e9e;">-</span>
-                                {% endif %}
+                                {% if cs == 'STRONG_COPYLEFT' %}<span class="cl-status-badge cl-copyleft-strong-copyleft">Strong</span>
+                                {% elif cs == 'WEAK_COPYLEFT' %}<span class="cl-status-badge cl-copyleft-weak-copyleft">Weak</span>
+                                {% elif cs == 'PERMISSIVE' %}<span class="cl-status-badge cl-copyleft-permissive">Permissive</span>
+                                {% else %}<span class="cl-dash">-</span>{% endif %}
                             </td>
                             <td>
-                                {% set policy = row.get('Policy Status', '') %}
-                                {% if policy %}
-                                    <span class="status-badge policy-{{ policy }}">{{ policy }}</span>
-                                {% else %}
-                                    <span style="color: #9e9e9e;">-</span>
-                                {% endif %}
+                                {% if pol %}<span class="cl-status-badge cl-policy-{{ pol }}">{{ row.get('Policy Status', '') }}</span>
+                                {% else %}<span class="cl-dash">-</span>{% endif %}
                             </td>
                             {% if folder_path %}<td>{{ row.get('Folder', '') }}</td>{% endif %}
                             <td>{{ row['Project Name'] }}</td>
                             <td>{{ row['Project Version'] }}</td>
-                            <td class="truncate" title="{{ row.get('BOM Reference', '') }}">
+                            <td class="cl-truncate" title="{{ row.get('BOM Reference', '') }}">
                                 <code style="font-size: 0.8em;">{{ row.get('BOM Reference', '') }}</code>
                             </td>
                             <td class="num">
-                                {% if row.get('Findings', 0) > 0 %}
-                                    <span class="severity-badge {% if row.get('Findings', 0) >= 10 %}severity-CRITICAL{% elif row.get('Findings', 0) >= 5 %}severity-HIGH{% else %}severity-MEDIUM{% endif %}">
-                                        {{ row['Findings'] }}
-                                    </span>
-                                {% else %}
-                                    <span style="color: #4caf50;">0</span>
-                                {% endif %}
+                                {% if findings >= 10 %}<span class="cl-finding-critical">{{ findings }}</span>
+                                {% elif findings >= 5 %}<span class="cl-finding-high">{{ findings }}</span>
+                                {% elif findings > 0 %}<span class="cl-finding-medium">{{ findings }}</span>
+                                {% else %}<span class="cl-finding-zero">0</span>{% endif %}
                             </td>
                             <td>
-                                {% set cstatus = row.get('Component Status', 'N/A') %}
                                 {% if cstatus and cstatus != 'N/A' %}
-                                    <span class="status-badge status-{{ cstatus }}">{{ cstatus }}</span>
-                                {% else %}
-                                    <span style="color: #9e9e9e;">-</span>
-                                {% endif %}
+                                    <span class="cl-status-badge cl-status-{{ cstatus | lower }}">{{ cstatus }}</span>
+                                {% else %}<span class="cl-dash">-</span>{% endif %}
                             </td>
                             <td>
                                 {% set lurl = row.get('License URL', '') %}
-                                {% if lurl %}
-                                    <a href="{{ lurl }}" target="_blank" class="license-link" title="{{ lurl }}">Link</a>
-                                {% else %}
-                                    <span style="color: #9e9e9e;">-</span>
-                                {% endif %}
+                                {% if lurl %}<a href="{{ lurl }}" target="_blank" class="cl-license-link" title="{{ lurl }}">Link</a>
+                                {% else %}<span class="cl-dash">-</span>{% endif %}
                             </td>
-                            <td>{{ row.get('Release Date', '') if row.get('Release Date', '') else '-' }}</td>
+                            <td>
+                                {% set rd = row.get('Release Date', '') %}
+                                {% if rd %}{{ rd }}{% else %}-{% endif %}
+                            </td>
                         </tr>
                     {% endfor %}
-                    {% if data|length > 2000 %}
-                    <tr>
-                        <td colspan="{% if folder_path %}16{% else %}15{% endif %}" style="text-align: center; padding: 16px; color: #6c757d; font-style: italic;">
-                            Showing 2,000 of {{ data|length }} rows. See CSV/XLSX export for full data.
-                        </td>
-                    </tr>
-                    {% endif %}
                 </tbody>
             </table>
+            {% if (data | length) > 2000 %}
+            <p class="cl-truncated">
+                Showing 2,000 of {{ data | length }} rows. See CSV/XLSX export for full data.
+            </p>
+            {% endif %}
             {% else %}
-            <div class="empty-state">
+            <div class="cl-no-data">
                 <p><strong>No components found</strong></p>
                 <p>No software components match the current criteria.</p>
             </div>
             {% endif %}
         </div>
-
-        {% include "_default_footer.html" %}
     </div>
+</main>
 
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const POLICY_COLORS = {
-            'PERMITTED': '#28a745',
-            'WARNING': '#ffc107',
-            'VIOLATION': '#dc3545'
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Component List",
+    "Components: " ~ ((summary.get('total_components', data | length)) | string),
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+{% if render_mode != 'fragment' or fragment_scripts_enabled %}
+<script>
+(function() {
+    if (typeof echarts === 'undefined') {
+        if (typeof console !== 'undefined' && console.error) {
+            console.error('ECharts library not loaded — Component List charts will be blank');
+        }
+        return;
+    }
+
+    function _tokens() {
+        var cs = getComputedStyle(document.documentElement);
+        return {
+            inkBody:     cs.getPropertyValue('--ink-body').trim() || '#374151',
+            inkMute:     cs.getPropertyValue('--ink-mute').trim() || '#6c757d',
+            surfaceCard: cs.getPropertyValue('--surface-card').trim() || '#ffffff',
+            hairline:    cs.getPropertyValue('--hairline').trim() || '#dee2e6',
+            accentTeal:  cs.getPropertyValue('--accent-teal').trim() || '#0d9488',
+            sevCritical: cs.getPropertyValue('--sev-critical').trim() || '#dc3545',
+            sevHigh:     cs.getPropertyValue('--sev-high').trim() || '#fd7e14',
+            sevMedium:   cs.getPropertyValue('--sev-medium').trim() || '#ffc107',
+            sevLow:      cs.getPropertyValue('--sev-low').trim() || '#28a745',
         };
+    }
 
-        const COPYLEFT_COLORS = {
-            'Permissive': '#28a745',
-            'Weak Copyleft': '#fd7e14',
-            'Strong Copyleft': '#dc3545',
-            'Unknown': '#6c757d'
-        };
-
-        // =============================================
-        // 1. License Distribution (Horizontal Bar)
-        // =============================================
-        {% if transform_result and transform_result.component_summary and transform_result.component_summary.license_distribution is defined %}
-        (function() {
-            const ctx = document.getElementById('licenseDistChart');
-            if (!ctx) return;
-            {% set ld = transform_result.component_summary.license_distribution %}
-            {% if ld is defined and ld|length > 0 %}
-            const labels = [{% for row in ld %}{{ row.License | tojson }}{% if not loop.last %}, {% endif %}{% endfor %}];
-            const values = [{% for row in ld %}{{ row.Count }}{% if not loop.last %}, {% endif %}{% endfor %}];
-
-            new Chart(ctx.getContext('2d'), {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        data: values,
-                        backgroundColor: '#4e79a7',
-                        borderWidth: 0
-                    }]
-                },
-                options: {
-                    indexAxis: 'y',
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        datalabels: {
-                            anchor: 'end',
-                            align: 'right',
-                            font: { weight: 'bold', size: 11 },
-                            color: '#333',
-                            formatter: function(v) { return v > 0 ? v : ''; }
-                        }
-                    },
-                    scales: {
-                        x: { title: { display: true, text: 'Component Count' }, grid: { color: 'rgba(0,0,0,0.06)' } },
-                        y: { ticks: { font: { size: 11 } }, grid: { display: false } }
-                    }
-                },
-                plugins: [ChartDataLabels]
-            });
-            {% endif %}
-        })();
-        {% endif %}
-
-        // =============================================
-        // 2. Policy Status (Doughnut)
-        // =============================================
-        {% if transform_result and transform_result.component_summary %}
-        (function() {
-            const ctx = document.getElementById('policyChart');
-            if (!ctx) return;
-            {% set s = transform_result.component_summary %}
-            const labels = ['PERMITTED', 'WARNING', 'VIOLATION'];
-            const values = [{{ s.permitted_count }}, {{ s.warning_count }}, {{ s.violation_count }}];
-            const colors = [POLICY_COLORS.PERMITTED, POLICY_COLORS.WARNING, POLICY_COLORS.VIOLATION];
-
-            // Only show if there's data
-            if (values.reduce((a, b) => a + b, 0) === 0) return;
-
-            new Chart(ctx.getContext('2d'), {
-                type: 'doughnut',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        data: values,
-                        backgroundColor: colors,
-                        borderWidth: 2,
-                        borderColor: '#fff'
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { position: 'right' },
-                        datalabels: {
-                            color: '#fff',
-                            font: { weight: 'bold', size: 14 },
-                            formatter: function(value, ctx) {
-                                if (value === 0) return '';
-                                const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
-                                const pct = ((value / total) * 100).toFixed(1);
-                                return value + '\n(' + pct + '%)';
-                            }
-                        }
-                    }
-                },
-                plugins: [ChartDataLabels]
-            });
-        })();
-        {% endif %}
-
-        // =============================================
-        // 3. Copyleft Classification (Doughnut)
-        // =============================================
-        {% if transform_result and transform_result.component_summary %}
-        (function() {
-            const ctx = document.getElementById('copyleftChart');
-            if (!ctx) return;
-            {% set s = transform_result.component_summary %}
-            const labels = ['Permissive', 'Weak Copyleft', 'Strong Copyleft', 'Unknown'];
-            const values = [{{ s.copyleft_permissive }}, {{ s.copyleft_weak }}, {{ s.copyleft_strong }}, {{ s.copyleft_unknown }}];
-            const colors = [COPYLEFT_COLORS['Permissive'], COPYLEFT_COLORS['Weak Copyleft'], COPYLEFT_COLORS['Strong Copyleft'], COPYLEFT_COLORS['Unknown']];
-
-            // Filter out zero values
-            const filtered = labels.reduce((acc, label, i) => {
-                if (values[i] > 0) {
-                    acc.labels.push(label);
-                    acc.values.push(values[i]);
-                    acc.colors.push(colors[i]);
+    function _initChart(elId, optsFactory) {
+        var el = document.getElementById(elId);
+        if (!el) return null;
+        var inst = fsEChartsInit(el, { renderer: 'canvas' });
+        try {
+            inst.setOption(optsFactory());
+        } catch (e) {
+            window.fsBeaconRelease();
+            throw e;
+        }
+        var obs = new MutationObserver(function(mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+                if (mutations[i].attributeName === 'data-theme') {
+                    inst.setOption(optsFactory());
+                    break;
                 }
-                return acc;
-            }, { labels: [], values: [], colors: [] });
+            }
+        });
+        obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+        window.addEventListener('resize', function() { inst.resize(); });
+        return inst;
+    }
 
-            if (filtered.values.length === 0) return;
+    function _pieLabel(t, surfaceCard, hairline) {
+        return {
+            tooltip: {
+                trigger: 'item',
+                formatter: '{b}: <b>{c}</b> ({d}%)',
+                backgroundColor: surfaceCard,
+                borderColor: hairline,
+                borderWidth: 1,
+                textStyle: { color: t.inkBody }
+            },
+            legend: { orient: 'horizontal', bottom: 0, textStyle: { color: t.inkBody, fontSize: 11 } }
+        };
+    }
 
-            new Chart(ctx.getContext('2d'), {
-                type: 'doughnut',
-                data: {
-                    labels: filtered.labels,
-                    datasets: [{
-                        data: filtered.values,
-                        backgroundColor: filtered.colors,
-                        borderWidth: 2,
-                        borderColor: '#fff'
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { position: 'right' },
-                        datalabels: {
-                            color: '#fff',
-                            font: { weight: 'bold', size: 14 },
-                            formatter: function(value, ctx) {
-                                if (value === 0) return '';
-                                const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
-                                const pct = ((value / total) * 100).toFixed(1);
-                                return value + '\n(' + pct + '%)';
-                            }
-                        }
+    {% if summary %}
+    // 1. License Distribution — horizontal bar.
+    {% set ld = summary.get('license_distribution', []) %}
+    {% if ld and (ld | length) > 0 %}
+    (function() {
+        var rows = {{ ld | tojson }};
+        var labels = rows.map(function(r) { return r.License; });
+        var values = rows.map(function(r) { return r.Count; });
+        _initChart('{{ fragment_scope_class }}-licenseDistChart', function() {
+            var t = _tokens();
+            return {
+                tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: t.surfaceCard, borderColor: t.hairline, borderWidth: 1, textStyle: { color: t.inkBody } },
+                grid: { left: 120, right: 50, top: 20, bottom: 30 },
+                xAxis: { type: 'value', name: 'Component Count', nameTextStyle: { color: t.inkMute, fontSize: 10 }, axisLabel: { color: t.inkBody, fontSize: 10 }, splitLine: { lineStyle: { color: t.hairline } }, minInterval: 1 },
+                yAxis: { type: 'category', data: labels, axisLabel: { color: t.inkBody, fontSize: 11 }, inverse: true },
+                series: [{
+                    type: 'bar',
+                    data: values,
+                    itemStyle: { color: t.accentTeal, borderRadius: [0, 4, 4, 0] },
+                    label: {
+                        show: true,
+                        position: 'right',
+                        color: t.inkBody,
+                        fontSize: 11,
+                        fontWeight: 'bold',
+                        formatter: function(p) { return p.value > 0 ? p.value : ''; }
                     }
-                },
-                plugins: [ChartDataLabels]
-            });
-        })();
-        {% endif %}
+                }]
+            };
+        });
+    })();
+    {% endif %}
 
-        // =============================================
-        // 4. Source Type Breakdown (Bar)
-        // =============================================
-        {% if transform_result and transform_result.component_summary and transform_result.component_summary.source_distribution is defined %}
-        (function() {
-            const ctx = document.getElementById('sourceChart');
-            if (!ctx) return;
-            {% set sd = transform_result.component_summary.source_distribution %}
-            {% if sd is defined and sd|length > 0 %}
-            const labels = [{% for row in sd %}{{ row.Source | tojson }}{% if not loop.last %}, {% endif %}{% endfor %}];
-            const values = [{% for row in sd %}{{ row.Count }}{% if not loop.last %}, {% endif %}{% endfor %}];
-
-            const palette = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f', '#edc948', '#b07aa1'];
-
-            new Chart(ctx.getContext('2d'), {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        data: values,
-                        backgroundColor: labels.map((_, i) => palette[i % palette.length]),
-                        borderWidth: 0
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        datalabels: {
-                            anchor: 'end',
-                            align: 'top',
-                            font: { weight: 'bold', size: 11 },
-                            color: '#333',
-                            formatter: function(v) { return v > 0 ? v : ''; }
-                        }
+    // 2. Policy Status — doughnut.
+    (function() {
+        var permitted = {{ summary.get('permitted_count', 0) | int }};
+        var warning   = {{ summary.get('warning_count', 0) | int }};
+        var violation = {{ summary.get('violation_count', 0) | int }};
+        if ((permitted + warning + violation) === 0) return;
+        _initChart('{{ fragment_scope_class }}-policyChart', function() {
+            var t = _tokens();
+            return Object.assign({}, _pieLabel(t, t.surfaceCard, t.hairline), {
+                series: [{
+                    type: 'pie',
+                    radius: ['45%', '70%'],
+                    center: ['50%', '45%'],
+                    avoidLabelOverlap: true,
+                    itemStyle: { borderColor: t.surfaceCard, borderWidth: 2, borderRadius: 4 },
+                    label: {
+                        show: true,
+                        formatter: function(p) {
+                            return p.value === 0 ? '' : p.value + '\n(' + p.percent.toFixed(1) + '%)';
+                        },
+                        color: '#fff',
+                        fontSize: 11,
+                        fontWeight: 'bold'
                     },
-                    scales: {
-                        y: { title: { display: true, text: 'Component Count' }, grid: { color: 'rgba(0,0,0,0.06)' } },
-                        x: { grid: { display: false } }
-                    }
-                },
-                plugins: [ChartDataLabels]
+                    labelLine: { show: false },
+                    data: [
+                        { name: 'PERMITTED', value: permitted, itemStyle: { color: t.sevLow } },
+                        { name: 'WARNING',   value: warning,   itemStyle: { color: t.sevMedium } },
+                        { name: 'VIOLATION', value: violation, itemStyle: { color: t.sevCritical } }
+                    ].filter(function(d) { return d.value > 0; })
+                }]
             });
-            {% endif %}
-        })();
-        {% endif %}
-    });
-    </script>
+        });
+    })();
+
+    // 3. Copyleft Classification — doughnut (filter zero values).
+    (function() {
+        var pal = ['Permissive', 'Weak Copyleft', 'Strong Copyleft', 'Unknown'];
+        var values = [
+            {{ summary.get('copyleft_permissive', 0) | int }},
+            {{ summary.get('copyleft_weak', 0) | int }},
+            {{ summary.get('copyleft_strong', 0) | int }},
+            {{ summary.get('copyleft_unknown', 0) | int }}
+        ];
+        if (values.reduce(function(a, b) { return a + b; }, 0) === 0) return;
+        _initChart('{{ fragment_scope_class }}-copyleftChart', function() {
+            var t = _tokens();
+            var palette = [t.sevLow, t.sevMedium, t.sevCritical, t.inkMute];
+            var data = pal.map(function(name, i) {
+                return { name: name, value: values[i], itemStyle: { color: palette[i] } };
+            }).filter(function(d) { return d.value > 0; });
+            return Object.assign({}, _pieLabel(t, t.surfaceCard, t.hairline), {
+                series: [{
+                    type: 'pie',
+                    radius: ['45%', '70%'],
+                    center: ['50%', '45%'],
+                    avoidLabelOverlap: true,
+                    itemStyle: { borderColor: t.surfaceCard, borderWidth: 2, borderRadius: 4 },
+                    label: {
+                        show: true,
+                        formatter: function(p) {
+                            return p.value === 0 ? '' : p.value + '\n(' + p.percent.toFixed(1) + '%)';
+                        },
+                        color: '#fff',
+                        fontSize: 11,
+                        fontWeight: 'bold'
+                    },
+                    labelLine: { show: false },
+                    data: data
+                }]
+            });
+        });
+    })();
+
+    // 4. Source Distribution — vertical bar.
+    {% set sd = summary.get('source_distribution', []) %}
+    {% if sd and (sd | length) > 0 %}
+    (function() {
+        var rows = {{ sd | tojson }};
+        var labels = rows.map(function(r) { return r.Source; });
+        var values = rows.map(function(r) { return r.Count; });
+        _initChart('{{ fragment_scope_class }}-sourceChart', function() {
+            var t = _tokens();
+            var palette = [t.accentTeal, t.sevHigh, t.sevCritical, t.sevMedium, t.sevLow, '#a78bfa', '#3b82f6'];
+            var data = values.map(function(v, i) {
+                return { value: v, itemStyle: { color: palette[i % palette.length], borderRadius: [4, 4, 0, 0] } };
+            });
+            return {
+                tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: t.surfaceCard, borderColor: t.hairline, borderWidth: 1, textStyle: { color: t.inkBody } },
+                grid: { left: 50, right: 20, top: 30, bottom: 60 },
+                xAxis: { type: 'category', data: labels, axisLabel: { color: t.inkBody, fontSize: 11, interval: 0, rotate: labels.length > 4 ? 20 : 0 } },
+                yAxis: { type: 'value', name: 'Component Count', nameTextStyle: { color: t.inkMute, fontSize: 10 }, axisLabel: { color: t.inkBody, fontSize: 10 }, splitLine: { lineStyle: { color: t.hairline } }, minInterval: 1 },
+                series: [{
+                    type: 'bar',
+                    data: data,
+                    label: {
+                        show: true,
+                        position: 'top',
+                        color: t.inkBody,
+                        fontSize: 11,
+                        fontWeight: 'bold',
+                        formatter: function(p) { return p.value > 0 ? p.value : ''; }
+                    }
+                }]
+            };
+        });
+    })();
+    {% endif %}
+    {% endif %}
+})();
+</script>
+
+{% include '_action_buttons.html' %}
 </body>
 </html>
+{% endif %}

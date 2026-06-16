@@ -1,0 +1,33 @@
+{# /runs body — swappable via HTMX (/api/runs/list).
+   One row per run (active ∪ persisted, deduped by run_id, newest-first); each
+   row opens the run's canvas at /run/{id} — live if active, terminal (re-rendered
+   from <run_id>.json) if finished. spec §6. #}
+{% if degraded %}
+<div class="runs-degraded">
+  <i data-lucide="alert-triangle"></i>
+  {{ degraded }} run{{ "" if degraded == 1 else "s" }} couldn't be read (corrupt summary) and {{ "was" if degraded == 1 else "were" }} skipped.
+</div>
+{% endif %}
+{% if not runs %}
+<div class="runs-empty">
+  <i data-lucide="git-branch"></i>
+  No runs yet — launch one from the Command Center.
+</div>
+{% else %}
+{% for r in runs %}
+  <a class="runrow" href="/run/{{ r.run_id }}" data-kind="{{ r.kind }}">
+    <span class="rk-badge rk-{{ r.kind }}">{{ r.kind }}</span>
+    <div class="rr-tx">
+      <div class="rr-name">{{ r.name }}</div>
+      <div class="rr-scope">{{ r.scope or "—" }}</div>
+    </div>
+    <span class="rr-status rs-{{ r.status }}{% if r.result %} rr-{{ r.result }}{% endif %}">
+      {%- if r.status == "running" -%}running
+      {%- elif r.result -%}{{ r.result }}
+      {%- else -%}finished{%- endif -%}
+    </span>
+    <span class="rr-when">{{ r.age }}</span>
+    <i class="rr-go" data-lucide="chevron-right"></i>
+  </a>
+{% endfor %}
+{% endif %}

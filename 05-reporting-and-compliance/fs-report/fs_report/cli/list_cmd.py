@@ -63,7 +63,15 @@ def recipes(
     logger = logging.getLogger(__name__)
 
     dir_str = str(recipes_dir) if recipes_dir else None
-    loader = RecipeLoader(dir_str, use_bundled=not no_bundled_recipes)
+    # scan_user_recipes=True so saved compound bundles in
+    # ~/.fs-report/recipes/ appear in the Compound group (spec § 7).
+    # Suppressed when --recipes <dir> is set (that's an explicit override
+    # path and shouldn't transparently mix in user state).
+    loader = RecipeLoader(
+        dir_str,
+        use_bundled=not no_bundled_recipes,
+        scan_user_recipes=dir_str is None,
+    )
 
     try:
         all_recipes = loader.load_recipes()
@@ -116,31 +124,78 @@ def recipes(
                 return "--project or --folder"
             if getattr(r, "category", None) == "operational":
                 return "--period"
+            if getattr(r, "category", None) == "compound":
+                # A saved axis-bearing compound is a meta-compare bundle: it
+                # takes its two scopes via --left / --right (just like a bare
+                # comparison recipe), so surface those flags instead of the
+                # generic placeholder. (M3-4.)
+                if getattr(r, "axis", None) is not None:
+                    return "--left/--right"
+                # Non-axis compound recipes inherit scope from their child
+                # sections — actual flags depend on which recipes are bundled.
+                # Show a placeholder so readers know to check the bundle's
+                # components. (Round-1 multi-review M1-1.)
+                return "(see children)"
+            if getattr(r, "category", None) == "comparison":
+                # M3-2: a bare comparison recipe does NOT run via a standalone
+                # `run` — the engine rejects a comparison recipe outside a
+                # meta-compare. It runs via the `compare` subcommand (which
+                # supplies --left/--right). A `--left/--right` hint here would
+                # imply a `run` form the engine rejects, so signal the
+                # subcommand instead. (Saved axis-bearing compounds above DO
+                # run via `run --recipe ... --left ... --right ...` and keep
+                # the `--left/--right` hint.)
+                return "via: fs-report compare"
             return ""
 
-        # Group: operational first, then assessment
+        # Group: operational first, then compound (saved bundles), then
+        # assessment. Compound is a third partition added in B1.5 per the
+        # compound-reports design spec § 8 — saved compounds carry
+        # category == "compound" via CompoundRecipe and appear with a
+        # ``[compound]`` marker so users can tell at a glance which
+        # entries are bundles vs single recipes.
         operational = sorted(
             [r for r in recipes_list if r.category == "operational"],
             key=lambda r: r.execution_order,
         )
+        compound = sorted(
+            [r for r in recipes_list if r.category == "compound"],
+            key=lambda r: r.name.lower(),
+        )
+        # Comparison partition (B3.7) — meta-compare diff recipes, sorted by
+        # name. Listed after Compound, before Assessment.
+        comparison = sorted(
+            [r for r in recipes_list if r.category == "comparison"],
+            key=lambda r: r.name.lower(),
+        )
         assessment = sorted(
-            [r for r in recipes_list if r.category != "operational"],
+            [
+                r
+                for r in recipes_list
+                if r.category not in ("operational", "compound", "comparison")
+            ],
             key=lambda r: r.execution_order,
         )
 
-        def _add_group(label: str, group: list) -> None:
+        def _add_group(label: str, group: list, marker: str = "") -> None:
             if not group:
                 return
             table.add_row(f"[bold]{label}[/bold]", "")
             for recipe in group:
                 scope = _scope(recipe)
+                name = f"  {recipe.name}{marker}"
                 if audience == "all":
-                    table.add_row(f"  {recipe.name}", scope, recipe.audience or "")
+                    table.add_row(name, scope, recipe.audience or "")
                 else:
-                    table.add_row(f"  {recipe.name}", scope)
+                    table.add_row(name, scope)
             table.add_section()
 
         _add_group("Operational", operational)
+        # Rich treats `[...]` sequences as style markup, so the literal
+        # ``[compound]`` / ``[comparison]`` markers are escaped with `\[`
+        # to render as text.
+        _add_group("Compound", compound, marker=r"  [dim]\[compound][/dim]")
+        _add_group("Comparison", comparison, marker=r"  [dim]\[comparison][/dim]")
         _add_group("Assessment", assessment)
 
         console.print(table)

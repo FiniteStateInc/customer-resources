@@ -1,6 +1,7 @@
 name: "Workflow Summary"
 category: assessment
 nav_category: Executive
+chart_libraries: []
 description: "Session summary for forge workflow runs — renders whatever steps the journal contains."
 execution_order: 50
 auto_run: false

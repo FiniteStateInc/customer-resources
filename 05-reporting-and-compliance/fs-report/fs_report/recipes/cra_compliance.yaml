@@ -2,6 +2,7 @@ name: "CRA Compliance"
 template: "cra_compliance.html"
 category: assessment
 nav_category: Compliance
+chart_libraries: []
 description: "EU Cyber Resilience Act morning queue — exploit-maturity promotions and SLA-breach findings requiring action."
 execution_order: 20
 auto_run: false
@@ -40,4 +41,5 @@ output:
     - xlsx
     - html
     - md
+    - pdf
   charts: []

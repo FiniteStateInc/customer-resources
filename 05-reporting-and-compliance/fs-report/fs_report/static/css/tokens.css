@@ -3,18 +3,51 @@
  * The values here mirror fs_report/renderers/chart_palette.py.
  * tests/test_chart_palette.py asserts the two stay in sync.
  * tokens.sha256 pins the file content for CI drift check.
+ *
+ * Token vocabulary is a Strategy-B reconciliation of main's original tokens
+ * with the v2.0 console/triage design pass: main's naming wins;
+ * the console pass's values win where they differ. Console-shell-specific aliases
+ * (--bg-*, --ink-N, --radius-*) live at the bottom of each block so the
+ * console-shell CSS keeps working without value drift.
  */
 
 :root {
     /* Surface */
-    --surface-page: #f5f7fa;
+    --surface-page: #f8f9fa;
     --surface-card: #ffffff;
-    --hairline: #e2e8f0;
+    --surface-subtle: #f8f9fa;
+    --surface-muted: #f5f5f5;
+    --surface-faint: #fafafa;
+    --surface-hover: #eef0f3;
+    --hairline: #dee2e6;
+    --hairline-soft: #e9ecef;
+
+    /* Surface aliases (console shell vocabulary) */
+    --bg-page: var(--surface-page);
+    --bg-surface: var(--surface-card);
+    --bg-subtle: var(--surface-subtle);
+    --bg-muted: var(--surface-muted);
+    --bg-faint: var(--surface-faint);
+    --bg-hover: var(--surface-hover);
+    --border: var(--hairline);
+    --border-soft: var(--hairline-soft);
 
     /* Ink */
-    --ink: #0f172a;
-    --ink-dim: #475569;
-    --ink-faint: #94a3b8;
+    --ink: #0b1020;
+    --ink-strong: #1f2937;
+    --ink-body: #374151;
+    --ink-dim: #4b5563;
+    --ink-mute: #6c757d;
+    --ink-faint: #9ca3af;
+
+    /* Ink aliases (console shell vocabulary) */
+    --ink-1: var(--ink);
+    --ink-2: var(--ink-strong);
+    --ink-3: var(--ink-body);
+    --ink-4: var(--ink-mute);
+    --ink-5: var(--ink-faint);
+    --ink-mute-1: var(--ink-dim);
+    --ink-mute-2: var(--ink-mute);
 
     /* Accent */
     --accent-teal: #0d9488;
@@ -24,6 +57,11 @@
     --accent-rose: #be123c;
     --accent-green: #15803d;
     --accent-blue: #1d4ed8;
+    --accent-grad-end: #14b8a6;
+    --accent-rgb: 13, 148, 136;
+
+    /* Accent alias (console shell vocabulary) */
+    --accent: var(--accent-teal);
 
     /* Nav stripes */
     --nav-executive: #0d9488;
@@ -31,12 +69,58 @@
     --nav-remediation: #7c3aed;
     --nav-compliance: #b45309;
 
-    /* Severity */
-    --sev-critical: #9f1239;
-    --sev-high: #c2410c;
-    --sev-medium: #b45309;
-    --sev-low: #15803d;
-    --sev-info: #0369a1;
+    /* Severity — base */
+    --sev-critical: #dc3545;
+    --sev-high: #fd7e14;
+    --sev-medium: #ffc107;
+    --sev-low: #28a745;
+    --sev-info: #1565c0;
+
+    /* Severity — text/bg/strong variants */
+    --sev-critical-text: #b71c1c;
+    --sev-critical-bg: #ffebee;
+    --sev-critical-strong: #c62828;
+
+    --sev-high-text: #bf360c;
+    --sev-high-bg: #fff3e0;
+    --sev-high-strong: #bf360c;
+
+    --sev-medium-text: #7c4a03;
+    --sev-medium-bg: #fff8e1;
+
+    --sev-low-text: #2e7d32;
+    --sev-low-bg: #e8f5e9;
+
+    --sev-info-bg: #e3f2fd;
+    --sev-info-muted: #6c757d;
+
+    --sev-unspecified-bg: #f5f5f5;
+    --sev-unspecified-text: #757575;
+
+    --total-bg: #2c3e50;
+
+    /* Entity link colors */
+    --link-default: #007bff;
+    --link-default-hover: #0056b3;
+    --link-cve: #6f42c1;
+    --link-cve-hover: #533399;
+    --link-component: #0d6efd;
+    --link-component-hover: #0a58ca;
+    --link-folder: #198754;
+    --link-folder-hover: #146c43;
+
+    /* Component-type badges */
+    --type-app-bg: #f3e5f5;
+    --type-app-text: #7b1fa2;
+    --type-os-bg: #fce4ec;
+    --type-os-text: #c2185b;
+
+    /* Icons (contextual indicators) */
+    --icon-exploit: #6f42c1;
+    --icon-kev: #dc3545;
+    --icon-reachable: #28a745;
+    --icon-unreachable: #6c757d;
+    --icon-unknown: #ffc107;
 
     /* Chart palette */
     --chart-1: #0d9488;
@@ -52,6 +136,10 @@
     --font-display: Manrope, Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     --font-body: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+    --line-height-body: 1.6;
+
+    /* Font alias (console shell vocabulary) */
+    --font-family-sans: var(--font-body);
 
     /* Type scale */
     --fs-xs: 0.75rem;
@@ -79,6 +167,13 @@
     --r-lg: 12px;
     --r-xl: 20px;
 
+    /* Radius aliases (console shell vocabulary; --radius-lg has its own
+       10px value distinct from main's --r-lg: 12px) */
+    --radius-sm: var(--r-sm);
+    --radius-md: var(--r-md);
+    --radius-lg: 10px;
+    --radius-pill: var(--r-lg);
+
     /* Motion */
     --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
     --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
@@ -89,36 +184,158 @@
 
     /* Shadows */
     --shadow-soft: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
-    --shadow-card: 0 2px 6px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.05);
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
     --shadow-elev: 0 8px 24px rgba(15, 23, 42, 0.10), 0 4px 8px rgba(15, 23, 42, 0.04);
     --shadow-hairline: 0 0 0 1px var(--hairline);
 }
 
 /* Dark theme (Phase 2 --serve consumes; standalone reports always stay light) */
 :root[data-theme="dark"] {
-    --surface-page: #050816;
-    --surface-card: rgba(15, 22, 48, 0.62);
-    --hairline: rgba(85, 231, 214, 0.18);
+    --surface-page: #0A0E1A;
+    --surface-card: #11151F;
+    --surface-subtle: #161B29;
+    --surface-muted: #1E2436;
+    --surface-faint: #11151F;
+    --surface-hover: #1E2436;
+    --hairline: #1F2740;
+    --hairline-soft: #1A2034;
 
-    --ink: #e6edf6;
-    --ink-dim: #94a3b8;
-    --ink-faint: #64748b;
+    --ink: #FFFFFF;
+    --ink-strong: #E5E7EB;
+    --ink-body: #B5BCC8;
+    --ink-dim: #B5BCC8;
+    --ink-mute: #8893A8;
+    --ink-faint: #5A6580;
+
+    /* Accent + accent-rgb shift for dark surfaces */
+    --accent-teal: #5EEAD4;
+    --accent-grad-end: #2DD4BF;
+    --accent-rgb: 94, 234, 212;
+
+    --sev-critical: #F87171;
+    --sev-critical-text: #FECACA;
+    --sev-critical-bg: rgba(248, 113, 113, 0.12);
+    --sev-critical-strong: #F87171;
+
+    --sev-high: #FB923C;
+    --sev-high-text: #FED7AA;
+    --sev-high-bg: rgba(251, 146, 60, 0.12);
+    --sev-high-strong: #FB923C;
+
+    --sev-medium: #FBBF24;
+    --sev-medium-text: #FDE68A;
+    --sev-medium-bg: rgba(251, 191, 36, 0.12);
+
+    --sev-low: #4ADE80;
+    --sev-low-text: #BBF7D0;
+    --sev-low-bg: rgba(74, 222, 128, 0.12);
+
+    --sev-info: #60A5FA;
+    --sev-info-bg: rgba(96, 165, 250, 0.12);
+    --sev-info-muted: #94A0B8;
+
+    --sev-unspecified-bg: rgba(148, 160, 184, 0.10);
+    --sev-unspecified-text: #94A0B8;
+
+    --total-bg: #5EEAD4;
+
+    --link-default: #60A5FA;
+    --link-default-hover: #93C5FD;
+    --link-cve: #A78BFA;
+    --link-cve-hover: #C4B5FD;
+    --link-component: #60A5FA;
+    --link-component-hover: #93C5FD;
+    --link-folder: #4ADE80;
+    --link-folder-hover: #86EFAC;
+
+    --type-app-bg: rgba(167, 139, 250, 0.12);
+    --type-app-text: #A78BFA;
+    --type-os-bg: rgba(244, 114, 182, 0.12);
+    --type-os-text: #F472B6;
+
+    --icon-exploit: #A78BFA;
+    --icon-kev: #F87171;
+    --icon-reachable: #4ADE80;
+    --icon-unreachable: #94A0B8;
+    --icon-unknown: #FBBF24;
 
     --shadow-soft: 0 0 0 1px rgba(85, 231, 214, 0.06), 0 1px 2px rgba(0, 0, 0, 0.5);
-    --shadow-card: 0 0 24px rgba(85, 231, 214, 0.08), 0 2px 8px rgba(0, 0, 0, 0.6);
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35);
     --shadow-elev: 0 8px 40px rgba(85, 231, 214, 0.12), 0 4px 16px rgba(0, 0, 0, 0.7);
 }
 
 /* Print: force light theme, drop shadows */
 @media print {
     :root,
-    :root[data-theme="dark"] {
+    :root[data-theme="dark"],
+    :root[data-theme="light"] {
         --surface-page: #ffffff;
         --surface-card: #ffffff;
-        --hairline: #cbd5e1;
-        --ink: #0f172a;
-        --ink-dim: #334155;
-        --ink-faint: #64748b;
+        --surface-subtle: #f8f9fa;
+        --surface-muted: #f5f5f5;
+        --surface-faint: #fafafa;
+        --surface-hover: #eef0f3;
+        --hairline: #dee2e6;
+        --hairline-soft: #e9ecef;
+
+        --ink: #0b1020;
+        --ink-strong: #1f2937;
+        --ink-body: #374151;
+        --ink-dim: #4b5563;
+        --ink-mute: #6c757d;
+        --ink-faint: #9ca3af;
+
+        --accent-teal: #0d9488;
+        --accent-grad-end: #14b8a6;
+        --accent-rgb: 13, 148, 136;
+
+        --sev-critical: #dc3545;
+        --sev-critical-text: #b71c1c;
+        --sev-critical-bg: #ffebee;
+        --sev-critical-strong: #c62828;
+
+        --sev-high: #fd7e14;
+        --sev-high-text: #bf360c;
+        --sev-high-bg: #fff3e0;
+        --sev-high-strong: #bf360c;
+
+        --sev-medium: #ffc107;
+        --sev-medium-text: #7c4a03;
+        --sev-medium-bg: #fff8e1;
+
+        --sev-low: #28a745;
+        --sev-low-text: #2e7d32;
+        --sev-low-bg: #e8f5e9;
+
+        --sev-info: #1565c0;
+        --sev-info-bg: #e3f2fd;
+        --sev-info-muted: #6c757d;
+
+        --sev-unspecified-bg: #f5f5f5;
+        --sev-unspecified-text: #757575;
+
+        --total-bg: #2c3e50;
+
+        --link-default: #007bff;
+        --link-default-hover: #0056b3;
+        --link-cve: #6f42c1;
+        --link-cve-hover: #533399;
+        --link-component: #0d6efd;
+        --link-component-hover: #0a58ca;
+        --link-folder: #198754;
+        --link-folder-hover: #146c43;
+
+        --type-app-bg: #f3e5f5;
+        --type-app-text: #7b1fa2;
+        --type-os-bg: #fce4ec;
+        --type-os-text: #c2185b;
+
+        --icon-exploit: #6f42c1;
+        --icon-kev: #dc3545;
+        --icon-reachable: #28a745;
+        --icon-unreachable: #6c757d;
+        --icon-unknown: #ffc107;
+
         --shadow-soft: none;
         --shadow-card: none;
         --shadow-elev: none;

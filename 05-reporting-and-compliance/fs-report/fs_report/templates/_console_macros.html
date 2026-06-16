@@ -1,0 +1,195 @@
+{# Finite State — Console Chrome Macros
+
+   Jinja macros for the stable chrome elements of the console-style report
+   layout. Templates import this file once and call the macros below to
+   render the topbar, status bar, brand mark, panel headers, and KPI cells
+   without duplicating markup. CSS for these classes is defined in
+   _console_shell.html.
+
+   Usage (import WITH CONTEXT — topbar() reads the render var `logo_path`):
+     {% import "_console_macros.html" as fs with context %}
+     {{ fs.topbar(
+         crumbs=['acme', single_project_name or 'portfolio', 'triage'],
+         meta=[{'label': 'generated', 'value': generated_at}],
+         controls=[{'label': 'Export', 'href': '#'}]
+     ) }}
+
+   The topbar() macro renders the theme-toggle button automatically — no
+   need to include _theme_toggle.html separately.
+
+   Macros intentionally do NOT cover content-specific composition (KPI bar
+   contents, sidebar entries, chart panel bodies) — those vary per recipe
+   and stay inline in each template using the CSS classes from
+   _console_shell.html.
+   #}
+
+
+{# ------------------------------------------------------------------
+   default_logo_data_uri()
+   The bundled Finite State wordmark as a webp data-URI — the single
+   canonical bundled brand asset shared by every fallback path
+   (E1). _default_logo.html and Customer Brief's PDF cover both pull
+   from here so a brand refresh is a one-line change. Returns a full
+   ``data:image/webp;base64,...`` string usable directly in src="".
+   ------------------------------------------------------------------ #}
+{% macro default_logo_data_uri() -%}data:image/webp;base64,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{%- endmacro %}
+
+
+{# ------------------------------------------------------------------
+   brand_mark()
+   The Finite State orange hex icon (extracted from fs-logo-light.svg).
+   Just the icon, no wordmark — the "Finite State" text is rendered as
+   sibling text in topbar() using the page font. Color is hardcoded to
+   FS brand orange so the icon stays consistent in both light and dark
+   themes (no background color worries).
+   ------------------------------------------------------------------ #}
+{% macro brand_mark() -%}
+<svg class="brand-mark" viewBox="312 10 108 123" width="16" height="16"
+     aria-hidden="true" fill="#FF6B0A">
+    <polygon points="365.93 133 312.73 102.16 312.8 40.73 365.96 10 419.25 40.8 419.15 101.9 414.2 104.82 414.3 43.65 365.96 15.71 317.74 43.59 317.68 99.31 365.92 127.28 402.57 105.98 402.5 78.14 381.84 66.23 381.94 47.49 402.67 59.54 402.52 50.29 374.04 33.56 374.13 70.71 394.44 82.57 394.6 103.05 365.99 119.61 337.19 102.92 337.27 82.49 357.88 70.76 357.83 61.53 337.4 73.44 337.36 54.77 357.94 42.73 357.92 33.55 329.41 50.34 329.41 98.05 324.35 95.2 324.46 47.51 362.85 24.91 362.9 45.57 342.31 57.6 342.33 64.85 362.74 52.94 362.83 73.63 342.2 85.37 342.15 100.08 365.99 113.89 389.63 100.21 389.52 85.42 369.19 73.55 369.08 24.91 407.43 47.43 407.75 68.21 386.84 56.06 386.8 63.38 407.44 75.27 407.52 108.82 365.93 133"/>
+    <path d="M366.06,105l-16.4-9.55V90.12l16.25-9.33L381.78,90l.1,5.67Zm-11.14-12.2,11.13,6.47,10.83-6.39-11-6.39Z"/>
+</svg>
+{%- endmacro %}
+
+
+{# ------------------------------------------------------------------
+   topbar(crumbs, meta, controls)
+   Args:
+     crumbs   : list of strings — breadcrumbs from left to right; the LAST
+                one renders with the .active class. Empty/None entries are
+                skipped so callers can safely pass optional values.
+     meta     : list of {'label': str, 'value': str} — right-aligned meta
+                items (env, scan id, generated_at, …). Rendered as
+                "label: <strong>value</strong>".
+     controls : list of {'label': str, 'href': str} — pill buttons. Theme
+                toggle is appended automatically and does not need to be in
+                this list.
+     pill     : optional string rendered as a small monospace pill after
+                the breadcrumbs (e.g. version number).
+     print_brand : when true (default), ALSO emit a print-only
+                ``.print-brand`` block as a sibling of the topbar — the
+                topbar is ``display:none`` in print, so this carries the
+                brand (configured logo or SVG mark) onto the PDF. Callers
+                with their own PDF cover/header (e.g. Customer Brief)
+                pass ``print_brand=false`` to avoid a duplicate.
+
+   E1: the user-configured logo (``config.logo``) is resolved centrally
+   to a ``data:…;base64,…`` data-URI and hoisted to the top-level
+   ``logo_path`` context var for EVERY report. When set, the brand
+   renders it as an ``<img>`` instead of the bundled SVG hex mark. The
+   read uses the ``is defined`` context-var pattern (macros are
+   scope-isolated, so a DEFAULT param can't see render vars) — same as
+   ``effective_scope`` below; this works because every console template
+   imports these macros ``with context``.
+   ------------------------------------------------------------------ #}
+{% macro topbar(crumbs=[], meta=[], controls=[], pill=None, scope=None, print_brand=True) -%}
+{% set _logo = logo_path if logo_path is defined else none %}
+<div class="topbar">
+    <div class="brand">
+        {% if _logo %}<img class="brand-logo" src="{{ _logo }}" alt="Logo">{% else %}<span>Finite</span>{{ brand_mark() }}<span>State</span>{% endif %}
+    </div>
+    {% for crumb in crumbs if crumb %}
+        <span class="crumb{% if loop.last %} active{% endif %}">{{ crumb }}</span>
+    {% endfor %}
+    {% if pill %}<span class="pill mono">{{ pill }}</span>{% endif %}
+    <div class="spacer"></div>
+    {% for m in meta %}
+        <span class="meta">{{ m.label }}: <strong>{{ m.value }}</strong></span>
+    {% endfor %}
+    {# B1 #15: effective-scope meta + active-filter chips. ``scope`` may be
+       passed explicitly OR (preferred) read from the ``effective_scope`` render-
+       context variable when the report imports these macros ``with context``.
+       Jinja macros are scope-isolated, so a macro DEFAULT param can't read a
+       render var — hence the body-level fallback guarded by ``is defined``. #}
+    {% set _scope = scope if scope is not none else (effective_scope if effective_scope is defined else none) %}
+    {% if _scope %}
+        <span class="meta scope-meta">Scope: <strong>{{ _scope.label }}{% if _scope.version %} @ {{ _scope.version }}{% endif %}</strong></span>
+        {% for chip in _scope.active_filters %}
+            <span class="meta scope-chip">{{ chip.label }}: <strong>{{ chip.value }}</strong></span>
+        {% endfor %}
+    {% endif %}
+    {# Connection badge injected by _action_buttons.html JS when served via
+       fs-report serve. Inline here so the serve app's fixed-position
+       overlay doesn't sit on top of the theme toggle. #}
+    <span id="fsConnectionBadge"></span>
+    {% include "_theme_toggle.html" %}
+    {% for c in controls %}
+        <a class="btn" href="{{ c.href or '#' }}">{{ c.label }}</a>
+    {% endfor %}
+</div>
+{# E1: print-only brand block. The topbar is ``display:none`` in print
+   (_console_shell.html @media print), so without this the PDF loses all
+   branding. Sibling of the topbar; ``display:none`` on screen, shown in
+   print (CSS in _console_shell.html). Honors the configured logo with
+   the SVG mark as fallback — same precedence as the topbar above.
+   Suppressed (``print_brand=false``) by reports with their own PDF
+   cover/header so the brand isn't duplicated. #}
+{% if print_brand %}
+<div class="print-brand">
+    {% if _logo %}<img class="brand-logo" src="{{ _logo }}" alt="Logo">{% else %}{{ brand_mark() }}<span>Finite State</span>{% endif %}
+</div>
+{% endif %}
+{%- endmacro %}
+
+
+{# ------------------------------------------------------------------
+   status_bar(items, version)
+   Args:
+     items   : list of strings — left-aligned status items (record count,
+               filter description, etc.). Plain text; styled monospace.
+     version : optional string — right-aligned version label (e.g.
+               "v1.9.9"). Rendered muted.
+   Renders a sticky bottom bar that hides in print.
+   ------------------------------------------------------------------ #}
+{% macro status_bar(items=[], version=None) -%}
+<div class="status-bar">
+    {% for item in items %}
+        <div class="item">{{ item }}</div>
+    {% endfor %}
+    <div class="spacer"></div>
+    {% if version %}<div class="item muted">{{ version }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+
+{# ------------------------------------------------------------------
+   panel_head(title, meta)
+   Args:
+     title : string — h2 inside the panel. Renders with the accent ::before
+             bar handled by .panel h2 CSS.
+     meta  : optional string — small monospace meta text on the right
+             (e.g. counts, sort order).
+   Use inside <div class="panel">…</div>. Body content is written inline by
+   the caller.
+   ------------------------------------------------------------------ #}
+{% macro panel_head(title, meta=None) -%}
+<div class="head">
+    <h2>{{ title }}</h2>
+    {% if meta %}<div class="meta">{{ meta }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+
+{# ------------------------------------------------------------------
+   kpi_cell(label, value, delta, dot)
+   Args:
+     label : uppercase short label (e.g. "Critical", "KEV / Exploit")
+     value : the big tabular number/text (any type — rendered as string)
+     delta : optional string — small line under the value
+             (e.g. "+1 vs last scan", "58% coverage", "±0"). When the text
+             starts with "+" or "−" or contains the word "vs", consider
+             passing delta_class="up"|"down" for color coding.
+     delta_class : optional string — "up" (green) or "down" (red)
+     dot   : optional severity dot color — pass "critical"|"high"|
+             "medium"|"low"|"info"|"total" to render a colored dot next to
+             the label. Omit for no dot.
+   ------------------------------------------------------------------ #}
+{% macro kpi_cell(label, value, delta=None, delta_class=None, dot=None) -%}
+<div class="kpi-cell">
+    <div class="label">
+        {% if dot %}<span class="dot dot-{{ dot }}"></span>{% endif %}{{ label }}
+    </div>
+    <div class="value">{{ value }}</div>
+    {% if delta %}<div class="delta{% if delta_class %} {{ delta_class }}{% endif %}">{{ delta }}</div>{% endif %}
+</div>
+{%- endmacro %}

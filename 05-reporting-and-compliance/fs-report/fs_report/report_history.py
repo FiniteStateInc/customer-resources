@@ -16,7 +16,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_HISTORY_DIR = Path.home() / ".fs-report"
+# Location of the history DB. Honors FS_REPORT_HISTORY_DIR (read at import) so
+# the path can be relocated — and, crucially, so a child process inherits the
+# isolation the test suite sets up (the autouse conftest fixture both
+# monkeypatches these globals for in-process calls AND sets the env var, so
+# report execution that happens in a subprocess can't write the real DB).
+_HISTORY_DIR = Path(
+    os.environ.get("FS_REPORT_HISTORY_DIR", str(Path.home() / ".fs-report"))
+)
 _HISTORY_DB = _HISTORY_DIR / "history.db"
 
 _SCHEMA = """
@@ -176,6 +183,32 @@ def get_run(run_id: str) -> dict[str, Any] | None:
             "files": files,
             "log_file": log_file or "",
         }
+    finally:
+        conn.close()
+
+
+def count_runs_since(since: datetime, output_dir: str | None = None) -> int:
+    """Count runs with timestamp >= `since` (ISO-8601 string compare).
+
+    When *output_dir* is provided only runs stored under that exact resolved
+    path are counted.  The caller is responsible for resolving the path the
+    same way ``append_run`` does (``str(Path(output_dir).expanduser().resolve())``).
+    When *output_dir* is ``None`` all runs are counted regardless of directory.
+    """
+    conn = _ensure_db()
+    try:
+        if output_dir is not None:
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM runs WHERE timestamp >= ? AND output_dir = ?",
+                (since.isoformat(), output_dir),
+            )
+        else:
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM runs WHERE timestamp >= ?",
+                (since.isoformat(),),
+            )
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
     finally:
         conn.close()
 

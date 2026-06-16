@@ -1,0 +1,48 @@
+/* ============================================================
+   fs-report Phase 2 — runs-page.css
+   Per-run index (/runs) body styles. The run-granularity complement to
+   Report History (reports-page.css) — one row per RUN → its canvas.
+   Tokens → tokens.css | Chrome (.page-head/.eyebrow/.btn) → shell.css
+   .btn.spin (rfspin) comes from command-center.css — do NOT redefine it.
+   ============================================================ */
+
+.btn.spin svg{animation:rfspin .8s linear}
+
+/* ── Run row ──────────────────────────────────────────────── */
+.runrow{display:flex;align-items:center;gap:13px;padding:12px 15px;background:var(--surface-card);border:1px solid var(--hairline);border-radius:var(--r-md);margin-bottom:8px;transition:.15s;position:relative;overflow:hidden;text-decoration:none}
+.runrow:hover{border-color:rgba(var(--accent-rgb),.4);box-shadow:0 6px 20px rgba(0,0,0,.35),0 0 18px rgba(var(--accent-rgb),.07);transform:translateY(-1px)}
+.runrow::after{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent);opacity:0;transition:opacity .15s}
+.runrow:hover::after{opacity:.85}
+
+/* ── Kind badge (workflow / compound / comparison / report) ──────────────── */
+.rk-badge{font-family:var(--font-mono);font-size:8.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:4px 8px;border-radius:4px;flex:0 0 auto;border:1px solid var(--hairline);background:var(--surface-subtle);color:var(--ink-faint)}
+.rk-workflow{color:var(--nav-investigation,#a78bfa);border-color:color-mix(in srgb,var(--nav-investigation,#a78bfa) 35%,transparent)}
+.rk-compound{color:#fbbf24;border-color:rgba(251,191,36,.35)}
+.rk-comparison{color:var(--nav-investigation,#a78bfa);border-color:color-mix(in srgb,var(--nav-investigation,#a78bfa) 35%,transparent)}
+.rk-report{color:var(--sev-info,#60a5fa);border-color:rgba(96,165,250,.35)}
+
+/* ── Name + scope ─────────────────────────────────────────── */
+.rr-tx{flex:1;min-width:0}
+.rr-name{font-family:var(--font-display);font-size:13.5px;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rr-scope{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-mute);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ── Status pill ──────────────────────────────────────────── */
+.rr-status{font-family:var(--font-mono);font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:999px;flex:0 0 auto;border:1px solid var(--hairline);color:var(--ink-faint)}
+.rs-running{color:#2dd4bf;border-color:rgba(45,212,191,.4);background:rgba(45,212,191,.08)}
+.rr-success{color:var(--sev-low,#4ade80);border-color:rgba(74,222,128,.4)}
+.rr-error{color:var(--sev-critical,#f87171);border-color:rgba(248,113,113,.4)}
+.rr-cancelled{color:var(--ink-faint)}
+
+/* ── Relative time + chevron ──────────────────────────────── */
+.rr-when{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-faint);width:64px;text-align:right;flex:0 0 auto}
+.rr-go{flex:0 0 auto;color:var(--ink-faint)}
+.rr-go svg{width:16px;height:16px}
+.runrow:hover .rr-go{color:var(--accent)}
+
+/* ── Degraded notice (corrupt/unreadable summaries skipped) ── */
+.runs-degraded{display:flex;align-items:center;gap:9px;color:var(--sev-medium,#fbbf24);font-family:var(--font-mono);font-size:11px;padding:10px 14px;margin-bottom:10px;background:color-mix(in srgb,var(--sev-medium,#fbbf24) 8%,transparent);border:1px solid rgba(251,191,36,.3);border-radius:var(--r-md)}
+.runs-degraded svg{width:15px;height:15px;flex:0 0 auto}
+
+/* ── Empty state ──────────────────────────────────────────── */
+.runs-empty{display:flex;align-items:center;gap:9px;color:var(--ink-mute);font-size:12.5px;padding:16px;background:var(--surface-card);border:1px solid var(--hairline);border-radius:var(--r-lg)}
+.runs-empty svg{width:16px;height:16px;color:var(--ink-faint)}

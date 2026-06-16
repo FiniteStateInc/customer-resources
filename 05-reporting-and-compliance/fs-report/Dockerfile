@@ -40,6 +40,12 @@ RUN pip install --no-cache-dir poetry && \
     poetry config virtualenvs.create false && \
     poetry install --only=main --no-interaction --no-ansi
 
+# Install Chromium for the Playwright PDF renderer (A1 cutover).
+# --with-deps pulls libnss3 / libatk-bridge2.0-0 / etc. that Chromium
+# needs on Debian-slim; this is the same code path used by the
+# `fs-report install-engine --with-deps` subcommand.
+RUN poetry run playwright install --with-deps chromium
+
 # Create output directory
 RUN mkdir -p /app/output
 

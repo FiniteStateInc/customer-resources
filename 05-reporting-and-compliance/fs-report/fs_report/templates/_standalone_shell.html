@@ -1,39 +1,63 @@
 {# Standalone-report HTML shell.
 
    Used by templates that produce a full HTML document (vs. fragments).
-   Owns the <head>, design tokens, the existing class-based design system,
-   the Chart.js CDN, and the Chart.js palette/typography bootstrap.
+   Owns common <head> content: title, design tokens (via _design_system.html),
+   and the Chart.js palette / typography bootstrap.
 
    Standalone templates should:
-     {% if not fragment_mode %}
+     {% if render_mode != 'fragment' %}
      <!DOCTYPE html>
      <html lang="en">
      <head>{% include "_standalone_shell.html" %}</head>
      <body data-nav-category="{{ nav_category_slug }}">
      {% endif %}
      ...content...
-     {% if not fragment_mode %}
+     {% if render_mode != 'fragment' %}
      </body>
      </html>
      {% endif %}
 
+   This shell does NOT load the Chart.js (or ECharts) library — the
+   recipe template is responsible for the pinned <script src="..."> tag
+   for whatever chart library it uses, before including this shell or
+   in tandem with it. The shell only configures Chart.js defaults
+   (palette, fonts) if Chart.js happens to be loaded; the bootstrap is
+   a no-op when Chart.js is absent.
+
    Fragment mode (compound bundles, embedded use) skips this shell
    entirely and relies on the parent shell template to provide
-   <head>, tokens, and Chart.js bootstrap. #}
+   <head>, tokens, and chart-library bootstraps.
+
+   Fragment-mode contract (T0b § item 3):
+   - The {% if render_mode != 'fragment' %} wrapper above must surround
+     the full document chrome — DOCTYPE through </html>. The shell's
+     own Chart.js bootstrap is also gated below so it doesn't leak
+     into fragments.
+   - Chart container IDs use {{ fragment_scope_class }} as a prefix:
+       <canvas id="{{ fragment_scope_class }}-pie" ...>
+     fragment_scope_class is set by HTMLRenderer._prepare_template_data
+     for EVERY render mode (T0b), so the same ID scheme works in
+     standalone HTML, PDF, and fragment-mode renders.
+   - Chart init code does direct getElementById:
+       document.getElementById('{{ fragment_scope_class }}-pie')
+   - No global JS state; chart init wrapped in IIFEs or section-scoped
+     functions so two standalone recipes can coexist in one compound
+     bundle. #}
 
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% block title %}{{ slide_title }} - Finite State Report{% endblock %}</title>
 
-{# Canonical design tokens (CSS custom properties) — light theme. #}
-{% include "_tokens_inline.html" %}
-
-{# Existing class-based design system (severity badges, KPI cards, etc.). #}
+{# Tokens come transitively via _design_system.html (which includes
+   _tokens_inline.html as of T0a). Don't add a direct include here —
+   that double-emits the token <style> block. #}
 {% include "_design_system.html" %}
 
-{# Chart.js palette + defaults bootstrap (browser only). PDF / fragment
-   renders skip the runtime since charts are pre-rendered to SVG
-   server-side.
+{# Chart.js palette + defaults bootstrap. Runs in both HTML (browser
+   viewing) and PDF (Chromium via Playwright) modes — PDF needs the
+   design-token palette too, since Chart.js executes during the
+   Playwright render. Only fragment mode skips, because the fragment
+   extractor strips <script> blocks before bundle assembly.
 
    The Chart.js library script itself is supplied by the parent template
    with a pinned version (e.g. chart.js@4.4.1) — we don't inject it here
@@ -44,7 +68,7 @@
    (bypassing HTMLRenderer._prepare_template_data, which is the source of
    chart_palette_json / sev_palette_json / etc.). In production these
    defaults never fire — the renderer always supplies the real values. #}
-{% if not pdf_target and not fragment_mode %}
+{% if render_mode != 'fragment' %}
 <script>
     window.FS_CHART_PALETTE = {{ chart_palette_json | default('[]') | safe }};
     window.FS_SEV_PALETTE = {{ sev_palette_json | default('{}') | safe }};

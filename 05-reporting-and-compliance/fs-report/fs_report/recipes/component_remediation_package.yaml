@@ -2,6 +2,10 @@ name: "Component Remediation Package"
 template: "component_remediation_package.html"
 category: assessment
 nav_category: Remediation
+# The component IS the primary input — refuse to run (and route the web
+# launcher to configure) without a --component (B4 #25).
+requires_component: true
+chart_libraries: []
 description: "Zero-day remediation guidance for a vulnerable component across your portfolio — upgrade paths, breaking-change analysis, ecosystem health, and interim mitigations (no CVE required)"
 execution_order: 25
 auto_run: false

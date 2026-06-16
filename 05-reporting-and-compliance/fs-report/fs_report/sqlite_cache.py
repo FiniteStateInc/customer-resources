@@ -1091,12 +1091,6 @@ class SQLiteCache:
             if "factors" not in record and "factors" in reach:
                 record["factors"] = reach["factors"]
 
-        # /scans on helix v2 returns bssMessage instead of errorMessage.
-        # Normalize at the cache boundary so a single canonical field
-        # flows through downstream code, regardless of backend.
-        if record.get("bssMessage") and not record.get("errorMessage"):
-            record["errorMessage"] = record["bssMessage"]
-
         trimmed = {}
         for api_field, db_column in fields.items():
             value = get_nested_value(record, api_field)

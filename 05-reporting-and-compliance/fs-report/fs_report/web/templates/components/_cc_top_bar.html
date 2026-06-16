@@ -1,0 +1,17 @@
+<!-- ===================== TOPBAR ===================== -->
+<header class="topbar">
+  <a class="home-link" href="/" title="Command Center">
+    <img class="logo" src="/static/img/fs-logo-light.svg" alt="Finite State">
+  </a>
+  <div class="divider"></div>
+  <nav class="crumbs">
+    <a class="home-link slash" href="/" title="Command Center">fs-report</a>
+    <span class="slash">/</span>
+    <span class="here">{{ crumb or 'Command Center' }}</span>
+  </nav>
+  <div class="spacer"></div>
+  <div class="kbar" id="kbar"><i data-lucide="search"></i> Search or run… <span class="kk">⌘K</span></div>
+  <div class="conn-pill"><span class="live"></span> {{ domain or 'localhost' }}</div>
+  <div class="top-meta">cache <strong>{{ cache_ttl or '—' }}</strong> · {{ version or '' }}</div>
+  <!-- Tweaks opener: tweaks.js injects its own .tw-fab.in-bar launcher into .topbar -->
+</header>

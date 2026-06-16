@@ -2,7 +2,7 @@
 
 Maps a raw /findings record to the set of CRA tiers it triggers and
 builds the RSQL filter for Fetch A's /findings query. Both functions
-implement spec §1 (2026-05-23 audit against rolandl.finitestate.io).
+implement spec §1 (2026-05-23 audit against a live environment).
 """
 
 from __future__ import annotations

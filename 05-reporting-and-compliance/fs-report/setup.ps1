@@ -3,7 +3,7 @@
 # Installs fs-report via pipx and configures domain + API token.
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/.../setup.ps1 | iex
+#   irm https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/05-reporting-and-compliance/fs-report/setup.ps1 | iex
 #   .\setup.ps1                    # from a local clone
 #   .\setup.ps1 -FromSource        # install from current directory
 
@@ -72,7 +72,7 @@ else {
         pipx install fs-report --force
     }
     catch {
-        pipx install "git+https://github.com/FiniteStateInc/fs-report.git" --force
+        pipx install "git+https://github.com/FiniteStateInc/customer-resources.git#subdirectory=05-reporting-and-compliance/fs-report" --force
     }
 }
 Write-Ok "fs-report installed"
@@ -142,4 +142,5 @@ Write-Host "  Run reports:      fs-report run --recipe `"Executive Summary`""
 Write-Host "  Interactive TUI:  fs-report"
 Write-Host "  See all commands: fs-report --help"
 Write-Host ""
+Write-Host "For PDF output, install the rendering engine (~150MB): fs-report install-engine" -ForegroundColor DarkGray
 Write-Host "Restart your terminal for environment variable changes to take effect." -ForegroundColor DarkGray

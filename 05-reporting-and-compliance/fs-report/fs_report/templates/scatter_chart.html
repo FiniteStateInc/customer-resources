@@ -1,17 +1,17 @@
 {% extends "base.html" %}
 
-{% block chart_libs %}{% include "_chartjs.html" %}{% endblock %}
+{% block chart_libs %}{% include "_chartjs.html" %}{% include "_chart_ready.html" %}{% endblock %}
 
 {% block content %}
 <div class="chart-container">
     <h2>Correlation Analysis</h2>
     {# scatter is the generic fallback template — no recipe uses it today. #}
-    {# In pdf_target/fragment_mode we don't have a server-side scatter
+    {# In fragment mode we don't have a server-side scatter
        implementation, so show the placeholder rather than a blank canvas. #}
-    {% if pdf_target or fragment_mode %}
+    {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
         <div class="chart-server-svg">{{ server_svgs.get('main', '<div class="chart-unavailable">Scatter chart unavailable in PDF</div>') | safe }}</div>
     {% else %}
-        <div class="chart-wrapper"><canvas id="scatterChart"></canvas></div>
+        <div class="chart-wrapper"><canvas id="{{ fragment_scope_class }}-scatterChart"></canvas></div>
     {% endif %}
 </div>
 
@@ -37,13 +37,13 @@
     </table>
 </div>
 
-{% if not pdf_target and not fragment_mode %}
+{% if render_mode != 'fragment' or fragment_scripts_enabled %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    const ctx = document.getElementById('scatterChart').getContext('2d');
+    const ctx = document.getElementById('{{ fragment_scope_class }}-scatterChart').getContext('2d');
     const chartData = {{ chart_data_json.main | safe }};
-    
-    new Chart(ctx, {
+
+    fsReportNewChart(ctx, {
         type: 'scatter',
         data: chartData,
         options: {

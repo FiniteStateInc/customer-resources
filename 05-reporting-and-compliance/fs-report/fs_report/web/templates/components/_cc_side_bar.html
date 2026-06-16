@@ -1,0 +1,26 @@
+<!-- ===================== SIDEBAR ===================== -->
+<aside class="sidebar">
+  <div class="side-group">
+    <div class="side-label">Command</div>
+    <a class="side-item{% if active_view == 'command-center' %} active{% endif %}" href="/"><i data-lucide="layout-dashboard"></i> Command Center</a>
+    <a class="side-item{% if active_view == 'queue' %} active{% endif %}" href="/queue"><i data-lucide="radar"></i> Scan Queue</a>
+    <a class="side-item{% if active_view == 'reports' %} active{% endif %}" href="/reports"><i data-lucide="folder-open"></i> Report History</a>
+    <a class="side-item{% if active_view == 'settings' %} active{% endif %}" href="/settings"><i data-lucide="sliders-horizontal"></i> Settings</a>
+  </div>
+  <div class="side-group">
+    <div class="side-label">Workflows</div>
+    <a class="side-item{% if active_view == 'builder' %} active{% endif %}" href="/workflows/builder"><i data-lucide="workflow"></i> Builder</a>
+    <a class="side-item{% if active_view in ('run', 'runs') %} active{% endif %}" href="/run"><i data-lucide="git-branch"></i> Run</a>
+  </div>
+  <div class="side-group">
+    <div class="side-label">Pinned scope</div>
+    {#- Folder-only pin (§4): when a folder is pinned but no project, the scope
+        readout shows the folder target (Lucide folder icon + name). A project
+        pin still renders the project/version readout below it. The unpin × stays
+        visible whenever ANYTHING is pinned (report, project, OR folder). -#}
+    <div class="side-item" style="cursor:default"><i data-lucide="pin"></i>
+      <span data-cc="pin-folder"{% if not pinned_folder %} hidden{% endif %}><i data-lucide="folder"></i> {{ pinned_folder_name or pinned_folder }}</span>
+      <span data-cc="pin-project"{% if not pinned_project %}{% if pinned_folder %} hidden{% endif %}{% endif %}>{% if pinned_project %}{{ pinned_project }}{% elif not pinned_folder %}—{% endif %}</span>
+      <span class="num" data-cc="pin-version"{% if pinned_folder and not pinned_project %} hidden{% endif %}>{{ pinned_version or 'latest' }}</span><button type="button" class="rb-unpin side-unpin" data-cc="unpin"{% if not (pinned_report or pinned_project or pinned_folder) %} hidden{% endif %} title="Unpin" aria-label="Unpin"><i data-lucide="x"></i></button></div>
+  </div>
+</aside>

@@ -23,7 +23,10 @@ from fs_report.cli.common import (
 )
 from fs_report.models import Config
 from fs_report.period_parser import PeriodParser
+from fs_report.renderers.pdf_renderer import cleanup_pdf_engines
 from fs_report.report_engine import ReportEngine
+from fs_report.scope_ref import ScopeRefError as _ScopeRefError
+from fs_report.scope_ref import parse as _parse_scope_ref
 from fs_report.sqlite_cache import parse_ttl
 
 console = Console()
@@ -38,9 +41,22 @@ run_app = typer.Typer(
 
 # ── helpers ──────────────────────────────────────────────────────────
 
-
-_SCORING_FILE_EXPECTED_KEYS = frozenset(
-    {"scoring_weights", "gates", "staleness_thresholds"}
+# Canonical valid sets for --scan-types and --scan-statuses.  Lifted to
+# module-level so they can be imported by the web validation layer without
+# duplicating the sets (DRY).
+VALID_SCAN_TYPES: frozenset[str] = frozenset(
+    {"SCA", "SAST", "CONFIG", "SOURCE_SCA", "SBOM_IMPORT", "VULNERABILITY_ANALYSIS"}
+)
+VALID_SCAN_STATUSES: frozenset[str] = frozenset(
+    {
+        "INITIAL",
+        "PENDING_UPLOAD",
+        "UPLOAD_FAILED",
+        "COMPLETED",
+        "ERROR",
+        "STARTED",
+        "NOT_APPLICABLE",
+    }
 )
 
 
@@ -54,76 +70,30 @@ def _split_csv(value: Union[str, None]) -> Union[list[str], None]:
 def _validate_scoring_file(path: str) -> None:
     """Fail fast if --scoring-file is missing, unreadable, or malformed.
 
-    Prior behavior was a silent fallback to defaults with only a DEBUG log —
-    customers writing custom scoring profiles got their weights silently
-    ignored. Validate eagerly at the CLI layer so typos surface immediately.
+    Thin CLI wrapper over the shared pure validator (`fs_report.scoring_support.
+    validate_scoring_yaml`, also used by the serve web upload endpoint): hard
+    errors → exit 1; warnings → yellow console note (preserving prior behavior).
     """
-    import yaml
+    from fs_report.scoring_support import validate_scoring_yaml
 
-    p = Path(path)
-    if not p.exists():
-        console.print(f"[red]Error: --scoring-file not found: {path}[/red]")
+    errors, warnings = validate_scoring_yaml(path)
+    for w in warnings:
+        console.print(f"[yellow]Warning: {w}[/yellow]")
+    if errors:
+        for e in errors:
+            console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
-    if not p.is_file():
-        console.print(f"[red]Error: --scoring-file is not a regular file: {path}[/red]")
-        raise typer.Exit(1)
-    try:
-        raw = p.read_text()
-    except OSError as exc:
-        console.print(f"[red]Error: cannot read --scoring-file {path}: {exc}[/red]")
-        raise typer.Exit(1) from exc
-    try:
-        data = yaml.safe_load(raw)
-    except yaml.YAMLError as exc:
-        console.print(
-            f"[red]Error: --scoring-file has invalid YAML ({path}): {exc}[/red]"
-        )
-        raise typer.Exit(1) from exc
-    if data is None:
-        console.print(f"[red]Error: --scoring-file is empty: {path}[/red]")
-        raise typer.Exit(1)
-    if not isinstance(data, dict):
-        console.print(
-            f"[red]Error: --scoring-file must be a YAML mapping (got "
-            f"{type(data).__name__}): {path}[/red]"
-        )
-        raise typer.Exit(1)
-    unknown = set(data.keys()) - _SCORING_FILE_EXPECTED_KEYS
-    if not data.keys() & _SCORING_FILE_EXPECTED_KEYS:
-        console.print(
-            f"[yellow]Warning: --scoring-file {path} has no recognized keys "
-            f"(expected one of: {', '.join(sorted(_SCORING_FILE_EXPECTED_KEYS))}). "
-            f"Scoring will fall back to defaults.[/yellow]"
-        )
-    elif unknown:
-        # Surface at console level — logger.info hides behind default log
-        # config, which would let a single typo (e.g. "staleness_threshold"
-        # without the trailing 's') fall through to defaults silently.
-        console.print(
-            f"[yellow]Warning: --scoring-file {path} has unknown keys that "
-            f"will be ignored: {', '.join(sorted(unknown))}[/yellow]"
-        )
 
 
 def _invalidate_findings_cache_for_versions(domain: str, results: list[dict]) -> None:
-    """Invalidate cached findings for versions affected by VEX apply."""
-    version_ids = {
-        str(r["project_version_id"])
-        for r in results
-        if r.get("success") and r.get("project_version_id")
-    }
-    if not version_ids:
-        return
-    try:
-        from fs_report.sqlite_cache import SQLiteCache
+    """Invalidate cached findings for versions affected by VEX apply.
 
-        cache = SQLiteCache(domain=domain)
-        cache.invalidate_versions(version_ids)
-    except Exception:
-        logger.warning(
-            "Failed to invalidate findings cache after VEX apply",
-            exc_info=True,
-        )
+    Delegates to the shared implementation in ``fs_report.vex_apply_support``
+    (also used by the serve web post-report apply path, SP2).
+    """
+    from fs_report.vex_apply_support import invalidate_findings_cache_for_versions
+
+    invalidate_findings_cache_for_versions(domain, results)
 
 
 # ── create_config ────────────────────────────────────────────────────
@@ -197,6 +167,7 @@ def create_config(
     compare_version: Union[str, None] = None,
     standalone: bool = False,
     detailed: bool = False,
+    theme: Union[str, None] = None,
     since: str = "24h",
     exploit_maturity_threshold: Union[list[str], None] = None,
     include_status: Union[list[str], None] = None,
@@ -206,6 +177,8 @@ def create_config(
     kev_due_date_source: str = "cisa",
     unfilterable_tier_strategy: str = "wide-fetch",
     snapshot_diff: str = "on",
+    left_scope: Union[str, None] = None,
+    right_scope: Union[str, None] = None,
 ) -> Config:
     """Build a Config object from CLI args, config file, and env vars."""
     _component_match: Literal["contains", "exact"] = cast(
@@ -213,6 +186,21 @@ def create_config(
     )
 
     cfg = load_config_file()
+
+    # Resolve --theme using the standard CLI > env > config-file > default
+    # precedence, then validate. Failing here means the user sees the error
+    # at parse time instead of deep in the renderer.
+    theme = merge_config(theme, "FS_REPORT_THEME", "theme", "auto", config_data=cfg)
+    theme_normalized = str(theme).strip().lower()
+    if theme_normalized not in {"light", "dark", "auto"}:
+        console.print(
+            f"[red]Error: --theme must be one of 'light', 'dark', 'auto'; "
+            f"got '{theme}'[/red]"
+        )
+        raise typer.Exit(1)
+    _theme: Literal["light", "dark", "auto"] = cast(
+        Literal["light", "dark", "auto"], theme_normalized
+    )
 
     # Merge config-file values for common options
     domain = merge_config(domain, "FINITE_STATE_DOMAIN", "domain", config_data=cfg)
@@ -320,46 +308,29 @@ def create_config(
             raise typer.Exit(1)
 
     # Validate scan_types
-    valid_scan_types = {
-        "SCA",
-        "SAST",
-        "CONFIG",
-        "SOURCE_SCA",
-        "SBOM_IMPORT",
-        "VULNERABILITY_ANALYSIS",
-    }
     if scan_types:
         st_list = [t.strip().upper() for t in scan_types.split(",")]
-        invalid_st = set(st_list) - valid_scan_types
+        invalid_st = set(st_list) - VALID_SCAN_TYPES
         if invalid_st:
             console.print(
                 f"[red]Error: Invalid scan type(s): {', '.join(invalid_st)}[/red]"
             )
             console.print(
-                f"[yellow]Valid types: {', '.join(sorted(valid_scan_types))}[/yellow]"
+                f"[yellow]Valid types: {', '.join(sorted(VALID_SCAN_TYPES))}[/yellow]"
             )
             raise typer.Exit(1)
         scan_types = ",".join(st_list)  # normalize
 
     # Validate scan_statuses
-    valid_scan_statuses = {
-        "INITIAL",
-        "PENDING_UPLOAD",
-        "UPLOAD_FAILED",
-        "COMPLETED",
-        "ERROR",
-        "STARTED",
-        "NOT_APPLICABLE",
-    }
     if scan_statuses:
         ss_list = [s.strip().upper() for s in scan_statuses.split(",")]
-        invalid_ss = set(ss_list) - valid_scan_statuses
+        invalid_ss = set(ss_list) - VALID_SCAN_STATUSES
         if invalid_ss:
             console.print(
                 f"[red]Error: Invalid scan status(es): {', '.join(invalid_ss)}[/red]"
             )
             console.print(
-                f"[yellow]Valid statuses: {', '.join(sorted(valid_scan_statuses))}[/yellow]"
+                f"[yellow]Valid statuses: {', '.join(sorted(VALID_SCAN_STATUSES))}[/yellow]"
             )
             raise typer.Exit(1)
         scan_statuses = ",".join(ss_list)  # normalize
@@ -531,6 +502,7 @@ def create_config(
         compare_version=compare_version,
         standalone=standalone,
         detailed_mode=detailed,
+        theme=_theme,
         since=since,
         exploit_maturity_threshold=exploit_maturity_threshold,
         include_status=include_status,
@@ -540,6 +512,8 @@ def create_config(
         kev_due_date_source=kev_due_date_source,
         unfilterable_tier_strategy=unfilterable_tier_strategy,
         snapshot_diff=snapshot_diff,
+        left_scope=left_scope,
+        right_scope=right_scope,
     )
 
 
@@ -614,6 +588,7 @@ def run_reports(
     compare_version: Union[str, None] = None,
     standalone: bool = False,
     detailed: bool = False,
+    theme: Union[str, None] = None,
     since: str = "24h",
     exploit_maturity_threshold: Union[list[str], None] = None,
     include_status: Union[list[str], None] = None,
@@ -623,6 +598,8 @@ def run_reports(
     kev_due_date_source: str = "cisa",
     unfilterable_tier_strategy: str = "wide-fetch",
     snapshot_diff: str = "on",
+    left_scope: Union[str, None] = None,
+    right_scope: Union[str, None] = None,
 ) -> Any:
     """Execute the report generation pipeline."""
     run_id = setup_logging(verbose)
@@ -700,6 +677,7 @@ def run_reports(
             compare_version=compare_version,
             standalone=standalone,
             detailed=detailed,
+            theme=theme,
             since=since,
             exploit_maturity_threshold=exploit_maturity_threshold,
             include_status=include_status,
@@ -709,6 +687,8 @@ def run_reports(
             kev_due_date_source=kev_due_date_source,
             unfilterable_tier_strategy=unfilterable_tier_strategy,
             snapshot_diff=snapshot_diff,
+            left_scope=left_scope,
+            right_scope=right_scope,
         )
 
         file_handler = attach_file_logging(run_id, config.auth_token)
@@ -852,44 +832,18 @@ def run_reports(
                 _invalidate_findings_cache_for_versions(config.domain, result.results)
             return
 
-        # Build deployment context from context file + CLI overrides
-        deployment_ctx = None
-        if (
-            config.context_file
-            or config.product_type
-            or config.network_exposure
-            or config.regulatory
-            or config.deployment_notes
-        ):
-            from pydantic import ValidationError
+        # Build deployment context (shared helper — also used by the serve web
+        # run path so context_file + the four scalar fields reach AI prompts).
+        from fs_report.deployment_context import build_deployment_context
 
-            from fs_report.deployment_context import (
-                DeploymentContext,
-                load_context_file,
-            )
-
-            if config.context_file:
-                try:
-                    deployment_ctx = load_context_file(config.context_file)
-                except (FileNotFoundError, ValueError) as e:
-                    console.print(f"[red]Error loading context file: {e}[/red]")
-                    raise typer.Exit(1) from e
-            else:
-                deployment_ctx = DeploymentContext()
-
-            # CLI flags / config values override context file values
-            try:
-                if config.product_type:
-                    deployment_ctx.product_type = config.product_type
-                if config.network_exposure:
-                    deployment_ctx.network_exposure = config.network_exposure
-                if config.regulatory:
-                    deployment_ctx.regulatory = config.regulatory
-                if config.deployment_notes:
-                    deployment_ctx.deployment_notes = config.deployment_notes
-            except (ValueError, ValidationError) as e:
-                console.print(f"[red]Invalid deployment context: {e}[/red]")
-                raise typer.Exit(1) from e
+        try:
+            deployment_ctx = build_deployment_context(config)
+        except FileNotFoundError as e:
+            console.print(f"[red]Error loading context file: {e}[/red]")
+            raise typer.Exit(1) from e
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(1) from e
 
         output_path = Path(config.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -936,7 +890,10 @@ def run_reports(
                 recipe_list = [recipe]  # type: ignore[unreachable]
             else:
                 recipe_list = recipe
-            engine.recipe_loader.recipe_filter = [r.lower() for r in recipe_list]
+            # Pass argv tokens through verbatim; recipe_loader normalizes
+            # both filter inputs and recipe.name through slug() for matching
+            # (compound-reports design spec § 7).
+            engine.recipe_loader.recipe_filter = list(recipe_list)
 
         run_result = engine.run()
         success = run_result.success
@@ -988,7 +945,7 @@ def run_reports(
                         files=history_files,
                     )
                 except Exception:
-                    logger.debug("Failed to record run in history", exc_info=True)
+                    logger.warning("Failed to record run in history", exc_info=True)
 
             console.print("[green]Report generation completed successfully![/green]")
 
@@ -1038,7 +995,14 @@ def run_reports(
                         "vex_recommendations.json was generated"
                     )
         else:
-            console.print("[red]Report generation failed![/red]")
+            # Surface an actionable validation message (axis scope-flag check,
+            # axis-compound missing-scope precheck, standalone-comparison
+            # rejection) instead of the generic banner. (M1-3, M1-4.)
+            engine_msg = getattr(run_result, "error_message", None)
+            if engine_msg:
+                console.print(f"[red]Error: {engine_msg}[/red]")
+            else:
+                console.print("[red]Report generation failed![/red]")
             raise typer.Exit(1)
 
         return run_result
@@ -1062,6 +1026,7 @@ def run_reports(
         if file_handler is not None:
             logging.getLogger().removeHandler(file_handler)
             file_handler.close()
+        cleanup_pdf_engines()
 
 
 def _print_vex_summary(result: "VexApplyResult") -> None:
@@ -1278,6 +1243,26 @@ def run_command(
         "--version",
         "-V",
         help="Filter by project version (version ID or name).",
+        rich_help_panel=_SCOPE,
+    ),
+    left_scope: Union[str, None] = typer.Option(
+        None,
+        "--left",
+        help=(
+            "Left/baseline scope reference for a saved meta-compare. "
+            "Required (with --right) when running a saved meta-compare bundle: "
+            "fs-report run --recipe <saved-compare> --left <scope> --right <scope>. "
+            "E.g. 'project:BN85@v3.2.1'."
+        ),
+        rich_help_panel=_SCOPE,
+    ),
+    right_scope: Union[str, None] = typer.Option(
+        None,
+        "--right",
+        help=(
+            "Right/current scope reference for a saved meta-compare. "
+            "See --left. E.g. 'project:BE65@v2.4.0'."
+        ),
         rich_help_panel=_SCOPE,
     ),
     finding_types: str = typer.Option(
@@ -1610,6 +1595,19 @@ def run_command(
         help="Overwrite existing report files.",
         rich_help_panel=_OUTPUT,
     ),
+    theme: Union[str, None] = typer.Option(
+        None,
+        "--theme",
+        help="HTML theme: 'auto' (default — let the browser pick from "
+        "localStorage / ?theme= URL param / prefers-color-scheme, falling "
+        "back to light), 'light', or 'dark'. Explicit 'light' or 'dark' "
+        "is authoritative on initial render and overrides viewer "
+        "preference. Affects reports that include the shared design "
+        "system; coverage is rolling out template-by-template. PDF "
+        "exports always render in light theme. Also honors "
+        "FS_REPORT_THEME env / config-file 'theme'.",
+        rich_help_panel=_OUTPUT,
+    ),
     standalone: bool = typer.Option(
         False,
         "--standalone",
@@ -1694,6 +1692,31 @@ def run_command(
             err=True,
         )
         raise typer.Exit(code=2)
+
+    # Parse-validate --left / --right scope refs when provided so a
+    # malformed ref fails fast with a clean message (B3.7). The engine
+    # (B3.6) owns the full matrix validation (missing sides, non-axis
+    # recipes) — the CLI only fails fast on a parse error here.
+    if left_scope is not None:
+        try:
+            _parse_scope_ref(left_scope)
+        except _ScopeRefError as exc:
+            console.print(f"[red]Error: invalid --left scope reference: {exc}[/red]")
+            raise typer.Exit(code=2) from exc
+    if right_scope is not None:
+        try:
+            _parse_scope_ref(right_scope)
+        except _ScopeRefError as exc:
+            console.print(f"[red]Error: invalid --right scope reference: {exc}[/red]")
+            raise typer.Exit(code=2) from exc
+
+    # M3-1: `run` does NOT enforce both-or-neither for --left/--right. A saved
+    # meta-compare may PIN one side via axis.left / axis.right; the user must be
+    # able to override just the other side with a lone runtime flag. The engine
+    # (_process_axis_compound) resolves runtime-flag-or-pinned-axis per side and
+    # raises an actionable "requires --left and --right" message when a side has
+    # neither — so the both-required check belongs there, not here. (The
+    # `compare` CLI keeps its own both-required check: it has no pinning.)
 
     # Cross-flag validation: --since=last-run requires snapshot state,
     # which --snapshot-diff=off disables. Reject the combination at
@@ -1815,6 +1838,7 @@ def run_command(
         compare_version=compare_version,
         standalone=standalone,
         detailed=detailed,
+        theme=theme,
         since=since,
         exploit_maturity_threshold=_split_csv(exploit_maturity),
         include_status=_split_csv(include_status),
@@ -1824,6 +1848,8 @@ def run_command(
         kev_due_date_source=kev_due_date_source,
         unfilterable_tier_strategy=unfilterable_tier_strategy,
         snapshot_diff=snapshot_diff,
+        left_scope=left_scope,
+        right_scope=right_scope,
     )
 
     # In headless mode, print a structured JSON summary to stdout

@@ -1,0 +1,27 @@
+{# Placeholder for a child recipe that failed to render under compound
+   dispatch (transform raised, or _process_recipe returned None).
+
+   Context vars:
+   - ``failure.slug``  — bare recipe slug; the section id is computed as
+                        ``fs-section-{slug}`` so TOC links land here.
+   - ``failure.title`` — display title (recipe.name or output.slide_title).
+   - ``failure.error`` — human-readable error message.
+   - ``section_number`` — 1-based ordinal for the eyebrow label.
+
+   Same id-shape as the RenderedFragment wrapper (``id="fs-section-{slug}"``)
+   so the TOC anchor href resolves to the failure callout instead of
+   404-ing inside the document. See the compound-reports design spec
+   § 4-5 (failure semantics) and § 5 (assembler step 3). #}
+<section id="fs-section-{{ failure.slug }}"
+         class="fs-failed-section fs-section-{{ failure.slug }}"
+         style="break-before: page; padding: 18mm 22mm;">
+  <div class="fs-section-eyebrow" style="font-size: 10pt; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint, #666);">
+    SECTION {{ '%02d'|format(section_number) }}
+  </div>
+  <h2 style="font-size: 22pt; margin: 4mm 0 6mm 0;">{{ failure.title }}</h2>
+  <div class="fs-failed-section-callout"
+       style="border: 1px solid var(--ink-faint, #999); padding: 8mm; border-radius: 4px;">
+    <p style="font-weight: 600; margin: 0 0 2mm 0;">Section failed to render</p>
+    <p style="margin: 0; font-family: monospace; font-size: 9pt;">{{ failure.error }}</p>
+  </div>
+</section>

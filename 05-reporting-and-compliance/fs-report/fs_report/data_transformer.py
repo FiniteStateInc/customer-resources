@@ -729,8 +729,17 @@ class DataTransformer:
 
             # Reorder severity columns for stacked bar chart
             severity_order = ["low", "medium", "high", "critical"]
-            cols = list(pivoted.columns)
             idx_col = pivoted.columns[0]
+            # When pivoting on severity, GUARANTEE all four tier columns
+            # exist (zero-filled). A portfolio with no findings in a tier
+            # previously produced a frame missing that column, which made
+            # any downstream sort/template reference on the tier raise
+            # (e.g. executive_summary's severity-desc sort, 2026-06-06).
+            if pivot_config.columns == "severity":
+                for s in severity_order:
+                    if s not in pivoted.columns:
+                        pivoted[s] = 0
+            cols = list(pivoted.columns)
             # Find which severity columns are present
             present = [s for s in severity_order if s in cols]
             # Any other columns (e.g., 'none', unexpected severities)

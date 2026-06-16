@@ -1,3 +1,4 @@
+{% include "components/_scope_dropdowns.html" %}
 <div class="prerun-panel" id="prerun-panel">
     <div class="prerun-header">
         <h2>{% if workflow_title %}{{ workflow_title }}{% else %}Run Recipes{% endif %}</h2>
@@ -18,18 +19,22 @@
             {% if show_cve and show_version_fields %}
             <div class="form-hint-info">CVE and Version Comparison recipes require the fields below. Leave empty to skip those recipes.</div>
             {% endif %}
+            {# For comparison (meta-compare) runs, scope is baked into the axis.
+               The L/R-override fields below are the real scope control.
+               Hide the generic project/folder/version pickers to avoid confusion. #}
+            {% if not show_left_right_override %}
             <div class="form-group">
                 <label for="pre-folder">&#128193; Folder filter</label>
                 <select id="pre-folder" name="folder_filter"
                         data-value="{{ state.get('folder_filter', '') }}">
-                    <option value="">(all folders)</option>
+                    <option value="">Any folder</option>
                 </select>
             </div>
             <div class="form-group">
                 <label for="pre-project">&#128196; Project filter</label>
                 <select id="pre-project" name="project_filter"
                         data-value="{{ state.get('project_filter', '') }}">
-                    <option value="">(all projects)</option>
+                    <option value="">All projects</option>
                 </select>
                 {% if show_project_required %}
                 <small class="form-hint-warning">Required for Remediation Package</small>
@@ -42,6 +47,7 @@
                     <option value="">(all versions)</option>
                 </select>
             </div>
+            {% if show_current_version_only %}
             <div class="form-group form-row">
                 <label for="pre-cvo">Current version only</label>
                 <label class="toggle">
@@ -50,11 +56,28 @@
                     <span class="toggle-slider"></span>
                 </label>
             </div>
+            {% endif %}
+            {% endif %}
+            {# Period + Custom date range — only operational recipes whose pipeline
+               trims by date (show_period). This also hides them for meta-compare
+               runs (comparisons aren't period recipes; the engine ignores --period
+               for them — report_engine._process_axis_compound). #}
+            {% if show_period %}
             <div class="form-group">
                 <label for="pre-period">Period</label>
                 <input type="text" id="pre-period" name="period"
                        value="{{ state.get('period', '30d') }}" placeholder="30d, 2m, 90d">
             </div>
+            <div class="form-group">
+                <label>Custom date range</label>
+                <div class="prerun-range">
+                    <input type="date" id="pre-start" name="start" value="{{ state.get('start', '') }}">
+                    <span class="prerun-range-sep">to</span>
+                    <input type="date" id="pre-end" name="end" value="{{ state.get('end', '') }}">
+                </div>
+                <small class="form-hint">Set both to use a custom range (overrides Period).</small>
+            </div>
+            {% endif %}
 
             {% if show_component %}
             <div class="form-group">
@@ -63,8 +86,11 @@
                        value="{{ state.get('component_filter', '') }}"
                        placeholder="e.g. openssl, busybox">
                 <small class="form-hint">Contains match — partial names work</small>
-                {% if show_component_recommended %}
-                <small class="form-hint-warning">Recommended for Component Impact / Component Remediation</small>
+                {# B11 #24: dropped the circular "Recommended for …" hint; those
+                   recipes set requires_component (B4) so show the accurate
+                   Required marker instead (mirrors the card-config back). #}
+                {% if requires_component %}
+                <small class="form-hint-warning">Required to run this report</small>
                 {% endif %}
             </div>
             {% endif %}
@@ -94,7 +120,44 @@
             </div>
             {% endif %}
 
+            {# PR3.3a: Left/Right scope-ref override for comparison (meta-compare) runs.
+               Rendered only when show_left_right_override is True (axis-bearing CompoundRecipe).
+               Pre-filled with baked axis defaults; user may override for this run only.
+               Submitted values are run-only and never persisted (Decision 11). #}
+            {% if show_left_right_override %}
+            <div class="form-group">
+                <label for="pre-left-scope">&#8592; Left scope (override)</label>
+                <input type="text" id="pre-left-scope" name="left_scope"
+                       value="{{ axis_left_default }}"
+                       placeholder="e.g. project:DeviceA@v1">
+                <small class="form-hint">Overrides the saved Left scope for this run only. Leave as-is to use the saved default.</small>
+            </div>
+            <div class="form-group">
+                <label for="pre-right-scope">&#8594; Right scope (override)</label>
+                <input type="text" id="pre-right-scope" name="right_scope"
+                       value="{{ axis_right_default }}"
+                       placeholder="e.g. project:DeviceA@v2">
+                <small class="form-hint">Overrides the saved Right scope for this run only. Leave as-is to use the saved default.</small>
+            </div>
+            {% endif %}
+
             {% if show_version_fields %}
+            {# Comparison mode toggle — see _card_config.html for the rationale.
+               Initial state derives from whether a saved pair exists; the toggle
+               has no name= (pure UX over the empty-vs-set-pair semantics). #}
+            {% set _vc_pair = state.get('baseline_version') and state.get('current_version') %}
+            <div class="form-group form-row">
+                <label for="pre-vc-all">All versions</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-vc-all" {% if not _vc_pair %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <small class="form-hint">On: compare <b>every</b> version of the scoped project (latest vs previous) — the pickers below stay inactive. Off: pick a specific baseline + current pair (works across projects too).</small>
+
+            {# B11 #19a: pickers stay VISIBLE (dimmed + inert) when All-versions is
+               on, so they're discoverable (was `hidden`). #}
+            <div class="pre-vc-pair{% if not _vc_pair %} vc-pair-inert{% endif %}"{% if not _vc_pair %} inert{% endif %}>
             <div class="form-group">
                 <label for="pre-bv">Baseline version</label>
                 <div class="version-picker-row">
@@ -123,6 +186,7 @@
                        value="{{ state.get('current_version', '') }}"
                        placeholder="Or paste version ID directly">
             </div>
+            </div>
             {% endif %}
 
             {% if show_triage %}
@@ -139,6 +203,101 @@
                        value="{{ state.get('triage', '') }}" min="0" step="1"
                        placeholder="0 = all eligible">
                 <small class="form-hint">Generate VEX recommendations for only the top N findings. Full list is still shown.</small>
+            </div>
+            {# tp_gate / vex_override are Triage-Prioritization-only (show_tp_gate);
+               top / triage above are shared with Config Analysis Triage. #}
+            {% if show_tp_gate %}
+            <div class="form-group">
+                <label for="pre-tp-gate">Triage gate</label>
+                <select id="pre-tp-gate" name="tp_gate">
+                    <option value="" {% if not state.get('tp_gate') %}selected{% endif %}>— none —</option>
+                    <option value="GATE_1" {% if state.get('tp_gate') == 'GATE_1' %}selected{% endif %}>GATE_1</option>
+                    <option value="GATE_2" {% if state.get('tp_gate') == 'GATE_2' %}selected{% endif %}>GATE_2</option>
+                    <option value="NONE" {% if state.get('tp_gate') == 'NONE' %}selected{% endif %}>NONE</option>
+                </select>
+            </div>
+            <div class="form-group form-row">
+                <label for="pre-vex-override">VEX override</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-vex-override" name="vex_override"
+                           {% if state.get('vex_override') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            {% endif %}
+
+            {# ── SP2: destructive VEX-write apply (autotriage) — TP-only ── #}
+            {% if show_vex_apply %}
+            <div class="form-group form-row">
+                <label for="pre-autotriage">Auto-apply VEX to platform</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-autotriage" name="autotriage"
+                           {% if state.get('autotriage') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label>Limit to VEX statuses (optional)</label>
+                {% set cur_as = state.get('autotriage_status', '') %}
+                <div class="finding-type-checkboxes">
+                    <label class="finding-type-cb"><input type="checkbox" name="as_cb" value="EXPLOITABLE" {% if 'EXPLOITABLE' in cur_as.split(',') %}checked{% endif %}> EXPLOITABLE</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="as_cb" value="IN_TRIAGE" {% if 'IN_TRIAGE' in cur_as.split(',') %}checked{% endif %}> IN_TRIAGE</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="as_cb" value="NOT_AFFECTED" {% if 'NOT_AFFECTED' in cur_as.split(',') %}checked{% endif %}> NOT_AFFECTED</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="as_cb" value="FALSE_POSITIVE" {% if 'FALSE_POSITIVE' in cur_as.split(',') %}checked{% endif %}> FALSE_POSITIVE</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="as_cb" value="RESOLVED" {% if 'RESOLVED' in cur_as.split(',') %}checked{% endif %}> RESOLVED</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="as_cb" value="RESOLVED_WITH_PEDIGREE" {% if 'RESOLVED_WITH_PEDIGREE' in cur_as.split(',') %}checked{% endif %}> RESOLVED_WITH_PEDIGREE</label>
+                </div>
+                <input type="hidden" id="pre-autotriage-status" name="autotriage_status"
+                       value="{{ state.get('autotriage_status', '') }}">
+                <small class="form-hint">Empty = apply all recommended statuses.</small>
+            </div>
+            <div class="form-group form-row">
+                <label for="pre-dry-run">Dry run (preview only)</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-dry-run" name="dry_run">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <small class="form-hint form-hint-warning">Auto-apply <b>writes VEX statuses to the platform</b> when this report runs. Use Dry run first to preview; you'll confirm before any real write. (VEX override, above, only affects in-report recommendations.)</small>
+            {% endif %}
+            {% endif %}
+
+            {% if show_license %}
+            <div class="form-group">
+                <label for="pre-license">License filter</label>
+                <input type="text" id="pre-license" name="license_filter"
+                       value="{{ state.get('license_filter', '') }}"
+                       placeholder="e.g. GPL, MIT">
+            </div>
+            {% endif %}
+
+            {% if show_open_only %}
+            <div class="form-group form-row">
+                <label for="pre-open-only">Open findings only</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-open-only" name="open_only"
+                           {% if state.get('open_only') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            {% endif %}
+
+            {% if show_baseline_date %}
+            <div class="form-group">
+                <label for="pre-baseline-date">Baseline date</label>
+                <input type="date" id="pre-baseline-date" name="baseline_date"
+                       value="{{ state.get('baseline_date', '') }}">
+            </div>
+            {% endif %}
+
+            {% if show_detailed %}
+            <div class="form-group form-row">
+                <label for="pre-detailed">Detailed output</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-detailed" name="detailed"
+                           {% if state.get('detailed') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
             </div>
             {% endif %}
         </div>
@@ -171,6 +330,9 @@
                 </label>
             </div>
 
+            {# Deployment context reaches the LLM for 4 of the 5 AI recipes —
+               NOT Component Remediation Package (show_deployment_context). #}
+            {% if show_deployment_context %}
             <!-- Deployment Context (nested inside AI Settings) -->
             <details class="form-subsection">
                 <summary class="form-subsection-title">Deployment Context</summary>
@@ -212,7 +374,124 @@
                         <span id="pre-deploy-notes-count">{{ state.get('deployment_notes', '') | length }}</span>/500
                     </small>
                 </div>
+                {# SP3: AI deployment context file #}
+                <div class="form-group">
+                    <label>AI deployment context (YAML)</label>
+                    <div class="fs-upload" data-kind="context" data-target="pre-context-file">
+                        <input type="file" class="fs-upload-input" accept=".yaml,.yml">
+                        <span class="fs-upload-name">{{ state.get('context_file','').rsplit('/', 1)[-1] or 'none' }}</span>
+                        <button type="button" class="fs-upload-clear" aria-label="Clear">&times;</button>
+                    </div>
+                    <input type="hidden" id="pre-context-file" name="context_file"
+                           value="{{ state.get('context_file', '') }}">
+                </div>
             </details>
+            {% endif %}
+
+            {# Threat context — Component-Remediation-Package-only (show_threat_context);
+               relocated here from the Scope section to match the card AI tab. #}
+            {% if show_threat_context %}
+            <div class="form-group">
+                <label for="pre-threat-context">Threat context</label>
+                <textarea id="pre-threat-context" name="threat_context" rows="3">{{ state.get('threat_context', '') }}</textarea>
+            </div>
+            {% endif %}
+        </details>
+        {% endif %}
+
+        {# SP3: scoring file — gated to its consumers (TP / Scan Quality / Config Analysis Triage) #}
+        {% if show_scoring %}
+        <details class="form-section">
+            <summary class="form-section-title">Scoring file</summary>
+            <div class="form-group">
+                {# B11 #18: label/hint per consumer. #}
+                {% if scoring_is_staleness %}<label>Custom staleness thresholds (YAML)</label>
+                {% elif scoring_is_triage %}<label>Custom triage scoring weights (YAML)</label>
+                {% else %}<label>Custom scoring file (YAML)</label>{% endif %}
+                <div class="fs-upload" data-kind="scoring" data-target="pre-scoring-file">
+                    <input type="file" class="fs-upload-input" accept=".yaml,.yml">
+                    <span class="fs-upload-name">{{ state.get('scoring_file','').rsplit('/', 1)[-1] or 'none' }}</span>
+                    <button type="button" class="fs-upload-clear" aria-label="Clear">&times;</button>
+                </div>
+                <input type="hidden" id="pre-scoring-file" name="scoring_file"
+                       value="{{ state.get('scoring_file', '') }}">
+                {% if scoring_is_staleness %}<small class="form-hint">Scan-age staleness thresholds (days), e.g. <code>staleness_thresholds: {fresh: 30, aging: 90, stale: 365}</code>.</small>
+                {% elif scoring_is_triage %}<small class="form-hint">Triage scoring weights — reachability / exploitability / EPSS / CVSS and gate cutoffs.</small>
+                {% else %}<small class="form-hint">Custom scoring weights / staleness thresholds.</small>{% endif %}
+            </div>
+        </details>
+        {% endif %}
+
+        {# Filters — hide the whole section when no child filter is consumed by
+           the selected recipe(s) (Round-1 M1-11). #}
+        {% if show_component_match or show_component_version or show_standalone or show_detected_after or show_scan_filters %}
+        <details class="form-section">
+            <summary class="form-section-title">Filters</summary>
+            {% if show_component_match %}
+            <div class="form-group">
+                <label for="pre-component-match">Component match</label>
+                <select id="pre-component-match" name="component_match">
+                    <option value="contains" {% if state.get('component_match', 'contains') == 'contains' %}selected{% endif %}>contains</option>
+                    <option value="exact" {% if state.get('component_match') == 'exact' %}selected{% endif %}>exact</option>
+                </select>
+            </div>
+            {% endif %}
+            {% if show_component_version %}
+            <div class="form-group">
+                {# B11 #28: version RANGE, not a single version. #}
+                <label for="pre-component-version">Component version range</label>
+                <input type="text" id="pre-component-version" name="component_version"
+                       value="{{ state.get('component_version', '') }}"
+                       placeholder="e.g. 1.2.11, &lt;2.0, &gt;=1.0,&lt;2.0">
+                <small class="form-hint">Exact version or a range — <code>1.2.11</code>, <code>&lt;2.0</code>, <code>&gt;=1.0,&lt;2.0</code>.</small>
+            </div>
+            {% endif %}
+            {% if show_standalone %}
+            <div class="form-group form-row">
+                <label for="pre-standalone">Standalone (skip deps)</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-standalone" name="standalone"
+                           {% if state.get('standalone') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            {% endif %}
+            {% if show_detected_after %}
+            <div class="form-group">
+                <label for="pre-detected-after">Detected after</label>
+                <input type="date" id="pre-detected-after" name="detected_after"
+                       value="{{ state.get('detected_after', '') }}">
+            </div>
+            {% endif %}
+            {% if show_scan_filters %}
+            <div class="form-group">
+                <label>Scan types</label>
+                <div class="finding-type-checkboxes">
+                    {% set cur_st = state.get('scan_types', '') %}
+                    <label class="finding-type-cb"><input type="checkbox" name="st_cb" value="SCA" {% if 'SCA' in cur_st.split(',') %}checked{% endif %}> SCA</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="st_cb" value="SAST" {% if 'SAST' in cur_st.split(',') %}checked{% endif %}> SAST</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="st_cb" value="CONFIG" {% if 'CONFIG' in cur_st.split(',') %}checked{% endif %}> CONFIG</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="st_cb" value="SOURCE_SCA" {% if 'SOURCE_SCA' in cur_st.split(',') %}checked{% endif %}> SOURCE_SCA</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="st_cb" value="SBOM_IMPORT" {% if 'SBOM_IMPORT' in cur_st.split(',') %}checked{% endif %}> SBOM_IMPORT</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="st_cb" value="VULNERABILITY_ANALYSIS" {% if 'VULNERABILITY_ANALYSIS' in cur_st.split(',') %}checked{% endif %}> VULNERABILITY_ANALYSIS</label>
+                </div>
+                <input type="hidden" id="pre-scan-types" name="scan_types" value="{{ state.get('scan_types', '') }}">
+            </div>
+            <div class="form-group">
+                <label>Scan statuses</label>
+                <div class="finding-type-checkboxes">
+                    {% set cur_ss = state.get('scan_statuses', '') %}
+                    <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="INITIAL" {% if 'INITIAL' in cur_ss.split(',') %}checked{% endif %}> INITIAL</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="PENDING_UPLOAD" {% if 'PENDING_UPLOAD' in cur_ss.split(',') %}checked{% endif %}> PENDING_UPLOAD</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="UPLOAD_FAILED" {% if 'UPLOAD_FAILED' in cur_ss.split(',') %}checked{% endif %}> UPLOAD_FAILED</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="COMPLETED" {% if 'COMPLETED' in cur_ss.split(',') %}checked{% endif %}> COMPLETED</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="ERROR" {% if 'ERROR' in cur_ss.split(',') %}checked{% endif %}> ERROR</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="STARTED" {% if 'STARTED' in cur_ss.split(',') %}checked{% endif %}> STARTED</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="ss_cb" value="NOT_APPLICABLE" {% if 'NOT_APPLICABLE' in cur_ss.split(',') %}checked{% endif %}> NOT_APPLICABLE</label>
+                </div>
+                <input type="hidden" id="pre-scan-statuses" name="scan_statuses" value="{{ state.get('scan_statuses', '') }}">
+            </div>
+            {% endif %}
         </details>
         {% endif %}
 
@@ -243,8 +522,27 @@
             </div>
         </details>
 
+        {# "Save as this report's default" — single-recipe modals only.
+           Persists the form via POST /api/cc/card-config so configuring a
+           recipe off-card (run bar / palette) graduates it exactly like
+           configuring it on the card.  Defaults checked when the recipe is
+           needs-setup.  data-requires-cve lets the JS validate the required
+           card input before launch.  Hidden for multi-recipe modals. #}
+        {% if recipe_names | length == 1 %}
+        <div class="form-group form-row prerun-save-default">
+            <label for="pre-save-default">Save as this report's default</label>
+            <label class="toggle">
+                <input type="checkbox" id="pre-save-default" name="save_as_default"
+                       data-requires-cve="{{ '1' if requires_cve else '0' }}"
+                       data-requires-component="{{ '1' if requires_component else '0' }}"
+                       {% if needs_setup %}checked{% endif %}>
+                <span class="toggle-slider"></span>
+            </label>
+        </div>
+        {% endif %}
+
         <div class="prerun-actions">
-            <button type="button" class="btn btn-primary" id="btn-run-submit">Run {{ recipe_names | length }} recipe{{ 's' if recipe_names | length != 1 else '' }}</button>
+            <button type="button" class="btn btn-primary" id="btn-run-submit">{{ submit_label | default('Run ' ~ (recipe_names | length) ~ ' recipe' ~ ('s' if recipe_names | length != 1 else ''), true) }}</button>
             <button type="button" class="btn btn-default prerun-close">Cancel</button>
         </div>
     </form>

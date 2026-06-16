@@ -3,7 +3,6 @@
  *
  * Components:
  * - prerunForm: Adaptive pre-run configuration form
- * - progressStream: SSE-powered live progress display
  * - recipeSelector: Recipe checkbox management
  * - toastManager: Toast notification system (defined inline in _toast.html)
  */

@@ -1,3 +1,27 @@
+{# Defensive defaults — keep the template renderable when the upstream
+   transform short-circuited. Mirrors B.1 cve_component_evidence.html and
+   sibling C.1 component_remediation_package.html. Placed BEFORE the
+   render-mode gate so fragment and standalone modes share the same defaults. #}
+{% set summary = summary | default({}) %}
+{% if not summary is mapping %}{% set summary = {} %}{% endif %}
+{% set locations = locations | default([]) %}
+
+{# Macro import — produces no output, just binds `fs` to the namespace.
+   Safe to hoist above the render-mode gate. #}
+{% import "_console_macros.html" as fs with context %}
+
+{# Build topbar meta items conditionally. #}
+{% set ci_meta = [{"label": "Domain", "value": domain or "—"}] %}
+{% set _ = ci_meta.append({"label": "Scope", "value": scope_label or "All Projects"}) %}
+{% if summary.get('component_name') %}
+    {% set _ = ci_meta.append({"label": "Component", "value": summary.component_name}) %}
+{% endif %}
+{% if summary.get('version_range') %}
+    {% set _ = ci_meta.append({"label": "Version range", "value": summary.version_range}) %}
+{% endif %}
+{% set _ = ci_meta.append({"label": "Generated", "value": generated_at or "—"}) %}
+
+{% if render_mode != 'fragment' %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,209 +29,240 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
     <title>Component Impact Report - Finite State Report</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 
-        {% include "_standalone_shell.html" %}
+    {# No charts in this recipe (output.charts: []) — ECharts CDN is
+       intentionally NOT included. Only design-system tokens + console
+       shell chrome. Pre-migration template had dead Chart.js +
+       chartjs-plugin-datalabels CDN tags; those are removed. #}
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+{% endif %}
+
+{# Recipe-local styles — render in BOTH standalone and fragment modes so
+   fragment_extractor (_STYLE_RE) collects them, scopes under
+   .fs-section-component-impact, and re-emits at the top of the fragment. #}
 <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            line-height: 1.6; color: #333; background-color: #f8f9fa;
-        }
-        .container { margin: 0 auto; padding: 20px; background-color: white; border: 1px solid #dee2e6; min-height: 100%; }
-        .header { text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid #e9ecef; }
-        .company-logo { max-height: 50px; width: auto; margin: 0 auto; display: block; }
-        .header h1 { color: #2c3e50; font-size: 2.5em; margin-bottom: 10px; }
-        .header .subtitle { color: #6c757d; font-size: 1.1em; }
-        .metadata { background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 30px; font-size: 0.9em; color: #6c757d; }
+    /* Version-range warning banner — token-driven, theme-aware. */
+    .ci-version-range-warning {
+        background: var(--sev-medium-bg);
+        color: var(--sev-medium-text);
+        border: 1px solid var(--sev-medium-text);
+        border-radius: 6px;
+        padding: 10px 14px;
+        margin-bottom: 20px;
+        font-size: 0.9em;
+    }
 
-        .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 30px; }
-        .kpi-card {
-            background: white; border: 1px solid #dee2e6; border-radius: 8px;
-            padding: 20px; text-align: center;
-        }
-        .kpi-card .kpi-title { font-size: 0.85em; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-        .kpi-card .kpi-value { font-size: 2.2em; font-weight: 700; color: #2c3e50; line-height: 1; }
+    /* "No locations" success branch — token-driven. */
+    .ci-no-locations {
+        background: var(--sev-low-bg);
+        color: var(--sev-low-text);
+        border: 1px solid var(--sev-low-text);
+        border-radius: 6px;
+        padding: 16px 20px;
+        font-size: 0.95em;
+    }
 
-        .section { margin-bottom: 30px; }
-        .section-title { color: #2c3e50; font-size: 1.5em; margin-bottom: 15px; }
+    /* Subtle highlight for table rows with CVE findings — use
+       --surface-muted so it adapts to dark mode automatically. */
+    .ci-locations-row-with-cves {
+        background: var(--surface-muted);
+    }
+    .ci-locations-row-with-cves td:first-child {
+        font-weight: 600;
+    }
 
-        .version-badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 30px; }
-        .version-badge {
-            display: inline-block; padding: 4px 12px; border-radius: 12px;
-            font-size: 0.85em; font-weight: 500; background-color: #e9ecef; color: #495057;
-            border: 1px solid #dee2e6;
-        }
+    /* Top CVE column severity badges. */
+    .ci-severity-critical,
+    .ci-severity-high,
+    .ci-severity-medium,
+    .ci-severity-low,
+    .ci-severity-unknown {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.75em;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+    .ci-severity-critical { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .ci-severity-high     { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .ci-severity-medium   { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .ci-severity-low      { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .ci-severity-unknown  { background: var(--surface-muted);   color: var(--ink-mute); }
 
-        .dossier { margin-bottom: 20px; border: 1px solid #dee2e6; border-radius: 8px; overflow: hidden; }
-        .dossier summary {
-            padding: 15px 20px; background-color: #f8f9fa; cursor: pointer;
-            font-weight: 600; color: #2c3e50; list-style: none;
-            display: flex; align-items: center; justify-content: space-between;
-        }
-        .dossier summary::-webkit-details-marker { display: none; }
-        .dossier summary::before { content: '\25B6'; margin-right: 10px; font-size: 0.7em; transition: transform 0.2s; }
-        .dossier[open] summary::before { transform: rotate(90deg); }
-        .dossier-body { padding: 20px; }
-        .dossier-meta { font-size: 0.9em; color: #6c757d; margin-bottom: 15px; }
+    .ci-detected-versions {
+        font-size: 0.85em;
+        color: var(--ink-mute);
+    }
 
-        .table-container { overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #dee2e6; }
-        th { background-color: #f8f9fa; font-weight: 600; color: #495057; position: sticky; top: 0; z-index: 10; }
-        tr:hover { background-color: #f8f9fa; }
-        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .ci-mdash { color: var(--ink-mute); }
+    .ci-more-suffix {
+        color: var(--ink-mute);
+        font-size: 0.8em;
+        margin-left: 4px;
+    }
 
-        .severity-badge {
-            display: inline-block; padding: 2px 10px; border-radius: 12px;
-            font-size: 0.8em; font-weight: 600; color: white;
-        }
-        .severity-critical { background-color: #dc2626; }
-        .severity-high { background-color: #ea580c; }
-        .severity-medium { background-color: #eab308; color: #333; }
-        .severity-low { background-color: #2563eb; }
-        .severity-unknown { background-color: #757575; }
+    .ci-locations-intro {
+        font-size: 0.9em;
+        color: var(--ink-mute);
+        margin-bottom: 12px;
+    }
+</style>
 
-        .footer { text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #e9ecef; color: #6c757d; font-size: 0.9em; }
-        .finite-state-logo { color: #007bff; font-weight: bold; }
-
-        @media print {
-            body { background-color: white; }
-            .container { max-width: none; }
-            .dossier[open] summary ~ * { display: block; }
-        }
-    </style>
+{% if render_mode != 'fragment' %}
 </head>
-<body data-nav-category="{{ nav_category_slug }}">
-    <span id="fsConnectionBadge"></span>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            {% include "_default_logo.html" %}
-            <h1>Component Impact Report</h1>
-            <div class="subtitle">
-                {{ summary.component_name | default('Unknown Component') }} — Blast Radius Analysis
-            </div>
-        </div>
+<body class="console">
+{% endif %}
 
-        <!-- Metadata -->
-        <div class="metadata">
-            <strong>Report:</strong> Component Impact |
-            <strong>Generated:</strong> {{ generated_at }} |
-            <strong>Scope:</strong> {{ scope_label | default('All Projects') }}
-            {% if summary.component_name %}| <strong>Component:</strong> {{ summary.component_name }}{% endif %}
-            {% if summary.version_range %}| <strong>Version Range:</strong> {{ summary.version_range }}{% endif %}
-        </div>
+{% if render_mode != 'fragment' %}
 
-        <!-- KPI Cards -->
-        <div class="kpi-row">
-            <div class="kpi-card">
-                <div class="kpi-title">Projects with Component</div>
-                <div class="kpi-value" {% if summary.projects_with_component | default(0) > 0 %}style="color: #dc2626;"{% endif %}>{{ summary.projects_with_component | default(0) }}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">With Known CVEs</div>
-                <div class="kpi-value" {% if summary.projects_with_findings | default(0) > 0 %}style="color: #ea580c;"{% endif %}>{{ summary.projects_with_findings | default(0) }}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Total CVE Findings</div>
-                <div class="kpi-value">{{ summary.total_cve_count | default(0) }}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Critical</div>
-                <div class="kpi-value" {% if summary.critical_count | default(0) > 0 %}style="color: #dc2626;"{% endif %}>{{ summary.critical_count | default(0) }}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">High</div>
-                <div class="kpi-value" {% if summary.high_count | default(0) > 0 %}style="color: #ea580c;"{% endif %}>{{ summary.high_count | default(0) }}</div>
-            </div>
-        </div>
+{{ fs.topbar(
+    crumbs=["Finite State", "Component Impact"],
+    meta=ci_meta,
+    controls=[],
+) }}
 
-        {% if summary.version_range %}
-        <div style="background:#fef9c3;border:1px solid #fde047;border-radius:6px;padding:10px 16px;margin-bottom:20px;font-size:0.9em;color:#713f12;">
-            &#9888; Version range filter active: <strong>{{ summary.version_range }}</strong> — only projects with matching component versions are shown.
-        </div>
-        {% endif %}
+{% endif %}
 
-        <!-- Portfolio Location Table (primary view) -->
-        {% if locations and locations | length > 0 %}
-        <div class="section">
-            <h2 class="section-title">Portfolio Locations</h2>
-            <p style="font-size:0.9em;color:#6c757d;margin-bottom:12px;">
-                <strong>{{ locations | length }}</strong> project(s) contain <strong>{{ summary.component_name }}</strong>.
-                Projects with known CVE findings are listed first.
-            </p>
-            <div class="table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Project</th>
-                            <th>Detected Version(s)</th>
-                            <th style="text-align:center;">CVE Findings</th>
-                            <th style="text-align:center;">Critical</th>
-                            <th style="text-align:center;">High</th>
-                            <th>Top CVE</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for loc in locations %}
-                        <tr {% if loc.cve_count > 0 %}style="background:#fff8f8;"{% endif %}>
-                            <td style="font-weight:{% if loc.cve_count > 0 %}600{% else %}normal{% endif %};">
-                                {{ loc.project_name }}
-                            </td>
-                            <td style="font-size:0.85em;color:#555;">
-                                {% if loc.detected_versions %}
-                                    {{ loc.detected_versions | join(', ') }}
-                                {% else %}
-                                    <span style="color:#aaa;">—</span>
-                                {% endif %}
-                            </td>
-                            <td style="text-align:center;">
-                                {% if loc.cve_count > 0 %}
-                                <strong style="color:#dc2626;">{{ loc.cve_count }}</strong>
-                                {% else %}
-                                <span style="color:#aaa;">—</span>
-                                {% endif %}
-                            </td>
-                            <td style="text-align:center;">
-                                {% if loc.critical_count > 0 %}
-                                <strong style="color:#dc2626;">{{ loc.critical_count }}</strong>
-                                {% else %}&mdash;{% endif %}
-                            </td>
-                            <td style="text-align:center;">
-                                {% if loc.high_count > 0 %}
-                                <strong style="color:#ea580c;">{{ loc.high_count }}</strong>
-                                {% else %}&mdash;{% endif %}
-                            </td>
-                            <td style="font-size:0.85em;">
-                                {% if loc.top_cves %}
-                                    {% set tc = loc.top_cves[0] %}
-                                    <code>{{ tc.cve_id | default('') }}</code>
-                                    {% set sev = tc.severity | default('') | upper %}
-                                    <span class="severity-badge {% if sev == 'CRITICAL' %}severity-critical{% elif sev == 'HIGH' %}severity-high{% elif sev == 'MEDIUM' %}severity-medium{% elif sev == 'LOW' %}severity-low{% endif %}" style="font-size:0.75em;">{{ sev }}</span>
-                                    {% if loc.top_cves | length > 1 %}
-                                    <span style="color:#aaa;font-size:0.8em;">+{{ loc.top_cves | length - 1 }} more</span>
-                                    {% endif %}
-                                {% else %}
-                                    <span style="color:#aaa;">No CVE findings</span>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        {% else %}
-        <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:16px 20px;color:#166534;font-size:0.95em;">
-            &#10003; No projects found containing <strong>{{ summary.component_name }}</strong>{% if summary.version_range %} in version range <strong>{{ summary.version_range }}</strong>{% endif %}.
-        </div>
-        {% endif %}
-
-        {% include "_default_footer.html" %}
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>Component Impact Report</h1>
+        <p class="subtitle">{{ summary.get('component_name', 'Unknown Component') }} — Blast Radius Analysis</p>
     </div>
 
-    {% include '_action_buttons.html' %}
+    {# 5 KPI cells via fs.kpi_cell. #}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell(
+            "Projects with Component",
+            summary.get('projects_with_component', 0),
+            dot=("critical" if summary.get('projects_with_component', 0) > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "With Known CVEs",
+            summary.get('projects_with_findings', 0),
+            dot=("high" if summary.get('projects_with_findings', 0) > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "Total CVE Findings",
+            summary.get('total_cve_count', 0),
+        ) }}
+        {{ fs.kpi_cell(
+            "Critical",
+            summary.get('critical_count', 0),
+            dot=("critical" if summary.get('critical_count', 0) > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "High",
+            summary.get('high_count', 0),
+            dot=("high" if summary.get('high_count', 0) > 0 else None),
+        ) }}
+    </div>
+
+    {% if summary.get('version_range') %}
+    <div class="ci-version-range-warning">
+        <strong>&#9888; Version range filter active:</strong> <code>{{ summary.version_range }}</code> — only projects with matching component versions are shown.
+    </div>
+    {% endif %}
+
+    {% if locations and (locations | length) > 0 %}
+    <div class="table-panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Portfolio locations", meta=((locations | length) | string) ~ " project" ~ ("s" if (locations | length) != 1 else "")) }}
+        <p class="ci-locations-intro" style="padding: 0 16px;">
+            <strong>{{ locations | length }}</strong> project(s) contain <strong>{{ summary.get('component_name', 'this component') }}</strong>.
+            Projects with known CVE findings are listed first.
+        </p>
+        <div class="body" style="overflow-x: auto;">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Project</th>
+                        <th>Detected Version(s)</th>
+                        <th class="num">CVE Findings</th>
+                        <th class="num">Critical</th>
+                        <th class="num">High</th>
+                        <th>Top CVE</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for loc in locations %}
+                    {% if loc is mapping %}
+                    {% set with_cves = (loc.get('cve_count', 0) | int) > 0 %}
+                    <tr{% if with_cves %} class="ci-locations-row-with-cves"{% endif %}>
+                        <td>{{ loc.get('project_name', '') }}</td>
+                        <td class="ci-detected-versions">
+                            {% if loc.get('detected_versions') %}
+                                {{ loc.detected_versions | join(', ') }}
+                            {% else %}
+                                <span class="ci-mdash">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="num">
+                            {% if (loc.get('cve_count', 0) | int) > 0 %}
+                                <strong>{{ loc.cve_count }}</strong>
+                            {% else %}
+                                <span class="ci-mdash">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="num">
+                            {% if (loc.get('critical_count', 0) | int) > 0 %}
+                                <strong>{{ loc.critical_count }}</strong>
+                            {% else %}
+                                <span class="ci-mdash">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="num">
+                            {% if (loc.get('high_count', 0) | int) > 0 %}
+                                <strong>{{ loc.high_count }}</strong>
+                            {% else %}
+                                <span class="ci-mdash">—</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if loc.get('top_cves') and (loc.top_cves | length) > 0 %}
+                                {% set tc = loc.top_cves[0] %}
+                                {% set sev = (tc.get('severity', '') | upper) %}
+                                <code>{{ tc.get('cve_id', '') }}</code>
+                                {% if sev == 'CRITICAL' %}<span class="ci-severity-critical">{{ sev }}</span>
+                                {% elif sev == 'HIGH' %}<span class="ci-severity-high">{{ sev }}</span>
+                                {% elif sev == 'MEDIUM' %}<span class="ci-severity-medium">{{ sev }}</span>
+                                {% elif sev == 'LOW' %}<span class="ci-severity-low">{{ sev }}</span>
+                                {% else %}<span class="ci-severity-unknown">{{ sev or 'UNKNOWN' }}</span>{% endif %}
+                                {% if (loc.top_cves | length) > 1 %}
+                                <span class="ci-more-suffix">+{{ loc.top_cves | length - 1 }} more</span>
+                                {% endif %}
+                            {% else %}
+                                <span class="ci-mdash">No CVE findings</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="ci-no-locations">
+        &#10003; No projects found containing <strong>{{ summary.get('component_name', 'this component') }}</strong>{% if summary.get('version_range') %} in version range <strong>{{ summary.version_range }}</strong>{% endif %}.
+    </div>
+    {% endif %}
+</main>
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Component Impact",
+    "Projects: " ~ ((locations | length) | string),
+    "CVE findings: " ~ ((summary.get('total_cve_count', 0)) | string),
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+{% if render_mode != 'fragment' %}
+{% include '_action_buttons.html' %}
 </body>
 </html>
+{% endif %}

@@ -19,6 +19,12 @@ from fs_report.transforms.pandas._cve_updates import (
     _process_cve_updates,
     _to_iso8601z,
 )
+from fs_report.transforms.pandas.comparison._shared import (
+    EXCLUDED_COMPONENT_TYPES as _EXCLUDED_COMPONENT_TYPES,
+)
+from fs_report.transforms.pandas.comparison._shared import (
+    add_finding_match_key as _add_finding_match_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -833,34 +839,15 @@ def _make_findings_df(raw: list[dict]) -> pd.DataFrame:
     df["severity"] = df["severity"].fillna("UNSPECIFIED").str.upper()
 
     # Build a stable match key for version-over-version comparison.
-    # Prefer cveId when available; otherwise build a composite fingerprint
-    # from component name + title (stable across platform re-scores that
-    # change severity or risk score).  If title is also empty, fall back to
-    # component_name | cwe_id | finding_type.
-    has_cve = df["cveId"].notna() & (df["cveId"] != "")
-    for col in ("cwe_id", "finding_type"):
-        if col not in df.columns:
-            df[col] = ""
-
-    title_str = df["title"].fillna("").astype(str).str.strip()
-    has_title = title_str != ""
-    comp_str = df["component_name"].fillna("").astype(str)
-    fallback_with_title = comp_str + "|" + title_str
-    fallback_no_title = (
-        comp_str
-        + "|"
-        + df["cwe_id"].fillna("").astype(str)
-        + "|"
-        + df["finding_type"].fillna("").astype(str)
-    )
-    fallback = fallback_with_title.where(has_title, fallback_no_title)
-    df["match_key"] = df["cveId"].where(has_cve, fallback)
+    # Logic lives in comparison._shared.add_finding_match_key — imported here
+    # so the match-key chain stays single-sourced.
+    _add_finding_match_key(df)
 
     return df
 
 
-# Component types to exclude from churn (noise, not meaningful SBOM entries)
-_EXCLUDED_COMPONENT_TYPES = {"file", "device driver", "device_driver"}
+# _EXCLUDED_COMPONENT_TYPES is imported from comparison._shared above; the
+# alias preserves the private name so existing usages in this file are unchanged.
 
 
 def _make_components_df(raw: list[dict]) -> pd.DataFrame:
@@ -1127,12 +1114,20 @@ def _build_externally_changed(
     if unchanged_df.empty or not cve_updates:
         return []
 
-    has_cve = unchanged_df["cveId"].notna() & (unchanged_df["cveId"] != "")
-    cve_df = unchanged_df[has_cve]
+    # Effective CVE id: ``cveId`` when present, else a CVE-shaped ``findingId``
+    # (real /public/v0/findings rows carry the CVE in findingId with cveId
+    # null). Matching on cveId alone would skip those rows entirely.
+    eff_cve = unchanged_df["cveId"].fillna("").astype(str).str.strip()
+    if "findingId" in unchanged_df.columns:
+        fid = unchanged_df["findingId"].fillna("").astype(str).str.strip()
+        fid_is_cve = fid.str.upper().str.startswith("CVE-")
+        eff_cve = eff_cve.where(eff_cve != "", fid.where(fid_is_cve, ""))
+    cve_df = unchanged_df.assign(_eff_cve=eff_cve)
+    cve_df = cve_df[cve_df["_eff_cve"] != ""]
     if cve_df.empty:
         return []
 
-    unchanged_cve_ids = set(cve_df["cveId"].astype(str))
+    unchanged_cve_ids = set(cve_df["_eff_cve"])
     result: list[dict] = []
 
     for change_type in ("severity_escalated", "exploit_gained", "exploit_subsided"):
@@ -1140,7 +1135,7 @@ def _build_externally_changed(
             cve_id = upd.get("cve_id", "")
             if cve_id not in unchanged_cve_ids:
                 continue
-            matching = cve_df[cve_df["cveId"] == cve_id]
+            matching = cve_df[cve_df["_eff_cve"] == cve_id]
             for _, row in matching.iterrows():
                 entry: dict[str, Any] = {
                     "cve_id": cve_id,
@@ -1184,7 +1179,12 @@ def _annotate_new_findings(
     }
 
     def _note(row: pd.Series) -> str:
-        cve_id = str(row.get("cveId") or "")
+        cve_id = str(row.get("cveId") or "").strip()
+        if not cve_id:
+            # Real findings carry the CVE in findingId with cveId null.
+            fid = str(row.get("findingId") or "").strip()
+            if fid.upper().startswith("CVE-"):
+                cve_id = fid
         if not cve_id:
             return ""
         if cve_id in escalated:

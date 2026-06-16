@@ -1,0 +1,17 @@
+name: "License Diff"
+category: comparison
+nav_category: Compliance
+chart_libraries: []
+template: "comparison/license_diff.html"
+description: "License changes and copyleft deltas between left scope and right scope component inventories."
+execution_order: 50
+auto_run: false
+query:
+  endpoint: "/public/v0/components"
+  params:
+    limit: 10000
+transform_function: license_diff_transform
+output:
+  formats: ["html"]
+  table: true
+  slide_title: "License Comparison"

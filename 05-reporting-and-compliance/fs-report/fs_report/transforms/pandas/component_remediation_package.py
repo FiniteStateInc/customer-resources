@@ -839,5 +839,11 @@ If no CVE is listed, treat this as a zero-day scenario.
         "id": prompt_id,
         "system": system_prompt,
         "user": user_prompt,
-        "context": action,
+        # Flat snapshot of the action's own fields — NOT the live ``action``
+        # object. The caller assigns ``action["ai_prompt"] = <this dict>``, so
+        # embedding ``action`` here would form a cycle (action → ai_prompt →
+        # context → action) that crashes JSON/`tojson` serialization for every
+        # AI mode. Excluding ``ai_prompt`` keeps the structured context the
+        # template renders (`context | tojson`) while staying acyclic.
+        "context": {k: v for k, v in action.items() if k != "ai_prompt"},
     }

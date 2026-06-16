@@ -63,7 +63,6 @@ class APIClient:
         sqlite_cache: SQLiteCache | None = None,
         cache_ttl: int = 0,
         cache_refresh: bool = False,
-        is_v2: bool | None = None,
     ) -> None:
         """
         Initialize the API client.
@@ -75,9 +74,6 @@ class APIClient:
             cache_ttl: Cache TTL in seconds. 0 = no cross-run caching (default)
             cache_refresh: If True, bypass cache reads but still write fresh
                 data to cache for future runs.
-            is_v2: Override v2 backend detection.  ``True`` forces v2 backend
-                mode (page-size cap 1000), ``False`` forces legacy mode, and
-                ``None`` (default) triggers auto-detection at init time.
         """
         self.config = config
         self.logger = logging.getLogger(__name__)
@@ -120,36 +116,7 @@ class APIClient:
             headers=self.headers,
         )
 
-        # v2 backend detection
-        if is_v2 is not None:
-            self.is_v2 = is_v2
-        elif getattr(self.config, "data_file", None):
-            self.is_v2 = False
-        else:
-            self.is_v2 = self._detect_v2()
-        self.max_page_size: int = 1000 if self.is_v2 else 10000
-
-    def _detect_v2(self) -> bool:
-        """Auto-detect v2 backend by probing pagination limit cap.
-
-        The v2 backend rejects limit>1000 with a 400 ZodError.
-        Legacy accepts limit=10000+.
-        """
-        try:
-            response = self.client.get(
-                f"{self.base_url}/public/v0/projects",
-                params={"limit": "1001", "archived": "false"},
-                timeout=10,
-            )
-            if response.status_code == 400:
-                self.logger.info(
-                    "Detected v2 backend (limit>1000 rejected). "
-                    "Capping page size at 1000."
-                )
-                return True
-            return False
-        except Exception:
-            return False
+        self.max_page_size: int = 10000
 
     def fetch_data(self, query: QueryConfig) -> list[dict[str, Any]]:
         """Fetch a single page of data from the API based on query configuration."""
@@ -403,10 +370,25 @@ class APIClient:
                 except httpx.HTTPStatusError as e:
                     status = e.response.status_code
                     if not _is_retryable(status):
-                        self.logger.error(
-                            f"Permanent HTTP {status} at offset {offset}: {str(e)[:200]}. Not retrying."
-                        )
-                        break
+                        # Some endpoints (e.g. /versions/{vid}/components) signal
+                        # end-of-pagination with HTTP 404 once offset exceeds the
+                        # total count, instead of returning an empty page. Treat
+                        # that as a clean stop rather than a permanent error.
+                        if status == 404 and total_stored > 0:
+                            self.logger.debug(
+                                f"HTTP 404 at offset {offset} after {total_stored} records: "
+                                f"treating as end-of-pagination."
+                            )
+                            fetch_completed = True
+                            break
+                        # Surface permanent client errors (e.g. helix's 400 on
+                        # limit>1000) instead of silently returning the partial
+                        # result fetched so far. Callers must see backend
+                        # contract failures.
+                        raise ValueError(
+                            f"API request failed at offset {offset}: "
+                            f"{status} - {str(e.response.text)[:500]}"
+                        ) from e
                     retry_count += 1
                     self.last_fetch_retries += 1
                     retry_after = e.response.headers.get("Retry-After")
@@ -501,15 +483,6 @@ class APIClient:
                     f"Stored {stored} records in SQLite cache (total: {total_stored})"
                 )
 
-                # The v2 backend returns exact pages — a short page means last page.
-                # Legacy can return short pages mid-stream, so keep going.
-                if self.is_v2 and len(page) < limit:
-                    self.logger.debug(
-                        f"Short page ({len(page)} < {limit}): last page reached (v2 backend)."
-                    )
-                    fetch_completed = True
-                    break
-
                 # Throttle between pages to avoid overloading the server
                 if self.request_delay > 0:
                     time.sleep(self.request_delay)
@@ -549,7 +522,7 @@ class APIClient:
         consecutive_empty_pages = 0
         max_consecutive_empty = 3
         retry_count = 0
-        all_results = []
+        all_results: list[dict] = []
         seen_ids: set[str] = set()
 
         bar_desc = f"           Fetching {endpoint}"
@@ -578,10 +551,24 @@ class APIClient:
                 except httpx.HTTPStatusError as e:
                     status = e.response.status_code
                     if not _is_retryable(status):
-                        self.logger.error(
-                            f"Permanent HTTP {status} at offset {offset}: {str(e)[:200]}. Not retrying."
-                        )
-                        break
+                        # Some endpoints (e.g. /versions/{vid}/components) signal
+                        # end-of-pagination with HTTP 404 once offset exceeds the
+                        # total count, instead of returning an empty page. Treat
+                        # that as a clean stop rather than a permanent error.
+                        if status == 404 and len(all_results) > 0:
+                            self.logger.debug(
+                                f"HTTP 404 at offset {offset} after {len(all_results)} records: "
+                                f"treating as end-of-pagination."
+                            )
+                            break
+                        # Surface permanent client errors (e.g. helix's 400 on
+                        # limit>1000) instead of silently returning the partial
+                        # result fetched so far. Callers must see backend
+                        # contract failures.
+                        raise ValueError(
+                            f"API request failed at offset {offset}: "
+                            f"{status} - {str(e.response.text)[:500]}"
+                        ) from e
                     retry_count += 1
                     self.last_fetch_retries += 1
                     retry_after = e.response.headers.get("Retry-After")
@@ -657,14 +644,6 @@ class APIClient:
                 offset += limit
 
                 pbar.update(len(page))
-
-                # The v2 backend returns exact pages — a short page means last page.
-                # Legacy can return short pages mid-stream, so keep going.
-                if self.is_v2 and len(page) < limit:
-                    self.logger.debug(
-                        f"Short page ({len(page)} < {limit}): last page reached (v2 backend)."
-                    )
-                    break
 
                 if self.request_delay > 0:
                     time.sleep(self.request_delay)
@@ -775,6 +754,12 @@ class APIClient:
             progress_file = os.path.join(
                 self.config.output_dir, f"{endpoint}_progress.json"
             )
+        # The progress file lives under config.output_dir, which the engine
+        # does not create until render time (after the fetch). Ensure its
+        # directory exists ONCE here so the atomic progress writes below don't
+        # crash with FileNotFoundError on a fresh --output dir (regression:
+        # `fs-report compare --output <new-dir>`).
+        os.makedirs(os.path.dirname(progress_file) or ".", exist_ok=True)
         # Resume support
         if os.path.exists(progress_file):
             try:
@@ -844,8 +829,57 @@ class APIClient:
                         self.logger.debug(
                             f"First 5 record IDs at offset {offset}: {ids}"
                         )
+                except ValueError as e:
+                    # fetch_data raises ValueError for two distinct cases:
+                    #   - Permanent backend contract failures
+                    #     ("Authentication failed:", "Access denied:",
+                    #     "API request failed: <4xx> - ..."). fetch_data has
+                    #     already exhausted its internal retries; outer
+                    #     retries won't help, and silently empty/partial
+                    #     results would mask the failure. Surface these
+                    #     loudly — this is the path that makes helix's
+                    #     `400 limit ≤ 1000` fail-fast instead of producing
+                    #     a blank report.
+                    #   - Transient ("Network error: ...") and exhausted-
+                    #     retry transient ("Rate limit exceeded: ..."). Let
+                    #     the outer paginator's retry/back-off handle these.
+                    msg = str(e)
+                    # Endpoints like /versions/{vid}/components signal
+                    # end-of-pagination with HTTP 404 once offset exceeds the
+                    # total count. Treat that as a clean stop (same as the
+                    # SQLite and no-cache paginators) — but only after we've
+                    # accumulated some records, so a genuine 404-on-first-page
+                    # still fails loud.
+                    if "API request failed: 404" in msg and len(all_results) > 0:
+                        self.logger.debug(
+                            f"HTTP 404 at offset {offset} after "
+                            f"{len(all_results)} records: treating as "
+                            f"end-of-pagination."
+                        )
+                        break
+                    permanent_prefixes = (
+                        "Authentication failed:",
+                        "Access denied:",
+                        "API request failed:",
+                    )
+                    if msg.startswith(permanent_prefixes):
+                        raise
+                    # Fall through to transient-retry handling
+                    wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
+                    self.logger.debug(
+                        f"Transient error at offset {offset}: {e}. Retrying in {wait:.1f}s..."
+                    )
+                    time.sleep(wait)
+                    retry_count += 1
+                    self.last_fetch_retries += 1
+                    if retry_count > max_retries:
+                        self.logger.error(
+                            f"Max retries exceeded at offset {offset}. Aborting."
+                        )
+                        break
+                    continue
                 except Exception as e:
-                    # Handle rate limit (429) or network error - retry silently
+                    # Unhandled transient (e.g. JSON decode, unexpected) — retry
                     wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
                     self.logger.debug(
                         f"Transient error at offset {offset}: {e}. Retrying in {wait:.1f}s..."
@@ -896,7 +930,8 @@ class APIClient:
 
                 all_results.extend(page)
                 offset += limit
-                # Progress logging (atomic write)
+                # Progress logging (atomic write); the progress dir was
+                # created once up-front (see above).
                 tempdir = os.path.dirname(progress_file) or "."
                 with tempfile.NamedTemporaryFile("w", delete=False, dir=tempdir) as tf:
                     json.dump({"offset": offset, "results": all_results}, tf)
@@ -906,14 +941,6 @@ class APIClient:
                 self.logger.debug(
                     f"Fetched {len(all_results)} records so far (page had {len(page)} records). Progress saved to {progress_file}."
                 )
-
-                # The v2 backend returns exact pages — a short page means last page.
-                # Legacy can return short pages mid-stream, so keep going.
-                if self.is_v2 and len(page) < limit:
-                    self.logger.debug(
-                        f"Short page ({len(page)} < {limit}): last page reached (v2 backend)."
-                    )
-                    break
 
                 # Throttle between pages to avoid overloading the server
                 if self.request_delay > 0:

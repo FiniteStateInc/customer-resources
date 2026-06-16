@@ -45,10 +45,10 @@ By default, fs-report only fetches findings from the **latest version** of each 
 
 ```bash
 # Default: Latest version only (recommended for most use cases)
-fs-report --period 1w
+fs-report run --period 1w
 
 # Include all historical versions when needed
-fs-report --period 1w --all-versions
+fs-report run --period 1w --all-versions
 ```
 
 ---
@@ -81,7 +81,7 @@ The reporting kit includes an intelligent caching system that significantly impr
 Use `--verbose` to see detailed cache information:
 
 ```bash
-fs-report --verbose
+fs-report run --verbose
 ```
 
 Look for these indicators:
@@ -123,13 +123,13 @@ For long-running reports or iterative development, the SQLite cache provides per
 
 ```bash
 # Enable persistent cache with 1-hour TTL
-fs-report --cache-ttl 1h
+fs-report run --cache-ttl 1h
 
 # Other TTL formats: 30m, 2h, 1d, 1w
-fs-report --cache-ttl 30m
+fs-report run --cache-ttl 30m
 
 # Force fresh data (ignore any cached data)
-fs-report --no-cache
+fs-report run --no-cache
 
 # Clear all cached data
 fs-report cache clear --api
@@ -162,7 +162,7 @@ Progress is now tracked in SQLite (when `--cache-ttl` is set) for better crash r
 
 ```bash
 # If a report is interrupted, simply rerun the same command
-fs-report --period 1w --cache-ttl 1h
+fs-report run --period 1w --cache-ttl 1h
 
 # The tool automatically resumes from where it left off
 # Look for: "Resuming from offset X, Y records already fetched"
@@ -177,7 +177,7 @@ JSON progress files (`*_progress.json`) are deprecated. If you have old progress
 rm ~/reports/*_progress.json
 
 # Use SQLite cache instead
-fs-report --cache-ttl 1h
+fs-report run --cache-ttl 1h
 ```
 
 ## Performance Tips
@@ -186,40 +186,40 @@ fs-report --cache-ttl 1h
 
 ```bash
 # Good: Specific date range
-fs-report --start 2024-01-01 --end 2024-01-31
+fs-report run --start 2024-01-01 --end 2024-01-31
 
 # Better: Use period shortcuts for recent data
-fs-report --period 1m
-fs-report --period 7d
+fs-report run --period 1m
+fs-report run --period 7d
 ```
 
 ### 2. Filter by Project When Possible
 
 ```bash
 # Good: All projects
-fs-report --period 1w
+fs-report run --period 1w
 
 # Better: Specific project
-fs-report --period 1w --project "MyProject"
+fs-report run --period 1w --project "MyProject"
 ```
 
 ### 3. Run Multiple Reports Together
 
 ```bash
 # Efficient: Run all reports together to share cache
-fs-report --period 1w --recipe "Executive Summary" --recipe "Component Vulnerability Analysis" --recipe "Findings by Project"
+fs-report run --period 1w --recipe "Executive Summary" --recipe "Component Vulnerability Analysis" --recipe "Findings by Project"
 
 # Less efficient: Run reports separately
-fs-report --period 1w --recipe "Executive Summary"
-fs-report --period 1w --recipe "Component Vulnerability Analysis"
-fs-report --period 1w --recipe "Findings by Project"
+fs-report run --period 1w --recipe "Executive Summary"
+fs-report run --period 1w --recipe "Component Vulnerability Analysis"
+fs-report run --period 1w --recipe "Findings by Project"
 ```
 
 ### 4. Monitor Performance
 
 ```bash
 # Use verbose mode to see cache usage and performance
-fs-report --verbose --period 1w
+fs-report run --verbose --period 1w
 ```
 
 ## Troubleshooting Performance Issues
@@ -237,12 +237,16 @@ fs-report --verbose --period 1w
 2. **Use Specific Filters**: Reduce data transfer with project/version filters
 3. **Check Date Ranges**: Use appropriate time periods
 4. **Resume Interrupted Reports**: Don't restart from scratch
+5. **Tune throughput**: `--batch-size N` (project versions per batch, default 5, max 25) and `--request-delay S` (seconds between requests, default 0.5) trade speed against server load. Lower the delay / raise the batch size to go faster on a healthy server; raise the delay if you hit rate limits.
+6. **Skip NVD enrichment**: `--no-nvd` avoids per-CVE NVD lookups when you don't need enriched descriptions.
 
 ### Memory Issues
 
-1. **Use Project Filters**: Reduce dataset size
-2. **Check Progress Files**: Resume instead of restarting
-3. **Monitor Verbose Output**: Watch for memory-related messages
+1. **`--low-memory`**: the primary lever — drops heavy columns and skips HTML/XLSX rendering to keep peak RSS down on large portfolios.
+2. **Use Project Filters**: Reduce dataset size
+3. **Lower `--batch-size`**: fewer versions fetched per batch means less data held in memory at once
+4. **Check Progress Files**: Resume instead of restarting
+5. **Monitor Verbose Output**: Watch for memory-related messages
 
 ## Order-of-Magnitude Expectations
 

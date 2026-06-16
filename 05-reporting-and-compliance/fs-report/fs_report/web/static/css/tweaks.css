@@ -1,0 +1,99 @@
+/* ============================================================
+   Shared Tweaks — panel chrome + universal application rules.
+   Reads/writes localStorage 'fs_tweaks_v1' (same keys as the
+   Command Center inline panel) so settings carry across every
+   Phase 2 screen. Pair with tweaks.js.
+   Expects each host page to define: --accent, --accent-rgb,
+   --surface-card, --surface-subtle, --surface-muted, --hairline,
+   --ink, --ink-body, --ink-mute, --ink-faint, --font-display,
+   --font-body, --r-lg, --ease-out.
+   ============================================================ */
+
+/* ---- universal application ---- */
+body.no-motion *{animation:none!important}
+body.no-backdrop .backdrop{display:none!important}
+body.no-backdrop::before{display:none!important}
+/* ambient backdrop glow scales with glow intensity (canvas .glow blobs) */
+body.glow-flat .glow{opacity:.12!important}
+body.glow-cinematic .glow{opacity:.42!important}
+/* density on dashboard/list screens that use .main */
+body.density-calm .main{padding:32px 38px}
+body.density-cockpit .main{padding:14px 18px}
+
+/* ---- floating launcher (every screen) ---- */
+.tw-fab{position:fixed;left:16px;bottom:34px;z-index:55;width:38px;height:38px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  background:rgba(17,21,31,.9);border:1px solid var(--hairline);color:var(--ink-body);
+  box-shadow:0 8px 24px rgba(0,0,0,.5);transition:.15s;backdrop-filter:blur(10px)}
+.tw-fab:hover{border-color:var(--accent);color:var(--accent);box-shadow:0 8px 28px rgba(var(--accent-rgb),.3)}
+.tw-fab svg{width:17px;height:17px}
+.tw-fab.in-bar{position:static;left:auto;bottom:auto;width:30px;height:30px;border-radius:var(--r-sm);box-shadow:none;background:var(--surface-subtle);margin-left:2px}
+
+/* ---- panel (mirrors Command Center) ---- */
+.tweaks{position:fixed;right:18px;bottom:42px;z-index:60;width:282px;display:none;
+  background:rgba(17,21,31,.94);backdrop-filter:blur(20px);border:1px solid var(--hairline);
+  border-radius:var(--r-lg);box-shadow:0 20px 60px rgba(0,0,0,.6),0 0 0 1px rgba(var(--accent-rgb),.08);
+  font-family:var(--font-body);overflow:hidden}
+.tweaks.open{display:block;animation:tw-in .26s var(--ease-out)}
+@keyframes tw-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.tw-head{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--hairline)}
+.tw-head .tt{font-family:var(--font-display);font-weight:700;font-size:13px;color:var(--ink);display:flex;align-items:center;gap:8px}
+.tw-head .tt svg{width:15px;height:15px;color:var(--accent)}
+.tw-head .tx{margin-left:auto;cursor:pointer;color:var(--ink-faint);display:flex}
+.tw-head .tx:hover{color:var(--ink)}.tw-head .tx svg{width:15px;height:15px}
+.tw-body{padding:14px;display:flex;flex-direction:column;gap:15px;max-height:68vh;overflow-y:auto}
+.tw-sec{display:flex;flex-direction:column;gap:8px}
+.tw-lbl{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-mute);font-weight:700}
+.tw-swatches{display:flex;gap:9px}
+.tw-sw{width:30px;height:30px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:.15s}
+.tw-sw.on{border-color:var(--ink);box-shadow:0 0 12px currentColor}
+.tw-seg{display:flex;background:var(--surface-subtle);border:1px solid var(--hairline);border-radius:4px;overflow:hidden}
+.tw-seg button{flex:1;padding:7px 4px;background:none;border:none;color:var(--ink-mute);font-family:var(--font-body);font-size:11px;font-weight:600;cursor:pointer;transition:.15s}
+.tw-seg button.on{background:rgba(var(--accent-rgb),.16);color:var(--accent)}
+.tw-seg button:not(:last-child){border-right:1px solid var(--hairline)}
+.tw-tog{display:flex;align-items:center;justify-content:space-between}
+.tw-tog .tl{font-size:12px;color:var(--ink-body)}
+.tw-sw2{position:relative;width:36px;height:20px;border-radius:999px;background:var(--surface-muted);border:1px solid var(--hairline);cursor:pointer;transition:.2s;flex:0 0 auto}
+.tw-sw2::after{content:'';position:absolute;top:1px;left:1px;width:16px;height:16px;border-radius:50%;background:var(--ink-mute);transition:.2s var(--ease-out)}
+.tw-sw2.on{background:rgba(var(--accent-rgb),.25);border-color:var(--accent)}
+.tw-sw2.on::after{left:17px;background:var(--accent);box-shadow:0 0 8px rgba(var(--accent-rgb),.6)}
+.tw-foot{font-size:10px;color:var(--ink-faint);padding:0 14px 12px;font-family:var(--font-mono)}
+
+/* ===== light theme (Tweaks) ===== */
+body.light{
+  --surface-page:#EEF1F7;--surface-card:#FFFFFF;--surface-subtle:#F4F6FA;--surface-muted:#E4E9F1;--surface-hover:#EDF1F7;
+  --hairline:#D6DCE7;--hairline-soft:#E6EAF1;
+  --ink:#0B1020;--ink-strong:#1F2937;--ink-body:#3A4658;--ink-mute:#647088;--ink-faint:#9AA4B5;
+  --accent:#0D9488;--accent-rgb:13,148,136;--accent-grad-end:#14B8A6;
+}
+body.light .backdrop{background:#EEF1F7!important}
+body.light .glow{opacity:.05!important}
+body.light .stars{display:none!important}
+body.light::before{opacity:.4}
+body.light .topbar,body.light .status-bar{background:rgba(255,255,255,.82)!important}
+/* logo is white (brightness(0) invert(1)) for the dark shell — invert to black on the light top-bar */
+body.light .topbar .logo{filter:brightness(0)!important}
+body.light .sidebar{background:rgba(255,255,255,.66)!important}
+body.light .node{background:#FFFFFF!important}
+body.light .pal,body.light .tweaks,body.light .fr,body.light .modal,body.light .cheat{background:rgba(255,255,255,.97)!important}
+body.light .ex-code,body.light .fr-cli,body.light .code{background:#0B1020!important}
+/* light-mode chip/badge legibility */
+body.light .chip,body.light .fmt,body.light .nbadge,body.light .rep-cat{background:rgba(13,17,32,.05)!important;border-color:rgba(13,17,32,.14)!important;color:#3A4658!important}
+body.light .badge,body.light .scan,body.light .qg-ratio{color:#1F2937!important}
+body.light .fmt.pdf,body.light .chip.pdf{color:#b3261e!important}
+body.light .fmt.csv,body.light .chip.csv{color:#1b6e3b!important}
+body.light .fmt.xlsx,body.light .chip.xlsx{color:#0f766e!important}
+body.light .fmt.html,body.light .chip.html{color:#9a6700!important}
+body.light .fmt.md,body.light .chip.md{color:#1d4ed8!important}
+body.light .chip.ai{color:#6d28d9!important}
+/* light-mode builder surfaces */
+body.light .rail,body.light .canvas-head{background:rgba(255,255,255,.72)!important}
+body.light .inspector{background:rgba(255,255,255,.6)!important}
+body.light .step{background:#FFFFFF!important}
+body.light .global-box{background:rgba(13,17,32,.035)!important}
+body.light .lib-item{background:#FFFFFF!important}
+/* light-mode run canvas */
+body.light .toolbar{background:rgba(255,255,255,.72)!important}
+body.light .tbtn{background:#FFFFFF!important}
+body.light .gate .shield{background:#EEF1F7!important;color:#1F2937!important}
+body.light .lmsg,body.light .amsg,body.light .rmsg,body.light .activity-message,body.light .fr-msg{color:#155E66!important;text-shadow:none!important}

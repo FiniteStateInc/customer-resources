@@ -1,0 +1,39 @@
+{% extends "components/_cc_shell.html" %}
+
+{% block title %}fs-report · Scan Queue{% endblock %}
+
+{% block head %}
+  <link rel="stylesheet" href="{{ static_v('css/queue-page.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="page-head fade-up">
+  <div class="ptitle">
+    <span class="eyebrow">Live · auto-refresh · 5m</span>
+    <h1>Scan Queue</h1>
+  </div>
+  <div class="head-actions">
+    <div class="chips">
+      <span class="chip on" data-qf="all">All</span>
+      <span class="chip" data-qf="running">Processing</span>
+      <span class="chip" data-qf="stuck">Stuck</span>
+      <span class="chip" data-qf="done">Done</span>
+    </div>
+    <button class="btn btn-ghost" id="q-refresh"
+            hx-get="/api/queue/full?force=1"
+            hx-target="#queue-body"
+            hx-swap="innerHTML"
+            onclick="this.classList.add('spin');setTimeout(()=>this.classList.remove('spin'),900)">
+      <i data-lucide="refresh-cw"></i> Refresh
+    </button>
+  </div>
+</div>
+
+<div id="queue-body">
+  {% include "components/_scan_queue_full.html" %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ static_v('js/queue-page.js') }}"></script>
+{% endblock %}

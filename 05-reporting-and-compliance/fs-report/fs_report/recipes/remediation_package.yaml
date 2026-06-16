@@ -1,6 +1,8 @@
 name: "Remediation Package"
 category: assessment
+card_description: "Per-version fixes grouped by component, with upgrade commands."
 nav_category: Remediation
+chart_libraries: ["marked", "dompurify"]
 template: "remediation_package.html"
 description: >
   Developer-friendly remediation package per project version. Groups vulnerabilities
