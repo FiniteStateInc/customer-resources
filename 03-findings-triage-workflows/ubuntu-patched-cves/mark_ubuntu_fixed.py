@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import random
+import re
 import sys
 import time
 import urllib.error
@@ -313,6 +314,9 @@ def iter_cve_findings(base_url, token, pvid, severities=None):
 
 
 def set_not_affected(base_url, token, pvid, finding_id, reason):
+    # Send only the fields that apply. justification/response are enum-
+    # validated, so omit response entirely rather than sending "" (which the
+    # API rejects with HTTP 400). status + justification + reason is accepted.
     body = {
         "status": VEX_STATUS,
         "justification": VEX_JUSTIFICATION,
@@ -323,6 +327,89 @@ def set_not_affected(base_url, token, pvid, finding_id, reason):
         f"/public/v0/findings/{pvid}/{finding_id}/status",
         body=body,
     )
+
+
+def detect_ubuntu_release(base_url, token, pvid):
+    """Inspect the project version's operating-system component(s) and return
+    (codename, version_str) for Ubuntu, or (None, None) if not found/unknown.
+    Some images carry the Ubuntu release only at the OS level (not per
+    package), so this is what unlocks release-level not-affected matching."""
+    _, _, payload = _fs_request(
+        "GET", base_url, token, "/public/v0/components",
+        query={"filter": f"projectVersion=={pvid} and type==operating-system",
+               "excluded": "false", "limit": 50},
+    )
+    codenames = {}
+    for c in _items(payload):
+        name = (c.get("name") or "")
+        supplier = (c.get("supplier") or "")
+        if "ubuntu" not in name.lower() and "canonical" not in supplier.lower():
+            continue
+        cn = ubuntu_release_codename(c.get("version") or "")
+        if cn:
+            codenames.setdefault(cn, c.get("version"))
+    if not codenames:
+        return None, None
+    if len(codenames) > 1:
+        print(f"  WARNING: multiple Ubuntu releases on this version "
+              f"({', '.join(sorted(codenames))}); using {sorted(codenames)[0]}.")
+    cn = sorted(codenames)[0]
+    return cn, codenames[cn]
+
+
+def fetch_dependencies(base_url, token, pvid):
+    """Return all direct dependency edges for a project version (paginated)."""
+    out = []
+    offset = 0
+    page_size = 100
+    while True:
+        _, headers, payload = _fs_request(
+            "GET", base_url, token,
+            f"/public/v0/project-versions/{pvid}/dependencies",
+            query={"offset": offset, "limit": page_size},
+        )
+        batch = _items(payload)
+        out.extend(batch)
+        if not batch or len(batch) < page_size:
+            break
+        offset += len(batch)
+        total = {k.lower(): v for k, v in headers.items()}.get("x-total-count")
+        if total is not None and len(out) >= int(total):
+            break
+    return out
+
+
+def latest_referenced_versions(base_url, token, deps):
+    """Collapse dependency edges to one version per dependency project: the
+    most recently created among the versions actually referenced. Returns a
+    list of (project_id, project_name, version_id, version_name)."""
+    by_proj = {}
+    for d in deps:
+        proj = d.get("dependencyProject") or {}
+        dv = d.get("dependencyProjectVersion") or {}
+        pid = proj.get("id")
+        if pid is None:
+            continue
+        entry = by_proj.setdefault(
+            pid, {"name": proj.get("name"), "vids": set()})
+        if dv.get("id"):
+            entry["vids"].add(dv.get("id"))
+
+    selected = []
+    for pid, info in by_proj.items():
+        _, _, payload = _fs_request(
+            "GET", base_url, token, f"/public/v0/projects/{pid}/versions")
+        versions = payload if isinstance(payload, list) else []
+        referenced = [v for v in versions if v.get("id") in info["vids"]]
+        if referenced:
+            latest = max(referenced, key=lambda v: v.get("created") or "")
+            selected.append((pid, info["name"], latest.get("id"),
+                             latest.get("version")))
+        elif info["vids"]:
+            # No created data available; fall back to an arbitrary referenced id.
+            vid = sorted(info["vids"])[0]
+            selected.append((pid, info["name"], vid, "?"))
+    return selected
 
 
 # ---------------------------------------------------------------------------
@@ -344,23 +431,67 @@ def is_ubuntu_component(name, version):
     return name.startswith("ubuntu/") or "ubuntu" in version
 
 
-def evaluate_fix(cve_data, comp_name, installed_version, release=None):
+# Ubuntu MAJOR.MINOR -> Security-tracker release codename.
+UBUNTU_RELEASES = {
+    "14.04": "trusty", "16.04": "xenial", "18.04": "bionic",
+    "20.04": "focal", "22.04": "jammy", "24.04": "noble",
+    "24.10": "oracular", "25.04": "plucky", "25.10": "questing",
+    "26.04": "resolute",
+}
+
+
+def ubuntu_release_codename(version_str):
+    """Map an OS-component version like '22.04.5 LTS' (or '22.04.5%20LTS') to
+    a release codename ('jammy'). Returns None if not recognized."""
+    m = re.search(r"(\d+)\.(\d+)", version_str or "")
+    if not m:
+        return None
+    return UBUNTU_RELEASES.get(f"{m.group(1)}.{m.group(2)}")
+
+
+def pkg_stem(name):
+    """Normalized stem of a package name, for fuzzy binary<->source matching
+    when there is no exact name match (e.g. perl-base ~ perl,
+    libpng16-16 ~ libpng1.6). Strips a leading 'lib', common binary suffixes,
+    and trailing version-ish characters."""
+    s = (name or "").lower()
+    if s.startswith("lib"):
+        s = s[3:]
+    for suf in ("-dev", "-bin", "-base", "-common", "-data", "-doc",
+                "-utils", "-tools", "-dbg"):
+        if s.endswith(suf):
+            s = s[:-len(suf)]
+    return re.sub(r"[0-9.+_-]+$", "", s)
+
+
+def evaluate_fix(cve_data, comp_name, installed_version, release=None,
+                 allow_not_affected=False):
     """
-    Decide whether `installed_version` of the component already contains
-    Ubuntu's fix for the CVE described by `cve_data`.
+    Decide whether the CVE is moot for `installed_version` of the component,
+    per Ubuntu's security data.
 
-    Matching strategy: Ubuntu's tracker is keyed by *source* package, while
-    findings carry *binary* package names (e.g. libc6 -> source glibc). We
-    therefore prefer a package whose source name equals the component name,
-    but fall back to every package in the CVE when there is no exact match.
-    The real signal is the Ubuntu *version lineage*: a fix only counts when a
-    'released' status shares the installed version's upstream series and the
-    installed version is >= the fixed version (dpkg comparison). The full
-    Ubuntu version string (e.g. 2.35-0ubuntu3.8) is source-and-release
-    specific, so lineage matching is reliable even without the source name.
+    Two ways a finding qualifies as NOT_AFFECTED:
+      - "fixed": a 'released' status whose fixed version the installed version
+        is >= (dpkg comparison). Guarded by upstream-series equality so we
+        never compare across releases or unrelated packages.
+      - "not-affected": Ubuntu marks the package not-affected for the relevant
+        release (no fixed version needed). Only considered when `release` is
+        known (from the operating-system component or --release) and
+        allow_not_affected is set, since it is release-specific.
 
-    Returns (fixed: bool, detail: dict|None). detail carries the matched
-    release_codename, fixed_version, and source package when fixed is True.
+    Ubuntu's tracker is keyed by *source* package while findings carry *binary*
+    names (libc6 -> glibc, perl-base -> perl). We prefer an exact source-name
+    match and otherwise fall back to every package in the CVE; the upstream
+    guard keeps 'fixed' matches honest, and 'not-affected' fallbacks require a
+    stem match (or a single-package CVE) to stay conservative.
+
+    When `release` is given, only that release's statuses are considered.
+    When it is None, we fall back to lineage matching across releases for
+    'released' only (no not-affected).
+
+    Returns (qualifies: bool, detail: dict|None) where detail has
+    kind ('fixed'|'not-affected'), release, fixed_version (None if
+    not-affected), and source package.
     """
     if not cve_data:
         return False, None
@@ -373,32 +504,36 @@ def evaluate_fix(cve_data, comp_name, installed_version, release=None):
     candidates = named if named else pkgs
 
     installed_upstream = upstream_of(installed_version)
-    best = None  # prefer the highest fixed version we are >= to
+    fixed_best = None
+    na_best = None
     for pkg in candidates:
+        pname = pkg.get("name")
+        # Conservative gate for the version-less not-affected case.
+        stem_ok = (pname == target or pkg_stem(pname) == pkg_stem(target)
+                   or len(pkgs) == 1)
         for st in pkg.get("statuses") or []:
-            if st.get("status") != "released":
-                continue
             codename = st.get("release_codename")
             if release and codename != release:
                 continue
-            fixed_version = (st.get("description") or "").strip()
-            if not fixed_version:
-                continue
-            # Lineage guard: only compare versions from the same upstream
-            # series, so we don't compare a jammy install against a focal fix.
-            if upstream_of(fixed_version) != installed_upstream:
-                continue
-            if dpkg_compare(installed_version, fixed_version) >= 0:
-                cand = {
-                    "release": codename,
-                    "fixed_version": fixed_version,
-                    "source": pkg.get("name"),
-                }
-                if best is None or dpkg_compare(
-                        fixed_version, best["fixed_version"]) > 0:
-                    best = cand
-    if best is not None:
-        return True, best
+            status = st.get("status")
+            desc = (st.get("description") or "").strip()
+            if status == "released":
+                if not desc or upstream_of(desc) != installed_upstream:
+                    continue
+                if dpkg_compare(installed_version, desc) >= 0:
+                    cand = {"kind": "fixed", "release": codename,
+                            "fixed_version": desc, "source": pname}
+                    if fixed_best is None or dpkg_compare(
+                            desc, fixed_best["fixed_version"]) > 0:
+                        fixed_best = cand
+            elif status == "not-affected" and allow_not_affected and stem_ok:
+                if na_best is None:
+                    na_best = {"kind": "not-affected", "release": codename,
+                               "fixed_version": None, "source": pname}
+    if fixed_best is not None:
+        return True, fixed_best
+    if na_best is not None:
+        return True, na_best
     return False, None
 
 
@@ -408,87 +543,79 @@ def evaluate_fix(cve_data, comp_name, installed_version, release=None):
 
 def parse_args(argv):
     p = argparse.ArgumentParser(
-        description="Mark Ubuntu-fixed CVE findings as NOT_AFFECTED on Finite State.",
+        description="Mark Ubuntu-fixed CVE findings as NOT_AFFECTED on "
+                    "Finite State.",
     )
-    p.add_argument("--project-version-id", help="Project version ID (skips name lookup).")
+    p.add_argument("--project-version-id",
+                   help="Project version ID (skips name lookup).")
     p.add_argument("--project", help="Project name (use with --version).")
-    p.add_argument("--version", dest="version_name", help="Version name (use with --project).")
+    p.add_argument("--version", dest="version_name",
+                   help="Version name (use with --project).")
     p.add_argument("--domain", default=os.environ.get("FINITE_STATE_DOMAIN"),
                    help="Finite State subdomain, e.g. acme.finitestate.io "
                         "(default: $FINITE_STATE_DOMAIN).")
     p.add_argument("--token", default=os.environ.get("FINITE_STATE_AUTH_TOKEN"),
                    help="API token (default: $FINITE_STATE_AUTH_TOKEN).")
-    p.add_argument("--release", help="Restrict matching to one Ubuntu release codename "
-                                     "(e.g. jammy). Default: auto-match by version lineage.")
+    p.add_argument("--release",
+                   help="Force an Ubuntu release codename (e.g. jammy), "
+                        "overriding OS-component detection. Default: detect "
+                        "from the operating-system component; if none is "
+                        "found, fall back to version-lineage matching "
+                        "(released-only, no not-affected).")
     p.add_argument("--severity", default=None,
                    help="Comma-separated severities to scope to, e.g. "
                         "'critical,high'. Default: all severities.")
+    p.add_argument("--include-dependencies", action="store_true",
+                   help="Also process the latest referenced version of each "
+                        "direct dependency project. Default: only the given "
+                        "version (warns if dependencies exist).")
     p.add_argument("--apply", action="store_true",
                    help="Actually send the status updates (default: dry-run).")
     p.add_argument("--overwrite", action="store_true",
                    help="Also re-set findings that already have a VEX status.")
     p.add_argument("--limit", type=int, default=0,
-                   help="Stop after marking N findings (0 = no limit). Useful for testing.")
+                   help="Stop after acting on N findings total across all "
+                        "processed versions (0 = no limit). Useful for "
+                        "testing.")
     return p.parse_args(argv)
 
 
-def main(argv):
-    args = parse_args(argv)
-
-    if not args.domain:
-        sys.exit("error: no domain (set FINITE_STATE_DOMAIN or pass --domain).")
-    if not args.token:
-        sys.exit("error: no token (set FINITE_STATE_AUTH_TOKEN or pass --token).")
-
-    domain = args.domain.replace("https://", "").replace("http://", "").strip("/")
-    base_url = f"https://{domain}/api"
-
-    if not args.project_version_id and not (args.project and args.version_name):
-        sys.exit("error: pass --project-version-id, or both --project and --version.")
-
-    severities = None
-    if args.severity:
-        valid = {"critical", "high", "medium", "low", "none"}
-        severities = [s.strip().lower() for s in args.severity.split(",") if s.strip()]
-        bad = [s for s in severities if s not in valid]
-        if bad:
-            sys.exit(f"error: invalid severity {bad}; choose from {sorted(valid)}.")
-
-    try:
-        if args.project_version_id:
-            pvid = args.project_version_id
-        else:
-            pvid = resolve_project_version_id(
-                base_url, args.token, args.project, args.version_name)
-            print(f"Resolved {args.project} / {args.version_name} -> projectVersionId {pvid}")
-    except ApiError as e:
-        sys.exit(f"error resolving project version: {e}")
-
-    mode = "APPLY" if args.apply else "DRY-RUN"
-    scope = f" severities={','.join(severities)}" if severities else ""
-    print(f"\n[{mode}] host={domain} projectVersionId={pvid}{scope}\n")
-
-    run_start = time.time()
-    stats = {
-        "cve_findings": 0,
-        "ubuntu_components": 0,
-        "matched_fixed": 0,
-        "updated": 0,
-        "skipped_triaged": 0,
-        "no_fix": 0,
-        "no_ubuntu_data": 0,
-        "errors": 0,
+def _new_stats():
+    return {
+        "cve_findings": 0, "ubuntu_components": 0, "matched_fixed": 0,
+        "matched_not_affected": 0, "updated": 0, "skipped_triaged": 0,
+        "no_fix": 0, "no_ubuntu_data": 0, "errors": 0,
     }
 
-    print("Fetching CVE findings...", flush=True)
+
+def process_version(base_url, token, pvid, args, severities, label, state):
+    """Process a single project version. Returns its stats dict. `state` holds
+    the shared cross-version attempt counter for the global --limit."""
+    stats = _new_stats()
+    print(f"\n{'-' * 60}\n{label}  (projectVersionId {pvid})")
+
+    # Determine the Ubuntu release: explicit override, else OS-component.
+    release = args.release
+    if release:
+        print(f"  release: {release} (from --release)")
+    else:
+        release, osver = detect_ubuntu_release(base_url, token, pvid)
+        if release:
+            print(f"  release: {release} (detected OS component '{osver}')")
+        else:
+            print("  release: unknown (no Ubuntu OS component); "
+                  "falling back to version-lineage matching, released-only.")
+    allow_not_affected = bool(release)
+
+    print("  Fetching CVE findings...", flush=True)
     try:
-        findings = list(
-            iter_cve_findings(base_url, args.token, pvid, severities))
+        findings = list(iter_cve_findings(base_url, token, pvid, severities))
     except ApiError as e:
-        sys.exit(f"error fetching findings: {e}")
+        print(f"  error fetching findings: {e}")
+        stats["errors"] += 1
+        return stats
     stats["cve_findings"] = len(findings)
 
-    # Keep only CVE findings on Ubuntu components.
     ubuntu_findings = [
         f for f in findings
         if is_ubuntu_component((f.get("component") or {}).get("name"),
@@ -498,10 +625,12 @@ def main(argv):
     stats["ubuntu_components"] = len(ubuntu_findings)
     print(f"  {stats['cve_findings']} CVE findings, "
           f"{stats['ubuntu_components']} on Ubuntu components.", flush=True)
+    if not ubuntu_findings:
+        return stats
 
-    # Prefetch all referenced Ubuntu CVE records concurrently.
     unique_cves = sorted({f.get("findingId") for f in ubuntu_findings})
-    print(f"Looking up {len(unique_cves)} unique CVEs on ubuntu.com...", flush=True)
+    print(f"  Looking up {len(unique_cves)} unique CVEs on ubuntu.com...",
+          flush=True)
     fetch_errors = prefetch_ubuntu(unique_cves)
 
     for f in ubuntu_findings:
@@ -523,63 +652,157 @@ def main(argv):
             stats["no_ubuntu_data"] += 1
             continue
 
-        fixed, detail = evaluate_fix(
-            cve_data, comp_name, comp_version, args.release)
-        if not fixed:
+        ok, detail = evaluate_fix(cve_data, comp_name, comp_version,
+                                  release, allow_not_affected)
+        if not ok:
             stats["no_fix"] += 1
             continue
 
-        stats["matched_fixed"] += 1
         page = UBUNTU_CVE_PAGE.format(cve=cve)
         src = detail["source"]
-        src_note = f" [{src}]" if src and src != package_name_from_component(comp_name) else ""
-        reason = (
-            f"Fixed by Ubuntu{src_note} in {detail['fixed_version']} "
-            f"({detail['release']}); installed {comp_version} >= fix. "
-            f"Backported patch present. See {page}"
-        )
+        src_note = (f" [{src}]" if src
+                    and src != package_name_from_component(comp_name) else "")
+        if detail["kind"] == "fixed":
+            stats["matched_fixed"] += 1
+            verdict = f"fix {detail['fixed_version']} / {detail['release']}"
+            reason = (
+                f"Fixed by Ubuntu{src_note} in {detail['fixed_version']} "
+                f"({detail['release']}); installed {comp_version} >= fix. "
+                f"Backported patch present. See {page}")
+        else:
+            stats["matched_not_affected"] += 1
+            verdict = f"not-affected / {detail['release']}"
+            reason = (
+                f"Ubuntu marks {src or comp_name} not-affected for "
+                f"{detail['release']}; installed {comp_version}. See {page}")
 
-        already_triaged = current_status not in UNTRIAGED_STATUSES
-        if already_triaged and not args.overwrite:
+        if current_status not in UNTRIAGED_STATUSES and not args.overwrite:
             print(f"  [skip] {cve} {comp_name} {comp_version} "
-                  f"(already {current_status}) -> {detail['fixed_version']}")
+                  f"(already {current_status}) -> {verdict}")
             stats["skipped_triaged"] += 1
             continue
 
         if args.apply:
             try:
-                set_not_affected(base_url, args.token, pvid, finding_id, reason)
+                set_not_affected(base_url, token, pvid, finding_id, reason)
                 stats["updated"] += 1
                 print(f"  [set ] {cve} {comp_name} {comp_version} "
-                      f"-> NOT_AFFECTED (fix {detail['fixed_version']} / {detail['release']})")
+                      f"-> NOT_AFFECTED ({verdict})")
             except ApiError as e:
                 print(f"  [err ] {cve} {comp_name} {comp_version}: {e}")
                 stats["errors"] += 1
         else:
             print(f"  [would] {cve} {comp_name} {comp_version} "
-                  f"-> NOT_AFFECTED (fix {detail['fixed_version']} / {detail['release']})")
+                  f"-> NOT_AFFECTED ({verdict})")
 
-        if args.limit and (stats["updated"] + (0 if args.apply else stats["matched_fixed"])) >= args.limit:
+        # Global cap on findings *acted on* (would/set), across all versions.
+        state["attempted"] += 1
+        if args.limit and state["attempted"] >= args.limit:
             print(f"  -- reached --limit {args.limit}, stopping --")
+            state["stop"] = True
+            break
+
+    return stats
+
+
+def main(argv):
+    args = parse_args(argv)
+
+    if not args.domain:
+        sys.exit("error: no domain (set FINITE_STATE_DOMAIN or pass --domain).")
+    if not args.token:
+        sys.exit("error: no token (set FINITE_STATE_AUTH_TOKEN or pass "
+                 "--token).")
+
+    domain = args.domain.replace("https://", "").replace("http://", "")
+    domain = domain.strip("/")
+    base_url = f"https://{domain}/api"
+
+    if not args.project_version_id and not (args.project and args.version_name):
+        sys.exit("error: pass --project-version-id, or both --project and "
+                 "--version.")
+
+    severities = None
+    if args.severity:
+        valid = {"critical", "high", "medium", "low", "none"}
+        severities = [s.strip().lower()
+                      for s in args.severity.split(",") if s.strip()]
+        bad = [s for s in severities if s not in valid]
+        if bad:
+            sys.exit(f"error: invalid severity {bad}; "
+                     f"choose from {sorted(valid)}.")
+
+    try:
+        if args.project_version_id:
+            root_pvid = args.project_version_id
+            root_label = f"version {root_pvid}"
+        else:
+            root_pvid = resolve_project_version_id(
+                base_url, args.token, args.project, args.version_name)
+            root_label = f"{args.project} / {args.version_name}"
+            print(f"Resolved {root_label} -> projectVersionId {root_pvid}")
+    except ApiError as e:
+        sys.exit(f"error resolving project version: {e}")
+
+    # Discover dependencies up front.
+    try:
+        deps = fetch_dependencies(base_url, args.token, root_pvid)
+    except ApiError as e:
+        print(f"warning: could not fetch dependencies: {e}")
+        deps = []
+
+    targets = [(root_pvid, root_label)]
+    if deps:
+        selected = latest_referenced_versions(base_url, args.token, deps)
+        if args.include_dependencies:
+            for pid, pname, vid, vname in selected:
+                targets.append((vid, f"dependency {pname} / {vname}"))
+            print(f"Including {len(selected)} dependency project(s) "
+                  f"(from {len(deps)} dependency edges).")
+        else:
+            print(f"NOTE: this version has {len(deps)} dependency edges across "
+                  f"{len(selected)} project(s). Re-run with "
+                  f"--include-dependencies to process them too.")
+
+    mode = "APPLY" if args.apply else "DRY-RUN"
+    scope = f" severities={','.join(severities)}" if severities else ""
+    print(f"\n[{mode}] host={domain}{scope} "
+          f"versions-to-process={len(targets)}")
+
+    run_start = time.time()
+    state = {"attempted": 0, "stop": False}
+    total = _new_stats()
+    for pvid, label in targets:
+        st = process_version(base_url, args.token, pvid, args, severities,
+                             label, state)
+        for k in total:
+            total[k] += st.get(k, 0)
+        if state["stop"]:
+            print("\n(global --limit reached; skipping remaining versions)")
             break
 
     elapsed = time.time() - run_start
+    matched = total["matched_fixed"] + total["matched_not_affected"]
     print("\n" + "=" * 60)
-    print(f"CVE findings scanned:         {stats['cve_findings']}")
-    print(f"On Ubuntu components:         {stats['ubuntu_components']}")
-    print(f"Ubuntu reports fixed:         {stats['matched_fixed']}")
+    print(f"Versions processed:           {len(targets) if not state['stop'] else '<=' + str(len(targets))}")
+    print(f"CVE findings scanned:         {total['cve_findings']}")
+    print(f"On Ubuntu components:         {total['ubuntu_components']}")
+    print(f"Ubuntu reports moot:          {matched} "
+          f"(fixed {total['matched_fixed']}, "
+          f"not-affected {total['matched_not_affected']})")
     if args.apply:
-        print(f"Marked NOT_AFFECTED:          {stats['updated']}")
+        print(f"Marked NOT_AFFECTED:          {total['updated']}")
     else:
-        print(f"Would mark NOT_AFFECTED:      {stats['matched_fixed'] - stats['skipped_triaged']}")
-    print(f"Skipped (already triaged):    {stats['skipped_triaged']}")
-    print(f"Not fixed by Ubuntu:          {stats['no_fix']}")
-    print(f"No Ubuntu data (404):         {stats['no_ubuntu_data']}")
-    print(f"Errors:                       {stats['errors']}")
+        print(f"Would mark NOT_AFFECTED:      {matched - total['skipped_triaged']}")
+    print(f"Skipped (already triaged):    {total['skipped_triaged']}")
+    print(f"Not moot per Ubuntu:          {total['no_fix']}")
+    print(f"No Ubuntu data (404):         {total['no_ubuntu_data']}")
+    print(f"Errors:                       {total['errors']}")
     print(f"Elapsed:                      {elapsed:.1f}s")
     print("=" * 60)
-    if not args.apply and stats["matched_fixed"]:
-        print("\nDry-run only. Re-run with --apply to write these status updates.")
+    if not args.apply and matched > total["skipped_triaged"]:
+        print("\nDry-run only. Re-run with --apply to write these "
+              "status updates.")
 
 
 if __name__ == "__main__":
