@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="fs-cli in CI/CD — scan dependencies, gate pull requests, and ship SBOMs from the pipeline.">
+<title>fs-cli in CI/CD</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  img, svg, video { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<style>
+  :root {
+    --ink: #0B1220;
+    --ink-2: #0E1626;
+    --panel: #131C30;
+    --panel-hi: #1B2740;
+    --line: #26324B;
+    --line-soft: #1C2740;
+    --text: #AEB9D0;
+    --text-dim: #6F7C97;
+    --head: #F4F7FF;
+    --azure: #5BA8FF;
+    --azure-deep: #2E6FD0;
+    --amber: #FFB454;
+    --pass: #4ADE80;
+    --fail: #F87171;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, "Cascadia Code", Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+  }
+
+  /* ambient blueprint dot grid */
+  .bg {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(91,168,255,0.10) 1px, transparent 0);
+    background-size: 30px 30px;
+    pointer-events: none;
+    mask-image: radial-gradient(ellipse 120% 90% at 70% 0%, #000 35%, transparent 100%);
+    -webkit-mask-image: radial-gradient(ellipse 120% 90% at 70% 0%, #000 35%, transparent 100%);
+  }
+  .bg::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 70% 60% at 85% 110%, rgba(46,111,208,0.18), transparent 60%);
+  }
+
+  /* top progress */
+  .progress {
+    position: fixed;
+    top: 0; left: 0;
+    height: 3px;
+    width: 0%;
+    background: linear-gradient(90deg, var(--azure-deep), var(--azure));
+    z-index: 50;
+    transition: width .45s cubic-bezier(.4,0,.2,1);
+    box-shadow: 0 0 12px rgba(91,168,255,.5);
+  }
+
+  .deck { position: relative; z-index: 1; height: 100vh; width: 100vw; }
+
+  .slide {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: clamp(2.2rem, 5vw, 5rem) clamp(1.4rem, 7vw, 7rem) clamp(5rem, 9vh, 7rem);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(14px);
+    transition: opacity .5s ease, transform .5s cubic-bezier(.2,.7,.2,1), visibility .5s;
+    overflow-y: auto;
+  }
+  .slide.active {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+  }
+
+  .inner { width: 100%; max-width: 1080px; margin: 0 auto; }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: .74rem;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    color: var(--azure);
+    display: flex;
+    align-items: center;
+    gap: .7rem;
+    margin-bottom: 1.2rem;
+  }
+  .eyebrow::before {
+    content: "";
+    width: 26px; height: 1px;
+    background: var(--azure);
+    opacity: .6;
+  }
+
+  h1 {
+    font-size: clamp(2.6rem, 7vw, 5rem);
+    line-height: 1.02;
+    letter-spacing: -.03em;
+    color: var(--head);
+    margin: 0;
+    font-weight: 700;
+    text-wrap: balance;
+  }
+  h2 {
+    font-size: clamp(1.7rem, 3.6vw, 2.7rem);
+    line-height: 1.08;
+    letter-spacing: -.02em;
+    color: var(--head);
+    margin: 0 0 1.5rem;
+    font-weight: 700;
+    text-wrap: balance;
+  }
+  p.lead { font-size: clamp(1.05rem, 1.7vw, 1.3rem); line-height: 1.55; max-width: 38ch; color: var(--text); margin: 1.4rem 0 0; }
+
+  .mono { font-family: var(--font-mono); }
+  .azure { color: var(--azure); }
+  .amber { color: var(--amber); }
+
+  /* generic content blocks */
+  .grid { display: grid; gap: 1rem; }
+  .cols-2 { grid-template-columns: 1fr 1fr; }
+  .cols-3 { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 760px) {
+    .cols-2, .cols-3 { grid-template-columns: 1fr; }
+  }
+
+  .card {
+    background: linear-gradient(180deg, var(--panel), var(--ink-2));
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 1.15rem 1.25rem;
+  }
+  .card h3 {
+    margin: 0 0 .5rem;
+    font-size: 1.02rem;
+    color: var(--head);
+    letter-spacing: -.01em;
+  }
+  .card p { margin: 0; font-size: .92rem; line-height: 1.5; color: var(--text); }
+  .card .tag {
+    font-family: var(--font-mono);
+    font-size: .68rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--azure);
+  }
+
+  ul.feat { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .95rem; }
+  ul.feat li {
+    position: relative;
+    padding-left: 1.7rem;
+    font-size: clamp(.98rem, 1.5vw, 1.12rem);
+    line-height: 1.5;
+  }
+  ul.feat li::before {
+    content: "";
+    position: absolute;
+    left: 0; top: .55em;
+    width: 7px; height: 7px;
+    background: var(--azure);
+    transform: rotate(45deg);
+    box-shadow: 0 0 8px rgba(91,168,255,.6);
+  }
+  ul.feat li b { color: var(--head); font-weight: 600; }
+
+  .callout {
+    border-left: 3px solid var(--amber);
+    background: linear-gradient(90deg, rgba(255,180,84,.10), transparent 80%);
+    padding: .9rem 1.1rem;
+    border-radius: 0 8px 8px 0;
+    font-size: .95rem;
+    color: var(--text);
+  }
+  .callout b { color: var(--amber); }
+
+  /* code */
+  .code {
+    background: #08101E;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .code .bar {
+    display: flex; align-items: center; gap: .5rem;
+    padding: .55rem .9rem;
+    border-bottom: 1px solid var(--line-soft);
+    background: rgba(255,255,255,.02);
+  }
+  .code .bar .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
+  .code .bar .name { font-family: var(--font-mono); font-size: .72rem; color: var(--text-dim); letter-spacing: .06em; margin-left: .4rem; }
+  .code-scroll { overflow-x: auto; }
+  pre {
+    margin: 0;
+    padding: 1rem 1.1rem;
+    font-family: var(--font-mono);
+    font-size: clamp(.74rem, 1.15vw, .9rem);
+    line-height: 1.6;
+    color: #C9D6EF;
+    white-space: pre;
+    tab-size: 2;
+  }
+  pre .c { color: var(--text-dim); font-style: italic; }
+  pre .k { color: var(--azure); }
+  pre .s { color: var(--amber); }
+  pre .f { color: #8FE0C9; }
+
+  /* pipeline flow (slide 3) */
+  .flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; margin-top: .5rem; }
+  .stage {
+    flex: 1 1 0;
+    min-width: 132px;
+    background: linear-gradient(180deg, var(--panel), var(--ink-2));
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: .9rem .85rem;
+    position: relative;
+    margin: .35rem .55rem .35rem 0;
+  }
+  .stage .n { font-family: var(--font-mono); font-size: .68rem; color: var(--azure); letter-spacing: .1em; }
+  .stage .t { display: block; color: var(--head); font-weight: 600; margin-top: .3rem; font-size: .98rem; }
+  .stage .d { display: block; font-size: .78rem; color: var(--text-dim); margin-top: .25rem; line-height: 1.35; }
+  .stage.fscli { border-color: var(--azure-deep); box-shadow: inset 0 0 0 1px rgba(91,168,255,.25); }
+  .stage.fscli .t { color: var(--azure); }
+  .stage::after {
+    content: "›";
+    position: absolute;
+    right: -.62rem; top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-dim);
+    font-size: 1.1rem;
+    z-index: 2;
+  }
+  .stage:last-child::after { content: none; }
+  @media (max-width: 760px) {
+    .stage::after { content: "▾"; right: 50%; top: auto; bottom: -1.05rem; transform: translateX(50%); }
+    .stage { flex-basis: 100%; }
+  }
+
+  /* table */
+  .tbl { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  .tbl th, .tbl td { text-align: left; padding: .7rem .9rem; border-bottom: 1px solid var(--line-soft); }
+  .tbl th { font-family: var(--font-mono); font-size: .68rem; letter-spacing: .12em; text-transform: uppercase; color: var(--text-dim); font-weight: 500; }
+  .tbl td.mono, .tbl td .mono { font-family: var(--font-mono); color: var(--azure); font-size: .86rem; }
+  .tbl tr:last-child td { border-bottom: none; }
+
+  /* precedence chain */
+  .chain { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; font-family: var(--font-mono); font-size: .9rem; margin-bottom: 1.4rem; }
+  .chain .step { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .45rem .7rem; color: var(--head); }
+  .chain .step.win { border-color: var(--azure-deep); color: var(--azure); }
+  .chain .gt { color: var(--text-dim); }
+
+  /* pill row */
+  .pills { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.1rem; }
+  .pill { font-family: var(--font-mono); font-size: .78rem; padding: .35rem .7rem; border-radius: 999px; border: 1px solid var(--line); color: var(--text); }
+  .pill.good { border-color: rgba(74,222,128,.4); color: var(--pass); }
+  .pill.bad { border-color: rgba(248,113,113,.4); color: var(--fail); }
+  .pill.warn { border-color: rgba(255,180,84,.4); color: var(--amber); }
+
+  /* nav bar */
+  .navbar {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    height: 4rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 clamp(1.2rem, 5vw, 4rem);
+    z-index: 40;
+    background: linear-gradient(0deg, var(--ink) 30%, transparent);
+  }
+  .brand { font-family: var(--font-mono); font-size: .78rem; letter-spacing: .08em; color: var(--text-dim); }
+  .brand b { color: var(--head); font-weight: 600; }
+  .brand .sq { color: var(--azure); }
+
+  .dots { display: flex; gap: .4rem; align-items: center; }
+  .dots button {
+    width: 8px; height: 8px; padding: 0;
+    border-radius: 50%;
+    border: none;
+    background: var(--line);
+    cursor: pointer;
+    transition: background .25s, transform .25s, width .25s;
+  }
+  .dots button.on { background: var(--azure); width: 20px; border-radius: 4px; }
+  .dots button:hover { background: var(--azure-deep); }
+
+  .ctrls { display: flex; align-items: center; gap: 1rem; }
+  .counter { font-family: var(--font-mono); font-size: .82rem; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .counter b { color: var(--head); }
+  .arrows { display: flex; gap: .4rem; }
+  .arrows button {
+    width: 34px; height: 34px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 1rem;
+    display: grid;
+    place-items: center;
+    transition: border-color .2s, color .2s, background .2s;
+  }
+  .arrows button:hover { border-color: var(--azure); color: var(--azure); }
+  .arrows button:disabled { opacity: .3; cursor: default; }
+
+  button:focus-visible, .dots button:focus-visible { outline: 2px solid var(--azure); outline-offset: 2px; }
+
+  .hint {
+    position: fixed; bottom: 4.4rem; right: clamp(1.2rem,5vw,4rem);
+    font-family: var(--font-mono); font-size: .66rem; letter-spacing: .1em;
+    color: var(--text-dim); z-index: 40;
+    opacity: .8;
+  }
+  @media (max-width: 640px) { .hint, .dots { display: none; } }
+
+  /* title slide specifics */
+  .title-ribbon { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 2rem; }
+  .title-ribbon .pill { background: var(--panel); }
+  .title-meta { margin-top: 2.4rem; font-family: var(--font-mono); font-size: .8rem; color: var(--text-dim); }
+
+  .two-col { display: grid; grid-template-columns: 1.05fr .95fr; gap: clamp(1.4rem, 4vw, 3rem); align-items: center; }
+  @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .slide { transition: opacity .2s ease; transform: none; }
+    .progress { transition: none; }
+  }
+</style>
+
+<div class="bg"></div>
+<div class="progress" id="progress"></div>
+
+<div class="deck" id="deck">
+
+  <!-- 1 — TITLE -->
+  <section class="slide" data-stage="intro">
+    <div class="inner">
+      <div class="eyebrow">Finite State · Developer Enablement</div>
+      <h1><span class="mono azure">fs-cli</span> in CI/CD</h1>
+      <p class="lead">Scan dependencies, gate pull requests, and ship SBOMs — straight from the pipeline, without blocking your build agents.</p>
+      <div class="title-ribbon">
+        <span class="pill">19 ecosystems</span>
+        <span class="pill">CycloneDX SBOM</span>
+        <span class="pill">async upload</span>
+        <span class="pill">single Go binary</span>
+      </div>
+      <div class="title-meta">A field guide · v2.0.x</div>
+    </div>
+  </section>
+
+  <!-- 2 — WHAT IT DOES -->
+  <section class="slide" data-stage="concept">
+    <div class="inner">
+      <div class="eyebrow">Where it fits</div>
+      <h2>What fs-cli does</h2>
+      <div class="two-col">
+        <ul class="feat">
+          <li>Detects package managers across <b>19 ecosystems</b> — npm, Go, Maven, pip, Cargo, and more.</li>
+          <li>Resolves the <b>full dependency tree</b> with scope, emits a <b>CycloneDX SBOM</b>.</li>
+          <li>Uploads to the Finite State platform — <b>analysis runs platform-side</b>.</li>
+          <li><b>Async by design:</b> the scan submits and returns; it never blocks CI agents on analysis.</li>
+        </ul>
+        <div class="card">
+          <span class="tag">choose the right command</span>
+          <h3 style="margin-top:.6rem;"><span class="mono">scan</span> vs. <span class="mono">upload</span></h3>
+          <p style="margin-bottom:.7rem;"><b class="azure mono">scan</b> → source repos with package managers. Resolves the dependency tree → SBOM.</p>
+          <p style="margin-bottom:.7rem;"><b class="amber mono">upload</b> → a pre-built binary artifact for analysis.</p>
+          <p style="font-size:.82rem;color:var(--text-dim);">SBOMs and external scanner output have their own commands: <span class="mono">import</span> · <span class="mono">third-party</span>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 — PIPELINE AT A GLANCE -->
+  <section class="slide" data-stage="pipeline">
+    <div class="inner">
+      <div class="eyebrow">The shape of it</div>
+      <h2>A security pipeline, end to end</h2>
+      <div class="flow">
+        <div class="stage"><span class="n">01</span><span class="t">checkout</span><span class="d">actions/checkout</span></div>
+        <div class="stage"><span class="n">02</span><span class="t">install fs-cli</span><span class="d">curl install.sh</span></div>
+        <div class="stage fscli"><span class="n">03</span><span class="t">scan + upload</span><span class="d">fs-cli scan .</span></div>
+        <div class="stage"><span class="n">04</span><span class="t">run-report</span><span class="d">recipes → findings</span></div>
+        <div class="stage"><span class="n">05</span><span class="t">quality-gate</span><span class="d">pass / fail</span></div>
+        <div class="stage"><span class="n">06</span><span class="t">pr-comment</span><span class="d">post results</span></div>
+      </div>
+      <p class="callout" style="margin-top:1.6rem;"><b>fs-cli owns step 3</b> — scan and upload. Reporting, gating, and PR feedback layer on top via the Finite State Actions suite (or fs-report). <span class="mono">download-sbom</span> can export the result at the end.</p>
+    </div>
+  </section>
+
+  <!-- 4 — INSTALL -->
+  <section class="slide" data-stage="install">
+    <div class="inner">
+      <div class="eyebrow">Step 02</div>
+      <h2>Installing in CI</h2>
+      <div class="two-col">
+        <ul class="feat">
+          <li><b>Publicly available</b> — install freely from anywhere, no auth needed to fetch the binary.</li>
+          <li>The <b>install script</b> is the quickest path in CI; <span class="mono">go install</span> or build from source work too.</li>
+          <li><b>Pin a version</b> for reproducibility; pass <span class="mono">--no-update-check</span> to skip the self-update probe.</li>
+          <li>Cache the binary across runs. Linux / macOS / Windows runners all supported.</li>
+        </ul>
+        <div class="code">
+          <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="name">.github/workflows/finite-state.yml</span></div>
+          <div class="code-scroll"><pre><span class="c"># install fs-cli</span>
+<span class="k">- name:</span> Install fs-cli
+  <span class="k">run:</span> <span class="s">|</span>
+    curl -fsSL \
+      https://raw.githubusercontent.com/FiniteStateInc/\
+      customer-resources/main/02-ci-cd-automation/\
+      fs-cli/install.sh | sh</pre></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 — AUTH & CONFIG -->
+  <section class="slide" data-stage="config">
+    <div class="inner">
+      <div class="eyebrow">Auth &amp; configuration</div>
+      <h2>Resolution precedence</h2>
+      <div class="chain">
+        <span class="step win">CLI flags</span><span class="gt">&gt;</span>
+        <span class="step">env vars</span><span class="gt">&gt;</span>
+        <span class="step">credential file</span><span class="gt">&gt;</span>
+        <span class="step">defaults</span>
+      </div>
+      <div class="grid cols-3">
+        <div class="card">
+          <span class="tag">secrets &amp; vars</span>
+          <h3 style="margin-top:.55rem;">Store it once</h3>
+          <p>Token → CI <b>secret</b>. Domain &amp; project ID → CI <b>variables</b>.</p>
+        </div>
+        <div class="card">
+          <span class="tag">env names</span>
+          <h3 style="margin-top:.55rem;">Short wins</h3>
+          <p><span class="mono azure">FS_TOKEN</span> / <span class="mono azure">FS_ENDPOINT</span> override the long <span class="mono">FINITE_STATE_*</span> forms.</p>
+        </div>
+        <div class="card">
+          <span class="tag">key flags</span>
+          <h3 style="margin-top:.55rem;">On the command</h3>
+          <p class="mono" style="font-size:.82rem;color:var(--azure);">--token · --endpoint --name · --project-id --version</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 — RUNNING A SCAN -->
+  <section class="slide" data-stage="scan">
+    <div class="inner">
+      <div class="eyebrow">Step 03</div>
+      <h2>Running a scan</h2>
+      <div class="two-col">
+        <ul class="feat">
+          <li><span class="mono">fs-cli scan .</span> → <b>detect → scan → assemble → upload</b>, concurrent under the hood.</li>
+          <li>Detection priority resolves overlaps: <b>Maven &gt; Gradle</b>, <b>lock file &gt; package.json</b>.</li>
+          <li>Exec scanners (Maven, Gradle, SBT, Go) need the build tool <b>on PATH</b> — bake it into the CI image.</li>
+          <li><span class="mono">--scope runtime</span> drops dev &amp; test deps from the inventory.</li>
+        </ul>
+        <div class="code">
+          <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="name">scan step</span></div>
+          <div class="code-scroll"><pre><span class="f">fs-cli</span> scan . \
+  <span class="k">--token</span> <span class="s">"$FS_API_TOKEN"</span> \
+  <span class="k">--endpoint</span> <span class="s">"https://$FS_DOMAIN"</span> \
+  <span class="k">--name</span> <span class="s">"$REPO_NAME"</span> \
+  <span class="k">--project-id</span> <span class="s">"$FS_PROJECT_ID"</span> \
+  <span class="k">--version</span> <span class="s">"$REF-$SHA"</span></pre></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7 — VERSIONING -->
+  <section class="slide" data-stage="versioning">
+    <div class="inner">
+      <div class="eyebrow">Don't skip this</div>
+      <h2>Versioning strategy</h2>
+      <p class="callout" style="margin-bottom:1.4rem;"><b>Every scan needs a unique version.</b> Reuse one and you overwrite the previous scan — always fold in the git SHA.</p>
+      <div class="code-scroll">
+        <table class="tbl">
+          <thead><tr><th>Trigger</th><th>Pattern</th><th>Example</th></tr></thead>
+          <tbody>
+            <tr><td>Tag / release</td><td class="mono">&lt;tag&gt;-&lt;sha&gt;</td><td class="mono">v1.4.2-9af3c1</td></tr>
+            <tr><td>Pull request</td><td class="mono">pr-&lt;number&gt;-&lt;sha&gt;</td><td class="mono">pr-318-9af3c1</td></tr>
+            <tr><td>Scheduled</td><td class="mono">nightly-&lt;date&gt;-&lt;sha&gt;</td><td class="mono">nightly-20260624-9af3c1</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="margin-top:1.2rem; font-size:.92rem; color:var(--text-dim);">Branch, commit, and remote git metadata are captured automatically and attached to the version.</p>
+    </div>
+  </section>
+
+  <!-- 8 — OUTPUT ADAPTERS -->
+  <section class="slide" data-stage="output">
+    <div class="inner">
+      <div class="eyebrow">Where results go</div>
+      <h2>Output adapters</h2>
+      <div class="grid cols-3">
+        <div class="card">
+          <span class="tag">default</span>
+          <h3 style="margin-top:.55rem;">platform</h3>
+          <p>CycloneDX SBOM → Finite State API upload.</p>
+        </div>
+        <div class="card">
+          <span class="tag">airgap</span>
+          <h3 style="margin-top:.55rem;">file</h3>
+          <p>SBOM to disk, optional <b>Ed25519 signing</b> for transport.</p>
+        </div>
+        <div class="card">
+          <span class="tag">adjacent</span>
+          <h3 style="margin-top:.55rem;">commands</h3>
+          <p class="mono" style="font-size:.82rem;color:var(--azure);">deliver · import · third-party · legacy</p>
+        </div>
+      </div>
+      <p class="callout" style="margin-top:1.5rem;"><b>Airgapped flow:</b> <span class="mono">scan --output=file</span> → transport the signed file → <span class="mono">fs-cli deliver</span> on the connected side.</p>
+    </div>
+  </section>
+
+  <!-- 9 — FS-REPORT: CONCEPT -->
+  <section class="slide" data-stage="fsreport">
+    <div class="inner">
+      <div class="eyebrow">The reporting half</div>
+      <h2>fs-report — inventory in, findings out</h2>
+      <div class="two-col">
+        <ul class="feat">
+          <li>fs-cli <b>writes</b> the inventory up; the platform analyzes it; <b>fs-report reads the findings back</b>.</li>
+          <li>A separate <b>Python CLI</b> — <span class="mono">pipx install fs-report</span> — the findings &amp; reporting engine.</li>
+          <li>Runs <b>recipes</b> that turn findings into deliverables: HTML · CSV · XLSX · JSON · MD · PDF.</li>
+          <li>The GitHub <span class="mono">run-report</span> action simply wraps it.</li>
+        </ul>
+        <div class="card">
+          <span class="tag">a few recipes</span>
+          <h3 style="margin-top:.6rem;">What you can generate</h3>
+          <p style="margin-bottom:.5rem;"><b class="azure">Triage Prioritization</b> — rank what to fix first, with VEX recs.</p>
+          <p style="margin-bottom:.5rem;"><b class="azure">Version Comparison</b> — new vs. fixed between builds.</p>
+          <p style="margin-bottom:.5rem;"><b class="azure">Remediation Package</b> — component action cards with upgrade paths.</p>
+          <p><b class="azure">Executive Summary · CRA Compliance · CVE Impact</b> — and more.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 — FS-REPORT: INSTALL -->
+  <section class="slide" data-stage="fsreport-install">
+    <div class="inner">
+      <div class="eyebrow">Setup</div>
+      <h2>Installing fs-report</h2>
+      <div class="two-col">
+        <ul class="feat">
+          <li><span class="mono">pipx install fs-report</span> — it's a Python tool; <b>pin a version</b> in CI.</li>
+          <li>Auth via env: <span class="mono">FINITE_STATE_AUTH_TOKEN</span> + <span class="mono">FINITE_STATE_DOMAIN</span> — the long names, <b>not</b> fs-cli's <span class="mono">FS_*</span>.</li>
+          <li>For <b>PDF</b> output, pre-stage Chromium with <span class="mono">install-engine</span> — otherwise it pulls ~150&nbsp;MB on first render.</li>
+          <li>Optional AI: set <span class="mono">ANTHROPIC_API_KEY</span> (or OpenAI / Gemini / <span class="mono">GITHUB_TOKEN</span>) to enable <span class="mono">--ai</span>.</li>
+        </ul>
+        <div class="code">
+          <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="name">finite-state.yml — install steps</span></div>
+          <div class="code-scroll"><pre><span class="k">env:</span>                  <span class="c"># job-level, inherited by all steps</span>
+  <span class="k">FINITE_STATE_AUTH_TOKEN:</span> <span class="s">${{ secrets.FS_API_TOKEN }}</span>
+  <span class="k">FINITE_STATE_DOMAIN:</span>     <span class="s">${{ vars.FS_DOMAIN }}</span>
+<span class="k">steps:</span>
+  <span class="k">- run:</span> pipx install fs-report
+  <span class="k">- run:</span> fs-report install-engine --with-deps  <span class="c"># PDFs only</span></pre></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 11 — FS-REPORT: HEADLESS CI -->
+  <section class="slide" data-stage="fsreport-run">
+    <div class="inner">
+      <div class="eyebrow">In the pipeline</div>
+      <h2>Running fs-report headless</h2>
+      <div class="two-col">
+        <ul class="feat">
+          <li><span class="mono">--headless</span> → non-interactive, and it prints a <b>JSON summary to stdout</b> you can parse to gate.</li>
+          <li>Scope it: <span class="mono">--project</span> / <span class="mono">--folder</span> / <span class="mono">--version</span>; pick work with repeated <span class="mono">--recipe</span>.</li>
+          <li><span class="mono">--cache-ttl 1h</span> keeps reruns fast; <span class="mono">--output ./reports</span>, then upload as an artifact.</li>
+          <li>Push triage back: <span class="mono">--autotriage</span> / <span class="mono">--apply-vex-triage</span> write VEX to the platform.</li>
+        </ul>
+        <div class="code">
+          <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="name">fs-report run</span></div>
+          <div class="code-scroll"><pre><span class="f">fs-report</span> run \
+  <span class="k">--recipe</span> <span class="s">"Triage Prioritization"</span> \
+  <span class="k">--recipe</span> <span class="s">"Version Comparison"</span> \
+  <span class="k">--project</span> openwrt <span class="k">--period</span> 30d \
+  <span class="k">--headless --cache-ttl</span> 1h <span class="k">--output</span> ./reports
+
+<span class="c"># stdout →</span>
+{ <span class="k">"success"</span>: true,
+  <span class="k">"recipes"</span>: [ { <span class="k">"recipe"</span>: <span class="s">"Triage Prioritization"</span>,
+                 <span class="k">"stats"</span>: { <span class="k">"total_findings"</span>: 142 } } ] }</pre></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 12 — GATE & REPORT -->
+  <section class="slide" data-stage="gate">
+    <div class="inner">
+      <div class="eyebrow">Layer on top</div>
+      <h2>Gating &amp; reporting</h2>
+      <div class="two-col">
+        <ul class="feat">
+          <li>fs-cli uploads the <b>inventory</b>; gating &amp; reporting layer above it.</li>
+          <li>Chain: <span class="mono">setup → scan → run-report → quality-gate → pr-comment</span>.</li>
+          <li><span class="mono">pr-comment</span> edits in place — use <span class="mono">if: always()</span> so it posts even on failure.</li>
+          <li><span class="mono">download-sbom</span> exports the SBOM (with VEX) as a build artifact.</li>
+        </ul>
+        <div class="card">
+          <span class="tag">gate modes — AND'd</span>
+          <h3 style="margin-top:.6rem;">Three ways to fail a build</h3>
+          <div class="pills">
+            <span class="pill warn">delta</span>
+            <span class="pill warn">threshold</span>
+            <span class="pill warn">triage-priority</span>
+          </div>
+          <p style="margin-top:.9rem;">e.g. <span class="mono">max-new-critical: 0</span> + <span class="mono">fail-on-p0: true</span>.</p>
+          <div class="pills">
+            <span class="pill good">✓ pass → merge</span>
+            <span class="pill bad">✕ fail → block</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 13 — QUERY: NATIVE GATE -->
+  <section class="slide" data-stage="query">
+    <div class="inner">
+      <div class="eyebrow">fs-cli's built-in gate</div>
+      <h2>Gate natively with <span class="mono">query</span></h2>
+      <p class="callout" style="margin-bottom:1.3rem;"><b>The exit code is the gate.</b> A read-only platform query that exits non-zero to fail the build — no fs-report, no report files to parse.</p>
+      <div class="two-col">
+        <div class="grid" style="gap:1rem;">
+          <div class="card">
+            <span class="tag">--type scan</span>
+            <h3 style="margin-top:.5rem;">Did scanning finish?</h3>
+            <p>Checks completion <b>across every scan type</b> — SCA, config, binary SAST, reachability. <span class="mono">--wait</span> polls until settled; fails if any scan failed (or, with <span class="mono">--fail-on-scan-incomplete</span>, is still running).</p>
+          </div>
+          <div class="card">
+            <span class="tag">--type project</span>
+            <h3 style="margin-top:.5rem;">Per-finding AND gate</h3>
+            <p>Prints severity counts, then fails if <b>one finding matches every</b> condition you set. Always fails if the version was never successfully scanned — no false green.</p>
+          </div>
+        </div>
+        <div class="code">
+          <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="name">native gate in CI</span></div>
+          <div class="code-scroll"><pre><span class="c"># fail on a reachable, KEV-listed critical</span>
+<span class="f">fs-cli</span> query <span class="k">--type</span> project \
+  <span class="k">--name</span> <span class="s">"$REPO"</span> <span class="k">--version</span> <span class="s">"$REF-$SHA"</span> \
+  <span class="k">--fail-on-severity</span> critical \
+  <span class="k">--reachable --vulns-in-kev</span></pre></div>
+          <div style="padding:.7rem .9rem; border-top:1px solid var(--line-soft);">
+            <span class="tag" style="color:var(--text-dim);">conditions · AND-combined</span>
+            <div class="pills" style="margin-top:.5rem;">
+              <span class="pill warn mono">--fail-on-severity</span>
+              <span class="pill warn mono">--reachable</span>
+              <span class="pill warn mono">--vulns-in-kev</span>
+              <span class="pill warn mono">--vulns-in-vc-kev</span>
+              <span class="pill warn mono">--exploit-maturity</span>
+              <span class="pill warn mono">--max-epss</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p style="margin-top:1.2rem; font-size:.9rem; color:var(--text-dim);">A lightweight pass/fail — reach for the fs-report + quality-gate chain when you also want reports and PR comments. <span class="mono">--format json</span> for machine output; distinct exit codes per failure mode are planned.</p>
+    </div>
+  </section>
+
+  <!-- 14 — RECIPE -->
+  <section class="slide" data-stage="recipe">
+    <div class="inner">
+      <div class="eyebrow">Worked example</div>
+      <h2>Recipe: the PR gate</h2>
+      <div class="code">
+        <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="name">.github/workflows/finite-state.yml</span></div>
+        <div class="code-scroll"><pre><span class="k">on:</span> { <span class="k">pull_request:</span> { <span class="k">branches:</span> [main] } }
+<span class="k">jobs:</span>
+  <span class="k">security:</span>
+    <span class="k">runs-on:</span> ubuntu-latest
+    <span class="k">permissions:</span> { <span class="k">contents:</span> read, <span class="k">pull-requests:</span> write }
+    <span class="k">steps:</span>
+      <span class="k">- uses:</span> actions/checkout@v4
+      <span class="k">- run:</span> <span class="s">curl -fsSL .../fs-cli/install.sh | sh</span>
+      <span class="k">- run:</span> <span class="s">fs-cli scan . --name "$REPO" --project-id "$PID"
+              --version "pr-${{ github.event.number }}-${{ github.sha }}"</span>
+      <span class="k">- uses:</span> FiniteStateInc/finite-state-actions/actions/run-report@v1
+        <span class="k">with:</span> { <span class="k">recipe:</span> <span class="s">"Triage Prioritization,Version Comparison"</span> }
+      <span class="k">- uses:</span> .../quality-gate@v1
+        <span class="k">with:</span> { <span class="k">mode:</span> delta,triage-priority, <span class="k">max-new-critical:</span> 0, <span class="k">fail-on-p0:</span> true }
+      <span class="k">- uses:</span> .../pr-comment@v1
+        <span class="k">if:</span> always()
+        <span class="k">with:</span> { <span class="k">template:</span> triage }</pre></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 11 — TROUBLESHOOTING -->
+  <section class="slide" data-stage="ops">
+    <div class="inner">
+      <div class="eyebrow">When it goes sideways</div>
+      <h2>Operations &amp; troubleshooting</h2>
+      <div class="grid cols-2">
+        <div class="card">
+          <span class="tag">common failures</span>
+          <h3 style="margin-top:.55rem;">Read the error</h3>
+          <p><b class="amber">401 / 403</b> → token invalid or under-scoped.<br>
+          <b class="amber">timeout</b> → raise the wait window for large scans.<br>
+          <b class="amber">tool not found</b> → exec scanner missing from the image.<br>
+          <b class="amber">file not found</b> → build step ran after the scan.</p>
+        </div>
+        <div class="card">
+          <span class="tag">diagnostics</span>
+          <h3 style="margin-top:.55rem;">Turn up the volume</h3>
+          <p><span class="mono azure">--debug</span> for structured logs, <span class="mono azure">--quiet</span> to silence.<br><br>
+          <b>Local-env gotcha:</b> stray <span class="mono">FS_*</span> vars in your shell can change behavior — unset them when reproducing CI locally.</p>
+        </div>
+      </div>
+      <p style="margin-top:1.3rem; font-size:.92rem; color:var(--text-dim);">Exit code <span class="mono azure">0</span> = pass, non-zero = fail — that's the contract CI reads to block or merge.</p>
+    </div>
+  </section>
+
+  <!-- 12 — CLOSING -->
+  <section class="slide" data-stage="close">
+    <div class="inner">
+      <div class="eyebrow">Take it home</div>
+      <h2>Three things to remember</h2>
+      <div class="grid cols-3" style="margin-bottom:2rem;">
+        <div class="card"><span class="tag">01</span><h3 style="margin-top:.5rem;">Scan, don't block</h3><p>fs-cli submits async — your pipeline keeps moving.</p></div>
+        <div class="card"><span class="tag">02</span><h3 style="margin-top:.5rem;">Version every scan</h3><p>Always fold in the SHA, or you overwrite history.</p></div>
+        <div class="card"><span class="tag">03</span><h3 style="margin-top:.5rem;">Gate where it counts</h3><p>delta + triage-priority blocks the PRs that matter.</p></div>
+      </div>
+      <p class="lead" style="max-width:46ch;">Pick a template, drop in three secrets, and you have security gating on every pull request.</p>
+      <div class="title-meta">github.com/FiniteStateInc · customer-resources/02-ci-cd-automation</div>
+    </div>
+  </section>
+
+</div>
+
+<div class="hint">← → or space to navigate</div>
+
+<nav class="navbar">
+  <div class="brand"><span class="sq">▢</span> <b>fs-cli</b> · CI/CD</div>
+  <div class="dots" id="dots"></div>
+  <div class="ctrls">
+    <div class="counter"><b id="cur">01</b> / <span id="total">16</span></div>
+    <div class="arrows">
+      <button id="prev" aria-label="Previous slide">‹</button>
+      <button id="next" aria-label="Next slide">›</button>
+    </div>
+  </div>
+</nav>
+
+<script>
+  (function () {
+    var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var total = slides.length;
+    var i = 0;
+
+    var elCur = document.getElementById('cur');
+    var elTotal = document.getElementById('total');
+    var elProg = document.getElementById('progress');
+    var elPrev = document.getElementById('prev');
+    var elNext = document.getElementById('next');
+    var elDots = document.getElementById('dots');
+
+    elTotal.textContent = String(total).padStart(2, '0');
+
+    // build dots
+    slides.forEach(function (s, idx) {
+      var b = document.createElement('button');
+      b.setAttribute('aria-label', 'Go to slide ' + (idx + 1));
+      b.addEventListener('click', function () { go(idx); });
+      elDots.appendChild(b);
+    });
+    var dots = Array.prototype.slice.call(elDots.children);
+
+    function render() {
+      slides.forEach(function (s, idx) { s.classList.toggle('active', idx === i); });
+      dots.forEach(function (d, idx) { d.classList.toggle('on', idx === i); });
+      elCur.textContent = String(i + 1).padStart(2, '0');
+      elProg.style.width = (total <= 1 ? 100 : (i / (total - 1)) * 100) + '%';
+      elPrev.disabled = i === 0;
+      elNext.disabled = i === total - 1;
+      if (location.hash !== '#' + (i + 1)) {
+        history.replaceState(null, '', '#' + (i + 1));
+      }
+    }
+
+    function go(n) {
+      i = Math.max(0, Math.min(total - 1, n));
+      render();
+    }
+    function next() { go(i + 1); }
+    function prev() { go(i - 1); }
+
+    elNext.addEventListener('click', next);
+    elPrev.addEventListener('click', prev);
+
+    document.addEventListener('keydown', function (e) {
+      switch (e.key) {
+        case 'ArrowRight': case 'PageDown': case ' ': e.preventDefault(); next(); break;
+        case 'ArrowLeft': case 'PageUp': prev(); break;
+        case 'Home': go(0); break;
+        case 'End': go(total - 1); break;
+      }
+    });
+
+    // advance on click in the right 60% of the viewport (ignore nav + links)
+    document.getElementById('deck').addEventListener('click', function (e) {
+      if (e.target.closest('a, button')) return;
+      if (e.clientX > window.innerWidth * 0.4) next(); else prev();
+    });
+
+    var start = parseInt((location.hash || '').replace('#', ''), 10);
+    if (start >= 1 && start <= total) i = start - 1;
+    render();
+  })();
+</script>
+
+</body>
+</html>

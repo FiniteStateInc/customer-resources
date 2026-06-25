@@ -4,7 +4,7 @@
 #
 # Usage:
 #   irm https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/run-fs-cli.ps1 | iex
-#   .\run-fs-cli.ps1 scan --token $env:FS_TOKEN --project-name my-project
+#   .\run-fs-cli.ps1 scan --token $env:FS_TOKEN --name my-project
 #
 # Environment variables:
 #   FS_CLI_DIR    Directory to cache the binary (default: .fs-cli in working dir)

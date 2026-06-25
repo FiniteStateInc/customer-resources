@@ -9,7 +9,7 @@ set -e
 #   curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/run-fs-cli.sh | sh -s -- scan --token "$TOKEN"
 #
 # Or download once and invoke directly:
-#   ./run-fs-cli.sh scan --token "$TOKEN" --project-name my-project
+#   ./run-fs-cli.sh scan --token "$TOKEN" --name my-project
 #
 # Environment variables:
 #   FS_CLI_DIR    Directory to cache the binary (default: .fs-cli in working dir)

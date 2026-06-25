@@ -44,4 +44,5 @@ irm https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-
 | `install.ps1` | One-line installer for Windows (PowerShell, verifies checksum) |
 | `run-fs-cli.sh` | CI wrapper for Linux/macOS (downloads, caches, and runs fs-cli) |
 | `run-fs-cli.ps1` | CI wrapper for Windows (PowerShell equivalent) |
+| `fs-cli-ci-cd-presentation.html` | Self-contained slide deck on using fs-cli (and fs-report) in CI/CD — open in any browser |
 | `latest/` | Current release binaries, checksums, changelog, and documentation |
