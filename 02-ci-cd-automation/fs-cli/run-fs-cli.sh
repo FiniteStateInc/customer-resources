@@ -2,14 +2,18 @@
 set -e
 
 # fs-cli CI wrapper
-# Downloads (if needed) and runs fs-cli with the correct platform binary.
+# Bootstraps fs-cli on first run (downloads the correct platform binary),
+# then reuses the cached binary. fs-cli 2.0.17+ keeps itself up to date from
+# the Finite State platform, so the wrapper never re-downloads a current
+# binary; a cached binary older than the published release (which cannot
+# self-update) is upgraded once.
 # All arguments are forwarded to fs-cli.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/FiniteStateInc/customer-resources/main/02-ci-cd-automation/fs-cli/run-fs-cli.sh | sh -s -- scan --token "$TOKEN"
 #
 # Or download once and invoke directly:
-#   ./run-fs-cli.sh scan --token "$TOKEN" --name my-project
+#   ./run-fs-cli.sh scan --token "$TOKEN" --project-name my-project
 #
 # Environment variables:
 #   FS_CLI_DIR    Directory to cache the binary (default: .fs-cli in working dir)
@@ -55,6 +59,26 @@ download() {
     fi
 }
 
+# version_lt A B — true when release A is numerically older than release B.
+# Accepts values like "v2.0.16" or "2.3.19-dev+abc" (leading v and any
+# -/+ suffix are ignored). Returns false on anything unparseable so the
+# caller prefers the cached binary rather than looping on downloads.
+version_lt() {
+    a="$(printf '%s' "$1" | sed 's/^v//; s/[-+].*//')"
+    b="$(printf '%s' "$2" | sed 's/^v//; s/[-+].*//')"
+    i=1
+    while [ "$i" -le 3 ]; do
+        na="$(printf '%s' "$a" | cut -d. -f"$i")"
+        nb="$(printf '%s' "$b" | cut -d. -f"$i")"
+        case "$na" in ''|*[!0-9]*) return 1 ;; esac
+        case "$nb" in ''|*[!0-9]*) return 1 ;; esac
+        [ "$na" -lt "$nb" ] && return 0
+        [ "$na" -gt "$nb" ] && return 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
 verify_checksum() {
     binary_path="$1"
     binary_name="$2"
@@ -93,20 +117,22 @@ ensure_binary() {
     cache_dir="${FS_CLI_DIR:-.fs-cli}"
     cached_bin="${cache_dir}/fs-cli${ext}"
 
-    # Check if cached binary exists and matches the latest version
+    # Use the cached binary if present. fs-cli 2.0.17+ updates itself from
+    # the Finite State platform, so the wrapper never re-downloads a current
+    # binary — but older cached versions cannot self-update, so upgrade them
+    # once to the published release.
     if [ -x "$cached_bin" ]; then
-        # Fetch remote version to see if we need to update
+        local_version="$("$cached_bin" version 2>/dev/null | awk '{print $2}')"
         tmpver="$(mktemp)"
-        trap_cleanup="rm -f \"$tmpver\""
         if download "${BASE_URL}/VERSION" "$tmpver" 2>/dev/null; then
             remote_version="$(cat "$tmpver")"
-            local_version="$("$cached_bin" version 2>/dev/null || echo "")"
             rm -f "$tmpver"
-            if [ -n "$remote_version" ] && [ "$local_version" = "$remote_version" ]; then
+            if version_lt "$local_version" "$remote_version"; then
+                info "Cached fs-cli ${local_version:-unknown} predates ${remote_version}; upgrading"
+            else
                 FS_CLI_BIN="$cached_bin"
                 return 0
             fi
-            info "Update available (${local_version:-unknown} -> ${remote_version})"
         else
             rm -f "$tmpver"
             # Can't reach remote; use cached binary
@@ -147,9 +173,6 @@ main() {
     else
         ensure_binary
     fi
-
-    # Suppress the built-in update check since we handle it ourselves
-    export FS_NO_UPDATE_CHECK=1
 
     exec "$FS_CLI_BIN" "$@"
 }

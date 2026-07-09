@@ -142,7 +142,9 @@ Shared flags: `--name`/`--project` + `--version` to resolve the version (`--vers
 fs-cli update
 ```
 
-Self-updates the binary in place. On Windows, renames the old binary to `.old` and cleans it up on the next run.
+Asks the Finite State platform for the latest release, verifies its SHA-256 checksum and Ed25519 signature, and self-updates the binary in place (requires endpoint + token). On Windows, renames the old binary to `.old` and cleans it up on the next run.
+
+fs-cli also updates itself automatically before work commands (`scan`, `upload`, `import`, `third-party`, `deliver`) when credentials are available — this is how it upgrades to the next-generation Finite State CLI (v2.3.x) once the platform is upgraded. If the platform has no update service yet, it logs an info message and the command continues. Disable with `FS_SKIP_UPDATE=1`, `FS_NO_UPDATE_CHECK=1`, or `--no-update-check`.
 
 ### Version
 
@@ -167,7 +169,7 @@ Credentials are resolved in order: CLI flags > environment variables > credentia
 - `FS_VERSION_ID`: version UUID (skips version creation)
 - `FS_RELEASE`: enable release mode (equivalent to `--release`)
 - `FS_RELEASE_SYNCHRONOUS`: enable synchronous release mode (equivalent to `--release-synchronous`; implies `FS_RELEASE`)
-- `FS_NO_UPDATE_CHECK=1`: disable update notifications
+- `FS_NO_UPDATE_CHECK=1` / `FS_SKIP_UPDATE=1`: disable the automatic update check
 
 **Credential file** at `~/.finitestate/credential`:
 ```
@@ -184,7 +186,7 @@ One key=value pair per line. Lines starting with `#` are comments. The legacy ke
 
 - `--debug`: structured debug logging
 - `--quiet`: minimal output
-- `--no-update-check`: suppress update notification
+- `--no-update-check`: disable the automatic update check
 
 ## Output adapters
 
@@ -249,7 +251,7 @@ Select with `--output`:
     fs-cli query --type project --name "$NAME" --version "$VER" --fail-on-severity high
 ```
 
-The two `query` steps fail the job (non-zero exit) if the scan errored or a finding matches the gate — here, any critical or high finding. Set `FS_NO_UPDATE_CHECK=1` in CI to suppress update notifications.
+The two `query` steps fail the job (non-zero exit) if the scan errored or a finding matches the gate — here, any critical or high finding. Set `FS_SKIP_UPDATE=1` in CI to disable automatic self-updates if you need fully pinned tooling.
 
 ## Airgap workflow
 

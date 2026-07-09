@@ -76,13 +76,17 @@ sudo mv fs-cli /usr/local/bin/
 
 ### Self-update
 
-Once installed, fs-cli can update itself in place:
+fs-cli keeps itself up to date automatically. Before a work command runs (`scan`, `upload`, `import`, `third-party`, `deliver`), it asks the Finite State platform whether a newer release is available for your OS and architecture. If so, it downloads the release, verifies its SHA-256 checksum and Ed25519 signature, replaces itself in place, and restarts to run your command on the new version.
+
+This is also how fs-cli upgrades itself to the next-generation Finite State CLI (v2.3.x): once your platform is upgraded, the first run updates the binary in place — same `fs-cli` name, compatible commands and flags. If your platform has not been upgraded yet, the update check logs an informational "auto-update service is temporarily unavailable" message and the command continues normally.
+
+The update check uses your configured endpoint and token, so it only runs when credentials are available. To check for an update manually:
 
 ```sh
 fs-cli update
 ```
 
-fs-cli also checks for new versions after each command and prints a notification to stderr when an update is available.
+To disable automatic updates, set `FS_SKIP_UPDATE=1` (or `FS_NO_UPDATE_CHECK=1`) or pass `--no-update-check`.
 
 ---
 
@@ -113,7 +117,9 @@ Configuration is resolved in this order (highest precedence first):
 | `FS_RELEASE` | | Enable release mode (equivalent to `--release`) |
 | `FS_RELEASE_SYNCHRONOUS` | | Enable synchronous release mode (equivalent to `--release-synchronous`; implies release mode) |
 | `FS_DEBUG` | | Enable debug logging |
-| `FS_NO_UPDATE_CHECK` | | Set to `1` to disable update notifications |
+| `FS_NO_UPDATE_CHECK` | | Set to `1` to disable the automatic update check |
+| `FS_SKIP_UPDATE` | | Set to `1` to disable the automatic update check (alias) |
+| `FS_ALLOW_INSECURE_HTTP` | | Set to `1` to permit a plain-HTTP endpoint for the update check (not recommended) |
 
 When both a primary variable and its alias are set, the primary (`FS_*`) takes precedence.
 
@@ -597,7 +603,7 @@ Update fs-cli to the latest version.
 fs-cli update
 ```
 
-Downloads the latest binary for your platform, verifies its SHA-256 checksum, and replaces the running binary. No arguments or flags required.
+Asks the Finite State platform for the latest release, downloads it, verifies its SHA-256 checksum and Ed25519 signature, and replaces the running binary. Requires a configured endpoint and token (flags, environment variables, or the credential file).
 
 On **Windows**, the running executable cannot be deleted, so fs-cli renames the old binary to `fs-cli.exe.old` and writes the new one in its place. The `.old` file is automatically cleaned up on the next invocation.
 
@@ -621,7 +627,7 @@ These flags apply to all commands:
 |---|---|
 | `--debug` | Enable debug logging (structured key-value output) |
 | `--quiet` | Minimal output |
-| `--no-update-check` | Disable the post-command update notification |
+| `--no-update-check` | Disable the automatic update check |
 
 ---
 
@@ -737,7 +743,7 @@ pipeline {
 - Store `FS_TOKEN` as a secret / masked variable — never commit it to source control.
 - Use `--test` in pull request checks to validate scanning without uploading.
 - Use `--strict` if you want the CI step to fail when a scanner encounters an error.
-- Set `FS_NO_UPDATE_CHECK=1` in CI to suppress update notifications.
+- Set `FS_SKIP_UPDATE=1` in CI if you need fully pinned tooling — note this also skips the automatic upgrade to the next-generation CLI.
 
 ---
 
@@ -779,7 +785,7 @@ The credential file at `~/.finitestate/credential` is fully compatible. Both the
 
 - **No Java required.** fs-cli is a single static binary.
 - **Faster.** Scans run concurrently and the binary starts instantly.
-- **Self-updating.** Run `fs-cli update` instead of re-downloading the JAR.
+- **Self-updating.** fs-cli keeps itself up to date automatically from the Finite State platform.
 - **Subcommand syntax.** `fs-cli scan`, `fs-cli upload`, etc. The old flag syntax still works but prints a deprecation warning.
 
 ---
@@ -817,7 +823,7 @@ fs-cli scan --name myproject --scan-timeout 15 .
 
 ### Permission denied on update
 
-`fs-cli update` needs write access to the directory containing the binary. If installed to `/usr/local/bin`, you may need to run the update with appropriate permissions.
+Self-updating (automatic or via `fs-cli update`) needs write access to the directory containing the binary. If installed to `/usr/local/bin`, you may need to run the update with appropriate permissions, or install to a user-writable location.
 
 ### Debug logging
 

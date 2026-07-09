@@ -4,6 +4,14 @@
 
 Single binary, no runtime dependencies. Supports 19 package ecosystems with transitive dependency resolution.
 
+> **⚠️ Final release — fs-cli now upgrades itself through the Finite State platform**
+>
+> v2.0.17 is the final release published through this distribution channel. From now on, fs-cli receives updates directly from the Finite State platform: the first time you run it against an upgraded platform, it automatically upgrades itself to the next-generation Finite State CLI (v2.3.x) — same `fs-cli` binary name, compatible commands and flags — and continues your command. If your platform has not been upgraded yet, fs-cli keeps working as before (you may see an informational "auto-update service is temporarily unavailable" log line, which is safe to ignore).
+>
+> You can also download the next-generation CLI directly from the Finite State platform UI — see the [CLI documentation](https://docs.finitestate.io/docs/getting-started/command-line-interface/).
+>
+> To opt out of automatic updates, set `FS_SKIP_UPDATE=1` or pass `--no-update-check`.
+
 ## Installation
 
 ### Automated (recommended)
@@ -169,13 +177,17 @@ fs-cli import sbom.cdx.json --name my-device --version v3.0.0
 
 ## Updating
 
-fs-cli checks for new versions after each command and will notify you when an update is available. To update in place:
+fs-cli keeps itself up to date automatically. Before a work command runs (`scan`, `upload`, `import`, `third-party`, `deliver`), it asks the Finite State platform whether a newer release is available. If so, it downloads the release, verifies its SHA-256 checksum and Ed25519 signature, replaces itself in place, and restarts to run your command on the new version. This is how fs-cli upgrades itself to the next-generation CLI (v2.3.x) once your platform is upgraded.
+
+The update check uses your configured endpoint and token, so it only runs when credentials are available. If the update service is unreachable — or your platform does not offer it yet — the command simply continues on the current version.
+
+To check for an update manually:
 
 ```sh
 fs-cli update
 ```
 
-To disable update notifications, set `FS_NO_UPDATE_CHECK=1` or use `--no-update-check`.
+To disable automatic updates, set `FS_SKIP_UPDATE=1` (or `FS_NO_UPDATE_CHECK=1`) or use `--no-update-check`.
 
 ## Supported Ecosystems
 
