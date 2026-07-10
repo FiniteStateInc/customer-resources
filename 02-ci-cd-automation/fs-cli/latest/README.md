@@ -8,7 +8,7 @@ Single binary, no runtime dependencies. Supports 19 package ecosystems with tran
 >
 > v2.0.17 is the final release published through this distribution channel. From now on, fs-cli receives updates directly from the Finite State platform: the first time you run it against an upgraded platform, it automatically upgrades itself to the next-generation Finite State CLI (v2.3.x) — same `fs-cli` binary name, compatible commands and flags — and continues your command. If your platform has not been upgraded yet, fs-cli keeps working as before (you may see an informational "auto-update service is temporarily unavailable" log line, which is safe to ignore).
 >
-> You can also download the next-generation CLI directly from the Finite State platform UI — see the [CLI documentation](https://docs.finitestate.io/docs/getting-started/command-line-interface/).
+> You can also download the next-generation CLI directly from the Finite State platform UI — see the [CLI documentation](https://docs.finitestate.io/docs/command-line-interface/v2/).
 >
 > To opt out of automatic updates, set `FS_SKIP_UPDATE=1` or pass `--no-update-check`.
 
