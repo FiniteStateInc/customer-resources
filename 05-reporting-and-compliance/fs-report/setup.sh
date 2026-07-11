@@ -83,15 +83,22 @@ if ! command -v pipx &>/dev/null; then
     warn "pipx not found. Installing..."
     if command -v brew &>/dev/null; then
         brew install pipx
+    elif command -v apt-get &>/dev/null; then
+        # Modern Debian/Ubuntu mark the system Python "externally managed"
+        # (PEP 668): `pip install` into it is blocked, so use apt's pipx.
+        # May prompt for your sudo password.
+        sudo apt-get update -qq && sudo apt-get install -y pipx
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y pipx
     else
         "$PYTHON" -m pip install --user pipx
     fi
-    "$PYTHON" -m pipx ensurepath 2>/dev/null || true
+    pipx ensurepath 2>/dev/null || "$PYTHON" -m pipx ensurepath 2>/dev/null || true
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
 if ! command -v pipx &>/dev/null; then
-    fail "pipx installation failed. Install manually: https://pipx.pypa.io"
+    fail "pipx installation failed. On Debian/Ubuntu: sudo apt install pipx && pipx ensurepath (then open a new shell). Otherwise: https://pipx.pypa.io"
 fi
 ok "pipx found: $(pipx --version)"
 
