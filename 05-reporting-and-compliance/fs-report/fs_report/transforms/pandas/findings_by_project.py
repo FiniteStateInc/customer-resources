@@ -263,52 +263,6 @@ def findings_by_project_pandas_transform(
     return output_df
 
 
-def apply_project_filter(df: pd.DataFrame, project_filter: str) -> pd.DataFrame:
-    """
-    Apply project filtering based on filter type detection.
-
-    Args:
-        df: Findings DataFrame
-        project_filter: Filter string (project name, ID, or version ID)
-
-    Returns:
-        Filtered DataFrame
-    """
-    if not project_filter or project_filter == "all":
-        return df
-
-    # Handle multiple projects (comma-separated)
-    if "," in project_filter:
-        project_list = [p.strip() for p in project_filter.split(",")]
-        filtered_dfs = []
-        for project in project_list:
-            filtered_df = apply_single_project_filter(df, project)
-            filtered_dfs.append(filtered_df)
-        return pd.concat(filtered_dfs, ignore_index=True)
-
-    return apply_single_project_filter(df, project_filter)
-
-
-def apply_single_project_filter(df: pd.DataFrame, project_filter: str) -> pd.DataFrame:
-    """
-    Apply filtering for a single project identifier.
-    """
-    try:
-        project_id = int(project_filter)
-        # Check if it's a project ID — compare as strings to handle mixed types
-        if "project.id" in df.columns:
-            project_match = df[df["project.id"].astype(str) == str(project_id)]
-            if not project_match.empty:
-                return project_match
-        return pd.DataFrame()
-    except ValueError:
-        # Not an integer, treat as project name (case-insensitive)
-        if "project.name" in df.columns:
-            project_match = df[df["project.name"].str.lower() == project_filter.lower()]
-            return project_match
-        return pd.DataFrame()
-
-
 def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     Flatten nested data structures in findings DataFrame and extract all required fields.
@@ -369,7 +323,16 @@ def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
 
         df["component.name"] = df["component"].apply(extract_component_name)
         df["component.version"] = df["component"].apply(extract_component_version)
-        df["component.group"] = df["component"].apply(extract_component_group)
+        # Non-destructive: only write the purl-derived group where the column
+        # is empty (or not yet populated).  Engine-level SBOM enrichment
+        # pre-populates component.group before the transform runs — clobbering
+        # it here would defeat that enrichment.
+        derived = df["component"].apply(extract_component_group)
+        if "component.group" in df.columns:
+            empty_mask = df["component.group"].fillna("").eq("")
+            df.loc[empty_mask, "component.group"] = derived[empty_mask]
+        else:
+            df["component.group"] = derived
 
     # Handle project data
     if "project" in df.columns:

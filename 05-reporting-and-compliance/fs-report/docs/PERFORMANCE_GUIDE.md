@@ -89,6 +89,10 @@ Look for these indicators:
 - `Using cached data for /public/v0/findings (X records)` - Using cache
 - `Using cache for /public/v0/findings` - Progress bar shows cache usage
 
+### Per-Version SBOM Group Lookup Cache
+
+License Report, Component List, and Findings by Project cache per-version CycloneDX SBOM group lookups (raw cache key `sbom_group_lookup:{version_id}`) with a dedicated 7-day TTL that is independent of `--cache-ttl` and fingerprint-invalidated whenever the version's component inventory changes (a metadata-only rescan on an unchanged inventory refreshes via the 7-day TTL, or immediately with `--refresh`). Caching activates whenever a cache exists (any `--cache-ttl > 0`; the web UI defaults to 4h), so repeat portfolio runs skip redundant full-SBOM downloads — the first run still costs one SBOM download per version. The run log prints a line like `SBOM group enrichment: N SBOM(s) fetched, M version(s) served from cache`.
+
 ## Filtering Performance
 
 ### Project and Version Filtering
@@ -239,6 +243,7 @@ fs-report run --verbose --period 1w
 4. **Resume Interrupted Reports**: Don't restart from scratch
 5. **Tune throughput**: `--batch-size N` (project versions per batch, default 5, max 25) and `--request-delay S` (seconds between requests, default 0.5) trade speed against server load. Lower the delay / raise the batch size to go faster on a healthy server; raise the delay if you hit rate limits.
 6. **Skip NVD enrichment**: `--no-nvd` avoids per-CVE NVD lookups when you don't need enriched descriptions.
+7. **VEX apply throughput**: VEX application (Autotriage / bulk apply) uses the platform's native bulk-set endpoint (`PUT /public/v0/findings/{projectVersionId}/status/set/bulk`) for integer-ID findings; `--vex-concurrency N` (1-5, default 5) meters parallel VEX-apply work units — concurrent bulk batches plus single-PUT fallbacks for UUID/non-integer IDs — not per-finding requests. The CLI VEX summary reports throughput as items/s. `--batch-size` and `--request-delay` are fetch-side levers and do not affect VEX-apply throughput.
 
 ### Memory Issues
 

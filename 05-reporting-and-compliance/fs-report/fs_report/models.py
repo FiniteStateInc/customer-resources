@@ -26,6 +26,21 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+def normalize_domain(value: str) -> str:
+    """Normalize a Finite State domain: lowercase, strip scheme + trailing /.
+
+    Single source of truth for ``Config.domain`` / ``Config.compare_domain``
+    validation and the ``fs-report doctor`` preflight, so a user-supplied
+    ``https://tenant.example.com/`` never produces a doubled-scheme URL.
+    """
+    domain = value.strip().lower()
+    if domain.startswith(("http://", "https://")):
+        domain = domain.split("://", 1)[1]
+    if domain.endswith("/"):
+        domain = domain[:-1]
+    return domain
+
+
 class ChartType(StrEnum):
     """Supported chart types for visualization."""
 
@@ -385,11 +400,19 @@ class Recipe(BaseModel):
         "Audience recipes are hidden from 'list recipes' by default.",
     )
     nav_category: (
-        Literal["Executive", "Investigation", "Remediation", "Compliance"] | None
+        Literal[
+            "Executive",
+            "Investigation",
+            "Remediation",
+            "Compliance",
+            "Exploitability Evidence",
+        ]
+        | None
     ) = Field(
         None,
         description="UI grouping for --serve and report-server sidebars. "
-        "Values: Executive | Investigation | Remediation | Compliance. "
+        "Values: Executive | Investigation | Remediation | Compliance | "
+        "Exploitability Evidence. "
         "Distinct from `audience` (consumer subdir) and `category` "
         "(assessment | operational | compound).",
     )
@@ -437,6 +460,13 @@ class Recipe(BaseModel):
     )
     transform_function: str | None = Field(
         None, description="Custom transform function name"
+    )
+    transform_input: Literal["object"] | None = Field(
+        default=None,
+        description="When 'object', the recipe's data (data-file override or query result) "
+        "is delivered to its transform_function as the raw object, bypassing "
+        "DataTransformer's pd.DataFrame coercion. Used by query-less recipes whose "
+        "transform consumes a whole {meta,coverage,results}-shaped dict.",
     )
     portfolio_transform: list[Transform] | None = Field(
         None, description="Transforms for portfolio analysis chart"
@@ -1373,7 +1403,7 @@ class Config(BaseModel):
     )
     exploit_maturity_threshold: list[str] | None = Field(
         None,
-        description="CRA tier set above threshold. Values: kev, weaponized, poc, ransomware, threat_actor. None defers to the recipe YAML default (kev, ransomware, threat_actor, weaponized).",
+        description="CRA tier set above threshold. Values: kev, weaponized, poc, ransomware, threat_actor, botnet, commercial, reported. None defers to the recipe YAML default (kev, ransomware, threat_actor, weaponized, botnet); poc/commercial/reported are recognized but opt-in.",
     )
     include_status: list[str] | None = Field(
         None,
@@ -1397,11 +1427,11 @@ class Config(BaseModel):
     )
     unfilterable_tier_strategy: str = Field(
         "wide-fetch",
-        description="CRA Compliance: how to handle tiers (ransomware, threat_actor) that the /findings API cannot filter directly. 'wide-fetch' (default): drop the threshold filter from Fetch A and narrow client-side. 'drop-tier': warn and omit the unfilterable tiers from the effective threshold. 'require-rsql': abort with a clear error.",
+        description="CRA Compliance: how to handle tiers (ransomware, threat_actor, botnet, commercial, reported) that the /findings API cannot filter directly. 'wide-fetch' (default): drop the threshold filter from Fetch A and narrow client-side. 'drop-tier': warn and omit the unfilterable tiers from the effective threshold. 'require-rsql': abort with a clear error.",
     )
     snapshot_diff: str = Field(
         "on",
-        description="CRA Compliance snapshot-diff mode. 'on' (default): fetch the status-agnostic baseline, persist new state after a successful run, detect KEV / ransomware / threat-actor crossings. 'read-only': read prior state but do not write a new one. 'off': skip Fetch C entirely; KEV / ransomware / threat-actor crossings will not be reported.",
+        description="CRA Compliance snapshot-diff mode. 'on' (default): fetch the status-agnostic baseline, persist new state after a successful run, detect KEV and exploitInfo-token crossings (ransomware / threat_actor / botnet / commercial / reported). 'read-only': read prior state but do not write a new one. 'off': skip Fetch C entirely; crossings will not be reported.",
     )
 
     @field_validator("kev_due_date_source")
@@ -1427,14 +1457,7 @@ class Config(BaseModel):
         """Clean up compare_domain the same way as domain."""
         if v is None:
             return v
-        domain = v.strip().lower()
-        if not domain:
-            return None
-        if domain.startswith(("http://", "https://")):
-            domain = domain.split("://", 1)[1]
-        if domain.endswith("/"):
-            domain = domain[:-1]
-        return domain
+        return normalize_domain(v) or None
 
     @field_validator("domain")
     @classmethod
@@ -1442,13 +1465,7 @@ class Config(BaseModel):
         """Validate domain format."""
         if not v.strip():
             raise ValueError("Domain cannot be empty")
-        # Remove protocol and trailing slash if present
-        domain = v.strip().lower()
-        if domain.startswith(("http://", "https://")):
-            domain = domain.split("://", 1)[1]
-        if domain.endswith("/"):
-            domain = domain[:-1]
-        return domain
+        return normalize_domain(v)
 
     @field_validator("start_date", "end_date")
     @classmethod

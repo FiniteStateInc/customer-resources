@@ -42,6 +42,7 @@
     Investigation: "var(--nav-investigation)",
     Remediation: "var(--nav-remediation)",
     Compliance: "var(--nav-compliance)",
+    "Exploitability Evidence": "var(--nav-exploitability-evidence)",
   };
 
   /* Per-step incrementing client id counter (no Math.random / Date.now).
@@ -469,6 +470,12 @@
       _scopeSeedGen: 0,
 
       /* ---- lifecycle ---- */
+      destroy: function () {
+        /* Alpine calls this on component teardown — a navigation mid-drag
+           must not leave the document-level listeners / rAF loop running. */
+        this._stopDragScrollAssist();
+      },
+
       init: function () {
         var self = this;
         /* #7 (B6): drop the Forge export targets unless the Forge/MCP surface is
@@ -1244,16 +1251,33 @@
           handle: ".sec-grip",
           draggable: ".wfb-section-row",
           ghostClass: "sortable-ghost",
+          onStart: function (evt) {
+            /* Same stale-reference hazard as the pipeline sortable: capture
+               the pre-move sibling for an exact revert. (No tripwire here:
+               this x-for is INDEX-keyed, so every reorder re-renders rows
+               from the model — a bad revert cannot persist a DOM/model
+               desync the way the step.id-keyed pipeline could.) */
+            self._secOrigNext = evt.item.nextElementSibling;
+            self._startDragScrollAssist();
+          },
           onUpdate: function (evt) {
             /* Revert SortableJS's DOM move — Alpine's keyed x-for owns DOM
-               order. Restore the dragged item to its original position so
-               Alpine reconciles from the model cleanly. */
-            var refNode = evt.from.children[evt.oldIndex] || null;
-            evt.from.insertBefore(evt.item, refNode);
+               order. Restore the dragged item using the sibling captured at
+               onStart (pre-move truth). */
+            try {
+              evt.from.insertBefore(evt.item, self._secOrigNext || null);
+            } catch (err) {
+              evt.from.appendChild(evt.item);
+            }
+            self._secOrigNext = null;
             self.moveSectionByIndex(evt.oldIndex, evt.newIndex);
             self.$nextTick(function () {
               relucide();
             });
+          },
+          onEnd: function () {
+            self._secOrigNext = null; // no stale ref if onUpdate never fired
+            self._stopDragScrollAssist();
           },
         });
       },
@@ -2448,6 +2472,12 @@
             sort: false,
             animation: 150,
             draggable: ".wfb-libitem",
+            onStart: function () {
+              self._startDragScrollAssist();
+            },
+            onEnd: function () {
+              self._stopDragScrollAssist();
+            },
           });
         });
 
@@ -2465,6 +2495,19 @@
           /* The receiver fills the canvas (CSS .wfb-steps flex:1); a generous
              threshold makes dropping onto the empty canvas forgiving. */
           emptyInsertThreshold: 40,
+          onStart: function (evt) {
+            self._startDragScrollAssist();
+            /* Capture the dragged item's ORIGINAL next sibling BEFORE any
+               sortable move. The onUpdate revert must NOT derive it from
+               evt.from.children[evt.oldIndex] — that reads POST-move children
+               and is off-by-one for some position/direction combos (last
+               card dragged upward on a scrolled canvas, deterministically).
+               Alpine's keyed diff then reconciles from subtly wrong DOM and
+               can leave DOM order != model.steps order — after which every
+               sortable index maps to the wrong model step and each further
+               drag scrambles the workflow. */
+            self._dragOrigNext = evt.item.nextElementSibling;
+          },
           onAdd: function (evt) {
             var item = evt.item;
             var kind = item.getAttribute("data-kind");
@@ -2477,16 +2520,158 @@
           },
           onUpdate: function (evt) {
             /* Revert SortableJS's DOM move — Alpine's keyed x-for owns DOM
-               order. Restore the dragged item to its original position so
-               Alpine reconciles from the model cleanly with no transient
-               wrong-order frame. */
-            var refNode = evt.from.children[evt.oldIndex] || null;
-            evt.from.insertBefore(evt.item, refNode);
+               order. Restore the dragged item using the sibling captured at
+               onStart (pre-move truth) so Alpine reconciles from exactly the
+               DOM it last rendered. */
+            try {
+              evt.from.insertBefore(evt.item, self._dragOrigNext || null);
+            } catch (err) {
+              /* Captured sibling detached mid-drag (not reachable in normal
+                 edit flows) — park the item at the end; the post-drop
+                 tripwire reorders DOM to the model either way. */
+              evt.from.appendChild(evt.item);
+            }
+            self._dragOrigNext = null;
             self.moveStep(evt.oldIndex, evt.newIndex);
             self.$nextTick(function () {
               relucide();
+              self._verifyStepDomSync();
             });
           },
+          onEnd: function () {
+            self._dragOrigNext = null; // no stale ref if onUpdate never fired
+            self._stopDragScrollAssist();
+          },
+        });
+      },
+
+      /* ── drag-scroll assist ──────────────────────────────────────────
+         SortableJS's built-in autoscroll band measured ~10px in this layout
+         (its scrollSensitivity option is inert for these drags), which made
+         long (6+) pipelines effectively un-scrollable mid-drag: users
+         overshoot into the statusbar strip below the canvas edge and the
+         list never moves. While any builder drag is active, a pointer-driven
+         rAF loop scrolls the canvas when the pointer is within 80px of its
+         top/bottom edge — INCLUDING a 40px grace *below* the bottom edge, so
+         hovering over the statusbar (the old dead zone) still scrolls. */
+      _startDragScrollAssist: function () {
+        var canvas = this.$el.querySelector(".wfb-canvas");
+        if (!canvas || this._dragScrollRaf) return;
+        var self = this;
+        this._dragScrollY = null;
+        this._dragScrollX = null;
+        this._dragScrollAt = 0;
+        this._onDragScrollMove = function (e) {
+          var t = e.touches && e.touches[0];
+          self._dragScrollY = t ? t.clientY : e.clientY;
+          self._dragScrollX = t ? t.clientX : e.clientX;
+          self._dragScrollAt = Date.now();
+        };
+        /* Native HTML5 drags emit NO pointer/mouse events — only dragover
+           streams positions. Fallback (touch) drags emit touchmove. Register
+           all three; whichever fires wins. */
+        document.addEventListener("dragover", this._onDragScrollMove, true);
+        document.addEventListener("pointermove", this._onDragScrollMove, true);
+        document.addEventListener("touchmove", this._onDragScrollMove, true);
+        function loop() {
+          /* Primary position source: the drag ghost itself. Sortable's
+             fallback drag stopPropagation()s pointer events before our
+             document listeners see them, but the fallback clone tracks the
+             pointer — its rect can't be hidden from us. The listeners above
+             remain as a secondary source (native-drag mode). */
+          var y = self._dragScrollY;
+          /* Scoped to builder clones only — an unrelated sortable fallback
+             elsewhere in the document must not steer this canvas. */
+          var ghost = document.querySelector(
+            ".sortable-fallback.wfb-step-wrap," +
+              " .sortable-fallback.wfb-libitem," +
+              " .sortable-fallback.wfb-section-row"
+          );
+          if (ghost) {
+            /* Fallback (touch) mode: the clone tracks the pointer. */
+            var gr = ghost.getBoundingClientRect();
+            y = gr.top + gr.height / 2;
+          } else if (Date.now() - self._dragScrollAt > 400) {
+            /* Native mode: dragover re-fires continuously for real input,
+               so a stale position means the stream paused — stop scrolling
+               rather than run away toward the last known band. */
+            y = null;
+          }
+          if (y !== null && y !== undefined) {
+            var r = canvas.getBoundingClientRect();
+            /* Only steer while the pointer is horizontally over the canvas —
+               dragging along the page bottom above the library/inspector
+               must not scroll the pipeline. */
+            var x = self._dragScrollX;
+            var inX = x === null || (x >= r.left - 40 && x <= r.right + 40);
+            if (!inX) {
+              // outside the canvas column — no scroll
+            } else if (y > r.bottom - 80 && y < r.bottom + 60) {
+              canvas.scrollTop += 12;
+            } else if (y < r.top + 80 && y > r.top - 60) {
+              canvas.scrollTop -= 12;
+            }
+          }
+          self._dragScrollRaf = requestAnimationFrame(loop);
+        }
+        this._dragScrollRaf = requestAnimationFrame(loop);
+      },
+      _stopDragScrollAssist: function () {
+        if (this._dragScrollRaf) cancelAnimationFrame(this._dragScrollRaf);
+        this._dragScrollRaf = null;
+        this._dragScrollY = null;
+        this._dragScrollX = null;
+        if (this._onDragScrollMove) {
+          document.removeEventListener(
+            "dragover", this._onDragScrollMove, true
+          );
+          document.removeEventListener(
+            "pointermove", this._onDragScrollMove, true
+          );
+          document.removeEventListener(
+            "touchmove", this._onDragScrollMove, true
+          );
+          this._onDragScrollMove = null;
+        }
+      },
+
+      /* Post-drop invariant: pipeline DOM order must equal model.steps
+         order. A mismatch means a revert/reconcile bug — without this
+         tripwire it silently corrupts every subsequent drag (sortable
+         indices stop matching model indices) and saved workflows run in a
+         different order than displayed. Self-heal by forcing a keyed
+         re-render from the model, and log loudly so regressions surface. */
+      _verifyStepDomSync: function () {
+        var pipeline = this.$el.querySelector("#wfb-steps");
+        if (!pipeline) return;
+        var domIds = Array.prototype.map.call(
+          pipeline.querySelectorAll(".wfb-step-wrap"),
+          function (el) {
+            return el.getAttribute("data-step-id");
+          }
+        );
+        var modelIds = this.model.steps.map(function (s) {
+          return String(s.id);
+        });
+        if (domIds.join("\u0000") === modelIds.join("\u0000")) return;
+        console.warn(
+          "[builder] step DOM order desynced from model — self-healing",
+          { dom: domIds, model: modelIds }
+        );
+        /* Heal by physically reordering the EXISTING keyed nodes to match
+           the model — no model churn, no re-render flash, selection and any
+           in-flight UI state untouched. appendChild moves (not clones) each
+           row into model order after the x-for template node. */
+        var byId = {};
+        Array.prototype.forEach.call(
+          pipeline.querySelectorAll(".wfb-step-wrap"),
+          function (el) {
+            byId[el.getAttribute("data-step-id")] = el;
+          }
+        );
+        this.model.steps.forEach(function (s) {
+          var el = byId[String(s.id)];
+          if (el) pipeline.appendChild(el);
         });
       },
 

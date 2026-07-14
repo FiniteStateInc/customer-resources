@@ -184,8 +184,18 @@ class EngineWrapper:
                     }
                 )
 
-            # Log capture — redirect fs-report logging to events
-            log_handler = _BridgeLogHandler(event_callback)
+            # Log capture — redirect fs-report logging to events. Bridge
+            # events cross the JSON-RPC boundary to the embedding
+            # integration, so raw secrets get the same redaction as the
+            # on-disk run logs.
+            from fs_report.llm_client import resolve_active_api_key
+
+            log_handler = _make_bridge_log_handler(
+                event_callback,
+                str(config.auth_token or ""),
+                str(config.compare_auth_token or ""),
+                resolve_active_api_key(config_params.get("aiProvider")),
+            )
             root_logger = logging.getLogger("fs_report")
             root_logger.addHandler(log_handler)
 
@@ -353,6 +363,22 @@ class EngineWrapper:
                 cleared.append("cache.db")
 
         return {"cleared": cleared}
+
+
+def _make_bridge_log_handler(
+    callback: Callable[[dict[str, Any]], None], *secrets: str
+) -> "_BridgeLogHandler":
+    """Bridge log handler with a ``TokenRedactionFilter`` for ``secrets``.
+
+    Every non-empty secret (platform auth token, compare token, active
+    AI-provider API key) is scrubbed from records before they are formatted
+    into bridge events — the events leave the process, like the run logs.
+    """
+    from fs_report.logging_utils import TokenRedactionFilter
+
+    handler = _BridgeLogHandler(callback)
+    handler.addFilter(TokenRedactionFilter(*secrets))
+    return handler
 
 
 class _BridgeLogHandler(logging.Handler):

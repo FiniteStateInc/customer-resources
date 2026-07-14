@@ -3,6 +3,7 @@
 import glob as _glob
 import logging
 import os
+import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,6 +11,22 @@ from pathlib import Path
 LOG_DIR = Path.home() / ".fs-report" / "logs"
 LOG_FORMAT = "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s"
 MAX_LOG_AGE_DAYS = 14
+
+# Secrets acquired only mid-run (e.g. the short-lived Copilot bearer minted by
+# copilot_auth's token exchange) don't exist yet when a handler's
+# TokenRedactionFilter snapshots its constructor tokens. They register here
+# instead; every filter consults this registry on each record, so a secret
+# registered at ANY point is scrubbed by all already-attached filters.
+_RUNTIME_SECRETS: set[str] = set()
+_RUNTIME_SECRETS_LOCK = threading.Lock()
+
+
+def register_runtime_secret(secret: str) -> None:
+    """Register a mid-run-acquired secret for redaction by all active filters."""
+    if not secret:
+        return
+    with _RUNTIME_SECRETS_LOCK:
+        _RUNTIME_SECRETS.add(secret)
 
 
 def generate_run_id() -> str:
@@ -49,22 +66,57 @@ def resolve_log_path(run_id: str, log_file: str | None = None) -> Path | None:
 
 
 class TokenRedactionFilter(logging.Filter):
-    """Logging filter that replaces a raw token with ``***REDACTED***``."""
+    """Logging filter that replaces raw secrets with ``***REDACTED***``.
 
-    def __init__(self, token: str) -> None:
+    Accepts any number of secret values (platform auth token, AI-provider
+    API key, …) and scrubs each from ``record.msg`` and ``record.args``.
+    Empty values are skipped, so callers can pass credentials that may not
+    be configured without guarding. Secrets registered mid-run via
+    :func:`register_runtime_secret` are scrubbed too, per record.
+    """
+
+    def __init__(self, *tokens: str) -> None:
         super().__init__()
-        self._token = token
+        # Longest-first so a token that is a prefix of another (overlapping
+        # secrets) can't leave a recoverable remnant after replacement.
+        self._tokens = tuple(sorted((t for t in tokens if t), key=len, reverse=True))
+
+    def _active_tokens(self) -> tuple[str, ...]:
+        # The unlocked emptiness check is safe: it's a GIL-atomic truthiness
+        # read (no iteration, so no mutation-during-iteration hazard), and a
+        # lock here would add no ordering guarantee — a record processed
+        # before a registration completes misses that secret with or without
+        # one. Leak-freedom instead comes from ordering at the SOURCE:
+        # get_copilot_token registers the bearer BEFORE returning it, so no
+        # caller can possess (and log) a secret that isn't registered yet.
+        if not _RUNTIME_SECRETS:
+            return self._tokens  # fast path — already longest-first
+        with _RUNTIME_SECRETS_LOCK:
+            combined = set(self._tokens) | _RUNTIME_SECRETS
+        return tuple(sorted(combined, key=len, reverse=True))
+
+    @staticmethod
+    def _has_secret(value: str, tokens: tuple[str, ...]) -> bool:
+        return any(token in value for token in tokens)
+
+    @staticmethod
+    def _scrub(value: str, tokens: tuple[str, ...]) -> str:
+        for token in tokens:
+            value = value.replace(token, "***REDACTED***")
+        return value
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if self._token and self._token in str(record.msg):
-            record.msg = str(record.msg).replace(self._token, "***REDACTED***")
+        tokens = self._active_tokens()
+        msg = str(record.msg)
+        if self._has_secret(msg, tokens):
+            record.msg = self._scrub(msg, tokens)
         if record.args:
             args = record.args
             if isinstance(args, tuple):
                 record.args = tuple(
                     (
-                        str(a).replace(self._token, "***REDACTED***")
-                        if self._token and self._token in str(a)
+                        self._scrub(str(a), tokens)
+                        if self._has_secret(str(a), tokens)
                         else a
                     )
                     for a in args
@@ -72,8 +124,8 @@ class TokenRedactionFilter(logging.Filter):
             elif isinstance(args, dict):
                 record.args = {
                     k: (
-                        str(v).replace(self._token, "***REDACTED***")
-                        if self._token and self._token in str(v)
+                        self._scrub(str(v), tokens)
+                        if self._has_secret(str(v), tokens)
                         else v
                     )
                     for k, v in args.items()
@@ -83,11 +135,13 @@ class TokenRedactionFilter(logging.Filter):
 
 def create_file_handler(
     run_id: str,
-    token: str,
+    *tokens: str,
     level: int = logging.DEBUG,
 ) -> logging.FileHandler:
     """Create a file handler writing to ``~/.fs-report/logs/<date>_<run_id>.log``.
 
+    Every non-empty value in ``tokens`` (platform auth token, AI-provider
+    API key, …) is redacted from records via :class:`TokenRedactionFilter`.
     Also triggers cleanup of old log files.
     """
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -104,8 +158,11 @@ def create_file_handler(
     handler.setLevel(level)
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
 
-    if token:
-        handler.addFilter(TokenRedactionFilter(token))
+    # Always attach — even with no static tokens the filter consults the
+    # runtime-secret registry, so mid-run credentials (e.g. a Copilot bearer
+    # minted after handler creation) are scrubbed regardless of whether any
+    # credential existed when the handler was built.
+    handler.addFilter(TokenRedactionFilter(*tokens))
 
     _cleanup_old_logs()
 

@@ -266,27 +266,28 @@ Each `data[*]` row:
 
 | # | Column | Type | Description |
 |---|--------|------|-------------|
-| 1 | `Component` | string | Component name |
-| 2 | `Version` | string | Component version |
-| 3 | `Type` | string | library, application, firmware |
-| 4 | `Source` | string | How discovered: Source SCA, Binary SCA, SBOM Import, etc. |
-| 5 | `Project Name` | string | Project name |
-| 6 | `Project Version` | string | Project version |
-| 7 | `Folder` | string | Folder path |
-| 8 | `Declared License` | string | Automatically detected license (SPDX) |
-| 9 | `Concluded License` | string | Human-reviewed/confirmed license (SPDX) |
-| 10 | `Copyleft Status` | string | Permissive, Weak Copyleft, Strong Copyleft |
-| 11 | `Policy Status` | string | PERMITTED, WARNING, VIOLATION |
-| 12 | `Findings` | int | Finding count |
-| 13 | `Warnings` | int | Warning count |
-| 14 | `Violations` | int | Violation count |
-| 15 | `Supplier` | string | Component supplier |
-| 16 | `Component Status` | string | CONFIRMED, NEEDS_REVIEW, IN_REVIEW, FALSE_POSITIVE |
-| 17 | `BOM Reference` | string | PURL or CPE identifier |
-| 18 | `Release Date` | string | Component release date |
-| 19 | `Created` | string | Discovery timestamp |
-| 20 | `Branch` | string | Branch name |
-| 21 | `License URL` | string | Link to license text |
+| 1 | `Group` | string | Group / namespace of the component, derived from its BOM Reference — the namespace of a PURL (e.g. the group in `pkg:maven/group/name@version`) or the group in a Maven `group:artifact:version` coordinate; empty when the BOM Reference carries no namespace. |
+| 2 | `Component` | string | Component name |
+| 3 | `Version` | string | Component version |
+| 4 | `Type` | string | library, application, firmware |
+| 5 | `Source` | string | How discovered: Source SCA, Binary SCA, SBOM Import, etc. |
+| 6 | `Project Name` | string | Project name |
+| 7 | `Project Version` | string | Project version |
+| 8 | `Folder` | string | Folder path |
+| 9 | `Declared License` | string | Automatically detected license (SPDX) |
+| 10 | `Concluded License` | string | Human-reviewed/confirmed license (SPDX) |
+| 11 | `Copyleft Status` | string | Permissive, Weak Copyleft, Strong Copyleft |
+| 12 | `Policy Status` | string | PERMITTED, WARNING, VIOLATION |
+| 13 | `Findings` | int | Finding count |
+| 14 | `Warnings` | int | Warning count |
+| 15 | `Violations` | int | Violation count |
+| 16 | `Supplier` | string | Component supplier |
+| 17 | `Component Status` | string | CONFIRMED, NEEDS_REVIEW, IN_REVIEW, FALSE_POSITIVE |
+| 18 | `BOM Reference` | string | PURL or CPE identifier |
+| 19 | `Release Date` | string | Component release date |
+| 20 | `Created` | string | Discovery timestamp |
+| 21 | `Branch` | string | Branch name |
+| 22 | `License URL` | string | Link to license text |
 
 ---
 
@@ -515,16 +516,24 @@ HTML-only output. No CSV/XLSX columns.
 
 | # | Column | Type | Description |
 |---|--------|------|-------------|
-| 1 | `cve_id` | string | CVE identifier |
-| 2 | `component_name` | string | Affected component name |
-| 3 | `component_version` | string | Component version |
-| 4 | `severity` | string | CRITICAL, HIGH, MEDIUM, LOW |
-| 5 | `fp_confidence` | float | False-positive confidence score |
-| 6 | `fp_signals` | string | Signals contributing to FP determination |
-| 7 | `primary_reason` | string | Primary reason for FP classification |
-| 8 | `ai_verdict` | string | AI-generated verdict |
-| 9 | `ai_rationale` | string | AI-generated rationale for the verdict |
-| 10 | `recommended_action` | string | Recommended next action |
+| 1 | `id` | string | Platform finding identifier (passed through from API `id`; a signed-int64 row id on legacy backends, or a UUID on UUID-ID backends). |
+| 2 | `finding_id` | string | Finding identifier; falls back to `cve_id` when absent. |
+| 3 | `cve_id` | string | CVE identifier. |
+| 4 | `component_name` | string | Affected component name. |
+| 5 | `component_version` | string | Component version. |
+| 6 | `project_name` | string | Project the finding belongs to. |
+| 7 | `project_version_id` | string | Project version identifier. |
+| 8 | `severity` | string | CRITICAL, HIGH, MEDIUM, LOW, INFO, UNKNOWN. |
+| 9 | `status` | string | Finding triage status (upper-cased). |
+| 10 | `reachability_score` | int | Raw reachability score. |
+| 11 | `risk` | int | Risk score (API 0-100 scale). |
+| 12 | `title` | string | Finding title. |
+| 13 | `fp_confidence` | string | False-positive confidence (HIGH / MEDIUM / LOW). |
+| 14 | `fp_signals` | string | Comma-separated signal types contributing to the FP determination. |
+| 15 | `primary_reason` | string | Reason from the highest-confidence signal. |
+| 16 | `ai_verdict` | string | AI-generated verdict (empty unless an `ai_*` signal fired). |
+| 17 | `ai_rationale` | string | AI-generated rationale for the verdict. |
+| 18 | `recommended_action` | string | Recommended next action (Mark NOT_AFFECTED / Review — likely FP / Review). |
 
 ---
 
@@ -545,10 +554,13 @@ HTML-only output. No CSV/XLSX columns.
 | 9 | `status` | string | Finding status |
 | 10 | `cra_trigger` | string | CRA regulation trigger |
 | 11 | `in_kev` | bool | In CISA KEV |
-| 12 | `has_known_exploit` | bool | Known exploits exist |
-| 13 | `epss_score` | float | Raw EPSS score (0-1) |
-| 14 | `epss_percentile` | float | EPSS percentile (0-1) |
-| 15 | `detected_date` | string | Detection date |
+| 12 | `kev_source` | string | Which KEV catalog flagged the finding: `CISA`, `VcKEV`, `CISA+VcKEV`, or empty when neither. Drives the UNKNOWN-deadline explanation in the SLA-Breach section (VcKEV-only rows have no CISA `dateAdded`). |
+| 13 | `exploit_maturity` | string | Single tier string: `poc` / `weaponized` / empty. Raw platform `exploitMaturity` field, lowercased (matches the platform GUI's `columns.exploitMaturity`). The CRA botnet / commercial / reported / ransomware / threat_actor tiers are derived from `exploitInfo` tokens (see `fs_report/cra/tiers.py::derive_tiers`) and drive section routing / threshold retention — they are NOT surfaced in this column. |
+| 14 | `has_known_exploit` | bool | Known exploits exist |
+| 15 | `epss_score` | float | Raw EPSS score (0-1) |
+| 16 | `epss_percentile` | float | EPSS percentile (0-1) |
+| 17 | `detected_date` | string | Detection date |
+| 18 | `reachability_label` | string | REACHABLE / UNREACHABLE / INCONCLUSIVE / UNKNOWN (binary scans only). |
 
 ---
 

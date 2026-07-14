@@ -285,7 +285,7 @@ class RecipeLoader:
             self.logger.warning(
                 "Recipe %r has no nav_category; will not appear under any "
                 "--serve sidebar group (valid values: Executive, Investigation, "
-                "Remediation, Compliance)",
+                "Remediation, Compliance, Exploitability Evidence)",
                 recipe.name,
             )
 

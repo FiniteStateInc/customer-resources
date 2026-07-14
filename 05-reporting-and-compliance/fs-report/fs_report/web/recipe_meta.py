@@ -37,6 +37,7 @@ CATEGORY_ICONS: dict[str, str] = {
     "Investigation": "target",
     "Remediation": "wrench",
     "Compliance": "landmark",
+    "Exploitability Evidence": "flask-conical",
     "Uncategorized": "file-text",
 }
 
@@ -111,4 +112,4 @@ def categorize(recipe: str) -> tuple[str, str, str]:
     norm = normalize_recipe_name(recipe)
     category = recipe_category_map().get(norm) or "Uncategorized"
     icon = icon_for(recipe, category)
-    return category, category.lower(), icon
+    return category, category.lower().replace(" ", "-"), icon

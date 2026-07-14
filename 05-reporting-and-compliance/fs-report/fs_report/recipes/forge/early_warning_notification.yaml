@@ -1,0 +1,17 @@
+# `name` is intentionally the snake_case recipe slug (not Title Case): the forge
+# assembler reads each recipe's output by its sanitized filename, so the name must
+# sanitize to a clean `early_warning_notification.json` — the literal id the
+# SRP-cascade spec (§2/§3) references. Same rationale for the sibling CRA recipes.
+name: "early_warning_notification"
+category: assessment
+nav_category: Compliance
+description: "EU CRA Article 14 — 24-hour early-warning notification. Producer recipe for the SRP-cascade live mode: consumes a forge exploitability-dataset/v2 export via --data-file and emits a json_package of the 6 authored early-warning fields plus a machine-readable meta.clock. The clock applies became_aware = max(cisa_dateAdded, awareness anchor), where the anchor is the platform detection date when available and otherwise the evidence-seal or report-generation time (recorded in became_aware_basis). Folded into the live CraSrpBundle stages by the forge assembler; conforms to the shared cra-stages.schema.json."
+card_description: "CRA Art.14 24h early-warning notification fields (early stage) + awareness clock, from exploitability evidence."
+auto_run: false
+transform_function: early_warning_notification_transform
+transform_input: object
+chart_libraries: []
+output:
+  table: false
+  formats:
+    - json

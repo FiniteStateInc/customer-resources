@@ -1003,7 +1003,9 @@ class HTMLRenderer:
         nav_category = getattr(recipe, "nav_category", None)
         template_data["nav_category"] = nav_category
         template_data["nav_category_slug"] = (
-            nav_category.lower() if isinstance(nav_category, str) else ""
+            nav_category.lower().replace(" ", "-")
+            if isinstance(nav_category, str)
+            else ""
         )
         template_data["render_mode"] = render_mode
         template_data["heading_depth"] = heading_depth
@@ -1166,6 +1168,7 @@ class HTMLRenderer:
     _CRA_SLA_COLS: list[tuple[str, str]] = [
         ("cve_id", "CVE"),
         ("component", "Component"),
+        ("project", "Project"),
         ("severity", "Severity"),
         ("exploit_maturity", "Maturity"),
         ("reachability_label", "Reachability"),
@@ -1182,6 +1185,7 @@ class HTMLRenderer:
     _CRA_NEWLY_ABOVE_COLS: list[tuple[str, str]] = [
         ("cve_id", "CVE"),
         ("component", "Component"),
+        ("project", "Project"),
         ("severity", "Severity"),
         ("cvss_score", "CVSS"),
         ("crossed_to", "Crossed To"),
@@ -1194,6 +1198,7 @@ class HTMLRenderer:
     _CRA_RE_EMERGED_COLS: list[tuple[str, str]] = [
         ("cve_id", "CVE"),
         ("component", "Component"),
+        ("project", "Project"),
         ("previous_resolution", "Previous Resolution"),
         ("resolution_date", "Resolution Date"),
         ("crossed_to", "Crossed To"),
@@ -1205,6 +1210,7 @@ class HTMLRenderer:
     _CRA_STILL_IN_TRIAGE_COLS: list[tuple[str, str]] = [
         ("cve_id", "CVE"),
         ("component", "Component"),
+        ("project", "Project"),
         ("severity", "Severity"),
         ("triage_age_days", "Triage Age (days)"),
         ("epss_percentile", "EPSS"),
@@ -1215,6 +1221,7 @@ class HTMLRenderer:
     _CRA_FULL_SNAPSHOT_COLS: list[tuple[str, str]] = [
         ("cve_id", "CVE"),
         ("component", "Component"),
+        ("project", "Project"),
         ("severity", "Severity"),
         ("cvss_score", "CVSS"),
         ("exploit_maturity", "Maturity"),

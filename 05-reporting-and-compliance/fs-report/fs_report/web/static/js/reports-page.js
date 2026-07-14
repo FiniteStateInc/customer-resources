@@ -4,7 +4,8 @@
  * Standalone Report History page (/reports) behavior:
  *   - Search: filters .rep rows by case-insensitive substring on row text.
  *   - Category chips (All / Executive / Investigation / Remediation /
- *     Compliance): toggle .rep rows by data-rf. Search + category COMPOSE —
+ *     Compliance / Exploitability Evidence): toggle .rep rows by data-rf.
+ *     Search + category COMPOSE —
  *     a row is visible only if it passes both. Both kept in module state so
  *     they survive body swaps.
  *   - Date headers (.rep-date) hide when every row until the next header is
@@ -23,7 +24,7 @@
 (function () {
   'use strict';
 
-  var _activeFilter = 'all'; /* all | executive | investigation | remediation | compliance */
+  var _activeFilter = 'all'; /* all | executive | investigation | remediation | compliance | exploitability-evidence */
   var _query = '';
   var _inited = false;
 

@@ -81,17 +81,36 @@ ok "Python found: $($PYTHON --version)"
 
 if ! command -v pipx &>/dev/null; then
     warn "pipx not found. Installing..."
+    # Root (containers, some VMs) needs no sudo; non-root uses sudo if present.
+    SUDO=""
+    if [ "$(id -u)" -ne 0 ]; then
+        command -v sudo &>/dev/null && SUDO="sudo" || SUDO="__nosudo__"
+    fi
     if command -v brew &>/dev/null; then
         brew install pipx
-    else
-        "$PYTHON" -m pip install --user pipx
+    elif command -v apt-get &>/dev/null && [ "$SUDO" != "__nosudo__" ]; then
+        # Modern Debian/Ubuntu mark the system Python "externally managed"
+        # (PEP 668): `pip install` into it is blocked, so prefer apt's pipx.
+        # Try a direct install first (no index refresh needed on most hosts);
+        # fall back to update+install, then to pip --user below.
+        $SUDO apt-get install -y pipx 2>/dev/null \
+            || { $SUDO apt-get update -qq && $SUDO apt-get install -y pipx; } \
+            || true
+    elif command -v dnf &>/dev/null && [ "$SUDO" != "__nosudo__" ]; then
+        # Needs EPEL on RHEL-likes; falls through to pip --user on failure.
+        $SUDO dnf install -y pipx || true
     fi
-    "$PYTHON" -m pipx ensurepath 2>/dev/null || true
+    if ! command -v pipx &>/dev/null; then
+        # User-level fallback — works on non-PEP-668 Pythons and sudo-less
+        # hosts (PEP 668 systems will have succeeded via the branches above).
+        "$PYTHON" -m pip install --user pipx || true
+    fi
+    pipx ensurepath 2>/dev/null || "$PYTHON" -m pipx ensurepath 2>/dev/null || true
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
 if ! command -v pipx &>/dev/null; then
-    fail "pipx installation failed. Install manually: https://pipx.pypa.io"
+    fail "pipx installation failed. On Debian/Ubuntu: sudo apt install pipx && pipx ensurepath (then open a new shell). Otherwise: https://pipx.pypa.io"
 fi
 ok "pipx found: $(pipx --version)"
 

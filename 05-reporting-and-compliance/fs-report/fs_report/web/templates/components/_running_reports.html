@@ -70,8 +70,16 @@
        data-run-id="{{ run.run_id }}"
        data-kind="{{ run.kind }}"
        {% if run.status != 'running' %}data-done="1"{% endif %}
+       {# A finished report deliverable opens in a NEW tab so clicking it never
+          navigates away from the Command Center. Canvas (/run/{id}) + log stay
+          same-tab on purpose (the canvas holds the live SSE connection — see
+          builder.html openRunCanvas). The report URL rides a data- attribute
+          (HTML-escaped by Jinja) and is read via this.dataset at click time,
+          so a URL containing a quote can't break out of the JS string. The
+          poller in command-center.js mirrors this (window.open on report_url,
+          which is already a safe JS value there). #}
        {% if is_canvas %}onclick="location.href='/run/{{ run.run_id }}'" style="cursor:pointer"
-       {% elif is_success and report_url %}onclick="location.href='{{ report_url }}'" style="cursor:pointer"
+       {% elif is_success and report_url %}data-report-url="{{ report_url }}" onclick="window.open(this.dataset.reportUrl, '_blank', 'noopener')" style="cursor:pointer"
        {% elif is_err %}onclick="location.href='/run/{{ run.run_id }}/log'" style="cursor:pointer"
        {% endif %}>
     <div class="run-row-top">

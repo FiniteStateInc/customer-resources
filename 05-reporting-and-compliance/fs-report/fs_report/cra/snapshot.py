@@ -1,9 +1,10 @@
 """CRA Compliance snapshot-diff state.
 
 Persists per-scope sets of inKev/inVcKev row IDs and per-row
-exploitInfo signal tokens so the next run can detect KEV / ransomware /
-threat-actor crossings (the audit confirmed /cves/updates does NOT
-carry these deltas — see API wishlist #15-#17).
+exploitInfo signal tokens so the next run can detect KEV and exploitInfo-token
+crossings (ransomware / threat_actor / botnet / commercial / reported) — the
+audit confirmed /cves/updates does NOT carry these deltas (see API wishlist
+#15-#17).
 
 Storage: ~/.fs-report/state/cra-compliance/<scope-hash>.json (schema v2).
 """
@@ -15,6 +16,10 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# Canonical exploitInfo token → CRA tier map lives in tiers.py so crossing
+# detection here can never drift from derive_tiers.
+from fs_report.cra.tiers import TOKEN_TO_TIER as _TOKEN_TO_TIER
 
 _STATE_ROOT = Path.home() / ".fs-report" / "state" / "cra-compliance"
 
@@ -64,13 +69,6 @@ def save_state(scope: str, state: State) -> None:
     path.write_text(json.dumps(payload, indent=2))
 
 
-# Map exploitInfo token names → CRA tier names. Spec §0 lines 475-510.
-_TOKEN_TO_TIER: dict[str, str] = {
-    "ransomware": "ransomware",
-    "threatActors": "threat_actor",
-}
-
-
 def snapshot_diff_kev_crossings(
     prior: State,
     *,
@@ -111,9 +109,10 @@ def snapshot_diff_token_crossings(
     """Return ROW IDs whose exploitInfo newly contains any token whose
     tier is in `threshold`.
 
-    Row-level (not CVE-level): a ransomware/threat_actor token addition on
-    one finding row must not flag sibling rows for the same CVE that did
-    not themselves get the token. Spec §6 morning-queue contract.
+    Row-level (not CVE-level): an exploitInfo-token addition (ransomware /
+    threat_actor / botnet / commercial / reported) on one finding row must not
+    flag sibling rows for the same CVE that did not themselves get the token.
+    Spec §6 morning-queue contract.
 
     Per spec §0 lines 502-512: 'newly-added ransomware token -> crossing
     iff ransomware in threshold; newly-added threatActors token ->

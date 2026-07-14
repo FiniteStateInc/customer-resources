@@ -107,6 +107,7 @@
   --sev-info:#60A5FA; --sev-info-bg:rgba(96,165,250,.12);
   --nav-executive:#5EEAD4; --nav-investigation:#22D3EE;
   --nav-remediation:#A78BFA; --nav-compliance:#FBBF24;
+  --nav-exploitability-evidence:#FB7185;
   --link-cve:#A78BFA;
   /* Scan-type hues (B8 #2) — queue dots/chips. Type = hue; status conveyed by
      motion/opacity/border. err/stuck still override with their status colors. */

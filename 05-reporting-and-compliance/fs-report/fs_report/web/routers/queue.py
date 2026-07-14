@@ -146,7 +146,6 @@ def _build_scan_entry(scan: dict[str, Any], now: datetime) -> dict[str, Any]:
         "project_name": project_name,
         "project_id": project_id,
         "version_name": version_name,
-        "created_by": scan.get("createdBy", ""),
     }
 
 
@@ -180,13 +179,10 @@ def _group_scans(
                 "completed_count": 0,
                 "error_count": 0,
                 "has_stuck": False,
-                "created_by": set(),
             }
 
         group = version_groups[group_key]
         group["scans"].append(entry)
-        if entry["created_by"]:
-            group["created_by"].add(entry["created_by"])
 
         status = entry["status"]
         if status == "INITIAL":
@@ -232,7 +228,6 @@ def _group_scans(
         # so the row reshuffled on every poll. type_order-only keeps each scan in
         # its lane; Python's stable sort preserves arrival order within a type.
         group["scans"].sort(key=lambda s: s["type_order"])
-        group["created_by"] = sorted(group["created_by"])
 
         # Recompute the displayed wait from the scans that REMAIN after the
         # two-week filter, so the wait shown always belongs to a rendered scan.

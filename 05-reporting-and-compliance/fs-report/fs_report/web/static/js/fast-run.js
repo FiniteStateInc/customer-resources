@@ -410,7 +410,9 @@
     var t = document.createElement('div');
     t.style.cssText = [
       'position:fixed', 'bottom:54px', 'left:50%', 'transform:translateX(-50%)',
-      'background:var(--surface-2,#2a2a3a)', 'color:var(--ink,#e0e0e0)',
+      /* Fixed dark pill in BOTH themes — must not use theme vars (--ink flips
+         to near-black in light mode → unreadable text on the dark pill). */
+      'background:#2a2a3a', 'color:#e8eaed',
       'padding:8px 18px', 'border-radius:6px', 'font-size:13px',
       'box-shadow:0 2px 12px rgba(0,0,0,.4)', 'z-index:9999',
       'pointer-events:none', 'opacity:1', 'transition:opacity .4s'

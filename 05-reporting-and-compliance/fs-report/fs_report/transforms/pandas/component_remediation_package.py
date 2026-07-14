@@ -199,7 +199,7 @@ def component_remediation_package_transform(
 
     # Live LLM enrichment: call the LLM with each action's prompt
     if ai_live and all_prompts:
-        _enrich_actions_with_llm(actions, cfg)
+        _enrich_actions_with_llm(actions, cfg, additional_data)
 
     # Build suppressed list
     suppressed_list: list[dict[str, Any]] = []
@@ -670,6 +670,7 @@ def _build_main_df_from_actions(actions: list[dict[str, Any]]) -> pd.DataFrame:
 def _enrich_actions_with_llm(
     actions: list[dict[str, Any]],
     cfg: Any,
+    additional_data: dict[str, Any] | None = None,
 ) -> None:
     """Call the LLM for each action that has a prompt, store response on action.
 
@@ -728,10 +729,13 @@ def _enrich_actions_with_llm(
 
     stats = llm.get_stats()
     logger.info(
-        "CRP AI guidance: %d API calls, %d cache hits",
+        "CRP AI guidance: %d API calls, %d cache hits, %d/%d tokens in/out",
         stats["api_calls"],
         stats["cache_hits"],
+        stats.get("input_tokens", 0),
+        stats.get("output_tokens", 0),
     )
+    llm.record_usage_metadata(additional_data)
 
 
 # ---------------------------------------------------------------------------

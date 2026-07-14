@@ -306,26 +306,32 @@ def _parse_date(date_str: str) -> datetime | None:
 def _build_detail_table(
     records: list[dict[str, Any]],
     thresholds: dict[str, int],
-    project_folder_map: dict[int, str] | None = None,
+    project_folder_map: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """Build one row per project-version from raw scan records."""
     now = _now()
 
     # Group records by (project_id, pv_id)
-    groups: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for rec in records:
         project = rec.get("project") or {}
         pv = rec.get("projectVersion") or {}
-        project_id = project.get("id", 0) if isinstance(project, dict) else 0
-        pv_id = pv.get("id", 0) if isinstance(pv, dict) else 0
-        key = (int(project_id), int(pv_id))
+        project_id = project.get("id", "") if isinstance(project, dict) else ""
+        pv_id = pv.get("id", "") if isinstance(pv, dict) else ""
+        # IDs are opaque (numeric on legacy, UUID on newer backends) — key by str.
+        key = (str(project_id), str(pv_id))
         groups.setdefault(key, []).append(rec)
 
     rows: list[dict[str, Any]] = []
-    for (project_id, pv_id), group_recs in groups.items():
+    for _key, group_recs in groups.items():
         first = group_recs[0]
         project = first.get("project") or {}
         pv = first.get("projectVersion") or {}
+        # Preserve the original id value/type for output (int on the legacy
+        # platform, UUID-str on newer backends); only the grouping key above
+        # is stringified.
+        project_id = project.get("id", "") if isinstance(project, dict) else ""
+        pv_id = pv.get("id", "") if isinstance(pv, dict) else ""
 
         project_name = (
             project.get("name", "Unknown") if isinstance(project, dict) else "Unknown"
@@ -387,7 +393,7 @@ def _build_detail_table(
             {
                 "project_id": project_id,
                 "project_name": project_name,
-                "folder_name": (project_folder_map or {}).get(project_id, ""),
+                "folder_name": (project_folder_map or {}).get(str(project_id), ""),
                 "pv_id": pv_id,
                 "version_name": version_name,
                 "has_sbom_import": has_sbom_import,
@@ -675,24 +681,24 @@ def scan_quality_transform(
     # Filter to active projects only
     # ------------------------------------------------------------------
     projects_data = additional_data.get("projects")
-    valid_project_ids: set[int] | None = None
-    project_folder_map: dict[int, str] = {}
+    valid_project_ids: set[str] | None = None
+    project_folder_map: dict[str, str] = {}
 
     if projects_data:
         valid_project_ids = set()
         for p in projects_data:
             pid = p.get("id")
             if pid is not None:
-                valid_project_ids.add(int(pid))
+                valid_project_ids.add(str(pid))
                 folder = p.get("folder") or {}
                 if isinstance(folder, dict):
-                    project_folder_map[int(pid)] = folder.get("name", "")
+                    project_folder_map[str(pid)] = folder.get("name", "")
 
         before_count = len(records)
         records = [
             r
             for r in records
-            if int((r.get("project") or {}).get("id", 0)) in valid_project_ids
+            if str((r.get("project") or {}).get("id", "")) in valid_project_ids
         ]
         if before_count != len(records):
             logger.info(
@@ -746,8 +752,8 @@ def scan_quality_transform(
     # Build scope label for template subtitle/metadata
     scope_label = "All Projects"
     cfg = additional_data.get("config") or config if additional_data else config
-    # Prefer the engine-resolved human-readable name: cfg.project_filter
-    # holds the numeric ID by transform time (2026-06-06 visual QA).
+    # Prefer the engine-resolved human-readable name; cfg.project_filter
+    # holds the resolved project ID (numeric or UUID) by transform time.
     _project_name = (additional_data or {}).get("project_name")
     if cfg is not None:
         if hasattr(cfg, "project_filter") and cfg.project_filter:

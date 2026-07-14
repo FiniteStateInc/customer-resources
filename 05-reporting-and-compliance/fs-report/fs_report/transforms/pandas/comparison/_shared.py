@@ -28,7 +28,7 @@ from typing import Any
 import pandas as pd
 
 from fs_report.purl_utils import _version_tuple
-from fs_report.transforms.pandas.component_list import _extract_group
+from fs_report.purl_utils import extract_group as _extract_group
 
 # =============================================================================
 # 1. Status taxonomy

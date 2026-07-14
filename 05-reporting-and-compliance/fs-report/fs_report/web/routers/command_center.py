@@ -392,8 +392,6 @@ def _build_overview(
         else:
             tags.append("binary")
 
-    authors = {s.get("createdBy") for s in cur if s.get("createdBy")}
-
     # 12 ISO-week UTC throughput buckets (completed scans only).
     # Align to ISO calendar weeks: each bucket runs from Monday 00:00 UTC.
     # iso_day: Monday=1 … Sunday=7; days_since_monday brings us to this week's Monday.
@@ -426,7 +424,6 @@ def _build_overview(
             "count": reports_30d,
             "delta_pct": _delta_pct(reports_30d, reports_prior),
         },
-        "active_users_30d": {"count": len(authors)},
         "scan_health": {
             "success_rate": rate,
             "grade": _grade(rate) if rate is not None else "—",

@@ -27,6 +27,10 @@ async def list_recipes() -> JSONResponse:
             "requires_project_or_folder": r.requires_project_or_folder,
             "requires_cve": r.requires_cve,
         }
+        # Consumer-audience recipes (e.g. the forge-driven CRA notifications and the
+        # forge customer briefs) are hidden from the web catalog, matching the CLI
+        # default (`fs-report list recipes` shows only `audience is None`).
         for r in recipe_list
+        if r.audience is None
     ]
     return JSONResponse(recipes)

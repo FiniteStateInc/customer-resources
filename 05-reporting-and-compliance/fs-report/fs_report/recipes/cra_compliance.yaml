@@ -3,7 +3,7 @@ template: "cra_compliance.html"
 category: assessment
 nav_category: Compliance
 chart_libraries: []
-description: "EU Cyber Resilience Act morning queue — exploit-maturity promotions and SLA-breach findings requiring action."
+description: "EU Cyber Resilience Act morning queue — exploit-maturity promotions and KEV-signalled findings flagged for CRA triage (not a verdict of active exploitation)."
 execution_order: 20
 auto_run: false
 # The engine still fetches this query for legacy compatibility; the
@@ -19,11 +19,24 @@ query:
 
 transform_function: cra_compliance_transform
 parameters:
+  # Exploit tiers that mark a finding as ABOVE THRESHOLD — i.e. retained and
+  # surfaced for CRA review (the Newly-Above and Full-Snapshot sections;
+  # KEV findings additionally get the Article-14 24h breach clock in the
+  # SLA-Breach section). These are triage signals — NOT a determination that a
+  # finding is actively exploited or reportable (that decision is always the
+  # operator's). The default includes strong real-world-exploitation signals;
+  # botnet is added because active botnet propagation is arguably stronger
+  # evidence than weaponized (which only means a working exploit exists).
+  # Other recognized tiers — poc, commercial, reported — are opt-in: weaker
+  # capability/availability signals (a demonstrated PoC, a commercial-framework
+  # module, or an uncorroborated report) held out of the default. Add any of
+  # them here to widen the net.
   exploit_maturity_threshold:
     - kev
     - ransomware
     - threat_actor
     - weaponized
+    - botnet
   include_status:
     - OPEN
     - NO_STATUS

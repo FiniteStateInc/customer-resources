@@ -345,7 +345,11 @@ def cve_impact_pandas_transform(
             additional_data.get("deployment_context") if additional_data else None
         )
         _prompts_path = _enrich_dossiers_with_ai(
-            dossiers, rows, config, deployment_context=_deployment_ctx
+            dossiers,
+            rows,
+            config,
+            deployment_context=_deployment_ctx,
+            additional_data=additional_data,
         )
         if _prompts_path:
             extra_generated_files.append(_prompts_path)
@@ -992,6 +996,7 @@ def _enrich_dossiers_with_ai(
     rows: list[dict[str, Any]],
     config: Config,
     deployment_context: Any | None = None,
+    additional_data: dict[str, Any] | None = None,
 ) -> str | None:
     """Enrich dossier dicts with AI guidance and/or exportable prompts.
 
@@ -1097,6 +1102,18 @@ def _enrich_dossiers_with_ai(
             guidance = _call_llm_for_cve(prompt, cve_id, llm)
             if guidance:
                 d["ai_guidance"] = guidance
+
+    if llm is not None:
+        stats = llm.get_stats()
+        logger.info(
+            "CVE Impact AI guidance: %d API calls, %d cache hits, "
+            "%d/%d tokens in/out",
+            stats["api_calls"],
+            stats["cache_hits"],
+            stats.get("input_tokens", 0),
+            stats.get("output_tokens", 0),
+        )
+        llm.record_usage_metadata(additional_data)
 
     # Write prompts file
     if want_prompts and prompts:

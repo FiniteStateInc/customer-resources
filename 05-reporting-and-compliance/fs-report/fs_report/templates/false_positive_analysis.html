@@ -247,6 +247,7 @@
                 <tr>
                     <th>CVE</th>
                     <th>Component</th>
+                    <th>Project</th>
                     <th>Severity</th>
                     <th>Confidence</th>
                     <th>Signals</th>
@@ -260,6 +261,7 @@
                 <tr>
                     <td><strong>{{ row.cve_id or row.finding_id or '—' }}</strong></td>
                     <td>{{ row.component_name or '—' }} {{ row.component_version or '' }}</td>
+                    <td>{{ row.project_name or '—' }}</td>
                     <td><span class="fp-badge-{{ row.severity or 'UNKNOWN' }}">{{ row.severity or 'UNKNOWN' }}</span></td>
                     <td>{{ row.fp_confidence or '—' }}</td>
                     <td>

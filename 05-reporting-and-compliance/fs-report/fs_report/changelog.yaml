@@ -1,4 +1,130 @@
 releases:
+  - version: "2.0.1"
+    date: "2026-07-13"
+    changes:
+      - report: "Exploitability Report"
+        type: added
+        description: "New **Exploitability Report** — the first member of a new Exploitability Evidence report family. A standalone, evidence-backed CVE-exploitability dossier for internal/console use (`parameters.mode: internal`), consumed from a forge exploitability-dataset export via `--data-file` rather than a live query. It is `auto_run: false` and query-less, so it runs only via an explicit `fs-report run --recipe exploitability_report --data-file …`, and outputs HTML + PDF (no Markdown)."
+      - report: "Exploitability Report (Shareable)"
+        type: added
+        description: "New **Exploitability Report (Shareable)** (`parameters.mode: external`, Briefing layout) — the same dossier redacted for customers and regulators. It shares one transform with the internal recipe, is `--data-file`-driven and `auto_run: false`, and outputs HTML + PDF."
+      - report: "Report Categories"
+        type: added
+        description: "New **Exploitability Evidence** report category — a 5th `nav_category` (joining Executive, Investigation, Remediation, and Compliance). It surfaces across the web Report Launcher grouping, Report History rows and category-filter chips, category badges, a crimson accent (`#e11d48` nav token + report-header stripe), and a flask-conical launcher icon."
+      - report: "CLI (--data-file)"
+        type: changed
+        description: "`--data-file` / `-df` extended for query-less **object recipes** (`transform_input: object`): these now consume the entire `--data-file` JSON document un-coerced (a forge exploitability-dataset export) instead of being flattened into a DataFrame. Such recipes are `auto_run: false` and error with an actionable contract message if run without `--data-file`."
+      - report: "Exploitability Report"
+        type: changed
+        description: "Exploitability recipes now consume a forge-produced **exploitability-dataset/v2** export (up from v1). fs-report owns the schema (`fs_report/schemas/exploitability-dataset-v2.schema.json`) and validates it on load with actionable, path-prefixed errors. A single schema carries two fill-levels — internal-complete vs. shareable-redacted — and the transform dispatches on `schema_version`; a legacy v1 export still renders via a retained dual path until cutover."
+      - report: "Exploitability Report"
+        type: changed
+        description: "Reworked into a standalone deliverable bucketed by pen-test verdict into a §0–§7 architecture: §0 identity header (degrades to a scope descriptor for portfolio runs), §1 decision summary with a bucket roll-up and Top-N prioritized actions grouped by shared remediation target, §2 must-fix EXPLOITABLE cards, §3 proven-not-affected (trust tiers High ≥ 0.80 / Moderate 0.60–0.79 / Low < 0.60), §4 tested-inconclusive, §5 an Affected-by-version compact table (CVE / component / severity / KEV flags / fix-version), §5b could-not-be-assessed, §6 method/honesty notes, and §7 provenance/replay. Evidence is prose-first, and supersession keyed on `finding_id` keeps same-CVE-different-component findings distinct (no bare-CVE collapse)."
+      - report: "Exploitability Report (Shareable)"
+        type: fixed
+        description: "External/shareable mode now defensively re-strips **only** internal-only fields (every `card.internal` payload and each citation's `inline_excerpt`) while **never** redacting the proof itself — `evidence_summary`, backport commit, crash signal/symbol, reachability fact, code locus, and replay chain all survive. Fixes the case where redaction had gutted the evidence on a real field delivery."
+      - report: "Exploitability Report"
+        type: fixed
+        description: "Bucketed object-recipe output no longer shows **'0 records'** in the briefing header — the engine now prefers a transform-supplied `record_count` over `len(main)` when the primary frame is empty (falling back to the length for v1-path transforms)."
+      - report: "CRA Compliance"
+        type: added
+        description: "Three new recognized CRA exploit-maturity tiers — **botnet**, **commercial**, and **reported** — are now selectable via `--exploit-maturity`. All three are `exploitInfo`-token tiers with no server-side RSQL filter, so they honor `--unfilterable-tier-strategy` like `ransomware`/`threat_actor`, and the 🆕 Newly Above Threshold snapshot-diff now detects their crossings."
+      - report: "CRA Compliance"
+        type: changed
+        description: "The default `--exploit-maturity` threshold (recipe `cra_compliance.yaml`) widened from `kev,ransomware,threat_actor,weaponized` to additionally include **botnet**, so botnet-attributed findings are promoted above-threshold (📋 Full Snapshot / 🆕 Newly Above Threshold) by default. `poc`, `commercial`, and `reported` remain recognized but opt-in."
+      - report: "CRA Compliance"
+        type: changed
+        description: "`--exploit-maturity` now **rejects unknown tier names at parse time** with exit code 2 (usage error) instead of silently shrinking the notification queue (e.g. the token `botnets` vs. the tier `botnet`), and it accepts tier names case-insensitively across the CLI, recipe YAML, and programmatic entry paths."
+      - report: "CRA Compliance"
+        type: changed
+        description: "Report copy reframed as **triage, not a verdict** (HTML + Markdown). The SLA-breach banner, 🔥 section callout, 'How to use this report' preamble, and report intro no longer say 'N potential actively-exploited vulnerabilities detected'; they now read 'N findings flagged for CRA review — carrying a CISA/VulnCheck KEV signal … a triage list to investigate, NOT a determination that a vulnerability is actively exploited or reportable.' The recipe description was updated to match."
+      - report: "CRA SRP Cascade"
+        type: added
+        description: "Three new CRA Article-14 SRP-cascade producer recipes — **early_warning_notification** (24 h), **vulnerability_notification** (72 h), and **final_report** (14 d). They are `transform_input: object` recipes fed the forge exploitability-dataset/v2 export via `--data-file`, each emitting a `json_package` (`{stage, fields}`, plus a `meta` block on the early_warning_notification package; the JSON renderer writes `<recipe>.json`) that conforms to the vendored `cra-stages.schema.json` and is consumed by the fs-comply SPA. They replace the earlier single `--stage` generator (there is no `--stage` flag) — all three run off one shared dataset, giving continuity by construction."
+      - report: "CRA SRP Cascade"
+        type: added
+        description: "**operator_input pass-through**: the SRP recipes now prefer an assembler-injected top-level `operator_input` string over the derived placeholder for seven manufacturer-knowledge fields (`cra_product_class`, `annex_category`, `measures_taken`, `security_update`, `update_available_since`, `automatic_update`, `root_cause`), letting operator-authored answers flow into the Article-14 filing. `user_actions` and `actively_exploited` are deliberately excluded, and blank/non-string values degrade to the placeholder (never an empty or coerced authored string)."
+      - report: "CRA SRP Cascade"
+        type: changed
+        description: "For direct `--data-file` runs, the scope flags `--cve` / `--component` / `--version` / `--project` / `--folder` now act as a **hard subject guardrail** (matching case-insensitively by id/name/label/folder-name): a scope that matches nothing raises `NoSubjectError` instead of silently picking the wrong subject, a multi-subject export emits an ambiguity warning, and a structurally invalid `--data-file` fails fast via `validate_dataset_v2` with an actionable contract error."
+      - report: "CRA SRP Cascade"
+        type: changed
+        description: "The three SRP-cascade recipes are now **forge-audience** and no longer appear in the default `fs-report list recipes` or the web recipe sidebar (they remain resolvable by explicit `--recipe`, or via `list recipes --audience forge|all`). The web `/api/recipes` endpoint now filters to audience-`None`, which also hides the 4 pre-existing forge-consumer recipes (Customer Brief, Customer Brief Detailed, Assessment Overview, and the Workflow Summary variants) from the dashboard to match the CLI default."
+      - report: "CRA SRP Cascade"
+        type: fixed
+        description: "SRP notifications no longer emit self-contradictory sealed pen-test verdict text: reachability and exploit-nature lines are now gated on an affirmative `verdict.kind` (`AFFECTED` / `AFFECTED_BY_VERSION`), so a `NOT_AFFECTED`/`INCONCLUSIVE` finding no longer renders 'confirmed reachable' or PoV crash text, and `vuln_nature`/`potential_impact` are sourced from the CVE description (falling back to weakness text) instead of the contradictory, truncated `verdict.reason_summary`."
+      - report: "Triage Prioritization"
+        type: added
+        description: "Report pages gain per-row action buttons (**🎫 Jira**, **⚑ Triage**, **Remediation**) that create real tracker/Jira tickets via a new serve-side `POST /api/tracker/tickets` endpoint against Customer API v0.3.0. Offers single / one-per-finding / one-per-component / one-for-all modes, groups the selection by project version (K versions = K tickets), confirms before creating more than one, and reports created keys, per-version failures, and platform degradation honestly."
+      - report: "Triage Prioritization"
+        type: changed
+        description: "Ticket creation works **only under `--serve` with the server holding credentials** — the manual browser-token connect mode is explicitly unsupported for ticket creation (the modal says so). Separately, the API proxy no longer masks an empty non-2xx response as `{ok: true}`, so a failed Jira availability ping now surfaces honestly instead of appearing successful."
+      - report: "Autotriage (VEX apply)"
+        type: changed
+        description: "VEX status updates now send only the fields semantically valid for the chosen status — `justification` for `NOT_AFFECTED`; `response` for `EXPLOITABLE`/`RESOLVED`/`RESOLVED_WITH_PEDIGREE`; neither for `IN_TRIAGE`/`FALSE_POSITIVE` — removing the old workaround that force-filled `response=WILL_NOT_FIX` + `justification=CODE_NOT_PRESENT` on every PUT and stamped nonsensical dispositions. Applies to both the CLI/bulk apply path and the `--serve` web UI. **BREAKING for helix-backed deployments**: fs-report now follows the alloy `{status}`-only contract and surfaces a helix HTTP 400 rather than masking it, so helix users must pin to `release/1.9` until helix relaxes its schema."
+      - report: "Autotriage (VEX apply)"
+        type: changed
+        description: "VEX application now uses the platform's native **bulk-set** endpoint for integer project-version/finding IDs (UUID / non-integer IDs still use single-PUT). Accordingly `--vex-concurrency` is redefined from 'parallel API requests' to 'parallel VEX-apply work units (1–5)', metering concurrent bulk batches plus single-PUT fallbacks, and the CLI VEX summary now reports throughput as **items/s** instead of req/s."
+      - report: "Autotriage (VEX apply)"
+        type: fixed
+        description: "Bulk VEX batch cap lowered from 5000 to **500** items (the platform's `BulkVexItem` `maxItems` limit); a 5000-item PUT tripped the client read timeout, so large re-triage runs (e.g. 6,382 updates on one project) now complete reliably via the 500-item bulk path."
+      - report: "Configuration Analysis Triage"
+        type: fixed
+        description: "The recipe now sets an explicit `NOT_AFFECTED` justification on its VEX writes so its dispositions stay valid under the new status-gated body (it previously relied on the removed force-filled defaults)."
+      - report: "Component List / Findings by Project"
+        type: fixed
+        description: "The **Group / namespace column** is now populated from the SBOM `bom-ref` or PURL (e.g. Maven `pkg:maven/group/name@version` or `group:artifact:version`) when the CycloneDX `group` field is absent, and engine-level SBOM group enrichment is no longer clobbered by the transform. Previously the Group column was frequently empty for these components."
+      - report: "Command Center"
+        type: removed
+        description: "The KPI band drops the **'Active users / 30d'** tile (now three tiles instead of four) and the scan-queue version rows drop the per-version **'created by' author chip**, because `ScanV0.createdBy` is not populated on Customer API v0.3.0."
+      - report: "Command Center"
+        type: changed
+        description: "Clicking a finished report deliverable now opens the report in a **new browser tab** instead of navigating away from the dashboard; the run canvas (`/run/{id}`) and error-log rows still open in the same tab."
+      - report: "Command Center"
+        type: fixed
+        description: "The sticky run bar now docks flush beneath the fixed topbar when scrolling, instead of leaving a gap where scrolling content bled through above it."
+      - report: "License Report / Component List / Findings by Project"
+        type: fixed
+        description: "Fixes **CST-795** ('License Report never finishes'). Per-version CycloneDX SBOM `group` lookups are now cached in the sqlite raw cache (key `sbom_group_lookup:{version_id}`, on a dedicated fingerprint-invalidated 7-day TTL independent of `--cache-ttl`'s row window), so repeat portfolio runs skip redundant full-SBOM downloads. Caching activates whenever a cache exists (any `--cache-ttl > 0`; the web UI defaults to 4 h), and the run log now prints 'N SBOM(s) fetched, M version(s) served from cache'. First-run cost is still one SBOM download per version."
+      - report: "CRA Compliance & False Positive Analysis"
+        type: fixed
+        description: "A **Project column** is now rendered in CRA Compliance HTML/PDF across all five sections (SLA-Breach Risk, Newly Above Threshold, Re-emerged, Still in Triage, Full Snapshot) and in the False Positive Analysis HTML + Markdown candidates table, restoring parity with the XLSX/CSV so multi-project reports show which project each row belongs to."
+      - report: "Scan Quality / Remediation Package"
+        type: fixed
+        description: "Both reports (including `--ai` / `--ai-prompts`) previously raised `ValueError` and produced no output on backends that issue UUID project/version IDs because IDs were cast with `int()`. IDs are now string-normalized (stripping a float `.0` suffix to protect large numeric legacy IDs), restoring these reports on UUID backends while preserving int-typed IDs in output columns on legacy backends."
+      - report: "Web UI"
+        type: fixed
+        description: "Light-mode readability fixes: the pop-up toast notification (e.g. 'Run failed: Failed to fetch') no longer renders as unreadable black-on-black, and Builder step cards (`.wfb-step`) / compound section rows no longer appear as dark-navy blocks with near-black text in the light theme."
+      - report: "Web UI (Builder)"
+        type: fixed
+        description: "Builder step reordering no longer scrambles the workflow at 6+ steps — the drag DOM/model desync that made saved workflows run in a different order than displayed is fixed — and dragging now autoscrolls the canvas on long lists, including the former statusbar dead zone at the bottom edge."
+      - report: "fs-report run"
+        type: added
+        description: "New `--progress-file <path>` flag appends one JSON line per engine progress event (`run_start`; `recipe_start`/`recipe_complete` with 1-based index/total mirroring the web SSE payload; `section_start`/`section_complete` for compound children, 0-based, with success; `run_complete` with success), each stamped with `run_id` and a UTC ISO timestamp, so an external supervisor can tail live run progress from the plain CLI path. The stream is append-only (delimit runs by `run_id`) and best-effort (an uncreatable parent dir or failed write warns and disables itself, never aborting the run); consumers must not assume start/complete pairing — `recipe_complete` fires from the engine loop's `finally`, so skipped recipes emit a completion with no matching start, and a missing `run_complete` line means the process died."
+      - report: "fs-report run (--headless)"
+        type: added
+        description: "When a recipe's transform ran an LLM (`--ai` / `--ai-analysis`), its `stats` block in the `--headless` JSON summary now carries **`ai_usage`**: `{input_tokens, output_tokens, models: {<model-id>: {input_tokens, output_tokens}}}` — raw provider-reported counts only (no pricing math), with a per-model breakdown because one run can use both the summary and component tiers. Compound bundles aggregate usage across AI-using children (billable usage survives a post-transform render failure). The key is absent (not empty) when no billable usage occurred — no AI, a fully cache-served run, or a provider that reported no telemetry."
+      - report: "Run Logs"
+        type: fixed
+        description: "Run logs (`~/.fs-report/logs/<date>_<run_id>.log`), the web SSE live-log stream, and the JSON-RPC bridge log handler now redact the active AI provider's API key (Anthropic / OpenAI / Gemini / Copilot, resolved via `--ai-provider` override or env auto-detect) and the `--compare-token`, in addition to the platform auth token. Redaction scrubs longest-token-first to avoid recoverable remnants and never breaks a run if key resolution fails — closing a leak in the very log files support asks customers to upload for remote debugging."
+      - report: "Run Logs"
+        type: fixed
+        description: "Closes the Copilot gap left by the redaction work above: a runtime-secret registry lets any credential minted mid-run be scrubbed by all already-attached log filters, so Copilot's short-lived exchanged bearer (and the GitHub gh-CLI / device-flow / cached-OAuth token spent to obtain it) are now redacted from run logs, the SSE stream, and the bridge. File handlers now always attach the redaction filter even when no static token is present."
+      - report: "fs-report doctor"
+        type: added
+        description: "New `fs-report doctor` — a read-only first-run preflight. It reports the fs-report / Python version; credentials present and their source (`--token`/`--domain` flag → env var → config file, token masked, using the run's `merge_config` precedence); domain normalization (scheme and trailing slash stripped; `https://tenant.io/` accepted); DNS resolution; API reachability + token validity (one `GET /public/v0/projects?limit=1` probe — 401/403 → re-issue/tenant-migration hint, TLS cert errors → corporate-proxy CA hint, 429 → warning not failure, 200-non-JSON → captive-portal hint); and run-log-dir writability. Accepts `--token`/`--domain`; exit 0 = healthy (warnings allowed), 1 = any failure."
+      - report: "fs-report run"
+        type: added
+        description: "Every `fs-report run` failure exit now prints `Full run log: ~/.fs-report/logs/<date>_<run_id>.log` on all failure paths once a run has started, so support can request the log file instead of screenshots. Pre-run validation failures (bad flags, missing credentials) have no run log and print none."
+      - report: "setup.sh"
+        type: fixed
+        description: "`setup.sh` (shipped to customers via `.customer-include`) now installs pipx via the system package manager (sudo-guarded `apt`/`dnf`; root needs no sudo) instead of `pip install --user pipx`, which fails with `externally-managed-environment` on Debian 12+ / Ubuntu 23.04+ (PEP 668); it falls back to user-level pip on sudo-less / RHEL-without-EPEL hosts. README gained a PEP 668 note (`sudo apt install -y pipx && pipx ensurepath`) and a `doctor` pointer."
+      - report: "fs-report list projects"
+        type: fixed
+        description: "Corrected the `--filter` example in `fs-report list projects --help` from the no-op `archived==false` to `archived==true` (help-string only; no behavior change)."
+      - report: "Dependencies"
+        type: changed
+        description: "Security-focused dependency bump for 2.0.1 (repo source-scan findings dropped 99 → 43): starlette 0.52 → 1.3.1 (major — powers `--serve`), fastapi 0.129 → 0.139, urllib3 2.7.0, python-multipart 0.0.32, plus idna / pygments / python-dotenv floors and a pydantic floor of `^2.9.0` (dev: pypdf `^6.13.3`, black, pytest). OSV fixed-in floors are now encoded in `pyproject.toml` so metadata installs can't select vulnerable versions. No CLI flags, reports, or behavior changed, and the full suite stayed green across the starlette major."
   - version: "2.0.0"
     date: "2026-06-01"
     changes:
@@ -31,7 +157,7 @@ releases:
         description: "Customer Brief's page footer (`Page X of Y` band) migrates from WeasyPrint CSS `@page @bottom-center` markers to Chromium's `footerTemplate` HTML parameter, surfaced via the new `output.pdf_footer_template` field on the recipe YAML. `OutputConfig` also gains `has_inline_charts: bool` (signals the chart-readiness beacon to the PDF renderer) and `pdf_margin: dict[str, str] | None` (per-edge margin overrides). Visual layout of existing PDFs is preserved."
       - report: "PDF Rendering"
         type: changed
-        description: "BREAKING for air-gapped customers: chart-bearing PDF recipes (Customer Brief, Customer Brief Detailed, Executive Summary, Assessment Overview, Findings by Project chart cards, etc.) require network access to `cdn.jsdelivr.net` for Chart.js until 2.0.1's library-packaging follow-on bundles the CDN libraries into the wheel. Chart-free PDFs (CRA Compliance, Findings by Project tabular sheets, False Positive Analysis, CVE Component Evidence, Remediation Package, Workflow Summary) render fully offline. Customers who need offline chart-in-PDF rendering should stay on `release/1.9` (WeasyPrint maintenance line) until 2.0.1 ships."
+        description: "BREAKING for air-gapped customers: chart-bearing PDF recipes (Customer Brief, Customer Brief Detailed, Executive Summary, Assessment Overview, Findings by Project chart cards, etc.) require network access to `cdn.jsdelivr.net` for Chart.js until a future library-packaging follow-on bundles the CDN libraries into the wheel. Chart-free PDFs (CRA Compliance, Findings by Project tabular sheets, False Positive Analysis, CVE Component Evidence, Remediation Package, Workflow Summary) render fully offline. Customers who need offline chart-in-PDF rendering should stay on `release/1.9` (WeasyPrint maintenance line) until that release ships."
       - report: "API Client"
         type: removed
         description: "Helix (v2) backend auto-detection and all v2-specific branches have been removed. fs-report now sends the same wire requests to every backend (\"alloy contract\"). Specifically gone: the `_detect_v2()` probe, the `APIClient(is_v2=...)` kwarg, the page-size cap at `limit=1000` (now always `10000`), the `/versions/{vid}/findings` per-version fallback in `ReportEngine._fetch_with_version_batching`, the `versionId↔projectVersion` RSQL rewrite, the v2 short-page early-exit in pagination, and the `bssMessage`→`errorMessage` normalization in `SQLiteCache._trim_record` and `scan_analysis.generate_scan_metrics`."

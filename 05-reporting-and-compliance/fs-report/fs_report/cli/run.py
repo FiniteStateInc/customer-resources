@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Union, cast
 
@@ -21,6 +22,7 @@ from fs_report.cli.common import (
     redact_token,
     setup_logging,
 )
+from fs_report.cra import tiers as cra_tiers
 from fs_report.models import Config
 from fs_report.period_parser import PeriodParser
 from fs_report.renderers.pdf_renderer import cleanup_pdf_engines
@@ -60,11 +62,31 @@ VALID_SCAN_STATUSES: frozenset[str] = frozenset(
 )
 
 
+def _print_run_log_location(file_handler: "logging.FileHandler | None") -> None:
+    """Point the user at the persistent run log on failure paths.
+
+    The log path is announced once as an INFO line at run start, which has
+    long scrolled away by the time a portfolio run fails hours later — and
+    support threads show users often don't know client-side logs exist at
+    all. Every failure exit prints it explicitly.
+    """
+    path = getattr(file_handler, "baseFilename", None)
+    if path:
+        console.print(f"[dim]Full run log: {path}[/dim]")
+
+
 def _split_csv(value: Union[str, None]) -> Union[list[str], None]:
     """Split a comma-separated string into a list of stripped, non-empty strings."""
     if value is None:
         return None
     return [s.strip() for s in value.split(",") if s.strip()]
+
+
+def _split_csv_lower(value: Union[str, None]) -> Union[list[str], None]:
+    """Like _split_csv but lowercases each token (for case-insensitive enums
+    whose canonical form is lowercase, e.g. CRA exploit-maturity tiers)."""
+    parts = _split_csv(value)
+    return [s.lower() for s in parts] if parts is not None else None
 
 
 def _validate_scoring_file(path: str) -> None:
@@ -83,6 +105,98 @@ def _validate_scoring_file(path: str) -> None:
         for e in errors:
             console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
+
+
+class _ProgressFileWriter:
+    """Append-only JSONL progress events for ``--progress-file``.
+
+    One JSON object per line, every event stamped with ``run_id`` + a UTC ISO
+    ``timestamp``. Event contract (field names mirror the web UI's SSE
+    progress payloads where an equivalent exists):
+
+    * ``run_start`` — emitted once, immediately after the flag is wired.
+    * ``recipe_start`` / ``recipe_complete`` — the engine's coarse per-recipe
+      tick (``index``/``completed`` are **1-based**, from
+      ``ReportEngine.run()``'s ``enumerate(recipes, 1)``). ``recipe_complete``
+      fires from the engine loop's ``finally``, so a recipe skipped by a
+      requires-* pre-check emits a completion with NO matching
+      ``recipe_start``, and a compound bundle emits recipe events for the
+      bundle itself in addition to per-child section events — consumers must
+      not assume start/complete pairing.
+    * ``section_start`` / ``section_complete`` — compound children only
+      (``index`` is **0-based**, from ``_process_compound``'s enumerate).
+    * ``run_complete`` (``success``) — emitted on every exit path once the
+      writer was wired (same best-effort sink as ``run_start``); its absence
+      on a quiet file means the process died.
+
+    Writes are best-effort: the file is appended (never truncated) and
+    flushed per event; an ``OSError`` logs a warning and never aborts the
+    run.
+    """
+
+    def __init__(self, path: Path, run_id: str) -> None:
+        self._path = path
+        self._run_id = run_id
+
+    def emit(self, event: dict[str, Any]) -> None:
+        event["run_id"] = self._run_id
+        event["timestamp"] = datetime.now(UTC).isoformat()
+        try:
+            with open(self._path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event) + "\n")
+                fh.flush()
+        except OSError as exc:
+            logger.warning("Failed to write progress event to %s: %s", self._path, exc)
+
+    # ── the four ReportEngine hooks ──────────────────────────────────
+    def on_recipe_start(self, index: int, total: int, name: str) -> None:
+        self.emit(
+            {"event": "recipe_start", "index": index, "total": total, "recipe": name}
+        )
+
+    def on_recipe_complete(self, completed: int, total: int, name: str) -> None:
+        self.emit(
+            {
+                "event": "recipe_complete",
+                "completed": completed,
+                "total": total,
+                "recipe": name,
+            }
+        )
+
+    def on_section_start(self, index: int, name: str) -> None:
+        self.emit({"event": "section_start", "index": index, "section": name})
+
+    def on_section_complete(self, index: int, name: str, success: bool) -> None:
+        self.emit(
+            {
+                "event": "section_complete",
+                "index": index,
+                "section": name,
+                "success": success,
+            }
+        )
+
+
+def _make_progress_writer(
+    progress_file: str, run_id: str
+) -> Union[_ProgressFileWriter, None]:
+    """Build the writer, creating parent dirs; unwritable parent → warn + None.
+
+    Progress reporting is best-effort telemetry — a bad ``--progress-file``
+    path must disable the stream (loudly), not abort the report run.
+    """
+    path = Path(progress_file).expanduser()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "--progress-file disabled: cannot create parent directory of %s: %s",
+            path,
+            exc,
+        )
+        return None
+    return _ProgressFileWriter(path, run_id)
 
 
 def _invalidate_findings_cache_for_versions(domain: str, results: list[dict]) -> None:
@@ -600,11 +714,14 @@ def run_reports(
     snapshot_diff: str = "on",
     left_scope: Union[str, None] = None,
     right_scope: Union[str, None] = None,
+    progress_file: Union[str, None] = None,
 ) -> Any:
     """Execute the report generation pipeline."""
     run_id = setup_logging(verbose)
     logger = logging.getLogger(__name__)
     file_handler = None
+    progress_writer: Union[_ProgressFileWriter, None] = None
+    run_succeeded = False
     try:
         data_override = None
         if data_file:
@@ -691,7 +808,15 @@ def run_reports(
             right_scope=right_scope,
         )
 
-        file_handler = attach_file_logging(run_id, config.auth_token)
+        # str() coercion: compare_auth_token is the merged CLI-flag/env/config
+        # value; coercing keeps a non-str (e.g. a test double) from reaching
+        # the redaction filter as anything but an inert never-matching token.
+        file_handler = attach_file_logging(
+            run_id,
+            config.auth_token,
+            ai_provider=ai_provider,
+            extra_tokens=(str(config.compare_auth_token or ""),),
+        )
 
         logger.info("Configuration:")
         logger.info(f"  Domain: {config.domain}")
@@ -848,10 +973,30 @@ def run_reports(
         output_path = Path(config.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
+        # ── --progress-file: append one JSON line per progress event so an
+        # external supervisor (an integrating platform tailing the file) can
+        # follow live run progress. See _ProgressFileWriter for the contract.
+        if progress_file:
+            progress_writer = _make_progress_writer(progress_file, run_id)
+            if progress_writer is not None:
+                progress_writer.emit({"event": "run_start"})
+
         engine = ReportEngine(
             config,
             data_override=data_override,
             deployment_context=deployment_ctx,
+            on_recipe_start=(
+                progress_writer.on_recipe_start if progress_writer else None
+            ),
+            on_recipe_complete=(
+                progress_writer.on_recipe_complete if progress_writer else None
+            ),
+            on_section_start=(
+                progress_writer.on_section_start if progress_writer else None
+            ),
+            on_section_complete=(
+                progress_writer.on_section_complete if progress_writer else None
+            ),
         )
 
         # Patch API client if using data_override
@@ -897,6 +1042,7 @@ def run_reports(
 
         run_result = engine.run()
         success = run_result.success
+        run_succeeded = bool(success)
 
         if success:
             # Record run in history DB
@@ -1007,22 +1153,36 @@ def run_reports(
 
         return run_result
 
-    except typer.Exit:
+    except typer.Exit as e:
+        # Mid-run raises (VEX flag conflicts, context-file errors, …) pass
+        # through here — point at the log on any FAILURE exit code too.
+        if getattr(e, "exit_code", 1):
+            _print_run_log_location(file_handler)
         raise
     except FileNotFoundError as e:
         console.print(f"[red]File not found: {e}[/red]")
+        _print_run_log_location(file_handler)
         raise typer.Exit(1) from e
     except FileExistsError as e:
         console.print(f"[red]{e}[/red]")
+        _print_run_log_location(file_handler)
         raise typer.Exit(1) from e
     except ValueError as e:
         console.print(f"[red]Validation error: {e}[/red]")
+        _print_run_log_location(file_handler)
         raise typer.Exit(1) from e
     except Exception as e:
         logger.exception("Unexpected error occurred")
         console.print(f"[red]Error: {e}[/red]")
+        _print_run_log_location(file_handler)
         raise typer.Exit(1) from e
     finally:
+        # Terminal progress event — emitted on every exit path once run_start
+        # went out, so a supervisor tailing the file can distinguish a
+        # finished run (any success value) from a dead process (no terminal
+        # line).
+        if progress_writer is not None:
+            progress_writer.emit({"event": "run_complete", "success": run_succeeded})
         if file_handler is not None:
             logging.getLogger().removeHandler(file_handler)
             file_handler.close()
@@ -1045,7 +1205,7 @@ def _print_vex_summary(result: "VexApplyResult") -> None:
     if result.skipped_existing:
         console.print(f"  Skipped (existing):{result.skipped_existing}")
     console.print(
-        f"  Time:              {result.elapsed_seconds:.1f}s ({rate:.0f} req/s)"
+        f"  Time:              {result.elapsed_seconds:.1f}s ({rate:.0f} items/s)"
     )
     if result.results_path:
         console.print(f"  Results log:       {result.results_path}")
@@ -1089,6 +1249,16 @@ def run_command(
         file_okay=False,
         rich_help_panel=_OUTPUT,
     ),
+    progress_file: Union[str, None] = typer.Option(
+        None,
+        "--progress-file",
+        help="Append one JSON line per progress event (run_start, "
+        "recipe_start, recipe_complete, section_start, section_complete, "
+        "run_complete — each stamped with run_id + UTC timestamp) to this "
+        "file as the run executes, so an external tool can tail live "
+        "progress.",
+        rich_help_panel=_OUTPUT,
+    ),
     start: Union[str, None] = typer.Option(
         None,
         "--start",
@@ -1127,8 +1297,10 @@ def run_command(
         "--exploit-maturity",
         help=(
             "CRA threshold tiers, comma-separated. Values: "
-            "kev,weaponized,poc,ransomware,threat_actor. "
-            "Default (from recipe YAML): kev,ransomware,threat_actor,weaponized."
+            "kev,weaponized,poc,ransomware,threat_actor,botnet,commercial,reported. "
+            "Default (from recipe YAML): "
+            "kev,ransomware,threat_actor,weaponized,botnet. "
+            "poc/commercial/reported are recognized but opt-in."
         ),
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
@@ -1182,9 +1354,9 @@ def run_command(
         "wide-fetch",
         "--unfilterable-tier-strategy",
         help=(
-            "How to handle tiers (ransomware, threat_actor) that "
-            "the /findings API cannot filter directly. "
-            "Choices: wide-fetch (default), drop-tier, require-rsql."
+            "How to handle tiers (ransomware, threat_actor, botnet, "
+            "commercial, reported) that the /findings API cannot filter "
+            "directly. Choices: wide-fetch (default), drop-tier, require-rsql."
         ),
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
@@ -1577,7 +1749,8 @@ def run_command(
     vex_concurrency: int = typer.Option(
         5,
         "--vex-concurrency",
-        help="Parallel API requests for VEX application (1-5).",
+        help="Parallel VEX-apply work units (1-5): meters concurrent bulk "
+        "batches plus single-PUT fallbacks, not per-finding requests.",
         min=1,
         max=5,
         rich_help_panel=_PERFORMANCE,
@@ -1684,6 +1857,17 @@ def run_command(
             err=True,
         )
         raise typer.Exit(code=2)
+    # Reject unknown --exploit-maturity tier names at parse time. A typo
+    # (e.g. the token 'botnets' vs. the tier 'botnet') would otherwise
+    # silently shrink the CRA queue — dangerous for a notification report.
+    # Case-insensitive (tiers are canonically lowercase, like --scan-type).
+    _maturity_tiers = _split_csv_lower(exploit_maturity)
+    if _maturity_tiers:
+        try:
+            cra_tiers.validate_tier_names(_maturity_tiers)
+        except ValueError as exc:
+            typer.echo(f"--exploit-maturity: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
     _valid_snapshot_diff = {"on", "read-only", "off"}
     if snapshot_diff not in _valid_snapshot_diff:
         typer.echo(
@@ -1840,7 +2024,7 @@ def run_command(
         detailed=detailed,
         theme=theme,
         since=since,
-        exploit_maturity_threshold=_split_csv(exploit_maturity),
+        exploit_maturity_threshold=_split_csv_lower(exploit_maturity),
         include_status=_split_csv(include_status),
         exclude_status=_split_csv(exclude_status),
         reachable_only=reachable_only,
@@ -1850,6 +2034,7 @@ def run_command(
         snapshot_diff=snapshot_diff,
         left_scope=left_scope,
         right_scope=right_scope,
+        progress_file=progress_file,
     )
 
     # In headless mode, print a structured JSON summary to stdout

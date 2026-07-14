@@ -1,0 +1,363 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://finitestate.io/schemas/cra-stages.schema.json",
+  "title": "CraSrpBundle",
+  "description": "The neutral, shared contract for the CRA Article-14 SRP cascade bundle. CANONICAL COPY lives in fs-comply (the consumer-contract owner) and is vendored into fs-report (Member 7) with a CI checksum. fs-comply's TS validateBundle and forge's Python jsonschema BOTH enforce this; the fs-comply conformance test asserts the two gates agree. The x-cra-* blocks below are vendor annotations (the FieldKey registry and per-stage authored sets) mirroring src/model/srp.ts — they are not JSON-Schema keywords and are ignored for validation. NOTE: timestamp PARSEABILITY (Date.parse) is enforced only by the TS validateBundle; this schema intentionally omits a date-time format so the two gates stay aligned on accept/reject across the shared battery.",
+
+  "x-cra-field-registry": [
+    { "key": "notification_type", "provenance": "platform", "minStage": 0, "authored": false },
+    { "key": "reporting_stage", "provenance": "platform", "minStage": 0, "authored": false },
+    { "key": "srp_reference", "provenance": "platform", "minStage": 0, "authored": false },
+    { "key": "coordinating_csirt", "provenance": "customer", "minStage": 0, "authored": false },
+    { "key": "draft_prepared", "provenance": "platform", "minStage": 0, "authored": false },
+    { "key": "information_sensitivity", "provenance": "customer", "minStage": 1, "authored": false },
+    { "key": "manufacturer", "provenance": "customer", "minStage": 0, "authored": false },
+    { "key": "establishment", "provenance": "customer", "minStage": 0, "authored": false },
+    { "key": "eu_representative", "provenance": "customer", "minStage": 0, "authored": false },
+    { "key": "reporter_contact", "provenance": "customer", "minStage": 0, "authored": false },
+    { "key": "product", "provenance": "platform", "minStage": 0, "authored": true },
+    { "key": "affected_versions", "provenance": "platform", "minStage": 0, "authored": true },
+    { "key": "cra_product_class", "provenance": "platform", "minStage": 1, "authored": true },
+    { "key": "annex_category", "provenance": "platform", "minStage": 1, "authored": true },
+    { "key": "member_states", "provenance": "customer", "minStage": 0, "authored": false },
+    { "key": "cve", "provenance": "platform", "minStage": 0, "authored": true },
+    { "key": "euvd", "provenance": "platform", "minStage": 0, "authored": true },
+    { "key": "weakness", "provenance": "platform", "minStage": 0, "authored": true },
+    { "key": "cvss_base", "provenance": "platform", "minStage": 1, "authored": true },
+    { "key": "epss", "provenance": "computed", "minStage": 1, "authored": true },
+    { "key": "known_exploited", "provenance": "platform", "minStage": 1, "authored": true },
+    { "key": "affected_component", "provenance": "platform", "minStage": 1, "authored": true },
+    { "key": "reachability", "provenance": "platform", "minStage": 1, "authored": true },
+    { "key": "cvss_vector", "provenance": "platform", "minStage": 1, "authored": true },
+    { "key": "package_url", "provenance": "platform", "minStage": 1, "authored": true },
+    { "key": "vuln_nature", "provenance": "platform", "minStage": 0, "authored": true },
+    { "key": "actively_exploited", "provenance": "customer", "minStage": 0, "authored": false },
+    { "key": "exploit_nature", "provenance": "computed", "minStage": 1, "authored": true },
+    { "key": "malicious_actor", "provenance": "platform", "minStage": 2, "authored": true },
+    { "key": "first_observed", "provenance": "platform", "minStage": 2, "authored": true },
+    { "key": "exploitation_scope", "provenance": "customer", "minStage": 2, "authored": false },
+    { "key": "severity", "provenance": "platform", "minStage": 1, "authored": true },
+    { "key": "cia", "provenance": "computed", "minStage": 1, "authored": true },
+    { "key": "affected_units_eu", "provenance": "customer", "minStage": 1, "authored": false },
+    { "key": "sectors", "provenance": "customer", "minStage": 1, "authored": false },
+    { "key": "potential_impact", "provenance": "platform", "minStage": 1, "authored": true },
+    { "key": "measures_taken", "provenance": "platform", "minStage": 1, "authored": true },
+    { "key": "user_actions", "provenance": "customer", "minStage": 1, "authored": false },
+    { "key": "security_update", "provenance": "platform", "minStage": 2, "authored": true },
+    { "key": "update_available_since", "provenance": "platform", "minStage": 2, "authored": true },
+    { "key": "automatic_update", "provenance": "platform", "minStage": 2, "authored": true },
+    { "key": "vex_status", "provenance": "platform", "minStage": 2, "authored": true },
+    { "key": "root_cause", "provenance": "platform", "minStage": 2, "authored": true },
+    { "key": "preventive_measures", "provenance": "customer", "minStage": 2, "authored": false },
+    { "key": "vendor_advisory", "provenance": "customer", "minStage": 2, "authored": false },
+    { "key": "cve_record", "provenance": "platform", "minStage": 2, "authored": true },
+    { "key": "euvd_record", "provenance": "platform", "minStage": 2, "authored": true }
+  ],
+
+  "x-cra-authored-by-stage": {
+    "early": ["product", "affected_versions", "cve", "euvd", "weakness", "vuln_nature"],
+    "full": [
+      "product", "affected_versions", "cra_product_class", "annex_category", "cve", "euvd",
+      "weakness", "cvss_base", "epss", "known_exploited", "affected_component", "reachability",
+      "cvss_vector", "package_url", "vuln_nature", "exploit_nature", "severity", "cia",
+      "potential_impact", "measures_taken"
+    ],
+    "final": [
+      "product", "affected_versions", "cra_product_class", "annex_category", "cve", "euvd",
+      "weakness", "cvss_base", "epss", "known_exploited", "affected_component", "reachability",
+      "cvss_vector", "package_url", "vuln_nature", "exploit_nature", "malicious_actor",
+      "first_observed", "severity", "cia", "potential_impact", "measures_taken", "security_update",
+      "update_available_since", "automatic_update", "vex_status", "root_cause", "cve_record",
+      "euvd_record"
+    ]
+  },
+
+  "type": "object",
+  "required": [
+    "schema_version", "mode", "subject_id", "generated_at", "product", "clock", "actively_exploited",
+    "finding", "customer_input", "stages", "evidence"
+  ],
+  "properties": {
+    "schema_version": { "const": "cra-srp/3" },
+    "mode": { "enum": ["curated", "live"] },
+    "subject_id": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string" },
+    "product": { "$ref": "#/definitions/product" },
+    "org": { "$ref": "#/definitions/org" },
+    "clock": { "$ref": "#/definitions/clock" },
+    "actively_exploited": { "$ref": "#/definitions/activelyExploited" },
+    "finding": { "$ref": "#/definitions/finding" },
+    "customer_input": { "$ref": "#/definitions/customerInput" },
+    "refs": { "type": "object" },
+    "stages": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/stages" }]
+    },
+    "evidence": { "$ref": "#/definitions/evidence" },
+    "label": { "type": "string" },
+    "dot": { "type": "string" }
+  },
+
+  "allOf": [
+    {
+      "$comment": "clock XOR — never both an absolute became_aware and an offset.",
+      "not": {
+        "required": ["clock"],
+        "properties": {
+          "clock": {
+            "allOf": [
+              { "required": ["became_aware"], "properties": { "became_aware": { "type": "string" } } },
+              { "required": ["became_aware_offset_hours"], "properties": { "became_aware_offset_hours": { "type": "number" } } }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "$comment": "clock XOR — never both an absolute remediation and an offset.",
+      "not": {
+        "required": ["clock"],
+        "properties": {
+          "clock": {
+            "allOf": [
+              { "required": ["remediation_available_at"], "properties": { "remediation_available_at": { "type": "string" } } },
+              { "required": ["remediation_available_at_offset_hours"], "properties": { "remediation_available_at_offset_hours": { "type": "number" } } }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "$comment": "CURATED → projection only: stages null, offset clock (became_aware null).",
+      "if": { "properties": { "mode": { "const": "curated" } } },
+      "then": {
+        "properties": {
+          "stages": { "type": "null" },
+          "clock": { "properties": { "became_aware": { "type": "null" } } }
+        }
+      }
+    },
+    {
+      "$comment": "LIVE → authoritative stages object + absolute clock (no curated offsets).",
+      "if": { "properties": { "mode": { "const": "live" } } },
+      "then": {
+        "properties": {
+          "stages": { "$ref": "#/definitions/stages" },
+          "clock": {
+            "required": ["became_aware"],
+            "properties": {
+              "became_aware": { "type": "string", "minLength": 1 },
+              "became_aware_offset_hours": { "type": "null" },
+              "remediation_available_at_offset_hours": { "type": "null" }
+            }
+          }
+        }
+      }
+    }
+  ],
+
+  "definitions": {
+    "product": {
+      "$comment": "The `manufacturer`, `model`, `cra_class`, `annex_category`, `units_eu` and `sectors` keys carry profile-sourced customer data (baked at assembly from the forge-side CRA profile / per-incident agent answers — see the customer-input-interrogation addendum). Typed as optional strings; the object stays OPEN (no additionalProperties) so `versions_affected` and any future key still validate.",
+      "type": "object",
+      "required": ["name", "version", "project_version_id"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "project_version_id": { "type": "string" },
+        "manufacturer": { "type": "string" },
+        "model": { "type": "string" },
+        "cra_class": { "type": "string" },
+        "annex_category": { "type": "string" },
+        "units_eu": { "type": "string" },
+        "sectors": { "type": "string" }
+      }
+    },
+    "org": {
+      "$comment": "Business/contact facts the platform cannot know — customer-input provenance, populated verbatim from the forge-side CRA profile / per-incident agent answers (see the customer-input-interrogation addendum). All eight known keys are typed as optional strings; the object stays OPEN (no additionalProperties) — the conformance ROOT-open case and the demo scenarios depend on that openness. `org` is NOT in the top-level required set: an absent-org bundle stays valid.",
+      "type": "object",
+      "properties": {
+        "establishment": { "type": "string" },
+        "coordinating_csirt": { "type": "string" },
+        "eu_representative": { "type": "string" },
+        "reporter_contact": { "type": "string" },
+        "srp_reference": { "type": "string" },
+        "information_sensitivity": { "type": "string" },
+        "exploitation_scope": { "type": "string" },
+        "preventive_measures": { "type": "string" }
+      }
+    },
+    "clock": {
+      "type": "object",
+      "properties": {
+        "became_aware": { "type": ["string", "null"], "minLength": 1 },
+        "became_aware_offset_hours": { "type": ["number", "null"] },
+        "became_aware_basis": { "type": "string" },
+        "cisa_date_added": { "type": ["string", "null"], "minLength": 1 },
+        "detected": { "type": ["string", "null"], "minLength": 1 },
+        "remediation_available_at": { "type": ["string", "null"], "minLength": 1 },
+        "remediation_available_at_offset_hours": { "type": ["number", "null"] }
+      }
+    },
+    "activelyExploited": {
+      "type": "object",
+      "required": ["asserted", "supporting_context"],
+      "properties": {
+        "asserted": { "type": ["boolean", "null"] },
+        "supporting_context": {
+          "type": "object",
+          "required": ["tiers", "in_kev", "in_vc_kev"],
+          "properties": {
+            "tiers": { "type": "array", "items": { "type": "string" } },
+            "in_kev": { "type": "boolean" },
+            "in_vc_kev": { "type": "boolean" },
+            "verifier_verdict": {
+              "type": ["string", "null"],
+              "enum": ["EXPLOITABLE", "EXPLOITABLE_CONDITIONAL", "NOT_EXPLOITABLE", "INCONCLUSIVE", null]
+            },
+            "verifier_pending": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": ["finding_id", "cve_id", "cwe", "cvss", "exploit", "component", "reachability_tier", "remediation"],
+      "properties": {
+        "finding_id": { "type": "string" },
+        "cve_id": { "type": "string" },
+        "cve_description": { "type": ["string", "null"] },
+        "cwe": { "type": "array", "items": { "type": "string" } },
+        "cvss": {
+          "type": "object",
+          "required": ["score", "vector", "severity"],
+          "properties": {
+            "score": { "type": "number" },
+            "vector": { "type": "string" },
+            "severity": { "type": "string" }
+          }
+        },
+        "exploit": {
+          "type": "object",
+          "required": ["maturity", "threat_actors"],
+          "properties": {
+            "maturity": { "type": "string" },
+            "threat_actors": { "type": "array" }
+          }
+        },
+        "component": {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": { "name": { "type": "string" }, "version": { "type": "string" } }
+        },
+        "reachability_tier": { "type": "string" },
+        "remediation": {
+          "type": "object",
+          "required": ["fix_versions", "vex_status", "measures"],
+          "properties": {
+            "fix_versions": { "type": "array", "items": { "type": "string" } },
+            "vex_status": { "type": "string" },
+            "measures": { "type": "string" }
+          }
+        }
+      }
+    },
+    "customerInput": {
+      "type": "object",
+      "required": ["member_states", "information_sensitivity"],
+      "properties": {
+        "member_states": { "type": "array", "items": { "type": "string" } },
+        "information_sensitivity": { "type": ["string", "null"] }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["decision_state_at_t", "attestations", "source_versions", "bundle_hash", "platform_signature"],
+      "properties": {
+        "decision_state_at_t": { "type": "object" },
+        "attestations": { "type": "array" },
+        "source_versions": { "type": "object" },
+        "bundle_hash": { "type": ["string", "null"] },
+        "platform_signature": { "type": ["string", "null"] }
+      }
+    },
+
+    "stageFields": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } },
+
+    "stages": {
+      "type": "object",
+      "required": ["early", "full", "final"],
+      "additionalProperties": false,
+      "properties": {
+        "early": { "$ref": "#/definitions/stageEarly" },
+        "full": { "$ref": "#/definitions/stageFull" },
+        "final": { "$ref": "#/definitions/stageFinal" }
+      }
+    },
+    "stageEarly": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product", "affected_versions", "cve", "euvd", "weakness", "vuln_nature"],
+      "patternProperties": {
+        "^(product|affected_versions|cve|euvd|weakness|vuln_nature)$": { "type": "string", "minLength": 1 }
+      }
+    },
+    "stageFull": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product", "affected_versions", "cra_product_class", "annex_category", "cve", "euvd",
+        "weakness", "cvss_base", "epss", "known_exploited", "affected_component", "reachability",
+        "cvss_vector", "package_url", "vuln_nature", "exploit_nature", "severity", "cia",
+        "potential_impact", "measures_taken"
+      ],
+      "patternProperties": {
+        "^(product|affected_versions|cra_product_class|annex_category|cve|euvd|weakness|cvss_base|epss|known_exploited|affected_component|reachability|cvss_vector|package_url|vuln_nature|exploit_nature|severity|cia|potential_impact|measures_taken)$": { "type": "string", "minLength": 1 }
+      }
+    },
+    "stageFinal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product", "affected_versions", "cra_product_class", "annex_category", "cve", "euvd",
+        "weakness", "cvss_base", "epss", "known_exploited", "affected_component", "reachability",
+        "cvss_vector", "package_url", "vuln_nature", "exploit_nature", "malicious_actor",
+        "first_observed", "severity", "cia", "potential_impact", "measures_taken", "security_update",
+        "update_available_since", "automatic_update", "vex_status", "root_cause", "cve_record",
+        "euvd_record"
+      ],
+      "patternProperties": {
+        "^(product|affected_versions|cra_product_class|annex_category|cve|euvd|weakness|cvss_base|epss|known_exploited|affected_component|reachability|cvss_vector|package_url|vuln_nature|exploit_nature|malicious_actor|first_observed|severity|cia|potential_impact|measures_taken|security_update|update_available_since|automatic_update|vex_status|root_cause|cve_record|euvd_record)$": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "jsonPackage": {
+      "$comment": "Shape each fs-report CRA recipe emits (folded into stages by the forge assembler). The per-stage `allOf` below pins `fields` to EXACTLY that stage's authored set (same stageEarly/Full/Final defs the consumer enforces), so a recipe that omits an authored field or includes a wrong-stage / customer-owned field fails the shared schema at the producer, not only at assembly. The fs-report conformance pytest mirrors this.",
+      "type": "object",
+      "required": ["stage", "fields"],
+      "additionalProperties": false,
+      "properties": {
+        "stage": { "enum": ["early", "full", "final"] },
+        "fields": { "$ref": "#/definitions/stageFields" },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "clock": {
+              "type": "object",
+              "properties": {
+                "became_aware": { "type": "string" },
+                "became_aware_basis": { "type": "string" },
+                "cisa_date_added": { "type": ["string", "null"] },
+                "detected": { "type": ["string", "null"] }
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        { "if": { "required": ["stage"], "properties": { "stage": { "const": "early" } } }, "then": { "properties": { "fields": { "$ref": "#/definitions/stageEarly" } } } },
+        { "if": { "required": ["stage"], "properties": { "stage": { "const": "full" } } }, "then": { "properties": { "fields": { "$ref": "#/definitions/stageFull" } } } },
+        { "if": { "required": ["stage"], "properties": { "stage": { "const": "final" } } }, "then": { "properties": { "fields": { "$ref": "#/definitions/stageFinal" } } } }
+      ]
+    }
+  }
+}

@@ -1,0 +1,14 @@
+# snake_case `name` is the recipe slug, deliberate — see early_warning_notification.yaml.
+name: "final_report"
+category: assessment
+nav_category: Compliance
+description: "EU CRA Article 14 — 14-day final report. Producer recipe for the SRP-cascade live mode: consumes a forge exploitability-dataset/v2 export via --data-file and emits a json_package of all 29 authored final-report fields (the full set plus malicious actor, first observed, security update + availability date, automatic-update status, VEX status, root cause, and CVE/EUVD record references). Runs off the same shared dataset as the early/full recipes (no prior-stage threading); folded into the live CraSrpBundle stages by the forge assembler; conforms to the shared cra-stages.schema.json."
+card_description: "CRA Art.14 14d final report fields (final stage), from exploitability evidence."
+auto_run: false
+transform_function: final_report_transform
+transform_input: object
+chart_libraries: []
+output:
+  table: false
+  formats:
+    - json

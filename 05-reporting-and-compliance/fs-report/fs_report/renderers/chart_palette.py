@@ -41,6 +41,7 @@ FS_NAV_PALETTE: dict[str, str] = {
     "investigation": FS_ACCENT_CYAN,
     "remediation": FS_ACCENT_PURPLE,
     "compliance": FS_ACCENT_AMBER,
+    "exploitability-evidence": "#e11d48",
 }
 
 # ── Severity (Strategy-B reconciliation: the v2.0 design pass's brighter

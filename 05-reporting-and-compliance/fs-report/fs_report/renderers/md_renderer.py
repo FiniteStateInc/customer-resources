@@ -876,18 +876,20 @@ class MarkdownRenderer:
                 "ambiguous, flagged by finding-level applicability.\n"
             )
             lines.append(
-                "| CVE | Component | Severity | Confidence | Signals | Reason |"
+                "| CVE | Component | Project | Severity | Confidence | Signals | Reason |"
             )
-            lines.append("| --- | --- | --- | --- | --- | --- |")
+            lines.append("| --- | --- | --- | --- | --- | --- | --- |")
             for _, row in candidates.iterrows():
                 sigs = row.get("fp_signals", "")
                 if not isinstance(sigs, str):
                     sigs = ", ".join(sigs) if sigs else ""
                 reason = str(row.get("primary_reason", "") or "").replace("|", "\\|")
+                project = str(row.get("project_name", "") or "—").replace("|", "\\|")
                 lines.append(
                     f"| {row.get('cve_id', '') or row.get('finding_id', '')} | "
                     f"{row.get('component_name', '')} "
                     f"{row.get('component_version', '')} | "
+                    f"{project} | "
                     f"{row.get('severity', '')} | "
                     f"{row.get('fp_confidence', '')} | "
                     f"{sigs} | {reason} |"
@@ -2278,6 +2280,7 @@ class MarkdownRenderer:
     _CRA_SLA_COLS: list[tuple[str, str]] = [
         ("cve_id", "CVE"),
         ("component", "Component"),
+        ("project", "Project"),
         ("severity", "Severity"),
         ("exploit_maturity", "Maturity"),
         ("reachability_label", "Reachability"),
@@ -2294,6 +2297,7 @@ class MarkdownRenderer:
     _CRA_NEWLY_ABOVE_COLS: list[tuple[str, str]] = [
         ("cve_id", "CVE"),
         ("component", "Component"),
+        ("project", "Project"),
         ("severity", "Severity"),
         ("cvss_score", "CVSS"),
         ("crossed_to", "Crossed To"),
@@ -2306,6 +2310,7 @@ class MarkdownRenderer:
     _CRA_RE_EMERGED_COLS: list[tuple[str, str]] = [
         ("cve_id", "CVE"),
         ("component", "Component"),
+        ("project", "Project"),
         ("previous_resolution", "Previous Resolution"),
         ("resolution_date", "Resolution Date"),
         ("crossed_to", "Crossed To"),
@@ -2317,6 +2322,7 @@ class MarkdownRenderer:
     _CRA_STILL_IN_TRIAGE_COLS: list[tuple[str, str]] = [
         ("cve_id", "CVE"),
         ("component", "Component"),
+        ("project", "Project"),
         ("severity", "Severity"),
         ("triage_age_days", "Triage Age (days)"),
         ("epss_percentile", "EPSS"),
@@ -2327,6 +2333,7 @@ class MarkdownRenderer:
     _CRA_FULL_SNAPSHOT_COLS: list[tuple[str, str]] = [
         ("cve_id", "CVE"),
         ("component", "Component"),
+        ("project", "Project"),
         ("severity", "Severity"),
         ("cvss_score", "CVSS"),
         ("exploit_maturity", "Maturity"),
@@ -2339,10 +2346,12 @@ class MarkdownRenderer:
     # Per-section callout texts (customer-facing action guidance).
     _CRA_SECTION_CALLOUTS: dict[str, str] = {
         "sla_breach": (
-            "These vulnerabilities carry platform exploitation signals and are "
-            "flagged as *potentially* actively exploited — investigate and "
-            "disposition each (confirm affected, or mark NOT_AFFECTED / VEX) "
-            "before treating the 24-hour clock as running. The `KEV Source` "
+            "These findings carry a CISA/VulnCheck KEV signal and are flagged "
+            "for CRA review — a triage list to investigate, *not* a "
+            "determination that they are actively exploited or reportable. "
+            "Investigate and disposition each (confirm affected, or mark "
+            "NOT_AFFECTED / VEX) before treating the 24-hour clock as running. "
+            "The `KEV Source` "
             "column shows which platform signal triggered: `CISA` means the CVE "
             "is in the public CISA KEV catalog, `VcKEV` means the CVE is in "
             "VulnCheck's KEV catalog (broader than CISA's), `CISA+VcKEV` means both. "
@@ -2358,9 +2367,9 @@ class MarkdownRenderer:
         "newly_above": (
             "Exploit signals for these CVEs advanced in maturity during the report "
             "window. They weren't CRA-relevant before, but a new KEV listing / "
-            "weaponization / ransomware or threat-actor attribution puts them in scope "
-            "now. Treat as the 'what changed today' list — identify affected products "
-            "and start the triage."
+            "weaponization / ransomware, threat-actor, or botnet attribution puts them "
+            "in scope now. Treat as the 'what changed today' list — identify affected "
+            "products and start the triage."
         ),
         "re_emerged": (
             "CVEs you previously marked resolved or not-affected that have gained a new "
@@ -2648,13 +2657,14 @@ class MarkdownRenderer:
         if total_findings == 0 and sla_count == 0:
             banner = "✅ No CRA-relevant findings in scope this run."
         elif sla_count > 0:
-            _vuln_word = "vulnerability" if sla_count == 1 else "vulnerabilities"
+            _find_word = "finding" if sla_count == 1 else "findings"
             banner = (
-                f"⚠️ **{sla_count} potential actively-exploited {_vuln_word} detected** "
-                "in your portfolio. These are platform KEV / known-exploit signals — "
-                "investigate and disposition each (confirm affected, or mark "
-                "NOT_AFFECTED / VEX) before treating the EU CRA Article 14 24-hour "
-                "ENISA notification clock as running. The 🔥 SLA-Breach section lists deadlines."
+                f"⚠️ **{sla_count} {_find_word} flagged for CRA review** — carrying a "
+                "CISA/VulnCheck KEV signal. This is a triage list to investigate, "
+                "NOT a determination that a vulnerability is actively exploited or "
+                "reportable. Disposition each (confirm affected, or mark NOT_AFFECTED / "
+                "VEX) before treating the EU CRA Article 14 24-hour ENISA notification "
+                "clock as running. The 🔥 SLA-Breach section lists deadlines."
             )
         else:
             banner = (
@@ -2694,15 +2704,17 @@ class MarkdownRenderer:
             "## How to use this report\n\n"
             "This report alerts you when exploits for vulnerabilities in your\n"
             "portfolio advance in maturity — newly added to CISA KEV, becoming\n"
-            "weaponized, or gaining ransomware/threat-actor attribution. Use it to:\n\n"
+            "weaponized, or gaining ransomware/threat-actor/botnet attribution.\n"
+            "Use it to:\n\n"
             "  1. Identify which of your products contain the affected components.\n"
             "  2. Test those products to verify exposure.\n\n"
             "Under EU CRA Article 14, manufacturers must notify ENISA within 24 hours\n"
             "of becoming aware of an actively exploited vulnerability in a product\n"
             "with digital elements. The 🔥 SLA-Breach Risk section flags findings\n"
-            "carrying platform exploitation signals — potential candidates to\n"
-            "investigate and disposition (confirm affected vs NOT_AFFECTED/VEX)\n"
-            "before that 24-hour clock is treated as running."
+            "carrying a CISA/VulnCheck KEV signal — a triage list to investigate and\n"
+            "disposition (confirm affected vs NOT_AFFECTED/VEX), not a determination\n"
+            "that they are actively exploited or reportable — before that 24-hour\n"
+            "clock is treated as running."
         )
 
         # ── Assemble parts ───────────────────────────────────────────────

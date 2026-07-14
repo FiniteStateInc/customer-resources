@@ -130,8 +130,17 @@ async def proxy(
                     content = {"raw": resp.text}
             elif resp.text.strip():
                 content = {"raw": resp.text}
-            else:
+            elif resp.is_success:
                 content = {"ok": True}
+            else:
+                # Empty body on a non-2xx upstream response: don't mask the
+                # failure as success. The JSONResponse already carries the real
+                # status_code; the body must reflect it too so callers that
+                # trust the body (e.g. the tracker create path) see the error.
+                content = {
+                    "error": "Upstream returned an empty error response",
+                    "status": resp.status_code,
+                }
             return JSONResponse(content=content, status_code=resp.status_code)
     except httpx.HTTPStatusError as e:
         return JSONResponse(

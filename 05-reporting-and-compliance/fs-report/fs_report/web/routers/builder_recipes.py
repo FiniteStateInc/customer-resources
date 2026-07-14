@@ -100,14 +100,24 @@ def _doc_kind(data: dict) -> str:
     return "comparison" if isinstance(axis, dict) else "compound"
 
 
-# #20 (B6): the four allowed nav_category values (matches models.Recipe.nav_category).
-_NAV_CATEGORIES = ("Executive", "Investigation", "Remediation", "Compliance")
+# #20 (B6): the allowed nav_category values (matches models.Recipe.nav_category).
+_NAV_CATEGORIES = (
+    "Executive",
+    "Investigation",
+    "Remediation",
+    "Compliance",
+    "Exploitability Evidence",
+)
+# Keyed by ``.lower()`` (no hyphenation): this map is consumed ONLY by
+# ``_canon_nav_category`` to validate / canonicalize an incoming display-name
+# value back to its exact casing — it never builds a slug/token — so a
+# space-containing key ("exploitability evidence") is correct and harmless here.
 _NAV_BY_LOWER = {c.lower(): c for c in _NAV_CATEGORIES}
 
 
 def _canon_nav_category(raw: object) -> str | None:
     """Canonicalize *raw* to its exact-cased nav_category (case-insensitive
-    match against the four allowed values).
+    match against the allowed values).
 
     Empty / ``None`` → the default ``"Executive"``.  Returns ``None`` for an
     unrecognized value (a non-string or an unknown label) so the save path can

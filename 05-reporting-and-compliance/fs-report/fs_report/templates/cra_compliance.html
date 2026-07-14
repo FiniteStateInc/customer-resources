@@ -269,19 +269,19 @@
     {# How to use this report callout — preserved verbatim. #}
     <div class="cra-how-to-use">
         <h2>How to use this report</h2>
-        <p>This report alerts you when exploits for vulnerabilities in your portfolio advance in maturity — newly added to CISA KEV, becoming weaponized, or gaining ransomware/threat-actor attribution. Use it to:</p>
+        <p>This report alerts you when exploits for vulnerabilities in your portfolio advance in maturity — newly added to CISA KEV, becoming weaponized, or gaining ransomware/threat-actor/botnet attribution. Use it to:</p>
         <ol>
             <li>Identify which of your products contain the affected components.</li>
             <li>Test those products to verify exposure.</li>
         </ol>
-        <p>Under EU CRA Article 14, manufacturers must notify ENISA within 24 hours of becoming aware of an actively exploited vulnerability in a product with digital elements. The 🔥 SLA-Breach Risk section flags findings carrying platform exploitation signals — potential candidates to investigate and disposition (confirm affected, or mark NOT_AFFECTED / VEX) before that 24-hour clock is treated as running.</p>
+        <p>Under EU CRA Article 14, manufacturers must notify ENISA within 24 hours of becoming aware of an actively exploited vulnerability in a product with digital elements. The 🔥 SLA-Breach Risk section flags findings carrying a CISA/VulnCheck KEV signal — a triage list to investigate and disposition (confirm affected, or mark NOT_AFFECTED / VEX), not a determination that they are actively exploited or reportable — before that 24-hour clock is treated as running.</p>
     </div>
 
     {# Warning / OK banner. #}
     {% if sla_breach_count and sla_breach_count > 0 %}
         <div class="cra-banner cra-banner-warn">
-            ⚠️ {{ sla_breach_count }} potential actively-exploited vulnerabilit{% if sla_breach_count == 1 %}y{% else %}ies{% endif %} detected.
-            These are platform KEV / known-exploit signals — investigate and disposition each one (confirm affected, or mark NOT_AFFECTED / VEX) before treating the EU CRA Article 14 24-hour ENISA notification clock as running.
+            ⚠️ {{ sla_breach_count }} finding{% if sla_breach_count != 1 %}s{% endif %} flagged for CRA review — carrying a CISA/VulnCheck KEV signal.
+            This is a triage list to investigate, <strong>not</strong> a determination that a vulnerability is actively exploited or reportable. Disposition each one (confirm affected, or mark NOT_AFFECTED / VEX) before treating the EU CRA Article 14 24-hour ENISA notification clock as running.
         </div>
     {% else %}
         <div class="cra-banner cra-banner-ok">
@@ -317,8 +317,8 @@
     {# Per-section callout texts (preserved verbatim from pre-migration
        template lines 203-209). #}
     {% set _section_callouts = {
-        "sla_breach": "These vulnerabilities carry platform exploitation signals and are flagged as <em>potentially</em> actively exploited — investigate and disposition each (confirm affected, or mark NOT_AFFECTED / VEX) before treating the 24-hour clock as running. The <code>KEV Source</code> column shows which platform signal triggered: <code>CISA</code> means the CVE is in the public CISA KEV catalog, <code>VcKEV</code> means the CVE is in VulnCheck's KEV catalog (broader than CISA's), <code>CISA+VcKEV</code> means both. The 24-hour CRA notification clock anchors on the later of CISA's <code>dateAdded</code> (when the CISA catalog join succeeds for this row) and the platform's <code>detected_date</code> (when FS first observed this finding). If <code>Notification Deadline</code> is empty, neither timestamp was available — the row is flagged <em>Unknown Clock</em> and the 24-hour clock cannot be computed. Identify which of your products contain the listed components and either confirm a mitigation or file the ENISA notification.",
-        "newly_above": "Exploit signals for these CVEs advanced in maturity during the report window. They weren't CRA-relevant before, but a new KEV listing / weaponization / ransomware or threat-actor attribution puts them in scope now. Treat as the 'what changed today' list — identify affected products and start the triage.",
+        "sla_breach": "These findings carry a CISA/VulnCheck KEV signal and are flagged for CRA review — a triage list to investigate, <em>not</em> a determination that they are actively exploited or reportable. Investigate and disposition each (confirm affected, or mark NOT_AFFECTED / VEX) before treating the 24-hour clock as running. The <code>KEV Source</code> column shows which platform signal triggered: <code>CISA</code> means the CVE is in the public CISA KEV catalog, <code>VcKEV</code> means the CVE is in VulnCheck's KEV catalog (broader than CISA's), <code>CISA+VcKEV</code> means both. The 24-hour CRA notification clock anchors on the later of CISA's <code>dateAdded</code> (when the CISA catalog join succeeds for this row) and the platform's <code>detected_date</code> (when FS first observed this finding). If <code>Notification Deadline</code> is empty, neither timestamp was available — the row is flagged <em>Unknown Clock</em> and the 24-hour clock cannot be computed. Identify which of your products contain the listed components and either confirm a mitigation or file the ENISA notification.",
+        "newly_above": "Exploit signals for these CVEs advanced in maturity during the report window. They weren't CRA-relevant before, but a new KEV listing / weaponization / ransomware, threat-actor, or botnet attribution puts them in scope now. Treat as the 'what changed today' list — identify affected products and start the triage.",
         "re_emerged": "CVEs you previously marked resolved or not-affected that have gained a new exploit signal. Reverify the mitigation still holds. The <code>previous_resolution</code> column shows how the finding was originally closed.",
         "still_in_triage": "Open triage items not yet decided. <code>triage_age_days</code> shows how long each has been pending. The risk: if exploit maturity advances on any of these, they jump to 🆕 or 🔥 and the 24-hour clock starts.",
         "full_snapshot": "Complete inventory of CRA-relevant findings in scope. Reference list, not action items — the 🔥/🆕/🔁/⏰ sections above contain the rows that need attention this run."

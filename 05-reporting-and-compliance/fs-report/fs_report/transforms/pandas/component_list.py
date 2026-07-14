@@ -5,13 +5,12 @@ Includes license enrichment: copyleft classification, policy status,
 license URL, source type mapping, and release date extraction.
 """
 
-import re
 from typing import Any
 
 import pandas as pd
 
 from fs_report.models import Config
-from fs_report.purl_utils import parse_purl
+from fs_report.purl_utils import extract_group as _extract_group
 
 _CSV_COLUMNS = [
     "Group",
@@ -517,38 +516,6 @@ def _empty_summary() -> dict[str, Any]:
 
 
 # =============================================================================
-# GROUP EXTRACTION FROM bomRef
-# =============================================================================
-
-_HEX_RE = re.compile(r"^[0-9a-f]{16,}$")
-
-
-def _extract_group(bom_ref: Any) -> str:
-    """Extract a group/namespace from a bomRef string.
-
-    Handles PURL format (``pkg:maven/group/name@version``) and Maven
-    colon-delimited format (``group:artifact:version``).  Returns an
-    empty string for hashes, paths, NuGet-style refs, and other
-    unrecognised formats.
-    """
-    if not isinstance(bom_ref, str) or not bom_ref:
-        return ""
-    # 1. Try as PURL first (handles pkg:maven/group/name@version)
-    info = parse_purl(bom_ref)
-    if info and info.namespace:
-        return info.namespace
-    # 2. Try Maven colon format (group:artifact:version)
-    #    Skip if it looks like a hash, path, or random ID
-    if ":" in bom_ref and "/" not in bom_ref:
-        parts = bom_ref.split(":")
-        # Must have at least group:artifact, and group must contain a dot
-        # (e.g. org.springframework) to avoid matching nuget:Name:Version
-        if len(parts) >= 2 and "." in parts[0] and not _HEX_RE.match(parts[0]):
-            return parts[0]
-    return ""
-
-
-# =============================================================================
 # FLATTEN COMPONENT DATA  (shared with other consumers)
 # =============================================================================
 
@@ -663,54 +630,3 @@ def flatten_component_data(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = default_val
 
     return df
-
-
-# =============================================================================
-# PROJECT FILTERING
-# =============================================================================
-
-
-def apply_project_filter(df: pd.DataFrame, project_filter: str) -> pd.DataFrame:
-    """
-    Apply project filtering based on filter type detection.
-
-    Args:
-        df: Components DataFrame
-        project_filter: Filter string (project name, ID, or version ID)
-
-    Returns:
-        Filtered DataFrame
-    """
-    if not project_filter or project_filter == "all":
-        return df
-
-    # Handle multiple projects (comma-separated)
-    if "," in project_filter:
-        project_list = [p.strip() for p in project_filter.split(",")]
-        filtered_dfs = []
-        for project in project_list:
-            filtered_df = apply_single_project_filter(df, project)
-            filtered_dfs.append(filtered_df)
-        return pd.concat(filtered_dfs, ignore_index=True)
-
-    return apply_single_project_filter(df, project_filter)
-
-
-def apply_single_project_filter(df: pd.DataFrame, project_filter: str) -> pd.DataFrame:
-    """
-    Apply filtering for a single project identifier.
-    """
-    try:
-        project_id = int(project_filter)
-        # Check if it's a project ID — compare as strings to handle mixed types
-        if "project.id" in df.columns:
-            project_match = df[df["project.id"].astype(str) == str(project_id)]
-            if not project_match.empty:
-                return project_match
-        return pd.DataFrame()
-    except ValueError:
-        # Not an integer, treat as project name (case-insensitive)
-        if "project.name" in df.columns:
-            project_match = df[df["project.name"].str.lower() == project_filter.lower()]
-            return project_match
-        return pd.DataFrame()

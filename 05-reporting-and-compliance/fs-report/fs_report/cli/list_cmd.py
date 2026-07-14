@@ -263,7 +263,7 @@ def projects(
     filter_str: Union[str, None] = typer.Option(
         None,
         "--filter",
-        help="RSQL filter string passed to the API (e.g. name==*portal*, archived==false).",
+        help="RSQL filter string passed to the API (e.g. name==*portal*, archived==true).",
     ),
 ) -> None:
     """List all available projects."""

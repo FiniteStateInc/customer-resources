@@ -68,6 +68,7 @@
     --nav-investigation: #0891b2;
     --nav-remediation: #7c3aed;
     --nav-compliance: #b45309;
+    --nav-exploitability-evidence: #e11d48;
 
     /* Severity — base */
     --sev-critical: #dc3545;

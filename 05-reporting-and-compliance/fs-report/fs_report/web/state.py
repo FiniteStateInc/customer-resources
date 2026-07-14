@@ -155,10 +155,11 @@ class WebAppState:
 
     @property
     def domain(self) -> str:
-        d = str(self._data.get("domain", "")).strip()
-        if d.startswith(("http://", "https://")):
-            d = d.split("://", 1)[1]
-        return d.rstrip("/")
+        from fs_report.models import normalize_domain
+
+        # Shared normalization (lowercase + scheme/slash strip) so the web UI
+        # and the CLI/doctor agree on the same user input.
+        return normalize_domain(str(self._data.get("domain", "")))
 
     @property
     def has_config(self) -> bool:

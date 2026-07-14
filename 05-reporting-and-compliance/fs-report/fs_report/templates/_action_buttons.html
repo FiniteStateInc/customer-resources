@@ -459,6 +459,13 @@
                 alert('Jira integration is not configured on this domain. Contact your Finite State administrator to enable it.');
                 return;
             }
+            // Ticket creation needs the server to hold credentials (the
+            // serve-side endpoint reads state.token). Tell the user up front
+            // rather than after they fill the form (fsCreateTicket guards too).
+            if (!_serverSideAuth) {
+                alert('Ticket creation requires the server to be running with configured credentials (start with --serve and a configured token). The manual browser-token connection does not support ticket creation.');
+                return;
+            }
             _jiraContext = data;
             hideError('fsJiraError');
             const successEl = document.getElementById('fsJiraSuccess');
@@ -503,8 +510,6 @@
 
             // Save single-item context for restoring when switching modes
             _singleContext = {
-                findings: (data.findings || []).slice(),
-                components: (data.components || []).slice(),
                 title: document.getElementById('fsJiraTitle').value,
                 summary: document.getElementById('fsJiraSummary').value,
             };
@@ -562,105 +567,222 @@
     // Store original single-item context so we can restore on mode switch
     var _singleContext = {};
 
+    // Build one request item ({project_version_id, finding_ids (CVE),
+    // component {id, name, version}, internalId}) from a button's data-action.
+    // The wire is snake_case (matching the VEX /api endpoints); the camelCase
+    // data-action keys are mapped here.
+    function _itemFromData(data) {
+        return {
+            project_version_id: data.projectVersionId || '',
+            finding_ids: (data.cveIds || []).filter(function(c) { return !!c; }),
+            component: {
+                id: data.componentId || '',
+                name: data.componentName || '',
+                version: data.componentVersion || '',
+            },
+            internalId: data.internalId || '',  // kept for the deep link
+        };
+    }
+
+    // Collect the items the current mode targets. SINGLE_* → just the clicked
+    // item; the multi modes → one item per matching, enabled .btn-jira on the
+    // page (each carrying its OWN project_version_id — the load-bearing fix).
+    function _collectItems(endpoint, mode) {
+        if (mode === 'SINGLE_FINDING' || mode === 'SINGLE_COMPONENT') {
+            return [_itemFromData(_jiraContext)];
+        }
+        var items = [];
+        document.querySelectorAll('.btn-jira').forEach(function(btn) {
+            if (btn.disabled) return;
+            try {
+                var data = JSON.parse(btn.dataset.action);
+                if (data.endpoint !== endpoint) return;
+                items.push(_itemFromData(data));
+            } catch (_) {}
+        });
+        return items;
+    }
+
+    // How many tickets the mode+selection will create, and across how many
+    // distinct project-versions (M). Per the per-pv API: ONE_FOR_ALL_* makes one
+    // ticket per version; ONE_PER_* makes one per finding/component.
+    function _ticketCount(mode, items) {
+        var pvs = {};
+        items.forEach(function(it) { if (it.project_version_id) pvs[it.project_version_id] = true; });
+        var M = Object.keys(pvs).length;
+        if (mode === 'SINGLE_FINDING' || mode === 'SINGLE_COMPONENT') return { N: 1, M: 1 };
+        if (mode === 'ONE_FOR_ALL_FINDINGS' || mode === 'ONE_FOR_ALL_COMPONENTS') return { N: M, M: M };
+        // ONE_PER_*: the server dedups within a version (CVE union / vc_id set),
+        // so count DISTINCT findings/components per version — not raw item count
+        // (the same CVE on several component rows is one ticket per version).
+        var distinct = {};
+        if (mode === 'ONE_PER_FINDING') {
+            items.forEach(function(it) {
+                (it.finding_ids || []).forEach(function(c) {
+                    if (c) distinct[it.project_version_id + '|' + c] = true;
+                });
+            });
+        } else {  // ONE_PER_COMPONENT
+            items.forEach(function(it) {
+                var c = it.component || {};
+                var key = c.id || (c.name ? c.name + '@' + (c.version || '') : '');
+                if (key) distinct[it.project_version_id + '|' + key] = true;
+            });
+        }
+        return { N: Object.keys(distinct).length, M: M };
+    }
+
     function _onModeChange() {
         var mode = document.getElementById('fsJiraMode').value;
         var endpoint = _jiraContext.endpoint || 'findings';
         var isSingle = (mode === 'SINGLE_FINDING' || mode === 'SINGLE_COMPONENT');
 
         if (isSingle) {
-            // Restore original single-item data
-            _jiraContext.findings = _singleContext.findings || [];
-            _jiraContext.components = _singleContext.components || [];
             document.getElementById('fsJiraTitle').value = _singleContext.title || '';
             document.getElementById('fsJiraSummary').value = _singleContext.summary || '';
             return;
         }
 
-        // Multi-item mode: collect all items from matching buttons on the page
-        var allFindings = [];
-        var allComponents = [];
-        var itemLabels = [];
-
+        // Multi-item mode: title/summary preview from the matching buttons.
+        var items = _collectItems(endpoint, mode);
+        var labels = [];
         document.querySelectorAll('.btn-jira').forEach(function(btn) {
             if (btn.disabled) return;
             try {
                 var data = JSON.parse(btn.dataset.action);
                 if (data.endpoint !== endpoint) return;
-                (data.findings || []).forEach(function(id) {
-                    if (id && allFindings.indexOf(id) === -1) allFindings.push(id);
-                });
-                (data.components || []).forEach(function(id) {
-                    if (id && allComponents.indexOf(id) === -1) allComponents.push(id);
-                });
-                if (data.title) itemLabels.push(data.title);
+                if (data.title) labels.push(data.title);
             } catch (_) {}
         });
-
-        _jiraContext.findings = allFindings;
-        _jiraContext.components = allComponents;
-
-        // Update title and summary for aggregate modes
-        var isAll = (mode === 'ONE_FOR_ALL_FINDINGS' || mode === 'ONE_FOR_ALL_COMPONENTS');
-        if (endpoint === 'findings') {
-            var title = allFindings.length + ' findings requiring remediation';
-            document.getElementById('fsJiraTitle').value = title;
-            if (isAll) {
-                document.getElementById('fsJiraSummary').value =
-                    allFindings.length + ' findings across ' + allComponents.length + ' components:\n\n' +
-                    itemLabels.slice(0, 50).join('\n') +
-                    (itemLabels.length > 50 ? '\n... and ' + (itemLabels.length - 50) + ' more' : '');
-            }
-        } else {
-            var title = allComponents.length + ' components requiring remediation';
-            document.getElementById('fsJiraTitle').value = title;
-            if (isAll) {
-                document.getElementById('fsJiraSummary').value =
-                    allComponents.length + ' components with ' + allFindings.length + ' total findings:\n\n' +
-                    itemLabels.slice(0, 50).join('\n') +
-                    (itemLabels.length > 50 ? '\n... and ' + (itemLabels.length - 50) + ' more' : '');
-            }
-        }
+        var noun = (endpoint === 'findings') ? 'findings' : 'components';
+        document.getElementById('fsJiraTitle').value = items.length + ' ' + noun + ' requiring remediation';
+        // Replace the single-item summary (incl. its row-specific deep link) for
+        // every multi-item mode — ONE_PER_* as well as ONE_FOR_ALL_* — so a
+        // mode switch never leaves a stale per-row description in the body.
+        document.getElementById('fsJiraSummary').value =
+            items.length + ' ' + noun + ':\n\n' +
+            labels.slice(0, 50).join('\n') +
+            (labels.length > 50 ? '\n... and ' + (labels.length - 50) + ' more' : '');
     }
 
     window.fsCreateTicket = async function() {
         hideError('fsJiraError');
-        setLoading('fsJiraCreateBtn', true);
-        const projKey = document.getElementById('fsJiraProject').value;
-        const s = getSession();
-        const proj = (s.projects || []).find(function(p) { return p.key === projKey; });
 
+        // Ticket creation requires the server to hold the credentials (the
+        // serve-side /api/tracker/tickets endpoint reads state.token). The
+        // manual browser-token mode has no server token and apiHeaders() omits
+        // the CSRF nonce, so the endpoint would 400/403 — same constraint the
+        // VEX /api mutations already have. Surface it clearly instead.
+        if (!_serverSideAuth) {
+            showError('fsJiraError',
+                'Ticket creation requires the server to be running with configured ' +
+                'credentials (start with --serve and a configured token). The manual ' +
+                'browser-token connection does not support ticket creation.');
+            return;
+        }
+
+        const projKey = document.getElementById('fsJiraProject').value;
         const endpoint = _jiraContext.endpoint || 'findings';
+        const mode = document.getElementById('fsJiraMode').value;
+        const items = _collectItems(endpoint, mode);
+
+        if (!items.length) {
+            showError('fsJiraError', 'No findings or components selected.');
+            return;
+        }
+
+        // Confirm-before-N: warn whenever the selection would create >1 ticket.
+        const counts = _ticketCount(mode, items);
+        if (counts.N > 1) {
+            var confirmMsg = 'This will create ' + counts.N + ' tickets';
+            if (counts.M > 1) confirmMsg += ' across ' + counts.M + ' versions';
+            confirmMsg += '. Continue?';
+            if (!window.confirm(confirmMsg)) return;
+        }
+
+        setLoading('fsJiraCreateBtn', true);
         const body = {
-            components: _jiraContext.components || [],
-            findings: _jiraContext.findings || [],
+            endpoint: endpoint,
+            mode: mode,
+            items: items,
             ticket_name: document.getElementById('fsJiraTitle').value,
             ticket_summary: document.getElementById('fsJiraSummary').value,
             priority: document.getElementById('fsJiraPriority').value,
-            project_name: proj ? proj.name : '',
             project_key: projKey,
             type: document.getElementById('fsJiraType').value,
-            mode: document.getElementById('fsJiraMode').value,
         };
 
         try {
-            const res = await fetch(apiBase() + '/public/v0/tracker/tickets/' + endpoint, {
+            // Serve-side endpoint (NOT the proxy): a relative path that resolves
+            // to the --serve app. CSRF nonce travels via apiHeaders()' X-FS-Session.
+            const res = await fetch('/api/tracker/tickets', {
                 method: 'POST',
                 headers: apiHeaders(),
                 body: JSON.stringify(body),
             });
-            if (!res.ok) {
-                const text = await res.text();
-                throw new Error('HTTP ' + res.status + ': ' + (text || 'Failed to create ticket'));
+            // The body carries the per-version detail in every case (200 success/
+            // partial, 502 all-failed). Render from it — do NOT treat a non-2xx as
+            // an opaque error.
+            let result = null;
+            try { result = await res.json(); } catch (_) { result = null; }
+            if (!result || typeof result.status === 'undefined') {
+                throw new Error((result && result.error) ? result.error : ('HTTP ' + res.status));
             }
-            const result = await res.json();
-            showSuccess('fsJiraSuccess', 'Ticket created successfully.' +
-                (result.ticket_url ? ' ' + result.ticket_url : ''));
 
-            // Update the source button in the table
+            var createdKeys = [];
+            (result.created || []).forEach(function(c) {
+                (c.ticket_keys || []).forEach(function(k) { createdKeys.push(k); });
+            });
+            var failParts = (result.failed || []).map(function(f) {
+                return f.project_version_id + ': ' + f.error;
+            });
+            var warnParts = result.warnings || [];
+
+            if (result.status === 'failure') {
+                // Honest: include degradation context, not just the failures.
+                var failMsg = failParts.length ? failParts.join('; ') : 'Ticket creation failed.';
+                if (warnParts.length) failMsg += ' (' + warnParts.join('; ') + ')';
+                throw new Error(failMsg);
+            }
+
+            // success or partial — report created keys (+ any failures/warnings)
+            var lines = [];
+            if (createdKeys.length) {
+                var n = createdKeys.length;
+                lines.push('Created ' + n + ' ticket' + (n === 1 ? '' : 's') + ': ' + createdKeys.join(', '));
+            }
+            if (failParts.length) lines.push('Some failed — ' + failParts.join('; '));
+            if (warnParts.length) lines.push('Note: ' + warnParts.join('; '));
+            showSuccess('fsJiraSuccess', lines.join('\n') || 'Ticket(s) created.');
+
+            // Always flip the button that opened the modal.
             if (_jiraContext.sourceBtn) {
                 _jiraContext.sourceBtn.classList.add('btn-success');
                 _jiraContext.sourceBtn.innerHTML = '&#10003; Created';
                 _jiraContext.sourceBtn.disabled = true;
+            }
+            // For ONE_FOR_ALL_* ONLY: a single per-version ticket genuinely covers
+            // every row in that version, so flip the other matching-endpoint
+            // buttons in versions that produced a ticket. SINGLE_* maps to one
+            // specific row, and ONE_PER_* can fail per-ticket within a version
+            // (the per-version response can't say which) — so for those we flip
+            // only the opener, to avoid marking un-ticketed/failed rows "Created".
+            if (mode === 'ONE_FOR_ALL_FINDINGS' || mode === 'ONE_FOR_ALL_COMPONENTS') {
+                var createdPvs = {};
+                (result.created || []).forEach(function(c) {
+                    if (c.project_version_id) createdPvs[c.project_version_id] = true;
+                });
+                document.querySelectorAll('.btn-jira').forEach(function(btn) {
+                    if (btn.disabled) return;
+                    try {
+                        var d = JSON.parse(btn.dataset.action);
+                        if (d.endpoint === endpoint && createdPvs[d.projectVersionId]) {
+                            btn.classList.add('btn-success');
+                            btn.innerHTML = '&#10003; Created';
+                            btn.disabled = true;
+                        }
+                    } catch (_) {}
+                });
             }
             // Change modal button to "Close" so user can dismiss
             const createBtn = document.getElementById('fsJiraCreateBtn');
@@ -759,17 +881,17 @@
         }
         const url = apiBase() + '/public/v0/findings/' + pvId + '/' + intId + '/status';
 
-        var defaults = _vexDefaults('IN_TRIAGE', _triageContext.reachabilityLabel || 'INCONCLUSIVE');
         try {
             const res = await fetch(url, {
                 method: 'PUT',
                 headers: apiHeaders(),
-                body: JSON.stringify({
-                    status: 'IN_TRIAGE',
-                    response: defaults.response,
-                    justification: defaults.justification,
-                    reason: _triageContext.reason || '',
-                }),
+                body: JSON.stringify(_vexBody(
+                    'IN_TRIAGE',
+                    _triageContext.reachabilityLabel || 'INCONCLUSIVE',
+                    null,
+                    null,
+                    _triageContext.reason
+                )),
             });
             if (!res.ok) {
                 const text = await res.text();
@@ -821,13 +943,23 @@
     // Accept Recommendation
     // =========================================================================
 
-    // Smart defaults matching Python vex_applier.get_smart_defaults()
-    function _vexDefaults(status, reachLabel) {
-        var justification = 'CODE_NOT_PRESENT';
-        if (status === 'NOT_AFFECTED' && reachLabel === 'UNREACHABLE') {
-            justification = 'CODE_NOT_REACHABLE';
+    // Build a VEX status PUT body with only the fields valid for `status`
+    // (mirrors Python vex_applier.build_status_body — alloy contract):
+    //   justification -> NOT_AFFECTED only (rec value, else reachability fallback)
+    //   response      -> EXPLOITABLE / RESOLVED / RESOLVED_WITH_PEDIGREE only, if given
+    // We do NOT force response/justification to satisfy helix's stricter schema.
+    function _vexBody(status, reachLabel, justification, response, reason) {
+        var body = { status: status };
+        if (status === 'NOT_AFFECTED') {
+            body.justification = justification ||
+                (reachLabel === 'UNREACHABLE' ? 'CODE_NOT_REACHABLE' : 'CODE_NOT_PRESENT');
         }
-        return { response: 'WILL_NOT_FIX', justification: justification };
+        if (response && (status === 'EXPLOITABLE' || status === 'RESOLVED'
+                         || status === 'RESOLVED_WITH_PEDIGREE')) {
+            body.response = response;
+        }
+        if (reason) { body.reason = reason; }
+        return body;
     }
 
     window.fsAcceptRecommendation = async function() {
@@ -850,17 +982,14 @@
         }
         const url = apiBase() + '/public/v0/findings/' + pvId + '/' + intId + '/status';
 
-        // Build body with smart defaults (mirrors Python vex_applier logic)
-        var defaults = _vexDefaults(
+        // Build a status-gated body (mirrors Python vex_applier.build_status_body)
+        var body = _vexBody(
             rec.recommended_vex_status,
-            _triageContext.reachabilityLabel || 'INCONCLUSIVE'
+            _triageContext.reachabilityLabel || 'INCONCLUSIVE',
+            rec.justification,
+            rec.response,
+            rec.reason
         );
-        var body = {
-            status: rec.recommended_vex_status,
-            response: defaults.response,
-            justification: rec.justification || defaults.justification,
-            reason: rec.reason || '',
-        };
 
         try {
             const res = await fetch(url, {

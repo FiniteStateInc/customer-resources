@@ -32,6 +32,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["run"])
 
 
+def _log_redaction_secrets(token: str, effective: dict[str, Any]) -> tuple[str, ...]:
+    """Secret set for the run-log ``TokenRedactionFilter`` — same as the CLI.
+
+    Platform ``token``, the run's compare token (cross-server comparison), and
+    the active AI-provider API key. The web carries no per-run provider
+    override (only the boolean ``ai``), so env auto-detection is exactly the
+    resolution ``llm_client`` performs here. Empty entries are skipped by the
+    filter.
+
+    The web config never populates compare fields today; both plausible key
+    spellings are checked so a future web compare surface can't silently
+    skip compare-token scrubbing whichever name it threads.
+    """
+    from fs_report.llm_client import resolve_active_api_key
+
+    return (
+        token,
+        str(
+            effective.get("compare_token") or effective.get("compare_auth_token") or ""
+        ),
+        resolve_active_api_key(None),
+    )
+
+
 def _relative_output_path(file_path: str, base: Path) -> str | None:
     """Path of a generated file relative to the served output ``base``, or None.
 
@@ -1644,7 +1668,7 @@ def _execute_run(
     # range (and vice-versa) mirrors the workflow path's _effective_step_config.
     effective = merge_with_period_range_clearing(state_data, overrides)
 
-    from fs_report.logging_utils import create_file_handler
+    from fs_report.logging_utils import TokenRedactionFilter, create_file_handler
 
     # Install SSE log handler
     handler = SSELogHandler(queue, loop)
@@ -1675,7 +1699,12 @@ def _execute_run(
             )
             return
 
-        file_handler = create_file_handler(run_id, token)
+        # The SSE stream leaves the process too (browser-facing live log) and
+        # its handler runs BEFORE the file handler, on the raw record — give
+        # it the same redaction filter.
+        redaction_secrets = _log_redaction_secrets(token, effective)
+        handler.addFilter(TokenRedactionFilter(*redaction_secrets))
+        file_handler = create_file_handler(run_id, *redaction_secrets)
         root_logger.addHandler(file_handler)
 
         # Store log filename for later retrieval
@@ -3336,7 +3365,7 @@ def _execute_workflow(
     steps are skipped (export-only).  Each step emits ``step`` SSE events; the
     final ``done`` event carries the overall status (success|error|cancelled).
     """
-    from fs_report.logging_utils import create_file_handler
+    from fs_report.logging_utils import TokenRedactionFilter, create_file_handler
     from fs_report.slug import slug as make_slug
 
     handler = SSELogHandler(queue, loop)
@@ -3386,7 +3415,11 @@ def _execute_workflow(
             _emit_done("error", "Missing token or domain")
             return
 
-        file_handler = create_file_handler(run_id, token)
+        # Same treatment as _execute_run: the SSE handler sees the raw record
+        # before the file handler, and its events leave the process.
+        redaction_secrets = _log_redaction_secrets(token, state_data)
+        handler.addFilter(TokenRedactionFilter(*redaction_secrets))
+        file_handler = create_file_handler(run_id, *redaction_secrets)
         root_logger.addHandler(file_handler)
         log_filename = Path(file_handler.baseFilename).name
         _runs[run_id]["log_file"] = log_filename

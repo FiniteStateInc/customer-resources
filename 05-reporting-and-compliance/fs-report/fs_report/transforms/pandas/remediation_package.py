@@ -404,9 +404,32 @@ def _apply_triage_scoring(df: pd.DataFrame, recipe_params: dict) -> pd.DataFrame
 # ---------------------------------------------------------------------------
 
 
+def _normalize_id(value: Any) -> str | None:
+    """Normalize an opaque project/version id to a string map key.
+
+    IDs are numeric on the legacy platform and UUIDs on newer backends. When a
+    DataFrame column is float-typed (which pandas does once it contains NaNs),
+    an integral id renders as ``"100.0"``; strip the trailing ``.0`` so the key
+    matches the legacy integer form. ``float()`` is deliberately avoided so
+    large ids keep full precision. UUIDs and other non-numeric ids pass through
+    unchanged. Returns ``None`` for empty/missing values so callers skip lookup.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if s == "" or s.lower() in ("nan", "none"):
+        return None
+    if s.endswith(".0"):
+        head = s[:-2]
+        digits = head[1:] if head.startswith("-") else head
+        if digits.isdigit():
+            return head
+    return s
+
+
 def _fetch_sboms(
     df: pd.DataFrame, api_client: Any, recipe_params: dict
-) -> dict[int, Any]:
+) -> dict[str, Any]:
     """Fetch CycloneDX SBOMs for each project version in the dataset."""
     from fs_report.sbom_parser import parse_cyclonedx
 
@@ -414,8 +437,11 @@ def _fetch_sboms(
     include_vex = recipe_params.get("include_vex", True)
 
     version_ids_raw = df["project_version_id"].dropna().unique()
-    version_ids: list[int] = [
-        int(vid) for vid in version_ids_raw if vid and str(vid) != ""
+    # IDs are opaque (numeric on the legacy platform, UUIDs on newer backends);
+    # normalize so they key the SBOM map and hit the API unchanged — and so a
+    # float-typed column's "100.0" matches the legacy integer "100".
+    version_ids: list[str] = [
+        nid for vid in version_ids_raw if (nid := _normalize_id(vid)) is not None
     ]
 
     sbom_map = {}
@@ -434,7 +460,7 @@ def _fetch_sboms(
     return sbom_map
 
 
-def _enrich_with_sbom(df: pd.DataFrame, sbom_map: dict[int, Any]) -> pd.DataFrame:
+def _enrich_with_sbom(df: pd.DataFrame, sbom_map: dict[str, Any]) -> pd.DataFrame:
     """Enrich findings with PURLs and dependency paths from SBOMs."""
     from fs_report.sbom_parser import (
         classify_dependency,
@@ -451,8 +477,8 @@ def _enrich_with_sbom(df: pd.DataFrame, sbom_map: dict[int, Any]) -> pd.DataFram
 
     for _, row in df.iterrows():
         vid = row.get("project_version_id", "")
-        vid_int = int(vid) if vid and str(vid) != "" else None
-        sbom = sbom_map.get(vid_int) if vid_int else None
+        vid_key = _normalize_id(vid)
+        sbom = sbom_map.get(vid_key) if vid_key else None
 
         if sbom is None:
             purls.append("")
@@ -502,7 +528,7 @@ def _enrich_with_sbom(df: pd.DataFrame, sbom_map: dict[int, Any]) -> pd.DataFram
 
 def _resolve_fix_versions(
     df: pd.DataFrame,
-    sbom_map: dict,
+    sbom_map: dict[str, Any],
     cfg: Any,
     nvd_client: Any = _UNSET,
 ) -> pd.DataFrame:
@@ -577,8 +603,8 @@ def _resolve_fix_versions(
         # Source 2: SBOM VEX fixed versions (branch-aware)
         if not fix:
             vid = row.get("project_version_id", "")
-            vid_int = int(vid) if vid and str(vid) != "" else None
-            sbom = sbom_map.get(vid_int)
+            vid_key = _normalize_id(vid)
+            sbom = sbom_map.get(vid_key) if vid_key else None
             if sbom:
                 vex = sbom.vex_for_cve(cve_id)
                 if vex and vex.fixed_versions:
@@ -628,7 +654,7 @@ def _resolve_fix_versions(
 
 def _resolve_fix_versions_no_osv(
     df: pd.DataFrame,
-    sbom_map: dict,
+    sbom_map: dict[str, Any],
     cfg: Any,
     nvd_client: Any = _UNSET,
 ) -> pd.DataFrame:
@@ -670,8 +696,8 @@ def _resolve_fix_versions_no_osv(
         cve_id = str(row.get("finding_id", ""))
         current = str(row.get("component_version", ""))
         vid = row.get("project_version_id", "")
-        vid_int = int(vid) if vid and str(vid) != "" else None
-        sbom = sbom_map.get(vid_int)
+        vid_key = _normalize_id(vid)
+        sbom = sbom_map.get(vid_key) if vid_key else None
 
         fix = ""
         source = ""
@@ -1148,7 +1174,7 @@ def _classify_and_generate_commands(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def _extract_suppressed(df: pd.DataFrame, sbom_map: dict) -> pd.DataFrame:
+def _extract_suppressed(df: pd.DataFrame, sbom_map: dict[str, Any]) -> pd.DataFrame:
     """Extract findings that are VEX not_affected or false_positive."""
     suppressed_statuses = {
         "NOT_AFFECTED",
@@ -1163,8 +1189,8 @@ def _extract_suppressed(df: pd.DataFrame, sbom_map: dict) -> pd.DataFrame:
 
     for _, row in df.iterrows():
         vid = row.get("project_version_id", "")
-        vid_int = int(vid) if vid and str(vid) != "" else None
-        sbom = sbom_map.get(vid_int)
+        vid_key = _normalize_id(vid)
+        sbom = sbom_map.get(vid_key) if vid_key else None
         cve_id = str(row.get("finding_id", ""))
 
         # Check SBOM VEX
@@ -1575,8 +1601,11 @@ def _enrich_with_llm_guidance(
     stats = llm.get_stats()
     logger.info(
         f"LLM guidance: {stats['api_calls']} API calls, "
-        f"{stats['cache_hits']} cache hits"
+        f"{stats['cache_hits']} cache hits, "
+        f"{stats.get('input_tokens', 0)}/{stats.get('output_tokens', 0)} "
+        "tokens in/out"
     )
+    llm.record_usage_metadata(additional_data)
     return df
 
 
@@ -1832,8 +1861,11 @@ def _enrich_with_combined_analysis(
     stats = llm.get_stats()
     logger.info(
         f"Combined analysis: {stats['api_calls']} API calls, "
-        f"{stats['cache_hits']} cache hits"
+        f"{stats['cache_hits']} cache hits, "
+        f"{stats.get('input_tokens', 0)}/{stats.get('output_tokens', 0)} "
+        "tokens in/out"
     )
+    llm.record_usage_metadata(additional_data)
     return df
 
 
@@ -1891,7 +1923,7 @@ After completing all upgrades, regenerate the SBOM and verify no P0/P1 findings 
 
 def _generate_agent_prompts(
     df: pd.DataFrame,
-    sbom_map: dict,
+    sbom_map: dict[str, Any],
     component_details: dict | None = None,
     cfg: Any = None,
     nvd_snippets_map: dict[str, str] | None = _UNSET,
@@ -2174,7 +2206,7 @@ def _build_json_package(
     project_version: str,
     project_prompt: str,
     domain: str,
-    sbom_map: dict,
+    sbom_map: dict[str, Any],
 ) -> dict[str, Any]:
     """Build the complete JSON remediation package for file output / IDE plugin."""
     # Find SBOM serial number

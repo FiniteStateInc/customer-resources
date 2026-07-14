@@ -532,6 +532,10 @@ def false_positive_analysis_transform(
     ai_enabled = config is not None and (
         getattr(config, "ai", False) or getattr(config, "ai_prompts", False)
     )
+    # Bound outside the try so partially-spent token usage is still recorded
+    # when the broad AI-tier except below swallows a mid-tier failure — the
+    # report still ships, so its stats must reflect the tokens consumed.
+    llm = None
     if ai_enabled and not open_df.empty:
         try:
             # Build component groups from open findings
@@ -826,6 +830,11 @@ def false_positive_analysis_transform(
             logger.warning(
                 "AI tier failed; mechanical results preserved", exc_info=True
             )
+        finally:
+            # Record even on the swallowed-failure paths above — tokens
+            # already spent on partial AI work must reach the recipe stats.
+            if llm is not None:
+                llm.record_usage_metadata(additional_data)
 
     # ------------------------------------------------------------------
     # 6. Confidence rollup — build candidates and VEX from combined signals

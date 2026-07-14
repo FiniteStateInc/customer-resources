@@ -65,7 +65,22 @@ def get_copilot_token(github_token: str | None = None) -> tuple[str, str]:
     3. Try a cached GitHub OAuth token → exchange.
     4. Try ``gh auth token`` for a CLI-based token → exchange.
     5. Run the interactive OAuth device flow → cache + exchange.
+
+    The returned bearer is minted/refreshed MID-RUN — after log handlers
+    have snapshotted their redaction tokens — so it is registered as a
+    runtime redaction secret here (the single chokepoint every resolution
+    path and refresh flows through). ``_exchange_for_copilot_token``
+    likewise registers the GitHub-side token it spends.
     """
+    from fs_report.logging_utils import register_runtime_secret
+
+    token, base_url = _resolve_copilot_token(github_token)
+    register_runtime_secret(token)
+    return token, base_url
+
+
+def _resolve_copilot_token(github_token: str | None = None) -> tuple[str, str]:
+    """Resolution body of :func:`get_copilot_token` (order documented there)."""
     # 1. Explicit token provided
     if github_token:
         try:
@@ -82,6 +97,13 @@ def get_copilot_token(github_token: str | None = None) -> tuple[str, str]:
     # 2. Check cache for a still-valid Copilot token
     cache = _load_cached_token()
     if cache:
+        # The cached GitHub OAuth/CLI token never came from the environment,
+        # so static redaction has never seen it. Register it even on the
+        # warm-cache path below, where no exchange spends it.
+        from fs_report.logging_utils import register_runtime_secret
+
+        register_runtime_secret(str(cache.get("github_token") or ""))
+
         copilot = cache.get("copilot_token")
         expires = cache.get("copilot_expires_at", 0)
         base_url = cache.get("copilot_base_url")
@@ -139,6 +161,12 @@ def _exchange_for_copilot_token(github_token: str) -> dict:
 
     Raises ``ValueError`` if the response is missing required fields.
     """
+    from fs_report.logging_utils import register_runtime_secret
+
+    # The GitHub-side token spent here may not come from the environment
+    # (gh CLI / device flow / cache), so static redaction never saw it.
+    register_runtime_secret(github_token)
+
     resp = requests.get(
         _TOKEN_EXCHANGE_URL,
         headers={

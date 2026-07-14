@@ -19,8 +19,12 @@ and the 5 section keys feed the upcoming D2 HTML morning-queue template.
 
 EU Cyber Resilience Act context: manufacturers must notify ENISA within 24 hours
 of becoming aware of an actively exploited vulnerability in a product with
-digital elements.  KEV inclusion, weaponised / PoC exploit maturity, ransomware
-and threat-actor signals are the primary trigger tiers.
+digital elements.  The tiers here are *triage* signals for that investigation,
+not a verdict of active exploitation: KEV inclusion plus weaponized exploit
+maturity, ransomware, threat-actor, and botnet attribution make up the default
+trigger set (poc / commercial / reported are recognized but opt-in — see
+tiers.derive_tiers). Only KEV findings carry the Article-14 24h clock (the 🔥
+SLA-Breach section); the other tiers gate above-threshold retention.
 """
 
 from __future__ import annotations
@@ -740,10 +744,19 @@ def cra_compliance_transform(
     # ------------------------------------------------------------------
     # Stage 0 — Resolve effective config (CLI overrides YAML defaults)
     # ------------------------------------------------------------------
-    threshold: set[str] = set(
-        config.exploit_maturity_threshold
-        or recipe_params.get("exploit_maturity_threshold", [])
-    )
+    # Lowercase at this shared choke point so every entry path — CLI (already
+    # lowercased), a hand-edited recipe YAML, or a programmatic caller — treats
+    # tier names case-insensitively (tiers are canonically lowercase).
+    threshold: set[str] = {
+        t.lower()
+        for t in (
+            config.exploit_maturity_threshold
+            or recipe_params.get("exploit_maturity_threshold", [])
+        )
+    }
+    # Fail loud on an unrecognized tier from either the CLI or the recipe YAML:
+    # an unknown tier never matches a finding, silently shrinking the queue.
+    tiers.validate_tier_names(threshold)
     include_status: list[str] = list(
         config.include_status or recipe_params.get("include_status", [])
     )

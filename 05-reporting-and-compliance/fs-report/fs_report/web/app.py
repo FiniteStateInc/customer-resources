@@ -85,6 +85,7 @@ def create_app(*, port: int = 8321) -> FastAPI:
     from fs_report.web.routers.reports import router as reports_router
     from fs_report.web.routers.run import router as run_router
     from fs_report.web.routers.settings import router as settings_router
+    from fs_report.web.routers.tracker import router as tracker_router
     from fs_report.web.routers.uploads import router as uploads_router
     from fs_report.web.routers.workflows import router as workflows_router
 
@@ -100,5 +101,6 @@ def create_app(*, port: int = 8321) -> FastAPI:
     app.include_router(proxy_router)
     app.include_router(workflows_router)
     app.include_router(uploads_router)
+    app.include_router(tracker_router)
 
     return app

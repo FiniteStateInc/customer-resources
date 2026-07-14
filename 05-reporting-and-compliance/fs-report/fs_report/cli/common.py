@@ -39,14 +39,26 @@ def setup_logging(verbose: bool, *, json_output: bool = False) -> str:
     return generate_run_id()
 
 
-def attach_file_logging(run_id: str, token: str) -> logging.FileHandler:
+def attach_file_logging(
+    run_id: str,
+    token: str,
+    ai_provider: Union[str, None] = None,
+    extra_tokens: tuple[str, ...] = (),
+) -> logging.FileHandler:
     """Create a persistent file handler and attach it to the root logger.
 
+    The platform ``token``, the currently-active AI-provider API key (if any
+    resolves — ``llm_client.resolve_active_api_key``), and any
+    ``extra_tokens`` (e.g. ``--compare-token``) are redacted from the log
+    file, which may be handed to third parties for remote debugging.
     Returns the handler so callers can remove it later if needed.
     """
+    from fs_report.llm_client import resolve_active_api_key
     from fs_report.logging_utils import LOG_DIR, create_file_handler
 
-    handler = create_file_handler(run_id, token)
+    handler = create_file_handler(
+        run_id, token, resolve_active_api_key(ai_provider), *extra_tokens
+    )
     logging.getLogger().addHandler(handler)
 
     logger = logging.getLogger(__name__)

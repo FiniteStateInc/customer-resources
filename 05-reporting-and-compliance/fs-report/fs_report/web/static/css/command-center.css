@@ -358,9 +358,15 @@ body.no-motion .wf-card.flipped .wf-back{visibility:visible}
 
 /* ---- RUN BAR ---- */
 /* B9 #17: two-row layout (row 1 = scope cascade, row 2 = report + actions) +
-   sticky. The run bar lives inside .main (the scroll container, which already
-   starts below the fixed .topbar), so position:sticky;top:0 parks it just under
-   the topbar; the solid card bg keeps scrolling content from bleeding through. */
+   sticky. The run bar sticks inside .main (the scroll container, which starts
+   below the fixed .topbar). When you scroll it DOCKS flush against the topbar —
+   no gap, no scrolling content peeking above it. That requires the sticky
+   containing block to reach the scrollport top, so we zero .main's top padding
+   on the dashboard (the only page carrying a .runbar). !important is needed to
+   beat the density-tier padding shorthand (.density-cockpit/-calm set
+   padding:14/32px). At-rest top spacing comes from the .page-head above the
+   bar, which scrolls away on the approach to the dock. */
+.main:has(.runbar){padding-top:0!important}
 .runbar{display:flex;flex-direction:column;gap:10px;background:var(--surface-card);border:1px solid var(--hairline);border-radius:var(--r-lg);padding:12px 16px;margin-bottom:16px;box-shadow:0 8px 30px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.03);position:sticky;top:0;z-index:20}
 .rb-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .rb-group{display:flex;align-items:center;gap:8px;min-width:0}

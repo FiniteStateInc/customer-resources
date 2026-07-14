@@ -214,7 +214,11 @@ body.no-motion .wfb { transition: none; }
 /* Grow to fill the canvas below the source node so the whole area is the drop
    target (was min-height:8px — an 8px strip, which made dropping land only just
    under "Portfolio snapshot"). */
-.wfb-steps { display: flex; flex-direction: column; gap: 0; flex: 1 1 auto; min-height: 220px; }
+.wfb-steps { display: flex; flex-direction: column; gap: 0; flex: 1 1 auto; min-height: 220px;
+  /* In-list runway below the last card: append-drops land INSIDE the list
+     instead of requiring a hover in the narrow autoscroll band / statusbar
+     dead zone (unusable-drag half of the 6+-steps bug). */
+  padding-bottom: 96px; }
 .wfb-step-wrap { display: flex; flex-direction: column; align-items: stretch; }
 
 .wfb-step {
@@ -235,6 +239,32 @@ body.no-motion .wfb { transition: none; }
   box-shadow: 0 0 0 1px rgba(var(--accent-rgb), .4), 0 0 26px rgba(var(--accent-rgb), .16);
 }
 .wfb-step.sortable-ghost { opacity: .45; }
+/* The card background is a hardcoded dark navy gradient (dark-mode aesthetic).
+   It does NOT flip for light mode, so under body.light the near-black --ink
+   title text landed on a dark card — the unreadable black blocks in the
+   Builder. Give the card a light, theme-token surface in light mode. */
+body.light .wfb-step,
+body.light .wfb-section-row {
+  background: linear-gradient(180deg, var(--surface-card), var(--surface-subtle));
+}
+/* Children of the now-light card were tuned for the dark navy: a
+   translucent-black chip backdrop, pastel accent inks (--purple/--blue/--rose
+   page tokens, plus --accent flipping to a 3.7:1 teal in light mode), and a
+   hard-coded pale-cyan run message. Re-ink them dark — same approach as
+   run-page.css's body.light block. Every pair clears WCAG AA (4.5:1) on the
+   card gradient's darker stop; pinned by tests/web/test_builder_step_contrast.py. */
+body.light .wfb-step .chip {
+  background: rgba(15, 23, 42, .05); /* matches body.light .node .chip */
+  color: var(--ink-body);            /* light --ink-mute is ~4.1:1 on the tint */
+}
+body.light .wfb-step .chip.ov { color: #0F766E; border-color: rgba(15, 118, 110, .45); }
+body.light .wfb-step .chip.ai { color: #6D28D9; border-color: rgba(109, 40, 217, .4); }
+body.light .wfb-step .chip.export-only { color: #1D4ED8; border-color: rgba(29, 78, 216, .4); }
+body.light .sec-tool { color: #0F766E; }
+body.light .s-runline .rmsg { color: #0E5B6E; text-shadow: none; }
+body.light .s-runline.skipped .rmsg { color: var(--ink-body); }
+body.light .s-runline.error .rmsg { color: #9A2330; }
+body.light .s-runline.done .r-open { color: #166534; }
 .wfb-step .s-top { display: flex; align-items: center; gap: 10px; }
 .wfb-step .s-grip { color: var(--ink-faint); cursor: grab; flex: 0 0 auto; }
 .wfb-step .s-grip svg { width: 14px; height: 14px; }

@@ -35,6 +35,7 @@ from fs_report.cli.common import (  # noqa: F401
 )
 from fs_report.cli.compare_cmd import compare_app
 from fs_report.cli.config_cmd import config_app
+from fs_report.cli.doctor_cmd import doctor_app
 from fs_report.cli.help_cmd import help_app
 from fs_report.cli.install_engine_cmd import install_engine_app
 from fs_report.cli.list_cmd import list_app
@@ -88,6 +89,11 @@ app.add_typer(
     install_engine_app,
     name="install-engine",
     help="Install the Chromium binary used by the Playwright PDF renderer.",
+)
+app.add_typer(
+    doctor_app,
+    name="doctor",
+    help="Diagnose configuration and connectivity (first-run preflight).",
 )
 
 

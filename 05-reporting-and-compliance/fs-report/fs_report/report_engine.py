@@ -38,9 +38,9 @@ try:
     import resource  # Unix only; not available on Windows
 except ImportError:
     resource = None  # type: ignore[assignment]
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pandas as pd
@@ -169,6 +169,23 @@ def _extract_comparison_rows(data: Any) -> dict[str, Any] | None:
         return None
     rows = {k: data[k] for k in _COMPARISON_ROW_KEYS if k in data}
     return rows or None
+
+
+def _extract_ai_usage(report_data: "ReportData") -> dict[str, Any] | None:
+    """The transform's accumulated ``_ai_usage`` token counts, or ``None``.
+
+    Transforms that run an ``LLMClient`` stash raw token usage in
+    ``metadata["additional_data"]["_ai_usage"]`` (via
+    ``LLMClient.record_usage_metadata``); the stats-building sites copy it
+    into ``RecipeResult.stats["ai_usage"]`` so it reaches CLI/headless
+    output. Shape: ``{"input_tokens", "output_tokens", "models": {model:
+    {"input_tokens", "output_tokens"}}}``.
+    """
+    metadata = getattr(report_data, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    usage = metadata.get("additional_data", {}).get("_ai_usage")
+    return usage if isinstance(usage, dict) and usage else None
 
 
 def _prune_exec_summary(
@@ -382,6 +399,42 @@ def _inject_project_names_df(df: pd.DataFrame, project_map: dict[str, str]) -> N
 # deprecation warning before reaching this function.
 CATEGORY_VALUES = {"credentials", "config_issues", "crypto_material", "sast_analysis"}
 TYPE_VALUES = {"cve", "sast", "thirdparty"}
+# TTL for the per-version SBOM-derived group lookup (raw cache,
+# ``sbom_group_lookup:{version_id}``). Deliberately much longer than row-data
+# cache_ttl: the full-SBOM download it replaces is the dominant cost of
+# License Report / Component List / Findings-by-Project runs on large
+# portfolios (CST-795). A rescan that CHANGES THE COMPONENT INVENTORY is
+# caught immediately by the fingerprint stored with each entry (see
+# _sbom_lookup_fingerprint); a rescan that only adds/edits group metadata on
+# an unchanged inventory is NOT detectable without fetching the SBOM, so it
+# refreshes via this TTL (or immediately with --cache-refresh). That bounded
+# staleness on a cosmetic column is the deliberate trade for not
+# re-downloading every SBOM on every run.
+SBOM_GROUP_LOOKUP_TTL = 7 * 24 * 3600
+
+
+def _sbom_lookup_fingerprint(pairs: Iterable[tuple[str, str]]) -> str:
+    """Fingerprint a version's current component inventory.
+
+    Cached ``sbom_group_lookup`` entries are only valid for the component set
+    they were derived from: a rescan that changes the version's components
+    must invalidate the cached lookup immediately (not after the TTL). The
+    fingerprint is computed from the version's component rows the engine has
+    ALREADY fetched this run — which refresh on the row-data cache_ttl — so
+    such a rescan surfaces here as a fingerprint mismatch and forces a
+    re-fetch. A rescan that leaves the (name, version) inventory identical
+    and only changes group metadata is invisible to this fingerprint and is
+    covered by SBOM_GROUP_LOOKUP_TTL / ``--cache-refresh`` instead.
+    """
+    digest = hashlib.sha256()
+    for name, version in sorted(pairs):
+        digest.update(name.encode("utf-8", "replace"))
+        digest.update(b"\n")
+        digest.update(version.encode("utf-8", "replace"))
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
 CATEGORY_MAP = {
     "credentials": "CREDENTIALS",
     "config_issues": "CONFIG_ISSUES",
@@ -596,24 +649,33 @@ class ReportEngine:
 
         Args:
             on_recipe_complete: Optional callback invoked after each recipe
-                finishes.  Signature: ``(completed, total, recipe_name)``.
+                finishes.  Signature: ``(completed, total, recipe_name)``,
+                ``completed`` 1-based.  Fired from the per-recipe loop's
+                ``finally``, so it ALSO fires for recipes skipped by a
+                requires-* pre-check (which never fired ``on_recipe_start``)
+                and for compound bundles.  Used by the web UI's SSE stream and
+                by the CLI's ``--progress-file`` JSONL stream.
             on_recipe_start: Optional callback invoked just before each recipe
                 begins processing (after its per-recipe cancel check + the
-                requires-* pre-checks, so a skipped recipe fires neither hook).
-                Signature: ``(index, total, recipe_name)``.  Used by the web
-                run-canvas to light a plain-report node "running" (T5); the CLI
-                never supplies it.
+                requires-* pre-checks, so a skipped recipe never fires it —
+                though ``on_recipe_complete`` still does, via the ``finally``).
+                Signature: ``(index, total, recipe_name)``, ``index`` 1-based.
+                Used by the web run-canvas to light a plain-report node
+                "running" (T5) and by the CLI's ``--progress-file`` JSONL
+                stream.
             on_section_start: Optional callback invoked just before a compound
                 child section begins processing (after the per-child cancel
                 check, so a cancelled child fires neither hook).  Signature:
                 ``(child_index, child_name)``.  Fired only on the non-axis
-                ``_process_compound`` path; the CLI never supplies it.
+                ``_process_compound`` path; supplied by the web UI and by the
+                CLI's ``--progress-file`` JSONL stream.
             on_section_complete: Optional callback invoked once per compound
                 child that started, after its section result is recorded.
                 Signature: ``(child_index, child_name, success)`` where
                 ``success`` is True iff the child produced a rendered fragment
                 (False for any failure path).  Fired only on the non-axis
-                ``_process_compound`` path; the CLI never supplies it.
+                ``_process_compound`` path; supplied by the web UI and by the
+                CLI's ``--progress-file`` JSONL stream.
             deployment_context: Optional DeploymentContext for AI prompt customization.
             extra_recipes: Optional pre-constructed recipe objects merged into
                 the loaded corpus (decision #10). B3.7's ``fs-report compare``
@@ -2573,12 +2635,16 @@ class ReportEngine:
                     data = report_data.data
                     if hasattr(data, "__len__"):
                         row_count = len(data)
+                    recipe_stats: dict[str, Any] = {"finding_count": row_count}
+                    _ai_usage = _extract_ai_usage(report_data)
+                    if _ai_usage:
+                        recipe_stats["ai_usage"] = _ai_usage
                     recipe_results.append(
                         RecipeResult(
                             recipe=_scoped_recipe.name,
                             output_dir=recipe_output_dir,
                             files=files + (extra or []),
-                            stats={"finding_count": row_count},
+                            stats=recipe_stats,
                         )
                     )
                 else:
@@ -3505,6 +3571,10 @@ class ReportEngine:
         section_results: list[SectionResult] = []
         chart_libraries_union: list[str] = []
         extra_files: list[str] = []
+        # Aggregated token usage across AI-using children — the bundle's
+        # RecipeResult is the only per-recipe stats consumers see, so child
+        # usage must roll up here or it never reaches CLI output.
+        compound_ai_usage: dict[str, Any] = {}
         any_failed = False
         for i, child in enumerate(children):
             # Observe cancellation between children so long bundles
@@ -3623,6 +3693,15 @@ class ReportEngine:
                     any_failed = True
                     continue
 
+                # Roll up the child's token usage BEFORE rendering — the
+                # transform already spent the tokens, so a render failure
+                # below must not drop them from the bundle's cost accounting.
+                child_ai_usage = _extract_ai_usage(report_data)
+                if child_ai_usage:
+                    from fs_report.llm_client import merge_ai_usage
+
+                    merge_ai_usage(compound_ai_usage, child_ai_usage)
+
                 try:
                     fragment_html = html_renderer.render_fragment(
                         child,
@@ -3736,6 +3815,7 @@ class ReportEngine:
             chart_libraries_union=chart_libraries_union,
             extra_files=extra_files,
             any_failed=any_failed,
+            ai_usage=compound_ai_usage or None,
         )
 
     # ------------------------------------------------------------------
@@ -3862,6 +3942,7 @@ class ReportEngine:
         runtime_scope_extra: dict[str, str] | None = None,
         facet_titles: list[str] | None = None,
         left_leads: bool | None = None,
+        ai_usage: dict[str, Any] | None = None,
     ) -> "RecipeResult":
         """Assemble the shell, render the PDF, and build the RecipeResult.
 
@@ -3980,6 +4061,11 @@ class ReportEngine:
             "chart_libraries": sorted(set(chart_libraries_union)),
             "any_failed": any_failed,
         }
+        if ai_usage:
+            # Aggregated across AI-using children (non-axis path); the axis
+            # path's comparison children build ReportData with empty metadata
+            # and use no LLM, so it passes nothing.
+            stats["ai_usage"] = ai_usage
         # M1-12: when the bundle completes but one or more children failed,
         # carry a short summary naming the failed sections in stats["error"] so
         # both `run` and `compare` can surface specifics (which sections) rather
@@ -4571,12 +4657,19 @@ class ReportEngine:
                     data = report_data.data
                     if hasattr(data, "__len__"):
                         row_count = len(data)
+                    project_stats: dict[str, Any] = {
+                        "finding_count": row_count,
+                        "project": project_name,
+                    }
+                    _ai_usage = _extract_ai_usage(report_data)
+                    if _ai_usage:
+                        project_stats["ai_usage"] = _ai_usage
                     recipe_results.append(
                         RecipeResult(
                             recipe=f"Remediation Package/{project_name}",
                             output_dir=project_output_dir,
                             files=files + (extra or []),
-                            stats={"finding_count": row_count, "project": project_name},
+                            stats=project_stats,
                         )
                     )
                     any_succeeded = True
@@ -5579,6 +5672,12 @@ class ReportEngine:
                     # No endpoint to match — use entire override as raw data
                     if isinstance(self.data_override, list):  # type: ignore[unreachable]
                         raw_data = self.data_override  # type: ignore[unreachable]
+                    elif getattr(recipe, "transform_input", None) == "object":
+                        # Whole-object delivery: the transform consumes the full dict
+                        # (e.g. a {meta,coverage,results}-shaped dataset). cast to Any
+                        # to match the dict-index path below so raw_data keeps the same
+                        # (Any) inferred type the rest of the pipeline narrows from.
+                        raw_data = cast(Any, self.data_override)
                     else:
                         # Dict override: use first value, or the whole dict
                         first_key = next(iter(self.data_override), None)
@@ -5616,6 +5715,20 @@ class ReportEngine:
                         return None
             else:
                 if recipe.query is None:
+                    # A query-less recipe that consumes a whole raw object
+                    # (transform_input: object) has no way to fetch its own data;
+                    # without --data-file it cannot run at all. Surface an
+                    # actionable contract error (caught by the dispatch loop's
+                    # except-Exception → stats["error"]) instead of the generic
+                    # silent skip, so the operator sees the remediation. (Spec §5.)
+                    if getattr(recipe, "transform_input", None) == "object":
+                        raise ValueError(
+                            f"Recipe '{recipe.name}' requires a dataset delivered "
+                            "via --data-file <export.json>. "
+                            "This recipe is query-less (transform_input: object) "
+                            "and cannot fetch its own data — re-run with "
+                            "`--data-file <export.json>`."
+                        )
                     self.logger.error(
                         f"Recipe '{recipe.name}' has no query and no data override — skipping"
                     )
@@ -5793,8 +5906,8 @@ class ReportEngine:
                                         f"cveId=in=({','.join(cve_ids)})"
                                     )
 
-                            # Apply --project filter (already resolved to
-                            # numeric ID by run(), so int() will not fail)
+                            # Apply --project filter (resolved by run() to an
+                            # opaque project ID — numeric or UUID; used as-is)
                             if self.config.project_filter:
                                 cve_filters.append(
                                     f"project=={self.config.project_filter}"
@@ -7228,6 +7341,16 @@ class ReportEngine:
             # now resolves multi-type requests to a single `category=in=(...)`
             # RSQL query at the API layer (no post-filter needed).
 
+            # Raw-object delivery (E1): a recipe with transform_input: object
+            # consumes the whole {meta,coverage,results}-shaped dict in its
+            # transform. Skip the DataFrame coercion + DataFrame-only enrichment
+            # below so the dict survives un-coerced to the transform dispatch
+            # (handled at the transform_object dispatch branch). Everything
+            # between here and that dispatch assumes a DataFrame, so the
+            # passthrough path jumps straight to it.
+            if getattr(recipe, "transform_input", None) == "object":
+                return self._process_recipe_raw_object(recipe, raw_data)
+
             # Ensure raw_data is a DataFrame at this point
             if not isinstance(raw_data, pd.DataFrame):
                 raw_data = pd.DataFrame(raw_data) if raw_data else pd.DataFrame()
@@ -8052,6 +8175,100 @@ class ReportEngine:
         except Exception as e:
             self.logger.error(f"Error processing recipe {recipe.name}: {e}")
             raise
+
+    def _process_recipe_raw_object(
+        self,
+        recipe: Recipe,
+        raw_data: Any,
+        additional_data: dict[str, Any] | None = None,
+        raw_data_count: int | None = None,
+    ) -> ReportData:
+        """Process a query-less ``transform_input: object`` recipe (E1).
+
+        The recipe's ``transform_function`` consumes the raw object (a whole
+        ``{meta,coverage,results}``-shaped dict) un-coerced — none of the
+        DataFrame coercion / per-finding enrichment in the main path applies.
+        The transform's dict return is stashed in
+        ``additional_data["transform_result"]`` by ``transform_object`` and its
+        keys are promoted into ``additional_data`` so the template receives
+        ``cover``/``coverage``/``cards``/etc. as top-level variables — mirroring
+        the post-dispatch merge in :meth:`_process_recipe`.
+        """
+        if additional_data is None:
+            additional_data = {}
+        if raw_data_count is None:
+            raw_data_count = len(raw_data) if hasattr(raw_data, "__len__") else 0
+
+        # Mirror the main path's additional_data["config"] = self.config (L7426)
+        # so the object-path transform receives the engine config under the same
+        # key.  setdefault preserves an explicitly-passed config (e.g. in tests).
+        additional_data.setdefault("config", self.config)
+
+        # Mirror the main path's recipe_parameters injection (L7436-7437) so an
+        # object-transform can read recipe.parameters (e.g. mode) via the
+        # standard key.  The E1 branch early-returns before L7436, so without
+        # this the mode convention never reaches an object-transform.
+        if recipe.parameters:
+            additional_data.setdefault("recipe_parameters", recipe.parameters)
+
+        if not recipe.transform_function:
+            raise ValueError(
+                f"Recipe '{recipe.name}' declares transform_input: object but has "
+                f"no transform_function to consume the raw object"
+            )
+
+        transformed_data = self.transformer.transform_object(
+            raw_data, recipe.transform_function, additional_data=additional_data
+        )
+
+        # Promote the transform's dict result into additional_data so a template
+        # receives its keys (cover, coverage, cards, ...) as top-level variables.
+        transform_result = additional_data.get("transform_result")
+        if isinstance(transform_result, dict):
+            for key, value in transform_result.items():
+                additional_data[key] = value
+
+        # If the transform returned a "main" DataFrame, surface it as the
+        # primary report data (the full dict stays in transform_result).
+        if isinstance(transformed_data, dict) and "main" in transformed_data:
+            transformed_data = transformed_data["main"]
+
+        return ReportData(
+            recipe_name=recipe.name,
+            data=transformed_data,
+            metadata={
+                "raw_count": raw_data_count,
+                # A transform may supply an authoritative record_count in its view
+                # model (promoted into additional_data above). Prefer it over
+                # len(main): an object-recipe whose primary "main" frame is empty
+                # (e.g. the bucketed Exploitability Report) would otherwise show
+                # "0 records" in the briefing header. Falls back to len for
+                # transforms that don't supply one (the v1 path).
+                "transformed_count": (
+                    additional_data["record_count"]
+                    if isinstance(additional_data.get("record_count"), int)
+                    and not isinstance(additional_data.get("record_count"), bool)
+                    else (
+                        len(transformed_data)
+                        if hasattr(transformed_data, "__len__")
+                        else 1
+                    )
+                ),
+                "portfolio_data": None,
+                "recipe": recipe.model_dump(),
+                "cache_stats": self.cache.get_stats(),
+                "additional_data": additional_data,
+                "start_date": self.config.start_date,
+                "end_date": self.config.end_date,
+                "project_filter": self.config.project_filter,
+                "project_name": self.resolved_project_name,
+                "folder_name": self._folder_name,
+                "folder_path": self._folder_path,
+                "folder_filter": self.config.folder_filter,
+                "domain": self.config.domain,
+                "logo_path": self._resolve_logo_path(),
+            },
+        )
 
     def get_cache_stats(self) -> dict[str, Any]:
         """Get cache statistics."""
@@ -8934,27 +9151,116 @@ class ReportEngine:
             return raw_data
 
         self.logger.info(
-            f"Fetching SBOMs for group enrichment ({len(version_ids)} versions)"
+            f"SBOM group enrichment: resolving {len(version_ids)} version(s)"
         )
 
-        # Build lookup: (lower_name, lower_version) → group
+        from fs_report.purl_utils import extract_group as _extract_group
+
+        # Cross-run caching follows the repo cache contract: cache_ttl == 0
+        # disables it entirely, --cache-refresh bypasses reads but still
+        # writes fresh entries (same gating as the structured cache reads).
+        cache = getattr(self.api_client, "sqlite_cache", None)
+        ttl_setting = getattr(self.api_client, "cache_ttl", 0)
+        if not isinstance(ttl_setting, int) or ttl_setting <= 0:
+            cache = None
+        if name_col not in raw_data.columns or version_col not in raw_data.columns:
+            # The fill step below skips shapes without name/version columns —
+            # nothing to fingerprint or fill, so disable caching for parity
+            # with that defensive contract instead of raising KeyError.
+            cache = None
+        cache_on = cache is not None
+        read_cache = cache_on and not bool(
+            getattr(self.api_client, "cache_refresh", False)
+        )
+
+        # Fingerprint each version's CURRENT component inventory (the rows
+        # this run already fetched). A cached lookup is only honored when its
+        # stored fingerprint matches — so a rescan that changes the component
+        # set invalidates the cache immediately, without waiting for the TTL.
+        pairs_by_vid: dict[str, set[tuple[str, str]]] = {}
+        if cache_on:
+            names = raw_data[name_col].fillna("").astype(str).str.lower()
+            versions = raw_data[version_col].fillna("").astype(str).str.lower()
+            for vid, n, v in zip(
+                vid_series,
+                names[vid_series.index],
+                versions[vid_series.index],
+                strict=True,
+            ):
+                pairs_by_vid.setdefault(str(vid), set()).add((n, v))
+        fp_by_vid = {
+            vid: _sbom_lookup_fingerprint(pairs) for vid, pairs in pairs_by_vid.items()
+        }
+
+        # Build lookup: (lower_name, lower_version) → group. Cached payload:
+        # {"v": 1, "fp": <inventory fingerprint>, "groups": {"name\nver": group}}
         group_lookup: dict[tuple[str, str], str] = {}
+        cached_versions = 0
+        fetched_versions = 0
         for vid in version_ids:
+            if cache is not None and read_cache:
+                raw = cache.get_raw(f"sbom_group_lookup:{vid}", SBOM_GROUP_LOOKUP_TTL)
+                if (
+                    isinstance(raw, dict)
+                    and raw.get("v") == 1
+                    and raw.get("fp") == fp_by_vid.get(vid)
+                    and isinstance(raw.get("groups"), dict)
+                ):
+                    for flat_key, group in raw["groups"].items():
+                        name, _, ver = str(flat_key).partition("\n")
+                        if group:
+                            group_lookup[(name, ver)] = str(group)
+                    cached_versions += 1
+                    continue
             try:
                 sbom_raw = self.api_client.fetch_sbom(
                     vid, sbom_format="cyclonedx", include_vex=False
                 )
                 sbom = parse_cyclonedx(sbom_raw)
+                per_version: dict[str, str] = {}
                 for comp in sbom.components.values():
-                    if comp.group:
-                        key = (comp.name.lower(), comp.version.lower())
-                        group_lookup[key] = comp.group
+                    # Use the explicit CycloneDX group field first; if absent,
+                    # derive from bom-ref (often a PURL or Maven colon ref),
+                    # then from purl (bom-ref may be an opaque ID).
+                    group = (
+                        comp.group
+                        or _extract_group(comp.bom_ref)
+                        or _extract_group(comp.purl)
+                    )
+                    if group:
+                        key = (
+                            str(comp.name or "").lower(),
+                            str(comp.version or "").lower(),
+                        )
+                        group_lookup[key] = group
+                        per_version[f"{key[0]}\n{key[1]}"] = group
+                fetched_versions += 1
+                if cache is not None:
+                    # Cache empty lookups too — a groupless SBOM must not be
+                    # re-downloaded on every run (the fingerprint invalidates
+                    # the negative entry as soon as the inventory changes).
+                    # Failed fetches are NOT cached (except path skips this).
+                    cache.put_raw(
+                        f"sbom_group_lookup:{vid}",
+                        {"v": 1, "fp": fp_by_vid.get(vid, ""), "groups": per_version},
+                    )
             except Exception:
                 self.logger.debug(
                     f"SBOM fetch failed for version {vid}, skipping group enrichment"
                 )
 
+        if cached_versions or fetched_versions:
+            self.logger.info(
+                f"SBOM group enrichment: {fetched_versions} SBOM(s) fetched, "
+                f"{cached_versions} version(s) served from cache"
+            )
+
+        # Only early-return when nothing was derivable from ANY source. The
+        # builder above feeds the CycloneDX group field AND bom_ref/purl into
+        # the lookup, so a bom-ref-only SBOM yields a non-empty lookup and
+        # proceeds to the vectorised fill; a truly empty lookup has nothing to fill.
         if not group_lookup:
+            self.logger.debug("SBOM group lookup empty — no group info derivable")
             return raw_data
 
         self.logger.info(

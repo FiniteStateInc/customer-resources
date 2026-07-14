@@ -193,6 +193,69 @@ def _fmt_iso(dt: datetime) -> str:
 
 
 # ---------------------------------------------------------------------------
+# CRA Article 14 "became aware" clock (single source of the awareness rule)
+# ---------------------------------------------------------------------------
+
+
+def became_aware_clock(
+    *,
+    anchor: str | None,
+    cisa_date_added: str | None,
+    detected: str | None = None,
+    anchor_label: str = "detected",
+) -> dict[str, Any]:
+    """Build the CRA Article 14 "became aware" clock for an early-warning notice.
+
+    ``became_aware = max(cisa_dateAdded, anchor)`` — under CRA Art. 14 the
+    manufacturer becomes aware at the *later* of the CISA KEV listing date and the
+    platform's awareness anchor. The anchor is normally the platform's detection
+    date; the SRP-cascade early recipe falls back to the evidence-seal or
+    report-generation time when no detection date is available, recording which it
+    used in ``became_aware_basis`` (via ``anchor_label``) so a consumer never
+    mistakes a seal/export time for a detection date.
+
+    ``detected`` is the *true* platform detection date (or ``None``) and is reported
+    verbatim in the returned clock — it is NEVER inferred from the seal/export
+    fallback (a fallback anchor leaves ``detected`` ``None``).
+
+    This is the single source of the awareness rule for the SRP-cascade early
+    recipe; it mirrors the same ``max(cisa_dateAdded, anchor)`` rule the
+    morning-queue SLA derivation (:func:`_derive_sla_breach_columns`) applies (the
+    two are intentionally separate call sites — this one is the SRP producer).
+
+    Either timestamp may be ``None``/empty. The later parseable value wins; if only
+    one parses it is used; if neither parses the ``anchor`` is echoed back verbatim
+    (which may be empty/non-ISO). Callers that require a usable absolute clock — the
+    early recipe — must reject an empty/unparseable result (it does, via
+    ``ClockAnchorError``); this function does not fabricate a date.
+
+    Returns the machine-readable ``meta.clock`` object the early recipe emits and the
+    forge assembler lifts into ``bundle.clock``::
+
+        {became_aware, became_aware_basis, cisa_date_added, detected}
+    """
+    dt_cisa = _parse_iso_date(cisa_date_added or "")
+    dt_anchor = _parse_iso_date(anchor or "")
+
+    if dt_cisa is not None and dt_anchor is not None:
+        became_aware = _fmt_iso(max(dt_cisa, dt_anchor))
+    elif dt_cisa is not None:
+        became_aware = _fmt_iso(dt_cisa)
+    elif dt_anchor is not None:
+        became_aware = _fmt_iso(dt_anchor)
+    else:
+        # Neither parsed — echo the anchor verbatim (may be "").
+        became_aware = anchor or ""
+
+    return {
+        "became_aware": became_aware,
+        "became_aware_basis": f"max(cisa_dateAdded, {anchor_label})",
+        "cisa_date_added": cisa_date_added or None,
+        "detected": detected or None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Per-section column derivation helpers
 # ---------------------------------------------------------------------------
 

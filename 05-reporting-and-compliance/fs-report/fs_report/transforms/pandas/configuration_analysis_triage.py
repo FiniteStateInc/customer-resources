@@ -565,12 +565,17 @@ def generate_vex_recommendations(
         # - Gate 1 (private keys) → IN_TRIAGE (needs human review)
         # - Public keys/certs → NOT_AFFECTED (clear signal from detail_private_key)
         # - Everything else → no recommendation (just scored and displayed)
+        justification: str | None = None
         if gate == "GATE_1":
             recommended_status = "IN_TRIAGE"
             reason = "Private key detected: requires human review"
         elif category == "CRYPTO_MATERIAL" and detail_private_key is not True:
             recommended_status = "NOT_AFFECTED"
             reason = "Public key or certificate — not a security risk"
+            # Public key / cert → the sensitive (private) key material is not
+            # present, so no exploitable code is exposed. Set this explicitly
+            # rather than relying on the applier's NOT_AFFECTED fallback.
+            justification = "CODE_NOT_PRESENT"
         else:
             continue  # No recommendation for other findings
 
@@ -588,6 +593,8 @@ def generate_vex_recommendations(
             "recommended_vex_status": recommended_status,
             "reason": reason,
         }
+        if justification:
+            rec["justification"] = justification
         recommendations.append(rec)
 
     if limit is not None:

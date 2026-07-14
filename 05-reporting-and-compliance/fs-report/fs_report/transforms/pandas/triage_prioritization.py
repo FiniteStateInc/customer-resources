@@ -1035,6 +1035,7 @@ def triage_prioritization_transform(
             ),
             nvd_client=nvd_client,
             domain=getattr(config, "domain", None) if config else None,
+            additional_data=additional_data,
         )
 
     # Enrich VEX IN_TRIAGE recommendations with AI mitigation data.
@@ -1420,15 +1421,25 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         if "project_id" not in df.columns:
             df["project_id"] = ""
 
+    # Stringify the version id (mirroring project_id above) so it stays an
+    # opaque string for the SBOM lookups downstream. The list-input path keeps
+    # `projectVersion` as a dict column, so str(x["id"]) preserves large ints
+    # exactly; the pre-flattened `projectVersion.id` branch is best-effort (a
+    # column already coerced to float64 upstream can't be de-coerced here).
+    # `or ""` maps a JSON-null id to "" (not the literal "None").
     if "projectVersion.id" in df.columns:
-        df["project_version_id"] = df["projectVersion.id"]
+        df["project_version_id"] = df["projectVersion.id"].astype(str)
     elif "projectVersion" in df.columns:
         df["project_version_id"] = df["projectVersion"].apply(
-            lambda x: x.get("id", "") if isinstance(x, dict) else ""
+            lambda x: str(x.get("id") or "") if isinstance(x, dict) else ""
         )
+    elif "project_version_id" in df.columns:
+        # Pre-existing column: standardize to str. If it already arrived
+        # float64-coerced upstream, precision is lost before this point — that
+        # must be fixed at the data/fetch layer, not here.
+        df["project_version_id"] = df["project_version_id"].astype(str)
     else:
-        if "project_version_id" not in df.columns:
-            df["project_version_id"] = ""
+        df["project_version_id"] = ""
 
     # --- Project version name (for display in findings detail) ---
     if "projectVersion.version" in df.columns:
@@ -3449,6 +3460,7 @@ def _generate_ai_guidance(
     deployment_context: Any | None = None,
     nvd_client: Any = _UNSET,
     domain: str | None = None,
+    additional_data: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, str], dict[str, dict[str, Any]], dict[str, dict[str, str]]]:
     """
     Generate AI remediation guidance at all requested scopes.
@@ -3730,8 +3742,11 @@ def _generate_ai_guidance(
         )
     logger.info(
         f"AI guidance complete: {stats['api_calls']} API calls, "
-        f"{stats['cache_hits']} cache hits{nvd_info}"
+        f"{stats['cache_hits']} cache hits, "
+        f"{stats.get('input_tokens', 0)}/{stats.get('output_tokens', 0)} "
+        f"tokens in/out{nvd_info}"
     )
+    llm.record_usage_metadata(additional_data)
 
     return ai_portfolio, ai_projects, ai_components, ai_findings
 

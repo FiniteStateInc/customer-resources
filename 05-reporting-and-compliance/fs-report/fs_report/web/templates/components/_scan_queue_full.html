@@ -62,7 +62,6 @@
       {% if group.has_stuck %}<span class="badge stuckb">⚠ stuck</span>{% endif %}
       <span class="qg-ratio">{{ group.completed_count }} / {{ group.scans|length }}</span>
       <span class="qg-wait">{{ group.oldest_wait_display }}</span>
-      {% if group.created_by %}<span class="qg-by">{{ group.created_by | join(', ') }}</span>{% endif %}
     </div>
     <div class="qg-scans">
       {%- for scan in group.scans -%}

@@ -153,6 +153,31 @@ class DataTransformer:
 
         return df
 
+    def transform_object(
+        self,
+        data: Any,
+        transform_function: str | None,
+        additional_data: dict[str, Any] | None = None,
+    ) -> pd.DataFrame | dict[str, Any]:
+        """Deliver a raw object straight to a transform function, un-coerced.
+
+        Unlike :meth:`transform`, this does NOT wrap ``data`` in a
+        ``pd.DataFrame`` first. The raw object (typically a whole
+        ``{meta,coverage,results}``-shaped dict) is passed directly to the
+        named transform via the same dynamic-import + dict-result handling
+        that :meth:`_apply_pandas_transform_function` already provides — a
+        dict return is stashed in ``additional_data["transform_result"]`` and
+        a "main" DataFrame (possibly empty) is returned. Used by query-less
+        recipes that declare ``transform_input: object`` (spec § 5 "E1").
+        """
+        if not transform_function:
+            raise ValueError(
+                "transform_object requires a non-empty transform_function name"
+            )
+        return self._apply_pandas_transform_function(
+            data, transform_function, additional_data
+        )
+
     def _apply_transform(self, df: pd.DataFrame, transform: Transform) -> pd.DataFrame:
         """Apply a single transform to the DataFrame."""
         try:

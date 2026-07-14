@@ -45,6 +45,8 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | CRA Compliance | EU Cyber Resilience Act Article 14 — 5-section morning-queue (🔥 SLA-Breach, 🆕 Newly Above Threshold, 🔁 Re-emerged, ⏰ Still-in-Triage, 📋 Snapshot) with CISA KEV notification clock, action-driven KPIs (OVERDUE / DUE_SOON / Unknown Clock / Reachable / In Triage), VulnCheck threat-actor evidence on queue rows, and `--since` delta detection for daily automation runs *(on-demand)* |
 | False Positive Analysis | Surface likely false positives using mechanical checks and AI applicability analysis; auto-apply VEX with `--autotriage` *(on-demand)* |
 | Scan Quality | Per-asset scan coverage and quality signals — scan type gaps and reachability unknowns *(on-demand)* |
+| Exploitability Report | Standalone, evidence-backed CVE-exploitability dossier bucketed by verdict.kind (must-fix / proven-not-affected / tested-inconclusive / affected-by-version) with prose-first proof, code locus, and replay provenance; internal/console mode retains full verifier telemetry. Consumes a forge `exploitability-dataset/v2` export via `--data-file` *(on-demand; HTML/PDF)* |
+| Exploitability Report (Shareable) | External-facing variant of the Exploitability Report — the same bucketed-verdict dossier redacted for customers/regulators (internal telemetry stripped, proof preserved). Consumes a forge `exploitability-dataset/v2` export via `--data-file` *(on-demand; HTML/PDF)* |
 
 ## Quick Start
 
@@ -92,6 +94,10 @@ You can also install manually with pipx:
 pipx install fs-report
 ```
 
+> **Modern Debian/Ubuntu** (PEP 668 "externally-managed environment"): `pip install` into the system Python is blocked — install pipx from apt instead, then ensure it's on PATH: `sudo apt install -y pipx && pipx ensurepath` (open a new shell), then `pipx install fs-report`.
+
+If a report run fails, start with `fs-report doctor` — it checks your credentials, domain, DNS, and API connectivity, and prints where the per-run log files live (`~/.fs-report/logs/`). Failed runs also print their own log path once the run has started.
+
 > **PDF output** requires the Chromium rendering engine — install it once with `fs-report install-engine` (the setup scripts print a reminder to run this).
 
 Once installed, set up API credentials (the setup script will prompt for these, or you can set them yourself):
@@ -134,6 +140,8 @@ The CLI is organized into subcommands for better discoverability:
 | `fs-report cache {clear,status}` | Manage cached data |
 | `fs-report config {init,show}` | Manage configuration |
 | `fs-report changelog` | Show per-report changelog |
+| `fs-report doctor` | Read-only first-run preflight: checks credentials, domain, DNS, API reachability, and log-dir writability |
+| `fs-report install-engine` | Pre-install the Chromium engine used for PDF rendering |
 | `fs-report help periods` | Show period format help |
 | `fs-report serve [directory]` | Serve reports via local HTTP server |
 
@@ -266,6 +274,7 @@ fs-report serve ./output                               # Serve existing reports
 fs-report run --verbose                                # Verbose logging
 fs-report run --batch-size 3                           # Reduce API batch size (default 5)
 fs-report run --request-delay 1.0                      # Increase delay between requests
+fs-report run --progress-file run.jsonl                # Append one JSON line per progress event (CI/automation)
 fs-report run --recipes ./my-recipes --output ./reports # Custom directories
 fs-report help periods                                 # Period format help
 ```
@@ -280,7 +289,7 @@ fs-report help periods                                 # Period format help
 
 Running bare `fs-report` (no arguments) launches an interactive web UI at `http://localhost:8321`:
 
-- **Dashboard** with 16 workflow cards covering all recipes — each card opens a pre-run panel with recipe-specific configuration (AI settings, component filter, CVE input, version pickers, etc.)
+- **Dashboard** with a workflow card for every launchable recipe (forge-audience recipes such as the CRA SRP-cascade producers are hidden from the launcher) — each card opens a pre-run panel with recipe-specific configuration (AI settings, component filter, CVE input, version pickers, etc.)
 - **Real-time progress** streaming via Server-Sent Events (SSE) during report generation
 - **Direct report linking** — "View Report" opens the generated HTML immediately after a run
 - **Cancellation** — cancel button works at any point, including during NVD lookups
@@ -291,6 +300,7 @@ Running bare `fs-report` (no arguments) launches an interactive web UI at `http:
 - **Log file viewer** — view log files from history runs in the browser
 - **New Folder creation** — create directories in the directory browser
 - **Per-recipe progress** — real-time progress bar updates during multi-recipe runs
+- **Per-row actions on Triage Prioritization** (`--serve` only) — **create Jira/tracker tickets** directly from report rows (single / per-finding / per-component / all), grouped by project version; **set VEX status** inline; and **generate a Remediation Package** for a component or CVE. Ticket creation runs server-side with the server holding credentials (browser-token connect mode is not supported for ticket creation)
 - **CSRF protection** and localhost-only access for security
 
 To serve existing reports without the full UI:

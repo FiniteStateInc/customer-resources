@@ -29,6 +29,8 @@ This guide explains each report available in the Finite State Reporting Kit, wha
    - [Executive Dashboard](#executive-dashboard) *(Assessment, on-demand: executive-level security overview)*
    - [Component Remediation Package](#component-remediation-package) *(Assessment, on-demand: zero-day component remediation)*
    - [Remediation Package](#remediation-package) *(Assessment, on-demand: actionable remediation plan)*
+   - [Exploitability Report](#exploitability-report) *(Assessment, on-demand: standalone evidence-backed CVE-exploitability dossier, internal)*
+   - [Exploitability Report (Shareable)](#exploitability-report-shareable) *(Assessment, on-demand: same dossier redacted for customers/regulators)*
 4. [Output Formats](#output-formats)
 5. [Filtering Options](#filtering-options)
 6. [Using Reports Together](#using-reports-together)
@@ -884,7 +886,7 @@ fs-report run --recipe "Triage Prioritization" --ai --ai-depth full --serve
 The Triage Prioritization HTML report includes interactive buttons that let you take action directly from the report:
 
 - **Create Jira Ticket** — Available on both findings and components. Pre-fills the ticket with severity, component, fix version, and AI guidance (when available). Uses your Jira integration configured in the Finite State platform.
-- **Set IN_TRIAGE** — Available on individual findings. Sets the finding status to `IN_TRIAGE` with `WILL_FIX` response in the platform, so your team knows it's being worked.
+- **Set IN_TRIAGE** — Available on individual findings. Sets the finding status to `IN_TRIAGE` in the platform (a status-only update — no response or justification is sent), so your team knows it's being worked.
 
 **How to connect:**
 
@@ -892,7 +894,9 @@ The Triage Prioritization HTML report includes interactive buttons that let you 
 2. Click any action button (or the "Connect to Finite State" button in the header).
 3. Enter your Finite State domain (e.g., `platform.finitestate.io`) and API token.
 4. Click **Connect** — the report verifies connectivity and fetches your Jira projects.
-5. A green "Connected" badge appears in the header. You're ready to create tickets and update statuses.
+5. A green "Connected" badge appears in the header. In this manual browser-token mode you can update finding statuses (Set IN_TRIAGE), but Jira/tracker ticket creation is not available — clicking Create Jira Ticket will report that ticket creation requires the server to hold the credentials.
+
+> Ticket creation requires running the report under `--serve` with a server-configured Finite State token. In that mode the report auto-connects (no prompt) and routes ticket requests through the local serve-side `/api/tracker/tickets` proxy; only then can you create tickets (single finding/component, one-per-finding, one-per-component, or one-for-all). Entering a domain + token directly in the browser (under `--serve` when the server was not given a token) grants status updates only. A report opened directly as a local file (`file://`) has no interactive actions at all — the action buttons and the connect UI are hidden; re-run under `--serve` to use them.
 
 **Security model:**
 
@@ -1127,7 +1131,8 @@ The four queue sections (🔥/🆕/🔁/⏰) are mutually exclusive per row — 
 | Column | Description |
 |--------|-------------|
 | **CVE / Component / Severity / CVSS** | Standard identification |
-| **Maturity** | Exploit-maturity tier (kev / weaponized / poc / ransomware / threat_actor) |
+| **Project** | Which project the finding belongs to (all five sections; relevant for multi-project runs) |
+| **Maturity** | Raw platform exploit-maturity (`poc` / `weaponized`, or empty). The derived CRA tiers (kev, ransomware, threat_actor, botnet, commercial, reported) drive section routing / threshold retention but are **not** shown in this column — see `Crossed To` and the `--exploit-maturity` flag. |
 | **KEV Source** | `CISA` (in public CISA KEV catalog), `VcKEV` (in VulnCheck's KEV catalog, broader than CISA's), or `CISA+VcKEV` (both). Only on 🔥. |
 | **Breach Status** | `OVERDUE` / `DUE_SOON` / `UPCOMING` / `UNKNOWN` |
 | **Hours Until Due / Notification Deadline** | CRA Article 14 24-hour clock |
@@ -1144,7 +1149,7 @@ The four queue sections (🔥/🆕/🔁/⏰) are mutually exclusive per row — 
 **Key CLI flags** (CRA-specific; full list in [fs-report CLI skill doc](.claude/skills/fs-report-cli/SKILL.md#cra-compliance)):
 
 - `--since` — delta window for 🆕/🔁 sections (`24h` default; also `7d`, ISO 8601 datetime, or `last-run`)
-- `--exploit-maturity` — override active tiers (default: `kev,ransomware,threat_actor,weaponized`)
+- `--exploit-maturity` — override active tiers (default: `kev,ransomware,threat_actor,weaponized,botnet`; `poc`, `commercial`, and `reported` are recognized but opt-in).
 - `--include-status` / `--exclude-status` — VEX status filters
 - `--reachable-only` — restrict to reachable findings
 - `--with-triage-age` — opt-in per-finding `/activity` fan-out for `triage_age_days`
@@ -1594,6 +1599,51 @@ fs-report run --recipe "Remediation Package" --project "MyProject" --format md
 
 ---
 
+### Exploitability Report
+
+**Category:** Assessment (on-demand) — standalone evidence-backed CVE-exploitability dossier (internal). In the web UI it is grouped under its own **Exploitability Evidence** navigation category (the fifth `nav_category`, alongside Executive, Investigation, Remediation, and Compliance).
+
+**Purpose:** Package CVE Evidence Verifier / pen-test output for a chosen subject into a standalone deliverable. Findings are bucketed by `verdict.kind` — must-fix exploitable, proven-not-affected, tested-inconclusive, affected-by-version, and could-not-be-assessed — behind an identity header, a decision summary with prioritized actions, an affected-by-version table, prose-first evidence, code locus, and replay provenance. Supersession is preserved by `finding_id` (no bare-CVE collapse).
+
+**Who should use it:** Security researchers, triage engineers, product security officers.
+
+**Important:** This report does **not** auto-run and is query-less — it is fed a forge `exploitability-dataset/v2` export via `--data-file` rather than querying the platform.
+
+```bash
+fs-report run --recipe "Exploitability Report" --data-file exploitability-dataset.json
+```
+
+**What it shows:**
+- An identity header for the subject under assessment
+- A decision summary with prioritized actions
+- Findings bucketed by verdict (must-fix exploitable, proven-not-affected, tested-inconclusive, could-not-be-assessed)
+- An affected-by-version table
+- Prose-first (un-redacted) evidence, code locus, and replay provenance
+
+The internal variant maps to the recipe `mode` parameter (`internal`) and keeps full verifier telemetry.
+
+**Formats:** HTML, PDF.
+
+---
+
+### Exploitability Report (Shareable)
+
+**Category:** Assessment (on-demand) — the same dossier redacted for customers and regulators (external). Shares the internal report's **Exploitability Evidence** navigation category in the web UI.
+
+**Purpose:** The customer- and regulator-facing counterpart of the Exploitability Report. It renders the same subject and verdict buckets (must-fix exploitable, proven-not-affected, tested-inconclusive, affected-by-version, could-not-be-assessed) but re-strips internal-only fields via the recipe `mode` parameter (external), while preserving the proof needed to share the result — `evidence_summary`, backport commit, crash signal, reachability fact, locus, and replay chain.
+
+**Who should use it:** Anyone sharing exploitability results externally — customers, auditors, regulators.
+
+**Important:** Like the internal Exploitability Report, this does **not** auto-run and is query-less; it is fed a forge `exploitability-dataset/v2` export via `--data-file`.
+
+```bash
+fs-report run --recipe "Exploitability Report (Shareable)" --data-file exploitability-dataset.json
+```
+
+**Formats:** HTML, PDF.
+
+---
+
 ## Output Formats
 
 Most reports generate output in multiple formats:
@@ -1711,7 +1761,7 @@ fs-report run --period 30d --finding-types all
 
 1. **Component List** → Full software inventory with declared/concluded licenses and policy status
 2. **License Report** → Risk-first summary grouping licenses by Permissive / Copyleft / Unknown
-3. **CRA Compliance** → Morning-queue of actively-exploited findings (🔥 SLA-Breach + 🆕/🔁/⏰/📋) with CRA Article 14 24-hour notification clocks — designed for daily automation
+3. **CRA Compliance** → Morning-queue of findings carrying a CISA/VulnCheck KEV or exploit-maturity signal (🔥 SLA-Breach + 🆕/🔁/⏰/📋), flagged for CRA triage (not a determination of active exploitation), with CRA Article 14 24-hour notification clocks — designed for daily automation
 
 ### By Audience
 
@@ -1750,7 +1800,7 @@ fs-report run --period 30d --finding-types all
 | **Findings by Project** | Weekly (dev teams), Daily (during sprints) | Plan project-level remediation |
 | **Component List** | Monthly (audits), On-demand (SBOM requests) | Compliance, license review, and inventory tracking |
 | **License Report** | Quarterly (legal reviews), On-demand | License risk summary for legal and compliance |
-| **CRA Compliance** | **Daily** (automated morning queue), On-demand (incident) | EU CRA Article 14 morning-queue: actively-exploited findings with 24-hour notification clocks |
+| **CRA Compliance** | **Daily** (automated morning queue), On-demand (incident) | EU CRA Article 14 morning-queue: KEV/exploit-maturity-signalled findings flagged for CRA triage (not a verdict of active exploitation) with 24-hour notification clocks |
 | **Scan Quality** | Quarterly (platform health), On-demand | Identify coverage gaps and unpack quality issues |
 | **Component Impact** | On-demand (zero-day / supply-chain incident) | Blast radius for a specific component |
 | **Component Remediation Package** | On-demand (zero-day / supply-chain incident) | Rapid remediation guidance for a compromised component |

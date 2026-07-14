@@ -107,6 +107,78 @@ def _is_auth_error(exc: Exception) -> bool:
     return status in (401, 403)
 
 
+def _usage_int(value: Any) -> int:
+    """Coerce an SDK usage field to int; None/absent/non-numeric → 0.
+
+    Usage accounting must never raise — some providers omit ``usage`` and
+    mocked responses carry auto-attribute objects in its place.
+    """
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def merge_ai_usage(target: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    """Accumulate one ``ai_usage`` payload into another, in place.
+
+    Shared shape: ``{"input_tokens": int, "output_tokens": int, "models":
+    {model: {"input_tokens": int, "output_tokens": int}}}``. Used by
+    :meth:`LLMClient.record_usage_metadata` (a transform running more than
+    one client) and by the compound assembler aggregating per-child usage
+    into the bundle's ``RecipeResult.stats``. Coerces every count through
+    :func:`_usage_int` and skips non-mapping model entries — usage
+    accounting must never raise, even on a malformed payload.
+    """
+    target["input_tokens"] = _usage_int(target.get("input_tokens")) + _usage_int(
+        incoming.get("input_tokens")
+    )
+    target["output_tokens"] = _usage_int(target.get("output_tokens")) + _usage_int(
+        incoming.get("output_tokens")
+    )
+    models = target.setdefault("models", {})
+    incoming_models = incoming.get("models")
+    if isinstance(incoming_models, dict):
+        for model, counts in incoming_models.items():
+            if not isinstance(counts, dict):
+                continue
+            bucket = models.setdefault(
+                str(model), {"input_tokens": 0, "output_tokens": 0}
+            )
+            bucket["input_tokens"] = _usage_int(
+                bucket.get("input_tokens")
+            ) + _usage_int(counts.get("input_tokens"))
+            bucket["output_tokens"] = _usage_int(
+                bucket.get("output_tokens")
+            ) + _usage_int(counts.get("output_tokens"))
+    return target
+
+
+def resolve_active_api_key(provider_override: str | None = None) -> str:
+    """Raw API key of the AI provider active for this process, or ``""``.
+
+    The same resolution ``LLMClient`` itself performs (explicit provider
+    override, else env-var auto-detection) — public entry point for log
+    redaction, so the key ``llm_client`` would actually send never lands
+    unscrubbed in a run log or a bridge event. Best-effort by contract: any
+    resolution failure returns ``""`` (logged at DEBUG) because redaction
+    must never break a run.
+
+    For Copilot this is the ``GITHUB_TOKEN``; the short-lived bearer minted
+    later by ``copilot_auth.get_copilot_token`` (and any GitHub-side token it
+    spends) is covered separately — it registers itself as a runtime
+    redaction secret via ``logging_utils.register_runtime_secret``.
+    """
+    try:
+        _provider, api_key = LLMClient._detect_provider(provider_override)
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "No AI credential resolved for log redaction: %s", exc
+        )
+        return ""
+    return api_key
+
+
 # ── Shared prompt blocks ────────────────────────────────────────────
 # These replace text that was previously duplicated across 5+ prompt
 # locations.  Each function returns a stable string fragment.
@@ -361,6 +433,13 @@ class LLMClient:
 
         self._call_count = 0
         self._cached_count = 0
+        # Per-model token usage accumulated from provider `usage` objects —
+        # a single client can call both the summary and component tiers in
+        # one run, so totals are kept per model, not flat.
+        self._usage_by_model: dict[str, dict[str, int]] = {}
+        # Snapshot of what record_usage_metadata has already reported, so
+        # repeat calls contribute only the delta (never double-count).
+        self._usage_reported: dict[str, dict[str, int]] = {}
 
         if self.cache_ttl > 0:
             logger.info(
@@ -580,6 +659,12 @@ class LLMClient:
                 messages=[{"role": "user", "content": prompt}],
             )
             self._call_count += 1
+            usage = getattr(response, "usage", None)
+            self._record_usage(
+                model,
+                getattr(usage, "input_tokens", 0),
+                getattr(usage, "output_tokens", 0),
+            )
             return response.content[0].text  # type: ignore[no-any-return]
         else:
             # OpenAI / Copilot / Gemini
@@ -602,7 +687,73 @@ class LLMClient:
                 else:
                     raise
             self._call_count += 1
+            usage = getattr(response, "usage", None)
+            self._record_usage(
+                model,
+                getattr(usage, "prompt_tokens", 0),
+                getattr(usage, "completion_tokens", 0),
+            )
             return response.choices[0].message.content or ""
+
+    def _record_usage(self, model: str, input_tokens: Any, output_tokens: Any) -> None:
+        """Accumulate token usage for ``model``.
+
+        Provider/mocked responses may omit ``usage`` or carry non-numeric
+        fields — those count as 0, never raise (usage reporting must not
+        break a run).
+        """
+        in_tokens = _usage_int(input_tokens)
+        out_tokens = _usage_int(output_tokens)
+        if not in_tokens and not out_tokens:
+            # No usage reported (provider omitted it / mocked response) —
+            # don't create a misleading 0/0 model bucket.
+            return
+        bucket = self._usage_by_model.setdefault(
+            model, {"input_tokens": 0, "output_tokens": 0}
+        )
+        bucket["input_tokens"] += in_tokens
+        bucket["output_tokens"] += out_tokens
+
+    def record_usage_metadata(self, additional_data: dict[str, Any] | None) -> None:
+        """Merge this client's UN-REPORTED token usage into
+        ``additional_data["_ai_usage"]``.
+
+        Transforms call this after their LLM work; the engine copies the
+        accumulated value into ``RecipeResult.stats["ai_usage"]`` so raw
+        token counts reach CLI/headless output (an external integration
+        computes dollar cost from them server-side). Merging — not
+        overwriting — supports transforms that use more than one client
+        (e.g. remediation guidance + combined-analysis passes). Only the
+        delta since the previous call is contributed, so a repeat invocation
+        (retry paths, future refactors) can never double-count this client's
+        lifetime totals; ``get_stats()`` stays lifetime-cumulative.
+        """
+        if additional_data is None or not self._usage_by_model:
+            return
+        delta_models: dict[str, dict[str, int]] = {}
+        for model, counts in self._usage_by_model.items():
+            reported = self._usage_reported.get(
+                model, {"input_tokens": 0, "output_tokens": 0}
+            )
+            d_in = counts["input_tokens"] - reported["input_tokens"]
+            d_out = counts["output_tokens"] - reported["output_tokens"]
+            if d_in or d_out:
+                delta_models[model] = {"input_tokens": d_in, "output_tokens": d_out}
+        if not delta_models:
+            return
+        merge_ai_usage(
+            additional_data.setdefault(
+                "_ai_usage", {"input_tokens": 0, "output_tokens": 0, "models": {}}
+            ),
+            {
+                "input_tokens": sum(m["input_tokens"] for m in delta_models.values()),
+                "output_tokens": sum(m["output_tokens"] for m in delta_models.values()),
+                "models": delta_models,
+            },
+        )
+        self._usage_reported = {
+            model: dict(counts) for model, counts in self._usage_by_model.items()
+        }
 
     def _refresh_copilot_client(self) -> None:
         """Re-exchange credentials and rebuild the OpenAI client for Copilot."""
@@ -2291,9 +2442,25 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
     # Stats
     # =========================================================================
 
-    def get_stats(self) -> dict[str, int]:
-        """Return API call and cache statistics."""
+    def get_stats(self) -> dict[str, Any]:
+        """Return API call, cache, and token-usage statistics.
+
+        ``input_tokens`` / ``output_tokens`` are totals across models;
+        ``models`` carries the per-model breakdown (a single client can call
+        both the summary and component tiers in one run, so a flat "model"
+        field would be ambiguous). Token counts are raw provider-reported
+        usage — no pricing math here; cost is computed downstream.
+        """
         return {
             "api_calls": self._call_count,
             "cache_hits": self._cached_count,
+            "input_tokens": sum(
+                m["input_tokens"] for m in self._usage_by_model.values()
+            ),
+            "output_tokens": sum(
+                m["output_tokens"] for m in self._usage_by_model.values()
+            ),
+            "models": {
+                model: dict(counts) for model, counts in self._usage_by_model.items()
+            },
         }

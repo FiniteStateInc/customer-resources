@@ -100,7 +100,9 @@
     var t = document.createElement('div');
     t.style.cssText = [
       'position:fixed', 'bottom:54px', 'left:50%', 'transform:translateX(-50%)',
-      'background:var(--surface-2,#2a2a3a)', 'color:var(--ink,#e0e0e0)',
+      /* Fixed dark pill in BOTH themes — must not use theme vars (--ink flips
+         to near-black in light mode → unreadable text on the dark pill). */
+      'background:#2a2a3a', 'color:#e8eaed',
       'padding:8px 18px', 'border-radius:6px', 'font-size:13px',
       'box-shadow:0 2px 12px rgba(0,0,0,.4)', 'z-index:9999',
       'pointer-events:none', 'opacity:1', 'transition:opacity .4s'
@@ -168,14 +170,6 @@
       }
     }
 
-    /* Active users 30d */
-    var usersEl = qs('[data-cc="users"]');
-    var usersSub = qs('[data-cc="users-sub"]');
-    if (data.active_users_30d && usersEl) {
-      usersEl.setAttribute('data-count', data.active_users_30d.count || 0);
-      animateCount(usersEl, data.active_users_30d.count || 0);
-    }
-    if (usersSub) usersSub.textContent = 'distinct scan authors';
   }
 
   /* ── Draw the scan-health ring ───────────────────────────────── */
@@ -2363,7 +2357,11 @@
               } else if (res === 'success' && run.report_url) {
                 row.style.cursor = 'pointer';
                 row.className = (row.className + ' run-row-link').trim();
-                row.onclick = function () { location.href = run.report_url; };
+                /* Report deliverable opens in a NEW tab — clicking a finished
+                   report never navigates away from the Command Center. Mirrors
+                   the server template's success+report_url branch (window.open).
+                   Canvas/log rows keep same-tab location.href above. */
+                row.onclick = function () { window.open(run.report_url, '_blank', 'noopener'); };
               } else if (res === 'error') {
                 row.style.cursor = 'pointer';
                 row.className = (row.className + ' run-row-link').trim();

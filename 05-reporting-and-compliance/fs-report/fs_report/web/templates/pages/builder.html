@@ -297,6 +297,7 @@
           <option value="Investigation">Investigation</option>
           <option value="Remediation">Remediation</option>
           <option value="Compliance">Compliance</option>
+          <option value="Exploitability Evidence">Exploitability Evidence</option>
         </select>
       </div>
     </div>
@@ -400,6 +401,7 @@
           <option value="Investigation">Investigation</option>
           <option value="Remediation">Remediation</option>
           <option value="Compliance">Compliance</option>
+          <option value="Exploitability Evidence">Exploitability Evidence</option>
         </select>
       </div>
     </div>
@@ -550,7 +552,7 @@
          each card carries a run-* state class driven by the `step` SSE event. #}
       <div class="wfb-steps" id="wfb-steps" data-pipeline>
         <template x-for="(step, i) in model.steps" :key="step.id">
-          <div class="wfb-step-wrap">
+          <div class="wfb-step-wrap" :data-step-id="step.id">
             {# An unresolved recipe ref (not in the known recipe set) is flagged
                with the `unresolved` class (folded into runStepClass) + a title
                + a warning chip; it's excluded from the local run (runnableCount)

@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 from urllib.parse import unquote
 
 
@@ -427,6 +428,37 @@ def best_fix_for_version(installed: str, candidates: list[str]) -> str:
     # Fall back to smallest valid upgrade
     parsed.sort()
     return parsed[0][1]
+
+
+_HEX_RE = re.compile(r"^[0-9a-f]{16,}$")
+
+
+def extract_group(bom_ref: Any) -> str:
+    """Extract a group/namespace from a bomRef or PURL string.
+
+    Handles PURL format (``pkg:maven/group/name@version``) and Maven
+    colon-delimited format (``group:artifact:version``).  Returns an
+    empty string for hashes, paths, NuGet-style refs, and other
+    unrecognised formats.
+
+    This is the canonical implementation, shared by component-list,
+    comparison, and the engine's SBOM-based group enrichment.
+    """
+    if not isinstance(bom_ref, str) or not bom_ref:
+        return ""
+    # 1. Try as PURL first (handles pkg:maven/group/name@version)
+    info = parse_purl(bom_ref)
+    if info and info.namespace:
+        return info.namespace
+    # 2. Try Maven colon format (group:artifact:version)
+    #    Skip if it looks like a hash, path, or random ID
+    if ":" in bom_ref and "/" not in bom_ref:
+        parts = bom_ref.split(":")
+        # Must have at least group:artifact, and group must contain a dot
+        # (e.g. org.springframework) to avoid matching nuget:Name:Version
+        if len(parts) >= 2 and "." in parts[0] and not _HEX_RE.match(parts[0]):
+            return parts[0]
+    return ""
 
 
 def upgrade_instruction(purl: str, fixed_version: str) -> str:
