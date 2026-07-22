@@ -278,7 +278,7 @@ svg.edges path { fill: none; }
   background: var(--rc-green); align-items: center; justify-content: center;
   box-shadow: 0 0 10px rgba(74, 222, 128, .6);
 }
-.node .check svg { width: 12px; height: 12px; color: #06231f; }
+.node .check svg { width: 12px; height: 12px; color: var(--ink-on-accent); }
 
 /* ── Node states ───────────────────────────────────────────────────
    queued / running / done are ported from the prototype; error + skipped
@@ -415,3 +415,16 @@ body.light .node .track { background: rgba(15, 23, 42, .12); }
 body.light #e-dorm path { stroke: rgba(80, 100, 150, .3); }
 body.light .lg,
 body.light .tb-stats { background: rgba(0, 0, 0, .03); }
+/* .tbtn.primary / .re-link.primary hard-code color:#fff for their icons/label so
+   they pop on the dark gradient; on the light page that same gradient is a pale
+   tint and white vanishes (reads as a blank block). Use dark ink rather than the
+   medium-teal --accent: --accent on the pale tint measures only ~2.5:1 (below
+   WCAG AA for the .re-link text label and the 3:1 icon minimum), whereas dark
+   ink on the tint clears AA comfortably. No :not(:disabled) gate — dark ink stays
+   legible under the base .4 disabled opacity, so a disabled primary (e.g. the
+   Replay button during a live run) is a muted-but-visible affordance instead of
+   an invisible white-on-pale block. --ink-on-accent is the shared dark accent-ink
+   (also used by .node .check svg here and the builder's .wfb-btn.primary). */
+body.light .run-canvas .tbtn.primary { color: var(--ink-on-accent); }
+body.light .re-link.primary,
+body.light .re-link.primary:hover { color: var(--ink-on-accent); }

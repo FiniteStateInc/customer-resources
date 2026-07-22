@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 import pandas as pd
 
+from fs_report.llm_client import build_tenant_scope, normalize_project_ref
 from fs_report.models import Config
 
 logger = logging.getLogger(__name__)
@@ -1067,6 +1068,10 @@ def _enrich_dossiers_with_ai(
                     model_high=getattr(config, "ai_model_high", None),
                     model_low=getattr(config, "ai_model_low", None),
                     deployment_context=deployment_context,
+                    cache_scope=build_tenant_scope(
+                        getattr(config, "domain", None),
+                        getattr(config, "auth_token", None),
+                    ),
                 )
             except (ValueError, ImportError) as e:
                 logger.error(f"AI guidance requested but LLM client init failed: {e}")
@@ -1099,7 +1104,23 @@ def _enrich_dossiers_with_ai(
 
         if want_live_ai:
             assert llm is not None  # guarded by want_live_ai
-            guidance = _call_llm_for_cve(prompt, cve_id, llm)
+            # Scope the per-CVE dossier narrative (which names affected projects)
+            # to the tenant + this CVE's affected project-version set, under a
+            # "dossier" kind so it never collides with component guidance. No
+            # stable project id -> None -> regenerated, never shared.
+            _pvids = sorted(
+                {
+                    normalize_project_ref(p.get("project_version_id"))
+                    for p in d.get("project_details", [])
+                }
+                - {""}
+            )
+            dossier_scope = (
+                llm._narrative_scope("dossier\x1f" + ",".join(_pvids))
+                if _pvids
+                else None
+            )
+            guidance = _call_llm_for_cve(prompt, cve_id, llm, scope=dossier_scope)
             if guidance:
                 d["ai_guidance"] = guidance
 
@@ -1125,6 +1146,7 @@ def _call_llm_for_cve(
     prompt: str,
     cve_id: str,
     llm: LLMClient,
+    scope: str | None = None,
 ) -> dict[str, str] | None:
     """Call the LLM for a single CVE and return parsed guidance.
 
@@ -1132,10 +1154,13 @@ def _call_llm_for_cve(
         prompt: The formatted LLM prompt for this CVE.
         cve_id: The CVE identifier (used as cache key).
         llm: An already-initialized LLMClient instance.
+        scope: Effective cache scope (tenant + affected-project set) for this
+            dossier's narrative. When ``None`` the cache is bypassed so the
+            project-naming narrative is never shared across reports/customers.
     """
     try:
         # Check cache first — only use if it has meaningful content
-        cached = llm.get_cached_remediation(cve_id)
+        cached = llm.get_cached_remediation(cve_id, scope=scope)
         if cached and any(
             cached.get(k) for k in ("fix_version", "guidance", "workaround")
         ):
@@ -1147,7 +1172,7 @@ def _call_llm_for_cve(
         result = _parse_ai_response(text)
         # Only cache if we got meaningful content
         if any(result.get(k) for k in ("fix_version", "guidance", "workaround")):
-            llm.cache_remediation(cve_id, result)
+            llm.cache_remediation(cve_id, result, scope=scope)
             logger.info(f"AI guidance generated for {cve_id}")
         else:
             logger.warning(f"AI response for {cve_id} had no parseable fields")

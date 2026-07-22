@@ -346,8 +346,16 @@ def _log_memory(logger: logging.Logger, label: str) -> None:
         pass  # Don't let memory logging break the report
 
 
-def _inject_folder_names_df(df: pd.DataFrame, pf_map: dict[str, str]) -> None:
-    """Add folder_name column to DataFrame using project-to-folder mapping."""
+def _inject_folder_names_df(
+    df: pd.DataFrame, pf_map: dict[str, str], column: str = "folder_name"
+) -> None:
+    """Add a per-component folder column from a project_id -> value mapping.
+
+    Defaults to the leaf ``folder_name`` (consumed by Component List, Findings
+    by Project, the dashboards, etc.). Pass ``column="folder_breadcrumb"`` with a
+    breadcrumb map to add the License Report's full-path Folder column without
+    touching the leaf column those other reports rely on.
+    """
 
     def _extract_pid(row: pd.Series) -> str:
         p = row.get("project") or row.get("projectId")
@@ -355,7 +363,7 @@ def _inject_folder_names_df(df: pd.DataFrame, pf_map: dict[str, str]) -> None:
             return str(p.get("id", ""))
         return str(p) if p else ""
 
-    df["folder_name"] = df.apply(_extract_pid, axis=1).map(pf_map).fillna("")
+    df[column] = df.apply(_extract_pid, axis=1).map(pf_map).fillna("")
 
 
 def _inject_project_names_df(df: pd.DataFrame, project_map: dict[str, str]) -> None:
@@ -786,17 +794,32 @@ class ReportEngine:
         # In-memory cache: per-project version lists from /projects/{id}/versions
         self._project_versions_cache: dict[str, list[dict]] = {}
 
+        # In-memory cache: per-project detail record from /projects/{id}.
+        # Coalesces the validate / name / folder-breadcrumb lookups so an
+        # ID-like single-project run hits the endpoint once (see
+        # _get_project_detail). Maps id-str -> parsed dict, or None for a
+        # definitive miss (404).
+        self._project_detail_cache: dict[str, dict | None] = {}
+
         # Cache for _fetch_all_folders() — avoids redundant API calls per run
         self._all_folders_cache: list[dict] | None = None
 
         # Cache for _build_project_folder_map_from_projects() — avoids re-fetching per recipe
         self._project_map_cache: dict[str, str] | None = None
 
+        # Cache for _build_project_folder_breadcrumb_map() — per-project full
+        # folder breadcrumb (root->leaf), used by the License Report's
+        # per-component Folder column.
+        self._project_breadcrumb_cache: dict[str, str] | None = None
+
         # Files produced by the last run() call
         self.generated_files: list[str] = []
 
         # Resolved project name (populated by _validate_and_resolve_filters)
         self.resolved_project_name: str | None = None
+
+        # Resolved folder breadcrumb path (populated by _resolve_folder_scope in run())
+        self.resolved_folder_path: list[str] = []
 
         # Folder scoping state (populated by _resolve_folder_scope in run())
         self._folder_project_ids: set[str] | None = None
@@ -1058,24 +1081,47 @@ class ReportEngine:
             time.sleep(max(0, min(0.5, end - time.monotonic())))
         self._check_cancel()
 
+    def _get_project_detail(self, project_id: int | str) -> dict | None:
+        """Fetch and memoize the ``/public/v0/projects/{id}`` detail record.
+
+        Single source of truth for a project's detail dict within a run.
+        ``_validate_numeric_project_id``, ``_resolve_project_id_to_name`` and
+        ``_resolve_project_folder_parts`` all read through here, so an ID-like
+        single-project run hits the endpoint exactly ONCE per project id
+        (previously three separate uncached GETs of the identical URL).
+
+        Best-effort: returns ``None`` on a 404 or any error, matching the prior
+        per-method fallbacks. A definitive answer (a 2xx dict or a 404) is
+        cached; a transient failure (network / non-404 HTTP error) is NOT
+        cached, so a later call can retry — mirroring ``_get_project_versions``.
+        """
+        pid_str = str(project_id)
+        if pid_str in self._project_detail_cache:
+            return self._project_detail_cache[pid_str]
+        try:
+            url = f"{self.api_client.base_url}/public/v0/projects/{pid_str}"
+            resp = self.api_client.client.get(url)
+            if resp.status_code == 404:
+                self._project_detail_cache[pid_str] = None
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:
+            # Don't cache on transient error — let a future call retry.
+            return None
+        detail = data if isinstance(data, dict) else None
+        self._project_detail_cache[pid_str] = detail
+        return detail
+
     def _validate_numeric_project_id(self, project_id: int | str) -> bool:
         """Check whether *project_id* is a valid project in the API.
 
         Returns ``True`` if the API returns project data for this ID,
         ``False`` otherwise (e.g. 404 or non-project entity).
         """
-        try:
-            url = f"{self.api_client.base_url}/public/v0/projects/{project_id}"
-            resp = self.api_client.client.get(url)
-            if resp.status_code == 404:
-                return False
-            resp.raise_for_status()
-            data = resp.json()
-            # Sanity-check: the response should contain an "id" key matching
-            # the requested project ID.
-            return isinstance(data, dict) and data.get("id") is not None
-        except Exception:
-            return False
+        # Sanity-check: the response should be a dict carrying an "id" key.
+        detail = self._get_project_detail(project_id)
+        return detail is not None and detail.get("id") is not None
 
     def _resolve_project_name(self, project_name: str) -> int | str | None:
         """Delegate to APIClient.resolve_project (added 2026-05-24 for
@@ -1157,14 +1203,70 @@ class ReportEngine:
 
         Returns the project name, or None if the lookup fails.
         """
+        detail = self._get_project_detail(project_id)
+        return detail.get("name") if detail is not None else None
+
+    def _fetch_license_policies(self) -> dict[str, str]:
+        """Fetch the tenant's configured license policies as ``{spdx: POLICY}``.
+
+        Reads ``/public/v0/config/licensePolicies`` (shape: ``{"enabled": bool,
+        "policies": {"<spdx>": {"policy": "PERMITTED|WARNING|VIOLATION|NONE",
+        ...}}}``). Keys are lowercased for case-insensitive lookup. Cached on the
+        instance so a run resolves it once. Best-effort: returns ``{}`` on any
+        error or when policy enforcement is disabled, so the Policy Status column
+        degrades to blank rather than raising.
+        """
+        cached: dict[str, str] | None = getattr(self, "_license_policies_cache", None)
+        if cached is not None:
+            return cached
+        policies: dict[str, str] = {}
         try:
-            url = f"{self.api_client.base_url}/public/v0/projects/{project_id}"
+            url = f"{self.api_client.base_url}/public/v0/config/licensePolicies"
             resp = self.api_client.client.get(url)
             resp.raise_for_status()
             data = resp.json()
-            return data.get("name") if isinstance(data, dict) else None
+            # Honor the enforcement flag: when policy enforcement is disabled the
+            # config map is not authoritative, so return {} and let Policy Status
+            # degrade to blank (matches the docstring contract). ``enabled``
+            # absent → treat as enabled (backward-compatible).
+            enforcement_on = (
+                data.get("enabled", True) if isinstance(data, dict) else False
+            )
+            if (
+                enforcement_on
+                and isinstance(data, dict)
+                and isinstance(data.get("policies"), dict)
+            ):
+                for spdx, entry in data["policies"].items():
+                    if isinstance(entry, dict):
+                        pol = str(entry.get("policy", "") or "").strip()
+                        if pol:
+                            policies[str(spdx).strip().lower()] = pol
         except Exception:
-            return None
+            self.logger.debug("Failed to fetch license policies", exc_info=True)
+        self._license_policies_cache = policies
+        return policies
+
+    def _resolve_project_folder_parts(self, project_id: int | str) -> list[str]:
+        """Folder breadcrumb (root->leaf) for a project's containing folder.
+
+        Best-effort: returns [] when the project has no folder or the lookup
+        fails, so history recording degrades gracefully.
+        """
+        try:
+            detail = self._get_project_detail(project_id)
+            folder = detail.get("folder") if isinstance(detail, dict) else None
+            if not isinstance(folder, dict):
+                return []
+            folder_id = folder.get("id")
+            if folder_id:
+                parts = self._build_folder_path_parts(str(folder_id))
+                if parts:
+                    return parts
+            name = folder.get("name")
+            return [name] if name else []
+        except Exception:
+            return []
 
     def _get_project_versions(self, project_id: int | str) -> list[dict]:
         """Fetch all versions for a project, walking pages and caching the
@@ -1430,10 +1532,13 @@ class ReportEngine:
             project_id_to_name,
         )
 
-    def _build_folder_path(
+    def _build_folder_path_parts(
         self, folder_id: str, all_folders: list[dict] | None = None
-    ) -> str:
-        """Build a breadcrumb-style path for a folder, e.g. 'Division A / Medical Products'."""
+    ) -> list[str]:
+        """Folder names from root to *folder_id* (inclusive). Empty if unknown.
+
+        Cycle-safe: stops if a parent pointer revisits a seen folder.
+        """
         if all_folders is None:
             all_folders = self._fetch_all_folders()
         folder_by_id = {str(f["id"]): f for f in all_folders}
@@ -1451,7 +1556,13 @@ class ReportEngine:
             current_id = str(parent) if parent else None
 
         parts.reverse()
-        return " / ".join(parts)
+        return parts
+
+    def _build_folder_path(
+        self, folder_id: str, all_folders: list[dict] | None = None
+    ) -> str:
+        """Build a breadcrumb-style path for a folder, e.g. 'Division A / Medical Products'."""
+        return " / ".join(self._build_folder_path_parts(folder_id, all_folders))
 
     def _resolve_folder_scope(self) -> bool:
         """
@@ -1477,6 +1588,9 @@ class ReportEngine:
         # Fetch all folders once (used for tree walk and path building)
         all_folders = self._fetch_all_folders()
         self._folder_path = self._build_folder_path(folder_id, all_folders)
+        self.resolved_folder_path = self._build_folder_path_parts(
+            folder_id, all_folders
+        )
 
         project_ids, project_folder_map, subfolders, project_name_to_id, _id_to_name = (
             self._collect_folder_tree(folder_id, all_folders)
@@ -1533,6 +1647,65 @@ class ReportEngine:
                 pf_map[pid] = folder.get("name", "")
         self._project_map_cache = pf_map
         return pf_map
+
+    def _build_project_folder_breadcrumb_map(self) -> dict[str, str]:
+        """project_id -> full folder breadcrumb ("Root > ... > Leaf"), cached.
+
+        Parallel to ``_build_project_folder_map_from_projects`` (leaf folder
+        name), but resolves each project's folder to its FULL path for the
+        License Report's per-component Folder column — so same-named projects in
+        different (possibly nested) folders are distinguishable. Falls back to the
+        leaf folder name when the full path can't be resolved. Cached per run.
+        """
+        if self._project_breadcrumb_cache is not None:
+            return self._project_breadcrumb_cache
+
+        from fs_report.models import QueryConfig, QueryParams
+
+        projects_query = QueryConfig(
+            endpoint="/public/v0/projects",
+            params=QueryParams(limit=10000, archived=False, excluded=False),
+        )
+        projects = self.api_client.fetch_data(projects_query)
+
+        # Build the folder lookup ONCE and resolve breadcrumbs against it — the
+        # shared _build_folder_path_parts rebuilds this dict on every call, which
+        # over all projects would be O(projects x folders).
+        folder_by_id = {
+            str(f["id"]): f for f in self._fetch_all_folders() if f.get("id")
+        }
+
+        def _breadcrumb(folder_id: str) -> str:
+            parts: list[str] = []
+            current: str | None = folder_id
+            seen: set[str] = set()
+            while current and current not in seen:
+                seen.add(current)
+                f = folder_by_id.get(current)
+                if not f:
+                    break
+                parts.append(f.get("name", "Unknown"))
+                parent = f.get("parentFolderId")
+                current = str(parent) if parent else None
+            parts.reverse()
+            return " > ".join(parts)
+
+        bc_map: dict[str, str] = {}
+        for p in projects:
+            pid = str(p.get("id", ""))
+            folder = p.get("folder")
+            if not (pid and isinstance(folder, dict)):
+                continue
+            fid = folder.get("id")
+            # Full path if resolvable, else the leaf folder name — either
+            # distinguishes same-named projects better than nothing.
+            crumb = (_breadcrumb(str(fid)) if fid else "") or str(
+                folder.get("name") or ""
+            )
+            if crumb:
+                bc_map[pid] = crumb
+        self._project_breadcrumb_cache = bc_map
+        return bc_map
 
     def _get_latest_version_ids(self) -> list:
         """Fetch latest version IDs for all projects (cached)."""
@@ -2272,6 +2445,17 @@ class ReportEngine:
                         )
                         return False
 
+        # Record the containing folder's breadcrumb for a single-project scope,
+        # unless folder scope already set it. Best-effort (empty on failure).
+        if (
+            self.config.project_filter
+            and not self.data_override
+            and not self.resolved_folder_path
+        ):
+            self.resolved_folder_path = self._resolve_project_folder_parts(
+                self.config.project_filter
+            )
+
         # Reject version filter with multi-project glob
         if (
             self.config.version_filter
@@ -2294,31 +2478,40 @@ class ReportEngine:
                     "Use --project-filter to specify the project."
                 )
                 return False
-            if self._is_id_like(self.config.version_filter):
-                pass  # Already an ID — no resolution needed
-            else:
-                if not self._is_id_like(self.config.project_filter):
-                    # project_filter should already be resolved above
-                    self.logger.error(
-                        f"Cannot resolve version name '{self.config.version_filter}': "
-                        f"project filter '{self.config.project_filter}' is not an ID."
-                    )
-                    return False
+            # A version NAME can be purely numeric (e.g. "1"), which ALSO
+            # matches the integer-ID heuristic (_is_id_like) — so we can't
+            # shortcut on _is_id_like alone, or a numeric version name gets
+            # mis-used as a version ID and 404s on the version-scoped endpoint
+            # (/public/v0/versions/<name>/components). Resolve by NAME first
+            # when the project is an ID; only fall back to treating the value
+            # as a literal ID when no version carries that name in the project.
+            resolved_ver_id = None
+            if self._is_id_like(self.config.project_filter):
                 resolved_ver_id = self._resolve_version_name(
                     self.config.project_filter, self.config.version_filter
                 )
-                if resolved_ver_id:
-                    self.logger.info(
-                        f"Resolved version '{self.config.version_filter}' to ID {resolved_ver_id}"
-                    )
-                    self.config.version_filter = str(resolved_ver_id)
-                else:
-                    self.logger.error(
-                        f"Could not resolve version name '{self.config.version_filter}' "
-                        f"in project {self.config.project_filter}. "
-                        "Use 'fs-report list-versions <project>' to see available versions."
-                    )
-                    return False
+            if resolved_ver_id is not None:
+                self.logger.info(
+                    f"Resolved version '{self.config.version_filter}' to ID "
+                    f"{resolved_ver_id}"
+                )
+                self.config.version_filter = str(resolved_ver_id)
+            elif self._is_id_like(self.config.version_filter):
+                pass  # No version by that name — treat the value as a literal ID.
+            elif not self._is_id_like(self.config.project_filter):
+                # project_filter should already be resolved above.
+                self.logger.error(
+                    f"Cannot resolve version name '{self.config.version_filter}': "
+                    f"project filter '{self.config.project_filter}' is not an ID."
+                )
+                return False
+            else:
+                self.logger.error(
+                    f"Could not resolve version name '{self.config.version_filter}' "
+                    f"in project {self.config.project_filter}. "
+                    "Use 'fs-report list-versions <project>' to see available versions."
+                )
+                return False
         return True
 
     def run(self) -> "RunResult":
@@ -3294,10 +3487,11 @@ class ReportEngine:
         (or there were no scope overrides), ``False`` when a scope override
         failed to resolve (the caller records a FailedSection). Restores
         ``self.config`` / ``self.api_client.config`` / ``resolved_project_name``
-        / ``_folder_project_ids`` on exit, so the next child sees the run-level
-        config again. Not re-entrant: it assumes the section loop is sequential
-        and never nested (compound nesting is rejected by validation), since a
-        nested call would clobber the saved run-level snapshot.
+        / ``_folder_project_ids`` / ``resolved_folder_path`` on exit, so the
+        next child sees the run-level config again. Not re-entrant: it assumes
+        the section loop is sequential and never nested (compound nesting is
+        rejected by validation), since a nested call would clobber the saved
+        run-level snapshot.
 
         Precedence (highest→lowest): section override ▸ run-level effective
         config (``self.config``) ▸ recipe/engine defaults. The authored bundle
@@ -3385,6 +3579,7 @@ class ReportEngine:
         saved_api_config = self.api_client.config
         saved_resolved_name = self.resolved_project_name
         saved_folder_ids = self._folder_project_ids
+        saved_folder_path = self.resolved_folder_path
         child_config = self.config.model_copy(update=update)
         self.config = child_config
         self.api_client.config = child_config
@@ -3393,6 +3588,7 @@ class ReportEngine:
         if scope_overridden:
             self._folder_project_ids = None
             self.resolved_project_name = None
+            self.resolved_folder_path = []
         try:
             ok = self._resolve_run_scope() if scope_overridden else True
             yield ok
@@ -3401,6 +3597,7 @@ class ReportEngine:
             self.api_client.config = saved_api_config
             self.resolved_project_name = saved_resolved_name
             self._folder_project_ids = saved_folder_ids
+            self.resolved_folder_path = saved_folder_path
 
     # ------------------------------------------------------------------
     # Compound-recipe dispatch
@@ -7460,6 +7657,31 @@ class ReportEngine:
                     raw_data = raw_data.copy()
                 _inject_folder_names_df(raw_data, pf_map)
 
+            # --- License Report: per-component folder BREADCRUMB (root->leaf) ---
+            # The detail Folder column disambiguates same-named projects that
+            # live in different folders. The leaf ``folder_name`` above isn't
+            # enough when the differing folders are nested; inject the FULL path
+            # under a separate column so the other reports' leaf column is intact.
+            # Only needed for MULTI-project scopes (folder / portfolio); a
+            # single-project run's Folder is fully covered by the scope-level
+            # breadcrumb, so skip the extra projects+folders resolve there.
+            _single_project_scope = (
+                bool(str(self.config.project_filter or "").strip())
+                and not str(self.config.folder_filter or "").strip()
+            )
+            if (
+                recipe.name == "License Report"
+                and not raw_data.empty
+                and not _single_project_scope
+                and "folder_breadcrumb" not in raw_data.columns
+            ):
+                bc_map = self._build_project_folder_breadcrumb_map()
+                if bc_map:
+                    raw_data = raw_data.copy()
+                    _inject_folder_names_df(
+                        raw_data, bc_map, column="folder_breadcrumb"
+                    )
+
             # --- Inject dependency path if tree has dependencies ---
             if (
                 self._current_dependency_tree is not None
@@ -7537,6 +7759,27 @@ class ReportEngine:
             # this (2026-06-06 visual QA: IDs leaked into five topbars).
             if self.resolved_project_name:
                 additional_data["project_name"] = self.resolved_project_name
+            # Folder breadcrumb (root->leaf) of the scoped project's containing
+            # folder — transforms that show a per-row Folder column (e.g. License
+            # Report detail) render it as "Folder > Folder > ...". Set only for a
+            # single-project scope (resolved above); empty for folder/portfolio.
+            # Stored under ``folder_path_parts`` (a LIST) — NOT ``folder_path`` —
+            # because ``folder_path`` is already a STRING top-level template var
+            # (the breadcrumb string). Reusing that key let the list clobber the
+            # string in shared chrome (base.html, _briefing_shell.html), rendering
+            # a Python list repr in the topbar for any single-project folder run.
+            # getattr-guarded: ``resolved_folder_path`` is defined in __init__ on
+            # this stacked base (#192), but the guard keeps this reference safe if
+            # the branch is ever built/merged without it (no AttributeError).
+            _resolved_folder_path = getattr(self, "resolved_folder_path", None)
+            if _resolved_folder_path:
+                additional_data["folder_path_parts"] = _resolved_folder_path
+            # License Report: per-license policy status (Permitted / Warning /
+            # Violation / None) from the tenant's configured license policies.
+            # Threaded so the pure transform can add a Policy Status column
+            # without making its own API call. Best-effort ({} on any failure).
+            if recipe.name == "License Report":
+                additional_data["license_policies"] = self._fetch_license_policies()
             if self._deployment_context is not None:
                 additional_data["deployment_context"] = self._deployment_context
             # Pass recipe parameters so transforms can access them

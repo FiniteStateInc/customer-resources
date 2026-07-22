@@ -7,7 +7,8 @@
  *
  * Data injected inline before this script:
  *   window.__CC.recipes  = [{label, nav_category}, ...]
- *   window.__CC.projects = ['Project A', 'Project B', ...]
+ *   window.__CC.projects = [{name, id}, ...]  (enriched so an activated project
+ *                          carries its id; plain name strings also accepted)
  *   window.__CC.folders  = [{id, name}, ...]  (optional; refreshed live by
  *                          command-center.js fetchFolders → __refreshPaletteFolders)
  *   window.__CC.pinned   = 'Recipe Name'  (optional, string)
@@ -58,17 +59,26 @@
   /* Project items.  Selecting a project sets the scope to that project (no
      folder) — same set-scope behavior as the run bar; a later run targets it. */
   function _makeProjectItem(p) {
+    /* ``p`` may be a NAME string (legacy) or an enriched ``{name, id}`` object.
+       Carrying the id lets a palette-activated project disambiguate same-named
+       projects across folders: __setScope stores SCOPE.projectId, which a later
+       launch threads as project_id (else the run resolves by name only — the very
+       bug this PR fixes). If duplicate names make the palette list visually
+       ambiguous, that's acceptable — activating any entry carries a concrete id. */
+    var name = (p && typeof p === 'object') ? (p.name || '') : String(p == null ? '' : p);
+    var pid  = (p && typeof p === 'object' && p.id != null) ? String(p.id) : '';
     return {
       type: 'Project',
-      label: p,
+      label: name,
       icon: 'box',
       sub: 'set scope',
       run: function () {
         /* Project scope: project only, clearing any folder filter (project
-           wins — fast-run.js drops folder_filter when a project is set). */
-        window.__setScope && window.__setScope(p, '', '');
+           wins — fast-run.js drops folder_filter when a project is set). The 4th
+           arg carries the unambiguous project id (empty → name resolution). */
+        window.__setScope && window.__setScope(name, '', '', pid);
         /* #14: visible feedback — a scope-set used to silently do nothing. */
-        window.__showToast && window.__showToast('Scope → ' + p);
+        window.__showToast && window.__showToast('Scope → ' + name);
       },
     };
   }
@@ -271,19 +281,22 @@
   }
 
   /**
-   * Refresh the project items in the palette with a new list of names.
+   * Refresh the project items in the palette with a new project list.
    * Called by command-center.js after a best-effort fetch from the proxy.
+   * Each entry is an enriched ``{name, id}`` object (so an activated project
+   * carries its id for cross-folder disambiguation); plain NAME strings are also
+   * accepted for backward-compat (_makeProjectItem handles both shapes).
    * Safe to call at any time; re-renders the palette list if it is open.
    */
-  window.__refreshPaletteProjects = function (projectNames) {
+  window.__refreshPaletteProjects = function (projectList) {
     /* Remove existing Project-type items */
     ITEMS = ITEMS.filter(function (it) { return it.type !== 'Project'; });
     /* Add fresh project items */
-    (projectNames || []).forEach(function (p) {
+    (projectList || []).forEach(function (p) {
       ITEMS.push(_makeProjectItem(p));
     });
     /* Also update CC.projects so subsequent opens are aware */
-    CC.projects = projectNames || [];
+    CC.projects = projectList || [];
     /* If palette is open, re-render immediately */
     if (_palOpen()) filter();
   };

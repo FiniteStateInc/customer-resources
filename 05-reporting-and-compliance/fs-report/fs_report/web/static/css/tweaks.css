@@ -76,7 +76,9 @@ body.light .topbar .logo{filter:brightness(0)!important}
 body.light .sidebar{background:rgba(255,255,255,.66)!important}
 body.light .node{background:#FFFFFF!important}
 body.light .pal,body.light .tweaks,body.light .fr,body.light .modal,body.light .cheat{background:rgba(255,255,255,.97)!important}
-body.light .ex-code,body.light .fr-cli,body.light .code{background:#0B1020!important}
+body.light .ex-code,body.light .fr-cli,body.light .code,body.light .rl-log{background:#0B1020!important}
+/* .rl-log is a permanently-dark surface — keep its text light in light mode (--ink-body flips dark) */
+body.light .rl-log{color:#B5BCC8!important}
 /* light-mode chip/badge legibility */
 body.light .chip,body.light .fmt,body.light .nbadge,body.light .rep-cat{background:rgba(13,17,32,.05)!important;border-color:rgba(13,17,32,.14)!important;color:#3A4658!important}
 body.light .badge,body.light .scan,body.light .qg-ratio{color:#1F2937!important}

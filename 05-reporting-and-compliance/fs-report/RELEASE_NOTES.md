@@ -1,5 +1,113 @@
 # Release Notes
 
+## Version 2.0.2 (July 2026)
+
+2.0.2 is a fix-and-hardening release on the 2.0 line: a cross-customer AI
+remediation-cache leak is closed, the License Report gains SPDX compound
+license expressions plus folder/URL/policy detail columns, several web-UI
+scope-resolution and folder-breadcrumb fixes land, and a handful of light-mode
+contrast and PDF-rendering issues are fixed. See `fs_report/changelog.yaml`
+for the full per-recipe diff.
+
+> **Still pending — offline chart-in-PDF.** The chart libraries are **not**
+> bundled in 2.0.2. Chart-bearing PDFs still require network access to
+> `cdn.jsdelivr.net` at render time; chart-free PDFs render fully offline.
+> Air-gapped customers who need chart-in-PDF should continue to stay on
+> `release/1.9`. Bundling remains planned for a later release.
+
+### Security fix
+
+- **AI-generated remediation narrative could leak across customers.** The AI
+  content cache (`~/.fs-report/cache.db`) keyed cached narrative by CVE/finding
+  and provider/model only, with no project or tenant scope, so AI-guided
+  remediation text generated during one project's triage run could later be
+  served **verbatim** to an unrelated project — including customer-identifying
+  text baked into the original prompt. The cache is now scoped by
+  `(tenant, project)`: tenant is `hash(domain + auth_token)` (the account is
+  the boundary, not the host); project is the stable `project_version_id`. A
+  missing or degraded identity forces regeneration rather than a cross-project
+  match. The triage prompt no longer includes the literal project name, so the
+  shareable `--ai-prompts` file can't name a customer either. A cache
+  schema-version bump automatically purges narrative rows cached under the old
+  unscoped keys on the first run after upgrading — **no manual cache-clear
+  needed.** Library-fact caches that are project-blind by design (CVE
+  identity/applicability, NVD detail) are unaffected. (#191)
+
+### License Report: compound expressions + new columns
+
+- **SPDX compound license expressions.** Handles `Apache-2.0 AND
+  GPL-3.0-only`, `(A AND B) OR C`, and similar via a precedence-aware
+  recursive-descent parser (`WITH` binds tightest, then `AND`, then `OR`;
+  parentheses honored). A resolved **Concluded** license is used as-is; an
+  unconcluded compound expression is evaluated **worst-case** — `AND` lists
+  every branch's obligations, `OR` shows the single most-restrictive branch
+  (or the whole winning AND-group, so co-obligations are never dropped). Two
+  new columns: **License Expression** (the full compound string) and
+  **Attribution Required** (`TRUE`/`FALSE`/blank — `FALSE` only when every
+  governing license is in the no-attribution set: `0BSD`, `MIT-0`, `CC0`,
+  `CC0-1.0`, `Unlicense`). Applies across the summary table, detail table,
+  CSV, and XLSX. (#196, #200)
+- **New detail columns + column order:** `Folder, Project, Component,
+  Version, Risk Category, License, Policy Status, URL`. **Folder** is each
+  component's own project folder breadcrumb (root→leaf), populated even on
+  folder/portfolio-scoped runs and distinguishing same-named projects in
+  different folders. **Project** is now always populated. **URL** links to
+  the platform's own license reference when present, else a synthesized
+  `https://spdx.org/licenses/<id>.html` covering every SPDX id (including
+  exception-bearing ones) — blank only for free-text names or unresolved
+  compounds. A new **License policy distribution** doughnut chart renders
+  alongside the existing risk-distribution chart. (#194, #195)
+- **Policy Status accuracy fix.** Now reads the platform's resolved
+  per-component policy first, falling back to the tenant policy map only when
+  absent — fixes deprecated SPDX ids the tenant map keyed wrong (e.g.
+  `LGPL-2.0` now correctly shows **Violation**, matching the platform UI,
+  instead of `None`). (#194)
+- **Cache fix:** a blank **License** on any cached run for components
+  licensed only via the legacy `licenses` field (e.g. `jakarta.servlet-api`)
+  — the cached field projection had omitted it. Cache keys now fold in each
+  endpoint's field projection, so a projection change self-heals with a
+  one-time re-fetch on the first run after upgrading rather than silently
+  serving stale fields until TTL expiry. (#194)
+
+### Web UI: scope resolution + folder breadcrumbs
+
+- **Fixed report runs failing with `Could not resolve version name`** when
+  multiple projects shared a name across different folders and the launch
+  scope selected by name (the engine resolved the first same-named match,
+  which could be the wrong folder). The web UI now carries the project **ID**
+  behind the scenes for resolution — across the run bar, prerun modal, and
+  Workflow Builder (including saved specs on reload) — while the project
+  **name** remains the only value shown or stored; no IDs on screen. (#193)
+- **Report History** and the **Running Reports monitor** (plus `/runs` and
+  the run-canvas source node) now show a full folder breadcrumb in their
+  scope line — e.g. `Root > 4NEO-1.11.0-QA-SNAPSHOT > Tenere Common
+  @ 2026-07-09` — instead of a raw folder ID or a bare project name. (#192,
+  #193)
+
+### Fixed
+
+- **Engine:** report runs pinned to a project version whose **name is a bare
+  integer** (e.g. a version literally named `1`) no longer 404 — the numeric
+  name was mistaken for a literal version ID. The engine now resolves by name
+  first, falling back to a literal-ID interpretation only when no version in
+  the project matches that name. (#197)
+- **CVE Component Evidence:** Evidence File Paths were blank on the Helix
+  back-end (the report called a legacy route that 404s there). Match evidence
+  now works on both back-ends via try-then-fallback, and nested-archive
+  evidence paths now collapse to their top-level archive and dedupe, so a jar
+  with hundreds of members renders as a single row instead of thousands.
+  Firmware filesystem images are deliberately not collapsed. (#201)
+- **Component Diff:** the comparison report's left-only/right-only tables cap
+  at 12 rows behind a "Show all N components" button, which can't fire in a
+  static PDF — PDF output now force-reveals every row and drops the dead
+  button, matching the sibling Finding Diff and Triage Status Diff reports.
+  (#202)
+- **Light-mode contrast:** the Builder's Run button, the Run page's primary
+  actions (Replay, expired-run "Report History" link), report-/workflow-card
+  category icons, and run-log text on the dark log surface were all styled
+  for the dark canvas and read poorly or were invisible in light mode. All
+  now meet WCAG AA / the 3:1 graphical minimum. (#190)
+
 ## Version 2.0.1 (July 2026)
 
 2.0.1 is a maintenance-and-feature release on the 2.0 line. It ships a new

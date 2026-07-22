@@ -16,7 +16,11 @@
  */
 (function () {
   /* ── Scope state ─────────────────────────────────────────────── */
-  var SCOPE = { project: '', version: '', folder: '' };
+  /* `projectId` is the unambiguous project ID companion to `project` (the name).
+     The name stays the user-visible value everywhere; the ID rides alongside so
+     a launch resolves the exact project when several share a name across
+     folders. Empty when no specific project (or an older pin without an ID). */
+  var SCOPE = { project: '', projectId: '', version: '', folder: '' };
 
   /* Seed scope from the pinned bootstrap. Non-dashboard shell pages (/queue,
    * /reports, /settings) have NO run bar but DO bootstrap the pinned
@@ -31,9 +35,10 @@
    * guard for it ('' fallback). */
   var CC = window.__CC || {};
   if (CC.pinned) {
-    if (!SCOPE.project) SCOPE.project = CC.pinned.project || '';
-    if (!SCOPE.version) SCOPE.version = CC.pinned.version || '';
-    if (!SCOPE.folder)  SCOPE.folder  = CC.pinned.folder  || '';
+    if (!SCOPE.project)   SCOPE.project   = CC.pinned.project   || '';
+    if (!SCOPE.projectId) SCOPE.projectId = CC.pinned.projectId || '';
+    if (!SCOPE.version)   SCOPE.version   = CC.pinned.version   || '';
+    if (!SCOPE.folder)    SCOPE.folder    = CC.pinned.folder    || '';
   }
 
   /* ── Gate helpers (shared with command-center.js card-body / Save&Run) ──
@@ -133,8 +138,12 @@
    * Store the current project/version/folder scope.
    * Called by palette.js when a project item is activated (before a one-click run).
    */
-  window.__setScope = function (project, version, folder) {
+  window.__setScope = function (project, version, folder, projectId) {
     SCOPE.project = project || '';
+    /* Reset (not preserve) when a caller omits projectId: a name-only setter
+       (e.g. palette) must not leave a STALE ID from a previous project attached
+       to the new name. Name-only launches fall back to name resolution. */
+    SCOPE.projectId = projectId || '';
     SCOPE.version = (version !== undefined) ? version : '';
     SCOPE.folder  = (folder  !== undefined) ? folder  : '';
   };
@@ -145,7 +154,7 @@
    * "what am I scoped to" honestly (#14), mirroring compute_effective_scope's
    * precedence (project > folder > portfolio) on the read side. */
   window.__getScope = function () {
-    return { project: SCOPE.project, version: SCOPE.version, folder: SCOPE.folder };
+    return { project: SCOPE.project, projectId: SCOPE.projectId, version: SCOPE.version, folder: SCOPE.folder };
   };
 
   /**
@@ -177,6 +186,12 @@
 
     opts = opts || {};
     var project = (opts.project !== undefined) ? opts.project : SCOPE.project;
+    /* Unambiguous project ID companion (name stays the visible value). Pair it
+       with the SAME provenance as `project`: when the caller supplies its own
+       project, take its projectId (may be absent → ''); otherwise fall back to
+       the stored SCOPE. Prevents a stale SCOPE.projectId attaching to a caller's
+       explicit project. */
+    var projectId = (opts.project !== undefined) ? (opts.projectId || '') : SCOPE.projectId;
     var version = (opts.version !== undefined) ? opts.version : SCOPE.version;
     var folder  = (opts.folder  !== undefined) ? opts.folder  : SCOPE.folder;
     /* B9 #17: optional period override (run bar's Period control for period
@@ -221,6 +236,9 @@
        _build_engine_config treats a whitespace-only project as "unset" and does
        NOT suppress the folder. */
     var projectVal = String(project || '').trim();
+    /* Project ID companion — only meaningful alongside a project (name). Cleared
+       when no project is set so it can't attach to a folder-only/portfolio run. */
+    var projectIdVal = projectVal ? String(projectId || '').trim() : '';
     var versionVal = String(version || '').trim();
     var folderVal = (!projectVal && String(folder || '').trim())
       ? String(folder).trim()
@@ -244,10 +262,12 @@
                        document.getElementById('rb-folder'));
     if (hasRunBar) {
       params.set('project_filter', projectVal);
+      params.set('project_id', projectIdVal);
       params.set('version_filter', versionVal);
       params.set('folder_filter', folderVal);
     } else {
       if (projectVal) params.set('project_filter', projectVal);
+      if (projectIdVal) params.set('project_id', projectIdVal);
       if (versionVal) params.set('version_filter', versionVal);
       if (folderVal)  params.set('folder_filter', folderVal);
     }

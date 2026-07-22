@@ -15,6 +15,44 @@ from typing import Any
 logger = logging.getLogger("fs_report.bridge")
 
 
+def _clear_ai_narrative_tables(db_path: Path) -> bool:
+    """Delete the LLM narrative rows from a shared cache.db in place.
+
+    Clears ``cve_remediations`` and the project-specific rows of
+    ``ai_summary_cache``, preserving the project-blind library-fact rows
+    (identity / applicability) and all co-located data (API-data cache, NVD
+    detail tables). Mirrors the web ``clear_ai_cache`` endpoint. Returns True on
+    success. Never unlinks the file — it is shared with unrelated caches.
+    """
+    from fs_report.llm_client import _FACT_SUMMARY_SCOPES
+
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("DELETE FROM cve_remediations")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            placeholders = ",".join("?" for _ in _FACT_SUMMARY_SCOPES)
+            conn.execute(
+                f"DELETE FROM ai_summary_cache "  # noqa: S608 - fixed placeholders
+                f"WHERE scope IS NULL OR scope NOT IN ({placeholders})",
+                tuple(_FACT_SUMMARY_SCOPES),
+            )
+        except sqlite3.OperationalError:
+            pass
+        conn.commit()
+        conn.execute("VACUUM")
+        return True
+    except Exception:
+        logger.warning("Failed to clear AI narrative in %s", db_path, exc_info=True)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def get_version() -> str:
     """Return fs-report version, or 'unknown' if not importable."""
     try:
@@ -299,6 +337,7 @@ class EngineWrapper:
                         count = 0
                         for table in (
                             "cve_remediations",
+                            "ai_summary_cache",
                             "cve_detail_cache",
                             "exploit_detail_cache",
                         ):
@@ -356,7 +395,15 @@ class EngineWrapper:
                 remove_db(nvd)
                 cleared.append("nvd_cache.db")
 
-        if cache_type in ("ai", "all"):
+        if cache_type == "ai":
+            # Targeted AI clear: delete only the LLM narrative tables in-place.
+            # cache.db is shared with the API-data cache (when no domain is set)
+            # and the project-blind fact tables (cve_detail/exploit_detail), so
+            # unlinking the file would destroy unrelated data.
+            ai = cache_dir / "cache.db"
+            if ai.exists() and _clear_ai_narrative_tables(ai):
+                cleared.append("cache.db (AI narrative)")
+        elif cache_type == "all":
             ai = cache_dir / "cache.db"
             if ai.exists():
                 remove_db(ai)

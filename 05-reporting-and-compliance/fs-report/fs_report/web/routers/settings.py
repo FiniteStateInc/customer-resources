@@ -180,11 +180,17 @@ def _get_cache_info(state: WebAppState) -> dict[str, Any]:
             _count_rows(nvd_path, "nvd_cve_cache") if nvd_path.is_file() else 0
         )
 
-        # --- AI remediation cache (cve_remediations in cache.db) ---
+        # --- AI cache (cve_remediations + ai_summary_cache in cache.db) ---
+        # Count BOTH narrative tables: ai_summary_cache holds the portfolio /
+        # project / finding / action narrative, which is the bulk of the AI
+        # cache and was previously omitted from the reported size.
         ai_db = cache_dir / "cache.db"
         info["ai_size_mb"] = _file_size_mb(ai_db)
         info["ai_entries"] = (
-            _count_rows(ai_db, "cve_remediations") if ai_db.is_file() else 0
+            max(_count_rows(ai_db, "cve_remediations"), 0)
+            + max(_count_rows(ai_db, "ai_summary_cache"), 0)
+            if ai_db.is_file()
+            else 0
         )
     except Exception:
         logger.warning("Cache info collection failed for %s", cache_dir, exc_info=True)
@@ -330,24 +336,53 @@ async def clear_nvd_cache(state: WebAppState = Depends(get_state)) -> JSONRespon
 
 @router.delete("/api/settings/cache/ai")
 async def clear_ai_cache(state: WebAppState = Depends(get_state)) -> JSONResponse:
-    """Clear the AI remediation cache (cve_remediations table in cache.db)."""
+    """Clear the AI narrative caches in cache.db.
+
+    Clears ``cve_remediations`` (component/CVE guidance) and the project-specific
+    narrative rows of ``ai_summary_cache`` (portfolio / project / finding /
+    action). Preserves the project-blind library-fact rows (``identity`` /
+    ``applicability``) — the same rows the schema-version purge keeps — so
+    clearing customer narrative doesn't force expensive regeneration of shared
+    facts. Clearing only ``cve_remediations`` (the original behavior) left the
+    bulk of the project-naming narrative on disk.
+    """
+    from fs_report.llm_client import _FACT_SUMMARY_SCOPES
+
     cache_dir = Path(
         str(state.get("cache_dir") or "").strip() or str(Path.home() / ".fs-report")
     )
     target = cache_dir / "cache.db"
-    if target.is_file():
+    if not target.is_file():
+        return JSONResponse({"status": "not_found", "type": "ai"})
+
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(target))
         try:
-            conn = sqlite3.connect(str(target))
-            conn.execute("DELETE FROM cve_remediations")
-            conn.commit()
-            conn.execute("VACUUM")
+            conn.execute("DELETE FROM cve_remediations")  # all narrative
+        except sqlite3.OperationalError:
+            pass  # table may not exist yet
+        try:
+            placeholders = ",".join("?" for _ in _FACT_SUMMARY_SCOPES)
+            conn.execute(
+                f"DELETE FROM ai_summary_cache "  # noqa: S608 - fixed placeholders
+                f"WHERE scope IS NULL OR scope NOT IN ({placeholders})",
+                tuple(_FACT_SUMMARY_SCOPES),
+            )
+        except sqlite3.OperationalError:
+            pass
+        conn.commit()
+        conn.execute("VACUUM")
+        return JSONResponse({"status": "cleared", "type": "ai"})
+    except Exception:
+        # Do NOT unlink cache.db here: it is shared with the API-data cache and
+        # the project-blind fact tables (cve_detail/exploit_detail), so deleting
+        # the file would destroy unrelated data. Report the failure instead.
+        logger.warning("Failed to clear AI cache in %s", target, exc_info=True)
+        return JSONResponse({"status": "error", "type": "ai"}, status_code=500)
+    finally:
+        if conn is not None:
             conn.close()
-            return JSONResponse({"status": "cleared", "type": "ai"})
-        except Exception:
-            # Table may not exist; delete the whole file
-            target.unlink(missing_ok=True)
-            return JSONResponse({"status": "cleared", "type": "ai"})
-    return JSONResponse({"status": "not_found", "type": "ai"})
 
 
 # ── Logo upload ───────────────────────────────────────────────────

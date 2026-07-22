@@ -104,6 +104,11 @@ COMPONENT_FIELDS = {
     "supplier": "supplier",
     "declaredLicenses": "declared_licenses",  # Auto-detected licenses
     "concludedLicenses": "concluded_licenses",  # User-specified licenses (takes precedence)
+    # Legacy/effective license string. Some components carry their license ONLY
+    # here (declaredLicenses/concludedLicenses null, licenseDetails empty) — e.g.
+    # jakarta.servlet-api's EPL-2.0. Omitting it dropped the license on any
+    # cached run (the web UI defaults to caching), so the report showed blank.
+    "licenses": "licenses",
     "releaseDate": "release_date",
     "findings": "findings",
     "warnings": "warnings",
@@ -176,6 +181,22 @@ ENDPOINT_FIELD_MAP = {
     "/projects": PROJECT_FIELDS,
     "/audit": AUDIT_FIELDS,
     "/cves": CVE_FIELDS,
+}
+
+# Columns whose absence on already-cached rows is user-visible (the rendered
+# report shows empty values until the cache refreshes). When a schema migration
+# adds one of these, we surface a one-shot warning so operators running with a
+# warm cache (`--cache-ttl`) know to flush for the first refresh after upgrade.
+#
+# NOTE: ``("components", "licenses")`` is deliberately NOT listed. The
+# ``licenses`` field joined COMPONENT_FIELDS at the same time generate_query_hash
+# began folding the endpoint's field projection into the cache key. Adding it
+# therefore also changes the components cache key, so every cached component row
+# is a guaranteed one-time MISS on upgrade and re-fetches WITH ``licenses``
+# populated. The value is never "NULL until TTL", which would make a warning here
+# inaccurate — the projection-fingerprint fold supersedes it.
+_USER_VISIBLE_NEW_COLUMNS = {
+    ("findings", "exploit_maturity"),
 }
 
 
@@ -254,6 +275,7 @@ CREATE TABLE IF NOT EXISTS components (
     supplier TEXT,
     declared_licenses TEXT,
     concluded_licenses TEXT,
+    licenses TEXT,
     release_date TEXT,
     findings INTEGER,
     warnings INTEGER,
@@ -322,18 +344,13 @@ CREATE TABLE IF NOT EXISTS cves (
     PRIMARY KEY (query_hash, cve_id)
 );
 
--- LLM-generated remediation guidance (keyed by CVE)
-CREATE TABLE IF NOT EXISTS cve_remediations (
-    cve_id TEXT PRIMARY KEY,
-    component_name TEXT,
-    fix_version TEXT,
-    guidance TEXT,
-    workaround TEXT,
-    code_search_hints TEXT,
-    generated_by TEXT,
-    generated_at TEXT,
-    confidence TEXT
-);
+-- NOTE: the LLM narrative cache table `cve_remediations` is intentionally NOT
+-- declared here. It is owned solely by fs_report.llm_client, whose schema uses a
+-- composite (cve_id, scope) primary key to keep one project/customer's AI
+-- guidance from being served to another. Re-declaring it here with the old
+-- bare-`cve_id` primary key would let a concurrent SQLiteCache init recreate the
+-- table under the unscoped layout and silently reintroduce the cross-customer
+-- leak. See LLMClient._init_cache_tables.
 
 -- CVE detail cache (from /findings/{pvId}/{findingId}/cves)
 CREATE TABLE IF NOT EXISTS cve_detail_cache (
@@ -531,7 +548,17 @@ def generate_query_hash(endpoint: str, params: dict) -> str:
     """
     # Normalize parameters for consistent hashing
     normalized = {k: v for k, v in sorted(params.items()) if v is not None}
-    key_string = f"{endpoint}:{json.dumps(normalized, sort_keys=True)}"
+    # Fold the endpoint's cache field-projection into the key. When the projection
+    # changes (a field added to / removed from a ``*_FIELDS`` map), the hash
+    # changes, so any entry cached under the OLD projection becomes a cache MISS
+    # and re-fetches with the new field set. Without this, a stale row keeps
+    # serving the old (reduced) fields forever — e.g. a component cached before
+    # ``licenses`` joined COMPONENT_FIELDS would show a blank License until its
+    # TTL expired. The fingerprint is the sorted API-field names (order-stable).
+    proj_fingerprint = ",".join(sorted(get_fields_for_endpoint(endpoint)))
+    key_string = (
+        f"{endpoint}:{json.dumps(normalized, sort_keys=True)}:{proj_fingerprint}"
+    )
     return hashlib.md5(key_string.encode()).hexdigest()
 
 
@@ -690,15 +717,13 @@ class SQLiteCache:
             ("components", "license_details", "TEXT"),
             ("components", "declared_license_details", "TEXT"),
             ("components", "concluded_license_details", "TEXT"),
+            ("components", "licenses", "TEXT"),
         ]
-        # Columns whose absence on already-cached rows is user-visible (the
-        # rendered report will show empty values until the cache refreshes).
-        # When the migration adds one of these, we surface a one-shot warning
-        # so operators running with `--cache-ttl` know to flush for the first
-        # refresh after upgrade.
-        _USER_VISIBLE_NEW_COLUMNS = {
-            ("findings", "exploit_maturity"),
-        }
+        # ``_USER_VISIBLE_NEW_COLUMNS`` (module-level) enumerates the columns
+        # whose absence on already-cached rows is user-visible; adding one emits
+        # a one-shot flush hint. ``components.licenses`` is intentionally absent
+        # (see the constant's note: the query-hash projection fold already forces
+        # an immediate re-fetch, so licenses are never NULL until TTL).
         for table, col, col_type in migrations:
             try:
                 conn.execute(f"SELECT {col} FROM {table} LIMIT 1")
@@ -901,6 +926,15 @@ class SQLiteCache:
                     "license_details",
                     "declared_license_details",
                     "concluded_license_details",
+                    # Plain license fields may arrive as a list/dict (multi- or
+                    # structured license), which _trim_record JSON-encodes on
+                    # store. Decode them back so a cached list-valued license
+                    # isn't rendered as literal JSON text. A plain SPDX string
+                    # ("EPL-2.0") isn't valid JSON, so json.loads raises and the
+                    # except keeps it verbatim.
+                    "licenses",
+                    "declared_licenses",
+                    "concluded_licenses",
                 ):
                     try:
                         value = json.loads(value) if value else None

@@ -40,6 +40,9 @@ from typing import Any
 
 import pandas as pd
 
+# Pure cache-scope helper (real function even when tests mock the client).
+from fs_report.llm_client import build_tenant_scope
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -703,6 +706,12 @@ def _enrich_actions_with_llm(
             provider=getattr(cfg, "ai_provider", None) if cfg else None,
             model_high=getattr(cfg, "ai_model_high", None) if cfg else None,
             model_low=getattr(cfg, "ai_model_low", None) if cfg else None,
+            deployment_context=(
+                additional_data.get("deployment_context") if additional_data else None
+            ),
+            cache_scope=build_tenant_scope(
+                getattr(cfg, "domain", None), getattr(cfg, "auth_token", None)
+            ),
         )
     except Exception as e:
         logger.warning("Failed to initialize LLM client: %s", e)
@@ -721,7 +730,17 @@ def _enrich_actions_with_llm(
 
             full_prompt = prompt_data["system"] + "\n\n" + prompt_data["user"]
             prev_cached = llm._cached_count
-            text = llm.generate_action_analysis(action_key, full_prompt)
+            # This analysis names the action's affected projects. CRP groups by
+            # component across projects, so only project NAMES are available here
+            # (no version id), and names are caller-controlled and collide. Cache
+            # ONLY when there is a tenant (account) boundary — then names merely
+            # distinguish projects *within* one account (same customer). Without
+            # a tenant token, names alone are not a safe confidentiality boundary,
+            # so bypass the cache (regenerate) rather than risk cross-account
+            # reuse. Empty affected-projects also bypasses.
+            _names = ",".join(sorted(action.get("affected_projects", [])))
+            _scope = _names if (_names and llm._cache_scope) else None
+            text = llm.generate_action_analysis(action_key, full_prompt, scope=_scope)
             action["ai_guidance"] = text
 
             if llm._cached_count == prev_cached:

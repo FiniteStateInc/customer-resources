@@ -116,6 +116,15 @@
     .mc-row-hidden { display: none; }
     .mc-wtable.expanded .mc-row-hidden { display: table-row; }
 
+    /* A PDF can't click "Show all N components": print EVERY row and drop
+       the dead button. Without this the PDF silently truncated the
+       left-only / right-only tables at 12 rows behind a non-functional
+       button. Mirrors the triage_prioritization.html print fix. */
+    @media print {
+        .mc-row-hidden { display: table-row !important; }
+        .mc-more { display: none !important; }
+    }
+
     /* "no divergence on this side" confident strip */
     .mc-noconflict {
         display: flex; align-items: center; gap: 13px; padding: 14px 18px;

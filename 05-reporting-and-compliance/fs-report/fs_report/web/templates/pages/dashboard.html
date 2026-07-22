@@ -24,7 +24,7 @@
       <span class="rb-lbl">Folder</span>
       <select class="rb-sel" id="rb-folder" data-value="{{ pinned_folder or '' }}"><option value="">Any folder</option></select>
       <span class="rb-lbl">Project</span>
-      <select class="rb-sel" id="rb-project" data-value="{{ pinned_project or '' }}"><option value="">All projects</option></select>
+      <select class="rb-sel" id="rb-project" data-value="{{ pinned_project or '' }}" data-project-id="{{ pinned_project_id or '' }}"><option value="">All projects</option></select>
       <span class="rb-lbl">Version</span>
       <select class="rb-sel" id="rb-version" data-value="{{ pinned_version or '' }}" disabled><option value="">latest</option></select>
     </div>

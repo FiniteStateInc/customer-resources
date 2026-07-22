@@ -28,7 +28,7 @@
        .risk-badge .risk-* family with hardcoded hex; consume design
        tokens instead so dark/light theming follows the rest of the
        console suite. */
-    .lr-risk-badge {
+    .lr-risk-badge, .lr-policy-badge {
         display: inline-block;
         padding: 2px 10px;
         border-radius: 12px;
@@ -46,10 +46,30 @@
     .lr-risk-badge.proprietary     { background: var(--accent-purple);   color: #fff; }
     .lr-risk-badge.unknown         { background: var(--surface-muted);   color: var(--ink-mute); }
     .lr-risk-badge.permissive      { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    /* Policy Status badges — same severity palette as the risk badges:
+       Violation = critical/red, Warning = high/amber, Permitted = low/green,
+       None = neutral/muted. */
+    .lr-policy-badge.violation     { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .lr-policy-badge.warning       { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .lr-policy-badge.permitted     { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .lr-policy-badge.none-policy   { background: var(--surface-muted);   color: var(--ink-mute); }
 
     .lr-chart-wrapper {
         width: 100%;
         height: 360px;
+    }
+
+    /* Two charts side by side (risk + policy); stacks on narrow viewports. */
+    .lr-chart-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+        margin-bottom: 20px;
+    }
+    .lr-chart-row > .panel {
+        flex: 1 1 340px;
+        min-width: 0;
+        margin-bottom: 0;
     }
 
     .lr-no-data {
@@ -115,21 +135,36 @@
         {{ fs.kpi_cell("No License", no_license_count | default(0), dot=("high" if no_license_count | default(0) > 0 else None)) }}
     </div>
 
-    {% if risk_pie and risk_pie.labels | default([]) | length > 0 %}
-    <div class="panel" style="margin-bottom: 20px;">
-        {{ fs.panel_head("License risk distribution", meta="doughnut") }}
-        <p class="subtitle">Components grouped by license risk category.</p>
-        {# Dual-render: fragment mode uses the server-side SVG produced by
-           HTMLRenderer (html_renderer.py:937-967 coerces `risk_pie` dict
-           to a 3-col DataFrame via pd.DataFrame and dispatches to
-           ChartRenderer.render_doughnut_svg since recipe YAML now declares
-           chart: doughnut). Standalone mode uses the live ECharts container
-           the <script> at the end of the body initializes. Mirrors
-           executive_summary.html:100-103. #}
-        {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
-            <div class="chart-server-svg">{{ server_svgs.get('risk_pie', '') | safe }}</div>
-        {% else %}
-            <div id="{{ fragment_scope_class }}-riskPieChart" class="lr-chart-wrapper"></div>
+    {% set _has_risk = risk_pie and risk_pie.labels | default([]) | length > 0 %}
+    {% set _has_policy = policy_pie and policy_pie.labels | default([]) | length > 0 %}
+    {% if _has_risk or _has_policy %}
+    <div class="lr-chart-row">
+        {% if _has_risk %}
+        <div class="panel">
+            {{ fs.panel_head("License risk distribution", meta="doughnut") }}
+            <p class="subtitle">Components grouped by license risk category.</p>
+            {# Dual-render: fragment mode uses the server-side SVG produced by
+               HTMLRenderer (coerces the chart dict to a 3-col DataFrame and
+               dispatches to ChartRenderer.render_doughnut_svg since the recipe
+               YAML declares chart: doughnut). Standalone mode uses the live
+               ECharts container the <script> at the end of the body initializes. #}
+            {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('risk_pie', '') | safe }}</div>
+            {% else %}
+                <div id="{{ fragment_scope_class }}-riskPieChart" class="lr-chart-wrapper"></div>
+            {% endif %}
+        </div>
+        {% endif %}
+        {% if _has_policy %}
+        <div class="panel">
+            {{ fs.panel_head("License policy distribution", meta="doughnut") }}
+            <p class="subtitle">Components grouped by license policy status.</p>
+            {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('policy_pie', '') | safe }}</div>
+            {% else %}
+                <div id="{{ fragment_scope_class }}-policyPieChart" class="lr-chart-wrapper"></div>
+            {% endif %}
+        </div>
         {% endif %}
     </div>
     {% endif %}
@@ -176,7 +211,11 @@
             <table class="data-table">
                 <thead>
                     <tr>
+                        <th>License Expression</th>
                         <th>License</th>
+                        <th>Policy Status</th>
+                        <th>Attribution Required</th>
+                        <th>URL</th>
                         <th>Risk Category</th>
                         <th class="num">Components</th>
                         <th>Projects</th>
@@ -186,8 +225,21 @@
                     {% for row in license_table %}
                     {% set cat = row.risk_category %}
                     {% set cls = 'strong-copyleft' if cat == 'Strong Copyleft' else 'weak-copyleft' if cat == 'Weak Copyleft' else 'proprietary' if cat == 'Proprietary/Restricted' else 'permissive' if cat == 'Permissive' else 'unknown' %}
+                    {# License Expression carries the compound AND/OR string; License shows
+                       the resolved display (both sub-licenses on separate lines for AND, the
+                       worst-case sub-license for OR). Fall back to license_name for callers
+                       that pre-date these keys. #}
+                    {% set _expr = row.license_expression if row.license_expression is defined else '' %}
+                    {% set _disp = row.license_display if (row.license_display is defined and row.license_display) else (row.license_name if row.license_name is defined else '') %}
+                    {% set _url = (row.license_url if row.license_url is defined else '') or '' %}
                     <tr>
-                        <td>{{ row.license_name if row.license_name else '(No License)' }}</td>
+                        <td>{{ _expr }}</td>
+                        <td>{% if _disp %}{% for ln in _disp.split('\n') %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}(No License){% endif %}</td>
+                        {% set pol = row.license_policy %}
+                        {% set pcls = 'violation' if pol == 'Violation' else 'warning' if pol == 'Warning' else 'permitted' if pol == 'Permitted' else 'none-policy' if pol == 'None' else '' %}
+                        <td>{% if pol %}<span class="lr-policy-badge {{ pcls }}">{{ pol }}</span>{% endif %}</td>
+                        <td>{{ row.attribution_required if row.attribution_required is defined else '' }}</td>
+                        <td>{% if _url %}{% for u in _url.split('\n') %}{% if u %}<a href="{{ u }}" target="_blank" rel="noopener">{{ u }}</a>{% endif %}{% if not loop.last %}<br>{% endif %}{% endfor %}{% endif %}</td>
                         <td><span class="lr-risk-badge {{ cls }}">{{ cat }}</span></td>
                         <td class="num"><strong>{{ row.component_count }}</strong></td>
                         <td>{{ row.projects }}</td>
@@ -212,23 +264,36 @@
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>License</th>
-                        <th>Risk Category</th>
+                        <th>Folder</th>
                         <th>Project</th>
                         <th>Component</th>
                         <th>Version</th>
+                        <th>Risk Category</th>
+                        <th>License Expression</th>
+                        <th>License</th>
+                        <th>Policy Status</th>
+                        <th>Attribution Required</th>
+                        <th>URL</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for row in detail_table %}
                     {% set cat = row['Risk Category'] %}
                     {% set cls = 'strong-copyleft' if cat == 'Strong Copyleft' else 'weak-copyleft' if cat == 'Weak Copyleft' else 'proprietary' if cat == 'Proprietary/Restricted' else 'permissive' if cat == 'Permissive' else 'unknown' %}
+                    {% set _disp = row['License'] if row['License'] is defined else '' %}
                     <tr>
-                        <td>{{ row.License if row.License else '(No License)' }}</td>
-                        <td><span class="lr-risk-badge {{ cls }}">{{ cat }}</span></td>
+                        <td>{{ row.Folder }}</td>
                         <td>{{ row.Project }}</td>
                         <td>{{ row.Component }}</td>
                         <td>{{ row.Version }}</td>
+                        <td><span class="lr-risk-badge {{ cls }}">{{ cat }}</span></td>
+                        <td>{{ row['License Expression'] if row['License Expression'] is defined else '' }}</td>
+                        <td>{% if _disp %}{% for ln in _disp.split('\n') %}{{ ln }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}(No License){% endif %}</td>
+                        {% set pol = row['Policy Status'] %}
+                        {% set pcls = 'violation' if pol == 'Violation' else 'warning' if pol == 'Warning' else 'permitted' if pol == 'Permitted' else 'none-policy' if pol == 'None' else '' %}
+                        <td>{% if pol %}<span class="lr-policy-badge {{ pcls }}">{{ pol }}</span>{% endif %}</td>
+                        <td>{{ row['Attribution Required'] if row['Attribution Required'] is defined else '' }}</td>
+                        <td>{% set _u = (row['URL'] if row['URL'] is defined else '') or '' %}{% if _u %}{% for u in _u.split('\n') %}{% if u %}<a href="{{ u }}" target="_blank" rel="noopener">{{ u }}</a>{% endif %}{% if not loop.last %}<br>{% endif %}{% endfor %}{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -251,116 +316,119 @@
 {% if render_mode != 'fragment' or fragment_scripts_enabled %}
 <script>
 (function() {
-    {% if risk_pie and risk_pie.labels | default([]) | length > 0 %}
-    const el = document.getElementById('{{ fragment_scope_class }}-riskPieChart');
-    if (!el) return;
-
     // Defensive: bail if ECharts CDN failed to load. Matches the
     // executive_summary.html:108-113 guard pattern. Without this, a
     // blocked CDN throws an uncaught ReferenceError instead of
     // degrading to a no-chart render.
     if (typeof echarts === 'undefined') {
         if (typeof console !== 'undefined' && console.error) {
-            console.error('ECharts library not loaded — license risk chart will be blank');
+            console.error('ECharts library not loaded — license charts will be blank');
         }
         return;
     }
 
-    const pie = {{ risk_pie | tojson }};
-    if (!pie.labels || pie.labels.length === 0) return;
-    // Defensive: data and backgroundColor must be arrays the same length as labels.
-    // Partial transform output (e.g. labels but no data) would otherwise
-    // throw on pie.data.reduce / pie.backgroundColor[i] below.
-    const dataArr = Array.isArray(pie.data) ? pie.data : [];
-    const colorArr = Array.isArray(pie.backgroundColor) ? pie.backgroundColor : [];
-    if (dataArr.length !== pie.labels.length) return;
-    // colorArr length mismatch → bail to avoid `undefined` slice colors.
-    // The transform keeps these in sync, so a divergence indicates upstream
-    // breakage and the recipe is better off rendering no chart than a
-    // miscolored one that hides risk levels.
-    if (colorArr.length !== pie.labels.length) return;
+    // Shared doughnut initializer — used by BOTH the risk-distribution and the
+    // policy-distribution charts so their appearance/behavior can't drift.
+    function initDoughnut(elementId, pie) {
+        const el = document.getElementById(elementId);
+        if (!el) return;
+        if (!pie || !pie.labels || pie.labels.length === 0) return;
+        // Defensive: data and backgroundColor must be arrays the same length as
+        // labels. Partial transform output would otherwise throw below.
+        const dataArr = Array.isArray(pie.data) ? pie.data : [];
+        const colorArr = Array.isArray(pie.backgroundColor) ? pie.backgroundColor : [];
+        if (dataArr.length !== pie.labels.length) return;
+        // colorArr length mismatch → bail to avoid `undefined` slice colors.
+        if (colorArr.length !== pie.labels.length) return;
 
-    const total = dataArr.reduce(function(a, b) { return a + b; }, 0);
-    if (total === 0) {
-        el.innerHTML = '<p class="lr-no-data">No data available</p>';
-        return;
-    }
+        const total = dataArr.reduce(function(a, b) { return a + b; }, 0);
+        if (total === 0) {
+            el.innerHTML = '<p class="lr-no-data">No data available</p>';
+            return;
+        }
 
-    const inst = fsEChartsInit(el, { renderer: 'canvas' });
+        const inst = fsEChartsInit(el, { renderer: 'canvas' });
 
-    // Theme-aware chart option builder. Reads CSS custom properties at
-    // call time so re-rendering on theme toggle picks up the new tokens.
-    function buildOption() {
-        const _cs = getComputedStyle(document.documentElement);
-        const inkBody = _cs.getPropertyValue('--ink-body').trim() || '#374151';
-        const surfaceCard = _cs.getPropertyValue('--surface-card').trim() || '#ffffff';
-        const hairline = _cs.getPropertyValue('--hairline').trim() || '#dee2e6';
-        return {
-            tooltip: {
-                trigger: 'item',
-                formatter: '{b}: <b>{c}</b> ({d}%)',
-                backgroundColor: surfaceCard,
-                borderColor: hairline,
-                borderWidth: 1,
-                textStyle: { color: inkBody, fontSize: 12 }
-            },
-            legend: {
-                orient: 'horizontal',
-                bottom: 0,
-                textStyle: { color: inkBody, fontSize: 12 }
-            },
-            series: [{
-                type: 'pie',
-                radius: ['45%', '70%'],
-                center: ['50%', '45%'],
-                avoidLabelOverlap: true,
-                itemStyle: { borderColor: surfaceCard, borderWidth: 2, borderRadius: 4 },
-                label: {
-                    show: true,
-                    formatter: '{b}\n{c} ({d}%)',
-                    fontSize: 12,
-                    color: inkBody,
-                    fontWeight: 'bold'
+        // Theme-aware chart option builder. Reads CSS custom properties at
+        // call time so re-rendering on theme toggle picks up the new tokens.
+        function buildOption() {
+            const _cs = getComputedStyle(document.documentElement);
+            const inkBody = _cs.getPropertyValue('--ink-body').trim() || '#374151';
+            const surfaceCard = _cs.getPropertyValue('--surface-card').trim() || '#ffffff';
+            const hairline = _cs.getPropertyValue('--hairline').trim() || '#dee2e6';
+            return {
+                tooltip: {
+                    trigger: 'item',
+                    formatter: '{b}: <b>{c}</b> ({d}%)',
+                    backgroundColor: surfaceCard,
+                    borderColor: hairline,
+                    borderWidth: 1,
+                    textStyle: { color: inkBody, fontSize: 12 }
                 },
-                labelLine: { show: true, length: 8, length2: 8 },
-                data: pie.labels.map(function(label, i) {
-                    return {
-                        name: label,
-                        value: dataArr[i],
-                        itemStyle: { color: colorArr[i] }
-                    };
-                })
-            }]
-        };
-    }
-
-    try {
-        inst.setOption(buildOption());
-    } catch (e) {
-        // Release the beacon acquire fsEChartsInit took; chart won't paint
-        // so 'finished' will never fire. PDF captures without this chart
-        // rather than hanging for the 30s BEACON_TIMEOUT.
-        window.fsBeaconRelease();
-        throw e;
-    }
-
-    // Re-render on theme toggle so chart text/colors track the current
-    // CSS tokens without a page reload. Mirrors triage_prioritization.html.
-    const themeObserver = new MutationObserver(function(mutations) {
-        for (const m of mutations) {
-            if (m.attributeName === 'data-theme') {
-                inst.setOption(buildOption());
-                break;
-            }
+                legend: {
+                    orient: 'horizontal',
+                    bottom: 0,
+                    textStyle: { color: inkBody, fontSize: 12 }
+                },
+                series: [{
+                    type: 'pie',
+                    radius: ['45%', '70%'],
+                    center: ['50%', '45%'],
+                    avoidLabelOverlap: true,
+                    itemStyle: { borderColor: surfaceCard, borderWidth: 2, borderRadius: 4 },
+                    label: {
+                        show: true,
+                        formatter: '{b}\n{c} ({d}%)',
+                        fontSize: 12,
+                        color: inkBody,
+                        fontWeight: 'bold'
+                    },
+                    labelLine: { show: true, length: 8, length2: 8 },
+                    data: pie.labels.map(function(label, i) {
+                        return {
+                            name: label,
+                            value: dataArr[i],
+                            itemStyle: { color: colorArr[i] }
+                        };
+                    })
+                }]
+            };
         }
-    });
-    themeObserver.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ['data-theme']
-    });
 
-    // Reflow on viewport resize so the chart adapts to window size changes.
-    window.addEventListener('resize', function() { inst.resize(); });
+        try {
+            inst.setOption(buildOption());
+        } catch (e) {
+            // Release the beacon fsEChartsInit took; chart won't paint so
+            // 'finished' never fires. PDF captures without it rather than
+            // hanging for the 30s BEACON_TIMEOUT.
+            window.fsBeaconRelease();
+            throw e;
+        }
+
+        // Re-render on theme toggle so chart text/colors track the current CSS
+        // tokens without a page reload. Mirrors triage_prioritization.html.
+        const themeObserver = new MutationObserver(function(mutations) {
+            for (const m of mutations) {
+                if (m.attributeName === 'data-theme') {
+                    inst.setOption(buildOption());
+                    break;
+                }
+            }
+        });
+        themeObserver.observe(document.documentElement, {
+            attributes: true,
+            attributeFilter: ['data-theme']
+        });
+
+        // Reflow on viewport resize so the chart adapts to window size changes.
+        window.addEventListener('resize', function() { inst.resize(); });
+    }
+
+    {% if risk_pie and risk_pie.labels | default([]) | length > 0 %}
+    initDoughnut('{{ fragment_scope_class }}-riskPieChart', {{ risk_pie | tojson }});
+    {% endif %}
+    {% if policy_pie and policy_pie.labels | default([]) | length > 0 %}
+    initDoughnut('{{ fragment_scope_class }}-policyPieChart', {{ policy_pie | tojson }});
     {% endif %}
 })();
 </script>

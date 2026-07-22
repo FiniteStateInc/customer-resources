@@ -148,6 +148,12 @@ _RESERVED_CANVAS_IDS = frozenset({"source", "deliverable"})
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "project_filter": None,
+    # Unambiguous project ID companion to project_filter (the name).  Must be in
+    # _GLOBAL_DEFAULTS so _normalize_global preserves it on save/normalize (else
+    # a target-bound workflow's ID is dropped and a same-named project across
+    # folders mis-resolves on reload/run).  The name stays the visible value;
+    # the ID folds into project_filter in _build_engine_config at run time.
+    "project_id": None,
     # Folder targeting (design §6): a workflow GLOBAL folder scope (the folder
     # ID).  Must be in _GLOBAL_DEFAULTS so _normalize_global preserves it (else
     # it's dropped on save/normalize and never reaches per-step effective
@@ -213,6 +219,10 @@ _VALID_OVERRIDE_STR_KEYS = frozenset(
         "end",
         "cache_ttl",
         "project_filter",
+        # Project ID companion to a step's project_filter override (name). Kept
+        # here so _normalize_overrides preserves it on save (else a step-level
+        # target-bound project ID is stripped and mis-resolves on reload/run).
+        "project_id",
         "folder_filter",
         "version_filter",
         "finding_types",
@@ -614,7 +624,14 @@ def _model_to_yaml_dict(model: dict[str, Any]) -> dict[str, Any]:
         # POP the baked scope keys (key-absent), not set-to-None: a saved general
         # workflow's YAML carries no ``*_filter: null`` noise — matching the
         # key-absent shape of _strip_target_agnostic_scope in workflow_export.
-        for _scope_key in ("project_filter", "folder_filter", "version_filter"):
+        for _scope_key in (
+            "project_filter",
+            # Strip the ID companion alongside the name so a general workflow's
+            # persisted YAML carries no baked target at all.
+            "project_id",
+            "folder_filter",
+            "version_filter",
+        ):
             global_block.pop(_scope_key, None)
 
     return {

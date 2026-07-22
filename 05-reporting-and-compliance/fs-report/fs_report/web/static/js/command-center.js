@@ -294,13 +294,16 @@
         folderEmptyLabel: 'Any folder',
         projectEmptyLabel: 'All projects',
         onChange: function (s) {
-          if (window.__setScope) window.__setScope(s.project, s.version, s.folder);
+          /* s.projectId is the unambiguous project ID companion (the visible
+             value stays the name). Threaded so the launch resolves the exact
+             project even when several share a name across folders. */
+          if (window.__setScope) window.__setScope(s.project, s.version, s.folder, s.projectId);
         },
       });
     } else if (window.__setScope && CC.pinned) {
       /* Defensive fallback: if the cascade helper is unavailable, still seed
          scope from the pinned values so the gate isn't empty. */
-      window.__setScope(CC.pinned.project || '', CC.pinned.version || '', CC.pinned.folder || '');
+      window.__setScope(CC.pinned.project || '', CC.pinned.version || '', CC.pinned.folder || '', CC.pinned.projectId || '');
     }
 
     /* Folder run-bar sync race (Finding 6b). The cascade's onChange only fires
@@ -315,10 +318,13 @@
        the live values directly, so it's unaffected either way. */
     if (rbFolder && window.__setScope) {
       rbFolder.addEventListener('change', function () {
+        /* The cascade clears the project synchronously on a folder change, so
+           _rbProjectId() is '' here — passed for consistency (fn is hoisted). */
         window.__setScope(
           rbProject ? rbProject.value.trim() : '',
           rbVersion ? rbVersion.value.trim() : '',
-          rbFolder.value.trim()
+          rbFolder.value.trim(),
+          _rbProjectId()
         );
       });
     }
@@ -348,11 +354,21 @@
     if (rbReport) rbReport.addEventListener('change', _syncPeriod);
     _syncPeriod();
 
+    /* The selected run-bar project's unambiguous ID (data-pid on the option;
+       empty for "All projects" or a stale-fallback option).  The visible value
+       stays the name; this ID rides alongside so the launch resolves the exact
+       project when several share a name across folders. */
+    function _rbProjectId() {
+      var o = rbProject && rbProject.options ? rbProject.options[rbProject.selectedIndex] : null;
+      return (o && o.dataset && o.dataset.pid) ? o.dataset.pid : '';
+    }
+
     /* Run button */
     if (rbRun) {
       rbRun.addEventListener('click', function () {
         var folder  = rbFolder  ? rbFolder.value.trim()  : '';
         var project = rbProject ? rbProject.value.trim() : '';
+        var projectId = _rbProjectId();
         var version = rbVersion ? rbVersion.value.trim() : '';
         var report  = rbReport  ? rbReport.value.trim()  : '';
         if (!report) return;
@@ -361,8 +377,8 @@
            not leak onto a non-period run. */
         var period = (rbPeriodGroup && !rbPeriodGroup.hasAttribute('hidden') && rbPeriod)
           ? rbPeriod.value.trim() : '';
-        if (window.__setScope) window.__setScope(project, version, folder);
-        if (window.__openFR) window.__openFR(report, { project: project, version: version, folder: folder, period: period });
+        if (window.__setScope) window.__setScope(project, version, folder, projectId);
+        if (window.__openFR) window.__openFR(report, { project: project, projectId: projectId, version: version, folder: folder, period: period });
       });
     }
 
@@ -373,10 +389,12 @@
       rbPin.addEventListener('click', function () {
         var folder  = rbFolder  ? rbFolder.value.trim()  : '';
         var project = rbProject ? rbProject.value.trim() : '';
+        var projectId = _rbProjectId();
         var version = rbVersion ? rbVersion.value.trim() : '';
         var report  = rbReport  ? rbReport.value  : '';
         _postPin(report, project, version, folder, {
           rbPinned: rbPinned,
+          projectId: projectId,
           okToast: 'Pinned: ' + (report || '—'),
           failToast: 'Pin failed — check connection',
         });
@@ -463,6 +481,10 @@
     var fd = new FormData();
     fd.append('pinned_report',  report);
     fd.append('pinned_project', project);
+    /* Unambiguous project ID companion — the visible pin value stays the name
+       (pinned_project); this rides alongside so a pinned/R-key launch resolves
+       the exact project among same-named projects in different folders. */
+    fd.append('pinned_project_id', opts.projectId || '');
     fd.append('pinned_version', version);
     fd.append('pinned_folder',  folder || '');
     fetch('/api/cc/pin', {
@@ -518,6 +540,7 @@
       syncCC.pinned = {
         report:     body.pinned_report  || '',
         project:    body.pinned_project || '',
+        projectId:  body.pinned_project_id || '',
         version:    body.pinned_version || '',
         folder:     body.pinned_folder  || '',
         folderName: keepFolderName
@@ -726,6 +749,10 @@
           var cbScope = _runBarScope();
           window.__openFR(recipe, {
             project: cbScope.project,
+            /* Carry the project ID companion so a same-named project across
+               folders resolves the exact one the run bar selected (else the run
+               posts project_id='' → name-only, the duplicate-name bug). */
+            projectId: cbScope.projectId,
             version: cbScope.version,
             folder: cbScope.folder,
           });
@@ -739,8 +766,15 @@
     var rbF = el('rb-folder');
     var rbP = el('rb-project');
     var rbV = el('rb-version');
+    /* Unambiguous project ID companion — the selected option's data-pid, read
+       the SAME way the Run button's _rbProjectId() reads it. Threaded through the
+       card-body / Save & Run launches so a duplicate NAME across folders resolves
+       the exact project the run submits (empty for "All projects" / no pid). */
+    var pOpt = (rbP && rbP.options) ? rbP.options[rbP.selectedIndex] : null;
+    var projectId = (pOpt && pOpt.dataset && pOpt.dataset.pid) ? pOpt.dataset.pid : '';
     return {
       project: rbP ? rbP.value : '',
+      projectId: projectId,
       version: rbV ? rbV.value : '',
       folder: rbF ? rbF.value : '',
     };
@@ -1242,6 +1276,10 @@
         if (window.__openFR) {
           window.__openFR(recipe, {
             project: sc.project,
+            /* Carry the project ID companion (data-pid) so Save & Run resolves
+               the exact project when several share a name across folders — parity
+               with the Run button + card-body launch. */
+            projectId: sc.projectId,
             version: sc.version,
             /* Carry the live folder so a folder-only Save & Run targets the
                folder (Finding 6a). _runBarScope() already returns the live
@@ -1528,7 +1566,16 @@
       var projectSel = container.querySelector('#pre-project');
       var versionSel = container.querySelector('#pre-version');
       if (opts.folder  && folderSel)  folderSel.setAttribute('data-value',  opts.folder);
-      if (opts.project && projectSel) projectSel.setAttribute('data-value', opts.project);
+      if (opts.project && projectSel) {
+        projectSel.setAttribute('data-value', opts.project);
+        /* Stash the authoritative project ID companion (from the caller's scope
+           override — _currentScopeOverride uses project_id; __openFR uses
+           projectId). The submit prefers it when the user leaves the prefilled
+           project unchanged, since the name-based restore can pick the wrong
+           same-named option. */
+        var _oid = opts.project_id || opts.projectId || '';
+        if (_oid) projectSel.setAttribute('data-override-pid', _oid);
+      }
       if (opts.version && versionSel) versionSel.setAttribute('data-value', opts.version);
       /* initScopeDropdowns is defined inside the prerun fragment
          (via {% include "_scope_dropdowns.html" %}).  Call it to
@@ -1788,6 +1835,28 @@
         }
       }
 
+      /* Unambiguous project ID companion (name stays the visible/submitted
+         project_filter). #pre-project is populated by initScopeDropdowns, which
+         tags each option with data-pid; append the selected one so the launch
+         resolves the exact project among same-named ones across folders. Sent
+         present (empty when none) alongside project_filter, matching the scope
+         present-key contract. Absent in left/right-override (comparison) mode
+         where the project block isn't rendered. */
+      var preProj = form.querySelector('#pre-project');
+      if (preProj) {
+        var pOpt = preProj.options[preProj.selectedIndex];
+        var pidFromOption = (pOpt && pOpt.dataset && pOpt.dataset.pid) ? pOpt.dataset.pid : '';
+        /* When the user LEFT the prefilled project unchanged, trust the
+           authoritative override ID (the name-based prefill can select the wrong
+           same-named option). A fresh pick (value ≠ the prefilled data-value)
+           uses the chosen option's own id. */
+        var seededName = preProj.getAttribute('data-value') || '';
+        var overridePid = preProj.getAttribute('data-override-pid') || '';
+        var pid = (overridePid && preProj.value && preProj.value === seededName)
+          ? overridePid : pidFromOption;
+        params.append('project_id', pid);
+      }
+
       /* Mark this as an AUTHORITATIVE launch (PR #117 review r5, narrowed r6).
          The modal pre-fills every field it RENDERS from EFFECTIVE values (saved
          per-card override ∪ global, via _EffectiveStateView), so its submit
@@ -2003,20 +2072,25 @@
         syncCC.__projectNameToId = nameToId;
         window.__CC = syncCC;
 
-        var names = list.filter(function (p) { return p && p.name; })
-                        .map(function (p) { return p.name; });
+        /* Enriched {name, id} entries so a palette-activated project carries its
+           unambiguous id (C6) — the palette then threads project_id on launch,
+           disambiguating same-named projects across folders. */
+        var projectItems = list.filter(function (p) { return p && p.name; })
+                        .map(function (p) {
+                          return { name: p.name, id: (p.id != null ? String(p.id) : '') };
+                        });
 
         /* 1. window.__CC.projects + palette — cross-page (skip push if empty,
            but still stamp count + sync below so empty portfolios aren't stuck
            showing "—" on /queue). */
-        if (names.length) {
-          if (window.__refreshPaletteProjects) window.__refreshPaletteProjects(names);
-          else { var cc2 = window.__CC || {}; cc2.projects = names; window.__CC = cc2; }
+        if (projectItems.length) {
+          if (window.__refreshPaletteProjects) window.__refreshPaletteProjects(projectItems);
+          else { var cc2 = window.__CC || {}; cc2.projects = projectItems; window.__CC = cc2; }
         }
 
         /* 2. Status-bar count — cross-page */
         var projectsEl = qs('[data-cc="projects"]');
-        if (projectsEl) projectsEl.textContent = names.length;
+        if (projectsEl) projectsEl.textContent = projectItems.length;
 
         /* 3. Status-bar last-sync stamp — cross-page (so /queue shows sync time too) */
         var syncEl = qs('[data-cc="sync"]');

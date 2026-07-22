@@ -453,8 +453,9 @@ fs-report run --recipe "License Report"
 - All components grouped by declared license and risk category
 - Risk categories: Strong Copyleft, Weak Copyleft, Proprietary/Restricted, Unknown, Permissive
 - Component count per license with associated projects
-- License risk distribution pie chart
-- Per-component detail table (one row per component) for finding every project/component carrying a given license
+- Two doughnut charts: **License risk distribution** and **License policy distribution** (Permitted / Warning / Violation / Unknown)
+- Per-component detail table (one row per component) for finding every project/component carrying a given license, with each row's own **Folder** breadcrumb (root→leaf) so same-named projects in different folders stay distinguishable
+- **Compound SPDX license expressions** (`Apache-2.0 AND GPL-3.0-only`, `(A AND B) OR C`) are parsed and evaluated **worst-case** when unconcluded — an `AND` expression lists every branch's obligations, an `OR` expression shows the single most-restrictive branch. A resolved **Concluded** license is always used as-is.
 
 **Risk categories:**
 
@@ -470,12 +471,18 @@ fs-report run --recipe "License Report"
 
 | File | Shape | Purpose |
 |------|-------|---------|
-| `License Report.csv` | one row per license | Summary: License, Risk Category, Component Count, Projects |
-| `License Report_Detail.csv` | one row per component | Detail: License, Risk Category, Project, Component, Version |
+| `License Report.csv` | one row per license | Summary: License Expression, License, Policy Status, Attribution Required, URL, Risk Category, Component Count, Projects |
+| `License Report_Detail.csv` | one row per component | Detail: Folder, Project, Component, Version, Risk Category, License Expression, License, Policy Status, Attribution Required, URL |
 | `License Report.xlsx` | two sheets (`Summary`, `Detail`) | Same data as the two CSVs in one workbook |
 | `License Report.html` | both tables on one page | License Breakdown summary + scrollable Component Detail section |
 
 The flat detail rows are bounded by component count, not per-license cardinality, so they pivot/auto-filter cleanly in Excel.
+
+**Column notes:**
+- **License Expression** — the full compound string when the license is an SPDX `AND`/`OR` expression (blank only for an unlicensed component); mirrors **License** for a non-compound row.
+- **Policy Status** (Permitted / Warning / Violation / None) — the platform's resolved per-component policy, falling back to the tenant policy map only when the component carries no per-component policy.
+- **Attribution Required** — `TRUE`/`FALSE`/blank; `FALSE` only when every governing license is in the no-attribution set (`0BSD`, `MIT-0`, `CC0`, `CC0-1.0`, `Unlicense`).
+- **URL** — the platform's own license reference link when present, else a synthesized `https://spdx.org/licenses/<id>.html` (covers every SPDX id); blank only for free-text names or unresolved compound expressions.
 
 **Optional flags:**
 - `--license "GPL,AGPL"` — restrict to license name(s) matching any of the comma-separated terms (case-insensitive substring). Filters both tables, the pie chart, and the KPIs. Use this to narrow the report to violation licenses (e.g. strong copyleft) and list every project + component that carries them. Note: filtering is client-side; the full component list is still fetched from the API.
@@ -1196,11 +1203,11 @@ fs-report run --recipe "CVE Component Evidence" \
 **What it shows:**
 - Each CVE-bearing component in the project version
 - The CVE IDs attributed to that component
-- File paths inside the firmware where the component was detected (`Evidence File Paths` column, sourced from an internal `/api/fs/v1/.../evidence` endpoint)
+- File paths inside the firmware where the component was detected (`Evidence File Paths` column). Fetched from the platform's match-evidence endpoint, which differs by back-end — Helix serves it from `/public/v0/components/{pvid}/{cid}/evidence`, legacy Alloy from `/fs/v1/projects/versions/{pvid}/components/{cid}/evidence`; the report tries one then falls back to the other so the column is populated on both. Paths that descend into a nested archive (e.g. a `.jar` unpacked inside another `.jar`) are collapsed to the outermost archive and deduped, so a component with hundreds of archive members renders as a single path instead of an unreadable wall of entries; firmware filesystem images (squashfs, ext, etc.) are not collapsed, since their inner paths are the real file locations.
 
 **Key flags:**
-- `--cache-ttl` — recommended for re-runs; per-component evidence calls are parallelized and cached.
-- `FS_REPORT_EVIDENCE_WORKERS` (env var, default `5`) — escape hatch to reduce worker count if the internal endpoint starts returning 500s.
+- `--cache-ttl` — recommended for re-runs, but only speeds up the CVE **findings** lookup (SQLite-cached across runs); per-component **evidence** calls use an in-memory, per-run cache only and are re-fetched every run.
+- `FS_REPORT_EVIDENCE_WORKERS` (env var, default `5`) — escape hatch to reduce worker count if the evidence endpoint starts returning 500s.
 
 **Formats:** HTML, CSV (no XLSX or MD output for this recipe).
 
@@ -1213,7 +1220,7 @@ fs-report run --recipe "CVE Component Evidence" \
 fs-report run --recipe "CVE Component Evidence" \
     --project "MyProduct" --version "v1.2.3" --cache-ttl 4h
 
-# Quiet the internal evidence endpoint if it's complaining
+# Quiet the evidence endpoint if it's complaining
 FS_REPORT_EVIDENCE_WORKERS=1 fs-report run \
     --recipe "CVE Component Evidence" \
     --project "MyProduct" --version "v1.2.3"

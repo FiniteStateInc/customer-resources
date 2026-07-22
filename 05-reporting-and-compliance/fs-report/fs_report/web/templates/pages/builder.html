@@ -124,7 +124,7 @@
              to write the model authoritatively and seed `data-value` from the
              model so a re-init (on load) re-seeds the loaded scope (fix A/B). #}
           <select class="wfb-sel" id="g-project" :data-value="model.global.project_filter"
-                  @change="onGlobalProjectChange($event.target.value)">
+                  @change="onGlobalProjectChange($event.target.value, $event.target.options[$event.target.selectedIndex] && $event.target.options[$event.target.selectedIndex].dataset.pid)">
             <option value="">All projects</option>
             {% if pinned_project %}<option value="{{ pinned_project }}" selected>{{ pinned_project }}</option>{% endif %}
           </select>
@@ -530,7 +530,7 @@
         {# Run flips to Stop while a run is in flight (§6.3).  Task D (T5):
            kind-aware label/title — "Run workflow" | "Run compound" |
            "Run comparison" (compound/comparison open the inline run drawer). #}
-        <button class="wfb-btn run sm" type="button" id="wf-run"
+        <button class="wfb-btn primary run sm" type="button" id="wf-run"
                 @click="runMode ? stopRun() : runWorkflow()"
                 :disabled="model.kind === 'workflow' && !runMode && (!runnableCount() || isRunning)"
                 :title="model.kind === 'workflow' ? runRunTitle() : runKindLabel()">

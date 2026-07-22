@@ -38,12 +38,14 @@ via the ``provider`` parameter.
 Results are cached in SQLite to avoid redundant API calls.
 """
 
+import hashlib
+import hmac
 import json
 import logging
 import os
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -96,6 +98,103 @@ AI_ENV_VARS: tuple[str, ...] = (
     "GOOGLE_API_KEY",
     "GITHUB_TOKEN",
 )
+
+
+# Cache schema version. Bump this to force clean regeneration of the AI
+# narrative caches (cve_remediations + ai_summary_cache narrative rows) on the
+# next run — used to purge entries written under an older, unscoped key layout
+# that could contain another project's/customer's text.
+_LLM_CACHE_SCHEMA_VERSION = "2"
+
+# ai_summary_cache "scope" values that hold project-blind LIBRARY FACTS (the
+# scanned component's true identity / per-CVE applicability). These are safe to
+# share across projects and tenants and are preserved across a schema-version
+# purge; every other scope holds project-specific narrative.
+_FACT_SUMMARY_SCOPES = ("identity", "applicability")
+
+# Tokens that a null/absent identifier can arrive as once a value has passed
+# through pandas (float64 coercion of an int column with any null -> NaN, which
+# str()-es to "nan") or JSON. Treated as "no stable identity".
+_NULL_REF_TOKENS = frozenset({"", "nan", "none", "null", "<na>", "na"})
+
+# Application salt for cache-scope tokens. Scope digests are HMAC-keyed (with a
+# fixed, non-secret application salt) rather than a bare hash, so scope values
+# are namespaced to this app and not a plain SHA-256 an attacker could match
+# against generic rainbow tables. NOTE: because the salt is public, the digest
+# is NOT a defense against an attacker who can brute-force the API token —
+# confidentiality of the token rests on its own entropy (a real Finite State API
+# token is high-entropy and not enumerable); true offline-oracle resistance would
+# require a per-install secret key, which we do not have here. Digests are
+# 128-bit (32 hex) to keep accidental cross-account collisions far out of reach,
+# since the scope IS the confidentiality boundary.
+_SCOPE_HMAC_SALT = b"fs-report/ai-cache-scope/v1"
+_SCOPE_DIGEST_HEX = 32
+
+# Placeholder API tokens that do NOT identify a real account. Offline/data-file
+# runs use "dummy_token" (see cli/run.py); such runs have no account boundary,
+# so build_tenant_scope must not mint a (constant) tenant token from them.
+_PLACEHOLDER_AUTH_TOKENS = frozenset({"", "dummy_token"})
+
+
+def _scope_digest(data: str) -> str:
+    """Keyed, non-reversible digest of a cache-scope string."""
+    return hmac.new(_SCOPE_HMAC_SALT, data.encode(), hashlib.sha256).hexdigest()[
+        :_SCOPE_DIGEST_HEX
+    ]
+
+
+def normalize_project_ref(value: Any) -> str:
+    """Canonicalize a project-version identifier for use in a cache scope.
+
+    Returns ``""`` for any null-like value (``None``, ``NaN``, ``"nan"``,
+    ``"None"``, empty). A stable id is required to scope narrative safely; an
+    empty return means "no stable identity" and callers must NOT cache narrative
+    under it (they bypass the cache instead of risking a cross-project match).
+
+    Floats produced by pandas coercing an int id column (e.g. ``"12345.0"``) are
+    canonicalized back to the integer form so the same version always hashes to
+    the same scope regardless of whether it arrived via the dict or flattened
+    dataframe branch.
+    """
+    if value is None:
+        return ""
+    # float NaN is truthy, so an explicit check is required.
+    if isinstance(value, float):
+        if value != value:  # NaN
+            return ""
+        # 12345.0 -> "12345"; keep genuine fractional ids intact (unexpected).
+        value = int(value) if value.is_integer() else value
+    text = str(value).strip()
+    if text.lower() in _NULL_REF_TOKENS:
+        return ""
+    # "12345.0" (string form of a pandas-coerced int id) -> "12345".
+    if text.endswith(".0") and text[:-2].isdigit():
+        text = text[:-2]
+    return text
+
+
+def build_tenant_scope(domain: str | None, auth_token: str | None) -> str:
+    """Build a stable tenant-boundary token from the platform host + API token.
+
+    The confidentiality boundary is the *account*, identified by the API token —
+    NOT the host: a single host (e.g. ``platform.finitestate.io``) serves many
+    accounts. A real token is therefore REQUIRED; without one this returns ``""``
+    (no tenant boundary). That covers domain-only callers and offline/data-file
+    runs, whose token is the shared placeholder ``dummy_token`` — treating it as
+    a real tenant would give every offline user the same constant token and
+    defeat callers that rely on the tenant boundary (e.g. the name-scoped CRP
+    path, which bypasses its cache when there is no tenant).
+
+    An empty tenant token is safe: cross-project isolation still comes from the
+    per-item ``project_version_id`` scope, which bypasses the cache when absent.
+    The domain is folded in (so the same token across staging/prod differs), but
+    only once a real token is present.
+    """
+    token = (auth_token or "").strip()
+    if token in _PLACEHOLDER_AUTH_TOKENS:
+        return ""
+    domain = (domain or "").strip().lower()
+    return _scope_digest(f"{domain}\x1f{token}")
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -396,6 +495,7 @@ class LLMClient:
         model_high: str | None = None,
         model_low: str | None = None,
         deployment_context: Any | None = None,
+        cache_scope: str | None = None,
     ) -> None:
         """
         Initialize the LLM client.
@@ -408,8 +508,14 @@ class LLMClient:
             model_high: Override for the summary model (high-capability tier).
             model_low: Override for the component model (fast/cheap tier).
             deployment_context: Optional DeploymentContext for prompt customization.
+            cache_scope: Tenant-boundary token (see ``build_tenant_scope``) mixed
+                into every project-scoped narrative cache key so one account's
+                AI text is never served to another account sharing the local
+                ``cache.db``. Optional; per-item project identity provides the
+                primary isolation, this adds the account boundary on top.
         """
         self._deployment_ctx = deployment_context
+        self._cache_scope = (cache_scope or "").strip()
 
         # Resolve provider and API key
         self._provider, self.api_key = self._detect_provider(provider)
@@ -467,20 +573,28 @@ class LLMClient:
             conn.close()
 
     def _init_cache_tables(self) -> None:
-        """Ensure remediation cache tables exist."""
+        """Ensure remediation cache tables exist and are at the current schema.
+
+        Owns the AI narrative tables (``cve_remediations`` and
+        ``ai_summary_cache``) outright: they are intentionally NOT declared in
+        ``sqlite_cache.SCHEMA_SQL`` so a concurrent ``SQLiteCache`` init cannot
+        recreate them under an older, unscoped layout. The generic project-blind
+        fact tables (``cve_detail_cache`` / ``exploit_detail_cache``) are shared
+        and left untouched by the version purge.
+        """
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         with self._connection() as conn:
+            # Create the stable tables first (including the unchanged
+            # ai_summary_cache and the LLM-owned schema-version marker) so the
+            # version purge below can DELETE from ai_summary_cache even on a
+            # brand-new DB. A dedicated meta row is used rather than PRAGMA
+            # user_version because cache.db is shared with SQLiteCache when no
+            # domain is configured, and user_version is a single file-global int
+            # the two subsystems would clobber.
             conn.executescript("""
-                CREATE TABLE IF NOT EXISTS cve_remediations (
-                    cve_id TEXT PRIMARY KEY,
-                    component_name TEXT,
-                    fix_version TEXT,
-                    guidance TEXT,
-                    workaround TEXT,
-                    code_search_hints TEXT,
-                    generated_by TEXT,
-                    generated_at TEXT,
-                    confidence TEXT
+                CREATE TABLE IF NOT EXISTS llm_cache_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
                 );
                 CREATE TABLE IF NOT EXISTS cve_detail_cache (
                     finding_id TEXT PRIMARY KEY,
@@ -500,21 +614,50 @@ class LLMClient:
                     generated_at TEXT
                 );
             """)
-            # Migrate: add project_notes column if missing
-            try:
-                conn.execute("SELECT project_notes FROM cve_remediations LIMIT 1")
-            except sqlite3.OperationalError:
+            row = conn.execute(
+                "SELECT value FROM llm_cache_meta WHERE key = 'schema_version'"
+            ).fetchone()
+            stored_version = row[0] if row else None
+            if stored_version != _LLM_CACHE_SCHEMA_VERSION:
+                # Older entries were keyed without project/tenant scope and may
+                # hold another project's/customer's AI narrative. Discard them:
+                # drop cve_remediations outright (its PRIMARY KEY changes, which
+                # SQLite cannot ALTER in place) and delete the narrative rows
+                # from ai_summary_cache while preserving the project-blind
+                # library-fact rows (identity / applicability).
+                conn.execute("DROP TABLE IF EXISTS cve_remediations")
+                placeholders = ",".join(["?"] * len(_FACT_SUMMARY_SCOPES))
                 conn.execute(
-                    "ALTER TABLE cve_remediations ADD COLUMN project_notes TEXT"
+                    f"DELETE FROM ai_summary_cache "  # noqa: S608 - fixed placeholders
+                    f"WHERE scope IS NULL OR scope NOT IN ({placeholders})",
+                    _FACT_SUMMARY_SCOPES,
                 )
-            # Migrate: add verdict + rationale columns if missing
-            for col, default in [("verdict", "'affected'"), ("rationale", "''")]:
-                try:
-                    conn.execute(f"SELECT {col} FROM cve_remediations LIMIT 1")
-                except sqlite3.OperationalError:
-                    conn.execute(
-                        f"ALTER TABLE cve_remediations ADD COLUMN {col} TEXT DEFAULT {default}"
-                    )
+                conn.execute(
+                    "INSERT OR REPLACE INTO llm_cache_meta (key, value) "
+                    "VALUES ('schema_version', ?)",
+                    (_LLM_CACHE_SCHEMA_VERSION,),
+                )
+            # (Re)create cve_remediations at the current schema. After a version
+            # purge it was just dropped, so this makes the new composite
+            # (cve_id, scope) primary key; on an up-to-date DB it is a no-op.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS cve_remediations (
+                    cve_id TEXT NOT NULL,
+                    scope TEXT NOT NULL DEFAULT '',
+                    component_name TEXT,
+                    fix_version TEXT,
+                    guidance TEXT,
+                    workaround TEXT,
+                    code_search_hints TEXT,
+                    generated_by TEXT,
+                    generated_at TEXT,
+                    confidence TEXT,
+                    project_notes TEXT,
+                    verdict TEXT DEFAULT 'affected',
+                    rationale TEXT DEFAULT '',
+                    PRIMARY KEY (cve_id, scope)
+                )
+            """)
 
     # =========================================================================
     # Provider helpers
@@ -789,18 +932,65 @@ class LLMClient:
     # Cache Operations
     # =========================================================================
 
-    def get_cached_remediation(self, cve_id: str) -> dict[str, Any] | None:
+    def _narrative_scope(self, project_ref: str | None) -> str | None:
+        """Return the effective cache scope for a project-specific narrative
+        entry, or ``None`` when the entry must NOT be cached (bypass).
+
+        ``project_ref`` must be a STABLE project identity (a project-version id,
+        or a joined set of them for portfolio/multi-project deliverables) — never
+        a human-chosen name like ``project_name``, which is caller-controlled and
+        collides across customers. When no stable identity is present the method
+        returns ``None`` so the caller regenerates instead of risking a
+        cross-project cache hit. The tenant token (``self._cache_scope``) is
+        folded in so the same project id under two accounts never collides.
+        """
+        ref = normalize_project_ref(project_ref)
+        if not ref:
+            return None
+        return _scope_digest(f"{self._cache_scope}\x1f{ref}")
+
+    def _component_scope(
+        self, project_ref: str | None, component_name: str, component_version: str
+    ) -> str | None:
+        """Scope for a ``cve_remediations`` row: project+tenant identity plus the
+        specific component.
+
+        Including the component means two *different* components that happen to
+        share a CVE never satisfy each other's lookup (the guidance is written
+        under every CVE in the component's group, so a bare-CVE key would let
+        component A's firmware-shaped guidance be returned for component B).
+        Returns ``None`` (bypass) when there is no stable project identity.
+        """
+        base = self._narrative_scope(project_ref)
+        if base is None:
+            return None
+        return _scope_digest(
+            f"{base}\x1fcomp\x1f{component_name}\x1f{component_version}"
+        )
+
+    def get_cached_remediation(
+        self, cve_id: str, *, scope: str | None = None
+    ) -> dict[str, Any] | None:
         """Look up cached remediation guidance for a CVE (respects TTL).
 
-        Only returns an entry if it was generated by the currently-configured
-        component model. Swapping ``--ai-model-low`` forces a fresh API call
-        rather than silently returning another model's output.
+        ``scope`` is the project+tenant identity the guidance was generated for
+        (see ``_component_scope`` / ``_narrative_scope``). It is REQUIRED: this
+        guidance is project-specific narrative, so without a scope there is no
+        safe way to know it belongs to the requesting project. A falsy scope
+        therefore skips the lookup entirely (cache bypass) rather than risk
+        serving another project's text.
+
+        Only returns an entry generated by the currently-configured component
+        model, so swapping ``--ai-model-low`` forces a fresh API call.
         """
+        if not scope:
+            return None
         try:
             with self._connection() as conn:
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
-                    "SELECT * FROM cve_remediations WHERE cve_id = ?", (cve_id,)
+                    "SELECT * FROM cve_remediations WHERE cve_id = ? AND scope = ?",
+                    (cve_id, scope),
                 ).fetchone()
                 if row:
                     row_dict = dict(row)
@@ -835,24 +1025,34 @@ class LLMClient:
                 logger.warning(f"Remediation cache unavailable: {exc}")
         return None
 
-    def cache_remediation(self, cve_id: str, remediation: dict[str, Any]) -> None:
-        """Store remediation guidance in the cache.
+    def cache_remediation(
+        self, cve_id: str, remediation: dict[str, Any], *, scope: str | None = None
+    ) -> None:
+        """Store remediation guidance in the cache under ``scope``.
+
+        ``scope`` (project+tenant identity) is REQUIRED — this text is
+        project-specific narrative and must never be written to the shared,
+        cross-project keyspace. A falsy scope skips the write (the guidance is
+        still returned to the current caller; it just isn't persisted).
 
         ``generated_by`` always reflects the active component model so that
         ``get_cached_remediation`` can reject entries written by a different
         model after a model swap. Callers may pass a ``generated_by`` override
         (e.g. tests) and it is honored as-is.
         """
+        if not scope:
+            return
         try:
             with self._connection() as conn:
                 conn.execute(
                     """INSERT OR REPLACE INTO cve_remediations
-                       (cve_id, component_name, fix_version, guidance, workaround,
-                        code_search_hints, generated_by, generated_at, confidence,
-                        project_notes, verdict, rationale)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (cve_id, scope, component_name, fix_version, guidance,
+                        workaround, code_search_hints, generated_by, generated_at,
+                        confidence, project_notes, verdict, rationale)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         cve_id,
+                        scope,
                         remediation.get("component_name", ""),
                         remediation.get("fix_version", ""),
                         remediation.get("guidance", ""),
@@ -870,7 +1070,7 @@ class LLMClient:
             try:
                 self._init_cache_tables()
                 # Retry once after creating tables
-                self.cache_remediation(cve_id, remediation)
+                self.cache_remediation(cve_id, remediation, scope=scope)
             except sqlite3.OperationalError as exc:
                 logger.warning(f"Remediation cache write failed: {exc}")
 
@@ -1127,6 +1327,7 @@ class LLMClient:
         reachability_summary: dict[str, Any] | None = None,
         nvd_snippets_map: dict[str, str] | None = None,
         project_ai_summaries: dict[str, str] | None = None,
+        project_scope: str | None = None,
     ) -> str:
         """
         Generate a strategic portfolio-level remediation summary.
@@ -1137,10 +1338,16 @@ class LLMClient:
             nvd_snippets_map: Optional map of "component:version" -> NVD fix snippet.
             project_ai_summaries: Optional map of project_name -> AI summary text
                 (from project-level LLM calls, for bottom-up cascade).
+            project_scope: Stable identity of the project SET in this portfolio
+                (e.g. the joined project_version_ids). Folded into the cache key
+                so two different portfolios with coincidentally-equal aggregate
+                counts never collide and swap strategic narrative. The summary
+                names specific projects, so this is the tenant/project boundary.
         """
-        # Build a stable cache key from the input data
-        import hashlib
-
+        # Build a stable cache key from the input data. The summary names
+        # specific projects, so it is only cached under a project scope; without
+        # one (scope is None) the cache is bypassed and the summary regenerated.
+        scope = self._narrative_scope(project_scope)
         ctx_hash = self._deployment_ctx.context_hash() if self._deployment_ctx else ""
         key_data = json.dumps(
             {
@@ -1149,6 +1356,7 @@ class LLMClient:
                 "has_nvd": bool(nvd_snippets_map),
                 "has_proj_ai": bool(project_ai_summaries),
                 "ctx": ctx_hash,
+                "scope": scope,
                 "provider": self._provider,
                 "model": self._summary_model,
             },
@@ -1158,11 +1366,12 @@ class LLMClient:
         cache_key = f"portfolio:{hashlib.sha256(key_data.encode()).hexdigest()[:16]}"
 
         # Check cache
-        cached = self.get_cached_summary(cache_key)
-        if cached is not None:
-            self._cached_count += 1
-            logger.info("Portfolio summary loaded from cache")
-            return cached
+        if scope is not None:
+            cached = self.get_cached_summary(cache_key)
+            if cached is not None:
+                self._cached_count += 1
+                logger.info("Portfolio summary loaded from cache")
+                return cached
 
         prompt = self._build_portfolio_prompt(
             portfolio_summary,
@@ -1175,7 +1384,10 @@ class LLMClient:
 
         try:
             result_text = self._call_llm(prompt, "summary", MAX_PORTFOLIO_TOKENS)
-            self.cache_summary(cache_key, "portfolio", result_text, self._summary_model)
+            if scope is not None:
+                self.cache_summary(
+                    cache_key, "portfolio", result_text, self._summary_model
+                )
             return result_text
         except Exception as e:
             logger.error(f"Portfolio summary generation failed: {e}")
@@ -1272,6 +1484,7 @@ Be specific with component names and versions. Focus on actionable guidance."""
         band_counts: dict[str, int],
         nvd_snippets_map: dict[str, str] | None = None,
         component_guidance: dict[str, dict[str, Any]] | None = None,
+        project_ref: str | None = None,
     ) -> str:
         """
         Generate a project-level remediation summary.
@@ -1282,9 +1495,14 @@ Be specific with component names and versions. Focus on actionable guidance."""
             nvd_snippets_map: Optional map of "component:version" -> NVD fix snippet.
             component_guidance: Optional map of "component:version" -> AI guidance dict
                 (from component-level LLM calls, containing fix_version, confidence, etc.).
+            project_ref: Stable project-version identity. Folded into the cache
+                key so this summary is not shared across project versions, or
+                across same-named projects in different tenants (project_name
+                alone is caller-controlled and collides).
         """
-        import hashlib
-
+        # Only cached under a project scope; without one (None) the summary,
+        # which names the project, is regenerated rather than shared.
+        scope = self._narrative_scope(project_ref)
         ctx_hash = self._deployment_ctx.context_hash() if self._deployment_ctx else ""
         key_data = json.dumps(
             {
@@ -1293,6 +1511,7 @@ Be specific with component names and versions. Focus on actionable guidance."""
                 "has_nvd": bool(nvd_snippets_map),
                 "has_comp_ai": bool(component_guidance),
                 "ctx": ctx_hash,
+                "scope": scope,
                 "provider": self._provider,
                 "model": self._summary_model,
             },
@@ -1301,11 +1520,12 @@ Be specific with component names and versions. Focus on actionable guidance."""
         )
         cache_key = f"project:{hashlib.sha256(key_data.encode()).hexdigest()[:16]}"
 
-        cached = self.get_cached_summary(cache_key)
-        if cached is not None:
-            self._cached_count += 1
-            logger.info(f"Project summary for '{project_name}' loaded from cache")
-            return cached
+        if scope is not None:
+            cached = self.get_cached_summary(cache_key)
+            if cached is not None:
+                self._cached_count += 1
+                logger.info(f"Project summary for '{project_name}' loaded from cache")
+                return cached
 
         prompt = self._build_project_prompt(
             project_name,
@@ -1317,7 +1537,10 @@ Be specific with component names and versions. Focus on actionable guidance."""
 
         try:
             result_text = self._call_llm(prompt, "summary", MAX_PROJECT_TOKENS)
-            self.cache_summary(cache_key, "project", result_text, self._summary_model)
+            if scope is not None:
+                self.cache_summary(
+                    cache_key, "project", result_text, self._summary_model
+                )
             return result_text
         except Exception as e:
             logger.error(f"Project summary generation failed for {project_name}: {e}")
@@ -1580,6 +1803,7 @@ Be specific with component names and versions."""
         exploit_details: list[dict[str, Any]] | None = None,
         reachability_info: list[dict[str, Any]] | None = None,
         nvd_fix_snippet: str = "",
+        project_ref: str | None = None,
     ) -> dict[str, Any]:
         """
         Generate component-level remediation guidance.
@@ -1592,13 +1816,19 @@ Be specific with component names and versions."""
                 reachability_label, vuln_functions, factors for each CVE.
             nvd_fix_snippet: Pre-formatted NVD fix version data to inject
                 into the prompt (from NVDClient.format_batch_for_prompt).
+            project_ref: Stable project-version identity this guidance belongs
+                to. Required to cache — the guidance is shaped by this project's
+                firmware reachability, so without a project id it is regenerated
+                every call rather than shared across projects.
 
         Returns:
             Dict with fix_version, guidance, workaround, code_search_hints
         """
-        # Check cache for each CVE
+        scope = self._component_scope(project_ref, component_name, component_version)
+
+        # Check cache for each CVE (scoped to this project+component).
         for cve_id in cve_ids:
-            cached = self.get_cached_remediation(cve_id)
+            cached = self.get_cached_remediation(cve_id, scope=scope)
             if cached:
                 self._cached_count += 1
                 return cached
@@ -1622,9 +1852,9 @@ Be specific with component names and versions."""
                 result_text, component_name, component_version
             )
 
-            # Cache for each CVE
+            # Cache for each CVE (skipped when scope is None — see cache_remediation)
             for cve_id in cve_ids:
-                self.cache_remediation(cve_id, remediation)
+                self.cache_remediation(cve_id, remediation, scope=scope)
 
             return remediation
 
@@ -2175,6 +2405,7 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
                     ),
                     reachability_info=reach_info_list if reach_info_list else None,
                     nvd_fix_snippet=nvd_snippet,
+                    project_ref=comp.get("project_ref"),
                 )
                 results[comp_key] = guidance
 
@@ -2204,48 +2435,55 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
         self,
         finding_id: str,
         prompt: str,
+        project_ref: str | None = None,
     ) -> dict[str, str]:
         """
         Generate finding-level triage guidance from a pre-built prompt.
 
-        Uses the fast (component) model. Caches by finding_id.
+        Uses the fast (component) model. Caches per project+finding.
 
         Args:
-            finding_id: The CVE/finding identifier.
+            finding_id: The CVE/finding identifier (a bare CVE id, shared across
+                projects — hence the mandatory project scope below).
             prompt: The complete triage prompt text (built by _build_triage_prompt).
+            project_ref: Stable project-version identity. The triage prompt
+                embeds this project's context (reachability, VEX status, and
+                historically the project name), so the guidance is project
+                narrative: it is cached per project and, without a project id,
+                regenerated every call rather than shared.
 
         Returns:
             Dict with priority, action, rationale, fix_version, workaround,
             code_search_hints, confidence.
         """
-        # Check cache — use ai_summary_cache with "finding:" prefix to avoid
-        # collision with component-level cve_remediations cache. Model name is
-        # part of the key so swapping models forces fresh LLM calls.
+        # ai_summary_cache "finding:" scope, keyed by project (scope) so one
+        # project's triage narrative is never served to another. Model name is
+        # part of the key so swapping models forces fresh LLM calls. When there
+        # is no stable project id, scope is None and the cache is bypassed.
+        scope = self._narrative_scope(project_ref)
         ctx_hash = self._deployment_ctx.context_hash() if self._deployment_ctx else ""
         model_tag = f"{self._provider}:{self._component_model}"
-        cache_key = (
-            f"finding:{finding_id}:{model_tag}:{ctx_hash}"
-            if ctx_hash
-            else f"finding:{finding_id}:{model_tag}"
-        )
-        cached_json = self.get_cached_summary(cache_key)
-        if cached_json is not None:
-            self._cached_count += 1
-            try:
-                result: dict[str, str] = json.loads(cached_json)
-                return result
-            except (json.JSONDecodeError, TypeError):
-                pass  # stale/corrupt entry — regenerate
+        cache_key = f"finding:{scope}:{finding_id}:{model_tag}:{ctx_hash}"
+        if scope is not None:
+            cached_json = self.get_cached_summary(cache_key)
+            if cached_json is not None:
+                self._cached_count += 1
+                try:
+                    result: dict[str, str] = json.loads(cached_json)
+                    return result
+                except (json.JSONDecodeError, TypeError):
+                    pass  # stale/corrupt entry — regenerate
 
         try:
             result_text = self._call_llm(prompt, "component", MAX_COMPONENT_TOKENS)
             guidance = self._parse_finding_response(result_text, finding_id)
-            self.cache_summary(
-                cache_key,
-                "finding",
-                json.dumps(guidance, default=str),
-                self._component_model,
-            )
+            if scope is not None:
+                self.cache_summary(
+                    cache_key,
+                    "finding",
+                    json.dumps(guidance, default=str),
+                    self._component_model,
+                )
             return guidance
         except Exception as e:
             logger.error(f"Finding guidance failed for {finding_id}: {e}")
@@ -2308,13 +2546,18 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
 
     def generate_batch_finding_guidance(
         self,
-        findings: list[tuple[str, str]],
+        findings: Sequence[tuple[Any, ...]],
     ) -> dict[str, dict[str, str]]:
         """
         Generate triage guidance for multiple findings.
 
         Args:
-            findings: List of (finding_id, prompt_text) tuples.
+            findings: List of ``(finding_id, prompt_text)`` or
+                ``(finding_id, prompt_text, project_ref)`` tuples. The optional
+                third element is the stable project-version identity used to
+                scope the per-finding cache; when omitted (2-tuple) the entry is
+                not cached (regenerated each call) so narrative is never shared
+                across projects.
 
         Returns:
             Dict mapping finding_id to guidance dict.
@@ -2327,10 +2570,14 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
         with tqdm(
             findings, desc="Generating AI finding guidance", unit=" findings"
         ) as pbar:
-            for finding_id, prompt in pbar:
+            for entry in pbar:
+                finding_id, prompt = entry[0], entry[1]
+                project_ref = entry[2] if len(entry) > 2 else None
                 pbar.set_postfix_str(finding_id[:40])
                 prev_cached = self._cached_count
-                guidance = self.generate_finding_guidance(finding_id, prompt)
+                guidance = self.generate_finding_guidance(
+                    finding_id, prompt, project_ref=project_ref
+                )
                 results[finding_id] = guidance
                 was_cached = self._cached_count > prev_cached
                 # Only rate-limit when we actually hit the API
@@ -2350,18 +2597,38 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
     # Action-Level Deep Analysis (Summary model — expensive)
     # =========================================================================
 
-    def generate_action_analysis(self, action_key: str, agent_prompt: str) -> str:
+    def _action_cache_key(self, action_key: str, scope: str | None) -> str | None:
+        """Compose the ai_summary_cache key for an action/combined analysis, or
+        ``None`` when the analysis must NOT be cached (bypass).
+
+        The deep analysis names its affected projects, so it is project-specific
+        narrative. It is cached only under a project scope (prepended so one
+        project's analysis is never served to another sharing a
+        ``component:version`` action key); without a stable scope the method
+        returns ``None`` and the caller regenerates rather than sharing an
+        unscoped entry.
+        """
+        eff = self._narrative_scope(scope)
+        if eff is None:
+            return None
+        return f"{eff}:{action_key}:{self._provider}:{self._summary_model}"
+
+    def generate_action_analysis(
+        self, action_key: str, agent_prompt: str, *, scope: str | None = None
+    ) -> str:
         """Send an action's agent prompt to the summary model for deep analysis."""
-        keyed = f"{action_key}:{self._provider}:{self._summary_model}"
-        cached = self.get_cached_summary(keyed)
-        if cached is not None:
-            self._cached_count += 1
-            return cached
+        keyed = self._action_cache_key(action_key, scope)
+        if keyed is not None:
+            cached = self.get_cached_summary(keyed)
+            if cached is not None:
+                self._cached_count += 1
+                return cached
 
         wrapped = _ANALYSIS_WRAPPER + agent_prompt
         try:
             text = self._call_llm(wrapped, "summary", MAX_ANALYSIS_TOKENS)
-            self.cache_summary(keyed, "action", text, self._summary_model)
+            if keyed is not None:
+                self.cache_summary(keyed, "action", text, self._summary_model)
             return text
         except Exception as e:
             logger.error(f"Action analysis failed for {action_key}: {e}")
@@ -2369,18 +2636,24 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
 
     def generate_batch_action_analysis(
         self,
-        actions: list[tuple[str, str]],
+        actions: Sequence[tuple[Any, ...]],
     ) -> dict[str, str]:
-        """Generate deep analysis for multiple actions with rate limiting."""
+        """Generate deep analysis for multiple actions with rate limiting.
+
+        Each action is ``(action_key, agent_prompt)`` or
+        ``(action_key, agent_prompt, project_scope)``.
+        """
         results: dict[str, str] = {}
         from tqdm import tqdm
 
         with tqdm(actions, desc="Generating AI analysis", unit=" actions") as pbar:
-            for action_key, agent_prompt in pbar:
+            for entry in pbar:
+                action_key, agent_prompt = entry[0], entry[1]
+                scope = entry[2] if len(entry) > 2 else None
                 pbar.set_postfix_str(action_key[:40])
                 prev = self._cached_count
                 results[action_key] = self.generate_action_analysis(
-                    action_key, agent_prompt
+                    action_key, agent_prompt, scope=scope
                 )
                 if self._cached_count == prev:  # was not a cache hit → rate limit
                     time.sleep(0.5)
@@ -2395,13 +2668,16 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
         action_key: str,
         context_prompt: str,
         cve_count: int = 1,
+        *,
+        scope: str | None = None,
     ) -> tuple[dict[str, str], str]:
         """Single high-model call: structured verdict + deep analysis."""
-        keyed = f"{action_key}:{self._provider}:{self._summary_model}"
-        cached = self.get_cached_summary(keyed)
-        if cached is not None:
-            self._cached_count += 1
-            return self._parse_combined_response(cached)
+        keyed = self._action_cache_key(action_key, scope)
+        if keyed is not None:
+            cached = self.get_cached_summary(keyed)
+            if cached is not None:
+                self._cached_count += 1
+                return self._parse_combined_response(cached)
 
         wrapped = build_combined_analysis_wrapper(self._deployment_ctx) + context_prompt
         max_tokens = min(
@@ -2410,7 +2686,8 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
         )
         try:
             text = self._call_llm(wrapped, "summary", max_tokens)
-            self.cache_summary(keyed, "action_combined", text, self._summary_model)
+            if keyed is not None:
+                self.cache_summary(keyed, "action_combined", text, self._summary_model)
             return self._parse_combined_response(text)
         except Exception as e:
             logger.error(f"Combined analysis failed for {action_key}: {e}")
@@ -2418,21 +2695,24 @@ CONFIDENCE: <high (exact fix version confirmed via NVD data or advisory), medium
 
     def generate_batch_combined_analysis(
         self,
-        actions: list[tuple[str, str, int]],
+        actions: Sequence[tuple[Any, ...]],
     ) -> dict[str, tuple[dict[str, str], str]]:
         """Batch combined analysis with rate limiting.
 
-        Each action is a tuple of (action_key, context_prompt, cve_count).
+        Each action is ``(action_key, context_prompt, cve_count)`` or
+        ``(action_key, context_prompt, cve_count, project_scope)``.
         """
         results: dict[str, tuple[dict[str, str], str]] = {}
         from tqdm import tqdm
 
         with tqdm(actions, desc="Generating AI analysis", unit=" actions") as pbar:
-            for action_key, context_prompt, cve_count in pbar:
+            for entry in pbar:
+                action_key, context_prompt, cve_count = entry[0], entry[1], entry[2]
+                scope = entry[3] if len(entry) > 3 else None
                 pbar.set_postfix_str(action_key[:40])
                 prev = self._cached_count
                 results[action_key] = self.generate_combined_action_analysis(
-                    action_key, context_prompt, cve_count=cve_count
+                    action_key, context_prompt, cve_count=cve_count, scope=scope
                 )
                 if self._cached_count == prev:
                     time.sleep(0.5)

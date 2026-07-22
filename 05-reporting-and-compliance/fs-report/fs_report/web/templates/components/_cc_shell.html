@@ -39,6 +39,10 @@
     pinned: {
       report: {{ pinned_report | tojson }},
       project: {{ pinned_project | tojson }},
+      /* Unambiguous project ID companion to `project` (the name). Seeds
+         SCOPE.projectId so a pinned/R-key/palette launch resolves the exact
+         project among same-named ones. "" for a folder-only/older pin. */
+      projectId: {{ pinned_project_id | tojson }},
       version: {{ pinned_version | tojson }},
       /* Folder-targeting (§4): the resolved folder ID (seeds SCOPE.folder for
          the R-key / palette / cross-page launches via fast-run.js). "" when

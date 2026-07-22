@@ -109,8 +109,20 @@ function initScopeDropdowns(opts) {
         onChange({
             folder:  hasFolder ? (folderSel.value || '') : '',
             project: projectSel.value || '',
+            /* Companion project ID (unambiguous across same-named projects in
+               different folders).  The option VALUE stays the name for display;
+               `data-pid` carries the ID.  Empty for "All projects" and for the
+               stale-fallback option (no pid) — callers fall back to the name. */
+            projectId: selectedProjectId(),
             version: versionSel.value || ''
         });
+    }
+
+    /* The selected project option's ID (from its data-pid), or '' when none
+       (the "all" option, or a stale-fallback option that has no data-pid). */
+    function selectedProjectId() {
+        var opt = projectSel.options[projectSel.selectedIndex];
+        return (opt && opt.dataset && opt.dataset.pid) ? opt.dataset.pid : '';
     }
 
     /* Disable + clear the version select when no specific project is chosen
@@ -127,8 +139,14 @@ function initScopeDropdowns(opts) {
         }
     }
 
-    function populateSelect(sel, items, valueFn, labelFn, currentValue, emptyLabel) {
+    /* `idFn` (optional): when provided, each option is tagged with
+       data-pid=idFn(item).  Used for the project select so an unambiguous ID
+       rides alongside the name-valued option (the "(all)" option is left
+       untagged).  Restore still matches on value/label, so a legacy name-based
+       saved value keeps working. */
+    function populateSelect(sel, items, valueFn, labelFn, currentValue, emptyLabel, idFn, currentId) {
         var prevValue = currentValue || sel.value || '';
+        var prevId = currentId || '';
         sel.innerHTML = '';
         var allOpt = document.createElement('option');
         allOpt.value = '';
@@ -138,17 +156,35 @@ function initScopeDropdowns(opts) {
             var o = document.createElement('option');
             o.value = valueFn(item);
             o.textContent = labelFn(item);
+            if (idFn) o.dataset.pid = idFn(item);
             sel.appendChild(o);
         });
-        // Restore previous value if it exists in the list (by value or label).
-        if (prevValue) {
+        // Restore the previous selection if it exists in the list.
+        if (prevValue || prevId) {
             var found = false;
-            for (var i = 0; i < sel.options.length; i++) {
-                if (sel.options[i].value === prevValue ||
-                    sel.options[i].textContent === prevValue) {
-                    sel.selectedIndex = i;
-                    found = true;
-                    break;
+            /* Prefer an exact ID (data-pid) match so a saved/pinned project
+               restores the RIGHT one among same-named projects across folders —
+               not the first name match — and a cascade re-seed can't overwrite a
+               correct pinned ID with a wrong same-named option's pid (M1-2).
+               Falls back to value/label for legacy name-only saved values. */
+            if (prevId) {
+                for (var j = 0; j < sel.options.length; j++) {
+                    var oj = sel.options[j];
+                    if (oj.dataset && oj.dataset.pid === prevId) {
+                        sel.selectedIndex = j;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found && prevValue) {
+                for (var i = 0; i < sel.options.length; i++) {
+                    if (sel.options[i].value === prevValue ||
+                        sel.options[i].textContent === prevValue) {
+                        sel.selectedIndex = i;
+                        found = true;
+                        break;
+                    }
                 }
             }
             /* Fallback: the saved value is absent from the API list (e.g. stale
@@ -158,7 +194,7 @@ function initScopeDropdowns(opts) {
                still see what was saved and change it if needed.  This is required
                by the inspector override selects, whose :data-value seeds the saved
                override value but whose option list is populated asynchronously. */
-            if (!found) {
+            if (!found && prevValue) {
                 var fallback = document.createElement('option');
                 fallback.value = prevValue;
                 fallback.textContent = prevValue;
@@ -220,6 +256,10 @@ function initScopeDropdowns(opts) {
         setLoading(versionSel, true);
 
         var savedProject = projectSel.getAttribute('data-value') || projectSel.value || '';
+        /* Companion pinned/saved project ID (data-project-id) so the restore can
+           pick the EXACT same-named project across folders, not the first name
+           match (M1-2).  Empty when the seeder provides none → name-only restore. */
+        var savedProjectId = projectSel.getAttribute('data-project-id') || '';
         var savedFolder  = hasFolder ? (folderSel.getAttribute('data-value') || folderSel.value || '') : '';
         var savedVersion = versionSel.getAttribute('data-value') || versionSel.value || '';
 
@@ -254,11 +294,11 @@ function initScopeDropdowns(opts) {
                 setLoading(folderSel, false);
 
                 // Populate projects (filtered if folder selected), then load versions
-                filterProjects(savedProject).then(function() {
+                filterProjects(savedProject, savedProjectId).then(function() {
                     setLoading(projectSel, false);
                     var vp;
                     if (projectSel.value) {
-                        vp = loadVersions(projectSel.value, savedVersion);
+                        vp = loadVersions(projectSel.value, savedVersion, selectedProjectId());
                     } else {
                         /* No specific project → disable + clear version (and hide
                            its spinner).  Must NOT setLoading(false) here — that
@@ -293,12 +333,14 @@ function initScopeDropdowns(opts) {
                     function(p) { return p.name || String(p.id); },
                     function(p) { return p.name || String(p.id); },
                     savedProject,
-                    projectEmptyLabel
+                    projectEmptyLabel,
+                    function(p) { return String(p.id); },
+                    savedProjectId
                 );
                 setLoading(projectSel, false);
                 var vp;
                 if (projectSel.value) {
-                    vp = loadVersions(projectSel.value, savedVersion);
+                    vp = loadVersions(projectSel.value, savedVersion, selectedProjectId());
                 } else {
                     /* No specific project → disable + clear version (see the
                        folder-path note above; setLoading(false) would re-enable). */
@@ -320,7 +362,7 @@ function initScopeDropdowns(opts) {
 
     /* ── filter projects by selected folder ──────────────────── */
     /* Only called when hasFolder is true. */
-    function filterProjects(restoreValue) {
+    function filterProjects(restoreValue, restoreId) {
         var folderId = folderSel.value;
         if (!folderId) {
             // No folder selected — show all projects
@@ -332,7 +374,9 @@ function initScopeDropdowns(opts) {
                 function(p) { return p.name || String(p.id); },
                 function(p) { return p.name || String(p.id); },
                 restoreValue,
-                projectEmptyLabel
+                projectEmptyLabel,
+                function(p) { return String(p.id); },
+                restoreId
             );
             return Promise.resolve();
         }
@@ -361,7 +405,9 @@ function initScopeDropdowns(opts) {
                 function(p) { return p.name || String(p.id); },
                 function(p) { return p.name || String(p.id); },
                 restoreValue,
-                projectEmptyLabel
+                projectEmptyLabel,
+                function(p) { return String(p.id); },
+                restoreId
             );
             setLoading(projectSel, false);
         })
@@ -384,7 +430,7 @@ function initScopeDropdowns(opts) {
        the saved version restored (C2: so loadAll can fire onReady AFTER the
        async version restore lands).  The synchronous-clear branches resolve
        immediately. */
-    function loadVersions(projectValue, restoreValue) {
+    function loadVersions(projectValue, restoreValue, projectId) {
         if (!projectValue) {
             /* No specific project → version is not applicable: clear + disable
                (mirrors syncVersionEnabled; version is project-specific). */
@@ -394,12 +440,28 @@ function initScopeDropdowns(opts) {
             hideSpinner(versionSel);
             return Promise.resolve();
         }
-        // Find project by name to get its id (search folder-scoped list first, then all)
-        var proj = folderProjects.find(function(p) {
-            return (p.name || String(p.id)) === projectValue || String(p.id) === projectValue;
-        }) || allProjects.find(function(p) {
-            return (p.name || String(p.id)) === projectValue || String(p.id) === projectValue;
-        });
+        /* Resolve the project by the SELECTED OPTION's id (data-pid) when known —
+           consistent with how a launch resolves it (selectedProjectId()). With
+           duplicate NAMES across folders, resolving by name alone loads project
+           A's versions while the run submits project B's id (mismatch). Prefer an
+           explicit pid (callers pass selectedProjectId()); fall back to the live
+           selected option's pid, then to the legacy name match for id-less/legacy
+           values. */
+        var pid = (projectId != null && projectId !== '')
+            ? String(projectId) : selectedProjectId();
+        var proj = null;
+        if (pid) {
+            proj = folderProjects.find(function(p) { return String(p.id) === pid; })
+                || allProjects.find(function(p) { return String(p.id) === pid; });
+        }
+        if (!proj) {
+            // Fall back to name match (search folder-scoped list first, then all).
+            proj = folderProjects.find(function(p) {
+                return (p.name || String(p.id)) === projectValue || String(p.id) === projectValue;
+            }) || allProjects.find(function(p) {
+                return (p.name || String(p.id)) === projectValue || String(p.id) === projectValue;
+            });
+        }
         if (!proj) {
             setLoading(versionSel, false);
             return Promise.resolve();
@@ -472,7 +534,9 @@ function initScopeDropdowns(opts) {
                (prevValue becomes '' instead of falling back to the old value). */
             versionSel.value = '';
             if (projectSel.value) {
-                loadVersions(projectSel.value, '');
+                /* Pass the freshly-selected option's id so a duplicate NAME loads
+                   the versions of the project the user actually picked (C5). */
+                loadVersions(projectSel.value, '', selectedProjectId());
             } else {
                 /* Project = "All projects" → disable + clear version. */
                 syncVersionEnabled();

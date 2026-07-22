@@ -497,7 +497,17 @@ async def pin(
     palette can seed ``SCOPE.folder`` from ``CC.pinned.folder`` on any page.
     """
     form = await request.form()
-    for key in ("pinned_report", "pinned_project", "pinned_version", "pinned_folder"):
+    for key in (
+        "pinned_report",
+        "pinned_project",
+        # Unambiguous project ID companion to pinned_project (the name). The name
+        # stays the displayed pin value; the ID rides alongside so a pinned /
+        # R-key / palette launch resolves the exact project among same-named
+        # projects in different folders.
+        "pinned_project_id",
+        "pinned_version",
+        "pinned_folder",
+    ):
         val = form.get(key)
         if val is not None:
             state[key] = str(val)
@@ -508,6 +518,7 @@ async def pin(
             for k in (
                 "pinned_report",
                 "pinned_project",
+                "pinned_project_id",
                 "pinned_version",
                 "pinned_folder",
             )

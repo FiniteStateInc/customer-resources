@@ -1,14 +1,15 @@
 name: "License Report"
 category: assessment
-card_description: "Component licenses grouped by risk category, with a distribution chart."
+card_description: "Component licenses grouped by risk category and policy status, with risk + policy distribution charts."
 nav_category: Compliance
 chart_libraries: ["echarts"]
 template: "license_report.html"
 description: >
   License risk analysis report showing component licenses grouped by risk
   category (Permissive, Weak Copyleft, Strong Copyleft, Proprietary/Restricted,
-  Unknown). Includes pie chart of risk distribution and tabular breakdown.
-  Works at both project and folder level.
+  Unknown). Includes risk and policy distribution charts plus a per-component
+  detail table (Folder, Project, Component, Version, Risk Category, License,
+  Policy Status, URL). Works at both project and folder level.
 execution_order: 35
 auto_run: false
 
@@ -30,3 +31,7 @@ output:
       chart: doughnut
       title: "License Risk Distribution"
       description: "Components grouped by license risk category"
+    - name: policy_pie
+      chart: doughnut
+      title: "License Policy Distribution"
+      description: "Components grouped by license policy status"

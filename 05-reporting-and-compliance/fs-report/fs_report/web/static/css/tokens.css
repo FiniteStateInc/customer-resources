@@ -100,6 +100,9 @@
   --ink:#FFFFFF; --ink-strong:#E5E7EB; --ink-body:#B5BCC8;
   --ink-dim:#B5BCC8; --ink-mute:#8893A8; --ink-faint:#5A6580;
   --accent:#5EEAD4; --accent-grad-end:#2DD4BF; --accent-rgb:94,234,212;
+  /* Dark ink for glyphs/labels drawn ON an accent/teal fill or pale-accent tint
+     (theme-independent). Used by primary buttons + the run-canvas check mark. */
+  --ink-on-accent:#06231F;
   --sev-critical:#F87171; --sev-critical-bg:rgba(248,113,113,.12); --sev-critical-strong:#F87171;
   --sev-high:#FB923C; --sev-high-bg:rgba(251,146,60,.12);
   --sev-medium:#FBBF24; --sev-medium-bg:rgba(251,191,36,.12);
@@ -146,4 +149,11 @@ body.light{
   --scan-sca:#2563EB; --scan-config:#D97706; --scan-vuln:#0D9488;
   --scan-sast:#7C3AED; --scan-source-sca:#DB2777; --scan-sbom:#64748B;
   --scan-other:#647088;
+  /* Nav-category hues — deeper variants for contrast on the light surfaces.
+     The dark-mode values (teal/cyan/violet/gold/rose ~300-400 shades) are too
+     pale to distinguish as report-card / command-center / run-kind icons on a
+     white card; deepen them the same way --scan-* above is deepened. */
+  --nav-executive:#0D9488; --nav-investigation:#0891B2;
+  --nav-remediation:#7C3AED; --nav-compliance:#B45309;
+  --nav-exploitability-evidence:#E11D48;
 }

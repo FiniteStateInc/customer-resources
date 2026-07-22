@@ -69,19 +69,21 @@ def _forge_builder_enabled() -> bool:
 # read once here (one read path for {slug}, {model}, and replay bodies), applied
 # as an overlay on the in-memory model's global scope before preflight/run, and
 # is NEVER persisted back to the store.
-_SCOPE_OVERRIDE_KEYS = ("project", "folder", "version")
+_SCOPE_OVERRIDE_KEYS = ("project", "project_id", "folder", "version")
 
 
 def _parse_scope_override(raw: object) -> dict[str, str] | None:
     """Validate + normalize a request body's ``scope_override``.
 
-    Returns a ``{project, folder, version}`` dict of trimmed strings, or
-    ``None`` when absent / an empty object (no scope intent).  ``folder`` is a
-    folder **ID** (matching ``global.folder_filter``), not a display name.
+    Returns a ``{project, project_id, folder, version}`` dict of trimmed
+    strings, or ``None`` when absent / an empty object (no scope intent).
+    ``folder`` is a folder **ID** (matching ``global.folder_filter``), not a
+    display name; ``project_id`` is the unambiguous project ID companion to
+    ``project`` (the name), used to resolve same-named projects across folders.
     Raises :class:`ValueError` for a malformed shape — a non-object, an
-    **unknown key** (so a typo like ``project_id`` fails loudly instead of
-    silently clearing scope to portfolio), or a non-string field — so the
-    caller can return 400.
+    **unknown key** (so a typo like ``projct`` fails loudly instead of silently
+    clearing scope to portfolio), or a non-string field — so the caller can
+    return 400.
     """
     if raw is None:
         return None
@@ -123,6 +125,10 @@ def _apply_scope_override(model: dict, override: dict[str, str]) -> None:
     project = override.get("project", "")
     folder = override.get("folder", "")
     g["project_filter"] = project
+    # Project ID companion (name stays the visible target): resolves the exact
+    # project among same-named ones. Only alongside a project — a folder-only /
+    # portfolio override clears it so no stale ID lingers.
+    g["project_id"] = override.get("project_id", "") if project else ""
     g["folder_filter"] = "" if project else folder
     g["version_filter"] = override.get("version", "")
 
@@ -646,6 +652,7 @@ async def run_workflow(
         WorkflowPreflightError,
         _execute_workflow,
         _register_workflow_run,
+        _workflow_scope,
         workflow_preflight,
     )
 
@@ -820,7 +827,15 @@ async def run_workflow(
     cancel_event = threading.Event()
 
     state_data = state.to_dict()
-    _register_workflow_run(run_id, model, state_data, queue, cancel_event, replay)
+    # C2: precompute the monitor scope label OFF the event loop. _workflow_scope →
+    # _run_scope_label → _project_folder_parts does a blocking httpx GET (the
+    # folder breadcrumb). run_workflow is an async handler, so resolving it inline
+    # (as _register_workflow_run does by default) would stall the loop up to the
+    # GET's 10s timeout. Resolve it in a worker thread and pass it in.
+    scope = await asyncio.to_thread(_workflow_scope, model, state_data)
+    _register_workflow_run(
+        run_id, model, state_data, queue, cancel_event, replay, scope=scope
+    )
 
     thread = threading.Thread(
         target=_execute_workflow,

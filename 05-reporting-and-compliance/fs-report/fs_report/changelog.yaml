@@ -1,4 +1,49 @@
 releases:
+  - version: "2.0.2"
+    date: "2026-07-22"
+    changes:
+      - report: "AI Remediation Caching"
+        type: fixed
+        description: "**Security fix: AI-generated remediation narrative could leak across customers.** The AI content cache (`~/.fs-report/cache.db`) keyed cached narrative by CVE/finding and provider/model only, with no project or tenant scope, so AI-guided remediation text generated during one project's triage run could later be served **verbatim** to an unrelated project — including customer-identifying text baked into the original prompt. The cache is now scoped by `(tenant, project)` — tenant is `hash(domain + auth_token)`, project is the stable `project_version_id`; a missing or degraded identity forces regeneration rather than a cross-project match. The triage prompt no longer includes the literal project name, so the shareable `--ai-prompts` file can't name a customer either. A cache schema-version bump automatically purges narrative rows cached under the old unscoped keys on first run after upgrading — no manual cache-clear needed. Library-fact caches that are project-blind by design (CVE identity/applicability, NVD detail) are unaffected."
+      - report: "Web UI"
+        type: fixed
+        description: "Light-mode contrast fixes: the Builder's Run button, the Run page's primary actions (Replay, the expired-run \"Report History\" link), report-/workflow-card category icons, and run-log text on the dark log surface were all styled for the dark canvas and read poorly or were invisible in light mode. All now meet WCAG AA (text) or the 3:1 graphical minimum (icons)."
+      - report: "Report History"
+        type: added
+        description: "Report History rows now show a human folder breadcrumb instead of a raw folder ID or a bare project name for folder- or project-scoped runs — e.g. `MartinFolder > MartinProject` instead of just `MartinProject`, joined with ` > ` (nested folders show the full path). Portfolio / multi-project runs are unchanged."
+      - report: "Web UI (Run Bar & Builder)"
+        type: fixed
+        description: "Fixed report runs failing with `Could not resolve version name` when the launch scope selected a project by name and multiple projects shared that name across different folders (the engine resolved the first same-named match, which could be the wrong folder — e.g. 3 projects named `Tenere Common` on one tenant). The web UI now carries the project **ID** behind the scenes for resolution across the run bar, prerun modal, and Workflow Builder (including saved workflow/compound specs on reload) — the project **name** remains the only value shown or stored, no IDs on screen."
+      - report: "Running Reports"
+        type: added
+        description: "The Running Reports monitor (plus the `/runs` index and the run-canvas source node) now shows the full folder breadcrumb in its scope line — e.g. `Root > 4NEO-1.11.0-QA-SNAPSHOT > Tenere Common @ 2026-07-09` — matching Report History."
+      - report: "License Report"
+        type: added
+        description: "Detail table gains three columns and a new column order: `Folder, Project, Component, Version, Risk Category, License, Policy Status, URL`. **Folder** is each component's own project folder breadcrumb (root→leaf, e.g. `Root > 4NEO-1.11.0-QA-SNAPSHOT`) — populated even on folder- or portfolio-scoped runs, and distinguishes same-named projects living in different folders. **Project** is now always populated (previously blank when a version-scoped fetch returned components without a per-record project). **URL** links to the license reference: the platform's own `licenseDetails[].url` when present, else a synthesized `https://spdx.org/licenses/<id>.html` (covers every SPDX id, including exception-bearing ones like `GPL-2.0-with-classpath-exception`) — blank only for free-text names or unresolved compound expressions with no single SPDX id. A new **License policy distribution** doughnut chart (Violation / Warning / Permitted / Unknown) renders alongside the existing risk-distribution chart."
+      - report: "License Report"
+        type: fixed
+        description: "**Policy Status** (Permitted / Warning / Violation / None) now reads the platform's resolved per-component `licenseDetails[].policy` first, falling back to the tenant policy map (`/config/licensePolicies`) only when a component carries no per-component policy. Fixes deprecated SPDX ids the tenant map keyed wrong — e.g. `LGPL-2.0` now correctly shows **Violation** to match the platform UI, instead of `None`."
+      - report: "License Report"
+        type: added
+        description: "Now handles SPDX **compound license expressions** (`Apache-2.0 AND GPL-3.0-only`, `(A AND B) OR C`) via a precedence-aware recursive-descent parser (`WITH` binds tightest, then `AND`, then `OR`; parentheses honored; a malformed expression degrades gracefully to a flat worst-of-all-tokens). A resolved **Concluded** license is used as-is; an unconcluded compound expression is evaluated **worst-case** — `AND` lists every branch's obligations, `OR` shows the single most-restrictive branch (or the whole winning AND-group, so co-obligations are never dropped). Two new columns: **License Expression** (the full compound string, placed before *License*) and **Attribution Required** (`TRUE` / `FALSE` / blank, placed after *Policy Status* — `FALSE` only when every governing license is in the no-attribution set: `0BSD`, `MIT-0`, `CC0`, `CC0-1.0`, `Unlicense`). Applies consistently across the summary table, per-component detail table, CSV, and XLSX."
+      - report: "License Report"
+        type: fixed
+        description: "Fixed two compound-license correctness issues found in review: a `WITH`-exception sub-license (e.g. `GPL-2.0-only WITH Linux-syscall-note`) was under-reporting risk/policy as Unknown/blank instead of Strong Copyleft/Violation; and free-text license prose containing the words \"or\"/\"and\" (e.g. `GNU Library General Public License v2 or later (LGPLv2+)`) was mis-parsed as a compound expression and mangled into fragments. Both are now handled correctly — genuine SPDX compounds are unaffected."
+      - report: "License Report"
+        type: fixed
+        description: "Fixed a caching bug that showed a **blank License** for components licensed only via the legacy `licenses` field (e.g. `jakarta.servlet-api`, `bcpkix-jdk18on`) on any cached run (the web UI defaults to a 4-hour cache) — the cached field projection had omitted that field. `generate_query_hash` now folds each endpoint's field projection into the cache key, so a projection change self-heals with a one-time re-fetch on the first run after upgrading (findings / projects / cves / components / scans) rather than silently serving stale reduced fields until TTL expiry."
+      - report: "Engine"
+        type: fixed
+        description: "Fixed report runs pinned to a project version whose **name is a bare integer** (e.g. a version literally named `1`) failing with a 404 (`versions not found`) — the numeric name was mistaken for a literal version ID and passed straight to the version-scoped endpoint. The engine now resolves by name first, falling back to treating the value as a literal ID only when no version in the project matches that name."
+      - report: "CVE Component Evidence"
+        type: fixed
+        description: "Evidence File Paths were blank on the Helix back-end: the report called the legacy `/fs/v1/projects/versions/{pvid}/components/{cid}/evidence` route, which 404s on Helix. Match evidence now works on **both** back-ends — Helix serves it from `/public/v0/components/{pvid}/{cid}/evidence` and legacy Alloy from the `/fs/v1` route. The report tries one endpoint and falls back to the other (each 404s on the wrong back-end); project-version-id shape (UUID→Helix, numeric→Alloy) only orders the attempts, so it is not a hard switch and an Alloy tenant using UUID ids still falls back correctly."
+      - report: "CVE Component Evidence"
+        type: changed
+        description: "Evidence File Paths now collapse to the top-level archive. Firmware unpacking recurses into nested archives, exploding one component into thousands of per-entry paths (e.g. `…/app.jar/META-INF/…/inner.jar/META-INF/BC2048KE.DSA`); each path is now truncated at its outermost archive boundary and deduped, so a jar with hundreds of members renders as a single row. Loose files with no archive boundary are unchanged. Recognized containers: jar/war/ear/aar/zip/apk/jmod/nupkg/whl/egg/gem/tar/gz/tgz/bz2/xz/7z/rar/rpm/deb/ipk/cab. Firmware filesystem images (squashfs/cramfs/ubifs/jffs2/ext/iso/img/cpio) are deliberately NOT collapsed — they unpack to the device root filesystem, where inner paths are the real evidence locations; an archive nested within a filesystem image still collapses at the archive boundary."
+      - report: "Component Diff"
+        type: fixed
+        description: "The comparison report's left-only / right-only component tables cap at 12 rows behind a \"Show all N components\" button, which can't fire in a static PDF — PDF readers saw a truncated table plus a dead, unclickable button. PDF/print output now force-reveals every row and drops the button, matching the existing behavior of the sibling Finding Diff and Triage Status Diff comparison reports."
   - version: "2.0.1"
     date: "2026-07-13"
     changes:

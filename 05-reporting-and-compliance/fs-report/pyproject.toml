@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "fs-report"
-version = "2.0.1"
+version = "2.0.2"
 description = "Finite State Stand-Alone Reporting Kit"
 authors = ["Finite State <support@finitestate.io>"]
 license = "FSL-1.1-MIT"

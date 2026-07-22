@@ -39,10 +39,29 @@ from typing import Any, cast
 
 import pandas as pd
 
+# Pure cache-scope helpers (real functions even when tests mock the client).
+from fs_report.llm_client import build_tenant_scope, normalize_project_ref
+
 logger = logging.getLogger(__name__)
 
 # Sentinel for "parameter not provided" (distinct from None = NVD unavailable)
 _UNSET: Any = object()
+
+
+def _run_project_ref(df: pd.DataFrame) -> str:
+    """Joined, sorted set of project-version ids in ``df`` — the run-level
+    project scope for AI narrative caches (empty string when none present)."""
+    if "project_version_id" not in df.columns:
+        return ""
+    refs = {normalize_project_ref(v) for v in df["project_version_id"]} - {""}
+    return ",".join(sorted(refs))
+
+
+def _tenant_scope(cfg: Any) -> str:
+    """Tenant-boundary cache token from the run config (domain + API token)."""
+    return build_tenant_scope(
+        getattr(cfg, "domain", None), getattr(cfg, "auth_token", None)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1540,6 +1559,7 @@ def _enrich_with_llm_guidance(
             deployment_context=(
                 additional_data.get("deployment_context") if additional_data else None
             ),
+            cache_scope=_tenant_scope(cfg),
         )
     except Exception as e:
         logger.warning(f"Failed to initialize LLM client: {e}")
@@ -1551,6 +1571,9 @@ def _enrich_with_llm_guidance(
         nvd_snippets_map = _build_nvd_snippets_map(df, _init_nvd_client(cfg))
 
     # --- Build component list for batch guidance ---
+    # project_ref scopes the guidance cache to this run's project set so it is
+    # never served to a different customer sharing the local cache.db.
+    run_project_ref = _run_project_ref(df)
     components_list = []
     for _, row in df.iterrows():
         cve_ids = json.loads(row.get("cve_ids", "[]"))
@@ -1559,6 +1582,7 @@ def _enrich_with_llm_guidance(
                 "component_name": str(row.get("component_name", "")),
                 "component_version": str(row.get("component_version", "")),
                 "cve_ids": cve_ids[:10],
+                "project_ref": run_project_ref,
             }
         )
 
@@ -1748,6 +1772,7 @@ def _enrich_with_combined_analysis(
             deployment_context=(
                 additional_data.get("deployment_context") if additional_data else None
             ),
+            cache_scope=_tenant_scope(cfg),
         )
     except Exception as e:
         logger.warning(f"Failed to initialize LLM client: {e}")
@@ -1758,31 +1783,33 @@ def _enrich_with_combined_analysis(
     if nvd_snippets_map is _UNSET or nvd_snippets_map is None:
         nvd_snippets_map = _build_nvd_snippets_map(df, _init_nvd_client(cfg))
 
-    # --- Build (action_key, context_prompt) tuples ---
+    # --- Build (action_key, context_prompt, cve_count, project_scope) tuples ---
     _deployment_ctx = (
         additional_data.get("deployment_context") if additional_data else None
     )
     _ctx_hash = _deployment_ctx.context_hash() if _deployment_ctx else ""
 
-    actions: list[tuple[str, str, int]] = []
+    actions: list[tuple[str, str, int, str]] = []
     action_keys_by_idx: dict[int, str] = {}
     for idx, (_, row) in enumerate(df.iterrows()):
         comp = str(row.get("component_name", ""))
         ver = str(row.get("component_version", ""))
         cve_ids_str = str(row.get("cve_ids", "[]"))
         key_hash = hashlib.sha256(cve_ids_str.encode()).hexdigest()[:12]
-        action_key = (
-            f"combined:{comp}:{ver}:{key_hash}:{_ctx_hash}"
-            if _ctx_hash
-            else f"combined:{comp}:{ver}:{key_hash}"
-        )
+        # The row's project-version id is baked into the action_key so two
+        # different projects that share a component:version:cve-set do NOT
+        # collapse to one entry in the results dict (which would serve project
+        # A's analysis into project B's row), and is also passed as the cache
+        # scope so the persisted analysis is tenant+project isolated.
+        pvid = normalize_project_ref(row.get("project_version_id", ""))
+        action_key = f"combined:{comp}:{ver}:{key_hash}:{pvid}:{_ctx_hash}"
         action_keys_by_idx[idx] = action_key
 
         comp_key = f"{comp}:{ver}"
         nvd_snippet = nvd_snippets_map.get(comp_key, "")
         context_prompt = _build_combined_context_prompt(row, nvd_snippet)
         cve_count = int(row.get("cve_count", 1))
-        actions.append((action_key, context_prompt, cve_count))
+        actions.append((action_key, context_prompt, cve_count, pvid))
 
     if not actions:
         df["ai_analysis"] = ""

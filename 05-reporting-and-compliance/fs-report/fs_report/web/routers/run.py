@@ -201,6 +201,11 @@ _RUN_STR_KEYS: tuple[str, ...] = (
     "output_dir",
     "cache_ttl",
     "project_filter",
+    # Unambiguous project ID companion to project_filter (the name). The name
+    # stays the user-visible/logged value; the ID (when present) is what the
+    # engine resolves against, so same-named projects across folders don't
+    # collide. Folded into the engine's project_filter in _build_engine_config.
+    "project_id",
     "folder_filter",
     "version_filter",
     "finding_types",
@@ -821,6 +826,10 @@ def clean_version_comparison_scope(
 # Scope keys that follow PRESENT-KEY clearing semantics in ``start_run`` (#27).
 _SCOPE_PRESENT_KEYS: tuple[str, ...] = (
     "project_filter",
+    # Present-empty clears a stale inherited project ID companion when the user
+    # switches to "all projects" (or a different, name-only selection), so a
+    # prior run's ID can never linger in state and mis-resolve a later run.
+    "project_id",
     "folder_filter",
     "version_filter",
 )
@@ -1528,7 +1537,16 @@ def _build_engine_config(
     # call. A whitespace-only project ("   ") is not a real selection: it must
     # never carry through to the engine (where a truthy "   " would be applied as
     # a project) and must never wrongly suppress the folder. (Finding 3)
-    project_filter = (effective.get("project_filter") or "").strip() or None
+    project_name = (effective.get("project_filter") or "").strip() or None
+    # Companion project ID (design: name visible, ID resolves). When BOTH a name
+    # and its ID are present, the engine resolves against the ID — unambiguous
+    # across same-named projects in different folders (the engine still resolves
+    # the ID back to a display name, so headers/history show the name). A
+    # name-only launch (legacy state, CLI, prerun/builder not yet ID-aware)
+    # resolves by name as before. A cleared name ("all projects") ignores any
+    # stale ID, so it can never mis-resolve to a lingering prior project.
+    project_id = (effective.get("project_id") or "").strip() or None
+    project_filter = project_id if (project_name and project_id) else project_name
 
     # Folder-targeting precedence — project wins (design §3, authoritative).
     # When a SPECIFIC project is selected the folder was only a UI filter and
@@ -1966,6 +1984,8 @@ def _execute_run(
                 }
                 if engine.resolved_project_name:
                     scope_dict["project_name"] = engine.resolved_project_name
+                if getattr(engine, "resolved_folder_path", None):
+                    scope_dict["folder_path"] = engine.resolved_folder_path
                 history_run_id = append_run(
                     output_dir=str(output_dir_abs),
                     domain=effective.get("domain", ""),
@@ -2096,6 +2116,12 @@ def _execute_run(
 # `_effective_step_config`.  `period` IS included (it is an engine key).
 _WORKFLOW_GLOBAL_ENGINE_KEYS: tuple[str, ...] = (
     "project_filter",
+    # Unambiguous project ID companion to project_filter (the name), so a
+    # workflow GLOBAL target resolves the exact project among same-named ones
+    # across folders. Folded into project_filter in _build_engine_config; the
+    # name still drives display/logging. Travels with project_filter through the
+    # step-override precedence below.
+    "project_id",
     # Folder targeting (design §6): a workflow GLOBAL folder scope (folder ID)
     # is an engine run-config input, threaded through _build_engine_config like
     # project_filter. Step-override precedence (project wins) is applied in
@@ -2278,6 +2304,21 @@ def _effective_step_config(
     step_sets_version = bool(
         str(step_overrides_effective.get("version_filter") or "").strip()
     )
+    step_sets_project_id = bool(
+        str(step_overrides_effective.get("project_id") or "").strip()
+    )
+    # The project_id companion must never outlive its project_filter. Two cases
+    # drop an INHERITED global project_id so it can't mis-resolve a step:
+    #   * a folder-only step (no project) — nothing to resolve;
+    #   * a step that retargets to its OWN project (name) WITHOUT supplying the
+    #     matching ID — the inherited global ID belongs to a DIFFERENT project,
+    #     so drop it and let the step resolve by its own name.
+    # (A step that sets its own project_id keeps it via the generic override
+    # merge, so its own ID wins.)
+    if (step_sets_folder and not step_sets_project) or (
+        step_sets_project and not step_sets_project_id
+    ):
+        effective.pop("project_id", None)
     if step_sets_folder and not step_sets_project:
         effective.pop("project_filter", None)
         # A version is project-specific; a folder-only step has no project to
@@ -2735,6 +2776,75 @@ def _folder_scope_label(folder: str, domain: str, token: str) -> str:
     return f"folder: {fid}"
 
 
+def _project_folder_parts(project_id: str, domain: str, token: str) -> list[str]:
+    """Best-effort folder breadcrumb (root->leaf) for a PROJECT's containing
+    folder — the SAME breadcrumb Report History records from
+    ``engine.resolved_folder_path``, resolved here for the live monitor label.
+
+    Resolves the project's folder ID via ``GET /projects/{id}``, then walks the
+    ancestry using the memoized folders list (``shell_context._fetch_folders``,
+    the same cheap lookup ``_folder_scope_label`` uses). Cycle-safe. Returns
+    ``[]`` on any miss (no creds / unknown project / no folder / transient
+    failure) so the label degrades to the bare project name; never raises.
+    """
+    pid = str(project_id or "").strip()
+    if not pid or not domain or not token:
+        return []
+    try:
+        import httpx
+
+        url = f"https://{domain}/api/public/v0/projects/{pid}"
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(url, headers={"X-Authorization": token})
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        folder = data.get("folder") if isinstance(data, dict) else None
+        if not isinstance(folder, dict):
+            return []
+        folder_id = folder.get("id")
+        if folder_id:
+            from fs_report.web.shell_context import _fetch_folders
+
+            ok, folders = _fetch_folders(domain, token)
+            if ok:
+                by_id = {str(f["id"]): f for f in folders if f.get("id") is not None}
+                parts: list[str] = []
+                current: str = str(folder_id)
+                seen: set[str] = set()
+                while current and current not in seen:
+                    seen.add(current)
+                    f = by_id.get(current)
+                    if not f:
+                        break
+                    parts.append(str(f.get("name", "Unknown")))
+                    parent = f.get("parentFolderId")
+                    current = str(parent) if parent else ""
+                parts.reverse()
+                if parts:
+                    return parts
+        # Fallback: the project's immediate folder name (no ancestry available).
+        name = folder.get("name")
+        return [str(name)] if name else []
+    except Exception:  # pragma: no cover - defensive best-effort
+        return []
+
+
+def _scope_project_id(effective: dict[str, Any]) -> str:
+    """The unambiguous project ID for breadcrumb resolution: the ``project_id``
+    companion when present, else an id-like ``project_filter`` (CLI/MCP pass IDs
+    directly). A name-only ``project_filter`` yields '' — the breadcrumb is then
+    skipped (best-effort), matching a legacy history row without ``folder_path``.
+    """
+    pid = str(effective.get("project_id") or "").strip()
+    if pid:
+        return pid
+    pf = str(effective.get("project_filter") or "").strip()
+    if re.fullmatch(r"-?\d+", pf) or re.match(r"^[0-9a-fA-F-]{32,36}$", pf):
+        return pf
+    return ""
+
+
 def _run_scope_label(
     effective: dict[str, Any], domain: str = "", token: str = ""
 ) -> str:
@@ -2753,7 +2863,15 @@ def _run_scope_label(
     sc = compute_effective_scope(effective)
     if sc["scope_kind"] == "project":
         version = sc["version"]
-        return str(sc["label"]) + (f" @ {version}" if version else "")
+        label = str(sc["label"]) + (f" @ {version}" if version else "")
+        # Prepend the folder breadcrumb (root->leaf) so the monitor shows the
+        # full path — 'Folder > Sub > Project @ version' — matching Report
+        # History's scope line (reports._scope_str). Best-effort: no breadcrumb
+        # (or no project ID to resolve one) degrades to the bare project label.
+        parts = _project_folder_parts(_scope_project_id(effective), domain, token)
+        if parts:
+            return " > ".join(parts) + " > " + label
+        return label
     if sc["scope_kind"] == "folder":
         return _folder_scope_label(
             str(effective.get("folder_filter") or "").strip(), domain, token
@@ -3062,6 +3180,7 @@ def _register_workflow_run(
     queue: RunEventHub,
     cancel_event: threading.Event,
     replay: dict[str, Any],
+    scope: str | None = None,
 ) -> None:
     """Register a fully monitor-compatible ``_runs`` entry for a workflow run.
 
@@ -3081,6 +3200,11 @@ def _register_workflow_run(
     it as EACH step (runnable or skipped) reaches a terminal state, so the ratio
     grows 0/N → N/N naturally (M1-4 + M3-1 — no pre-counting of skipped steps as
     done up front, which would show e.g. 3/5 before any recipe runs).
+
+    C2: ``scope`` may be PRECOMPUTED by the caller (``run_workflow`` resolves it
+    off the event loop via ``asyncio.to_thread`` because ``_workflow_scope`` →
+    ``_project_folder_parts`` does a blocking httpx GET). When ``None`` (the
+    direct/test callers), it is computed inline here — identical value/format.
     """
     steps = model.get("steps", [])
     total = len(steps)
@@ -3090,7 +3214,9 @@ def _register_workflow_run(
             "status": "running",
             "result": None,
             "recipes": [_step_title(s) for s in steps],
-            "scope": _workflow_scope(model, state_data),
+            "scope": (
+                scope if scope is not None else _workflow_scope(model, state_data)
+            ),
             "progress": {"completed": 0, "total": total},
             "report_url": None,
             "started_at": time.time(),
@@ -3326,6 +3452,8 @@ def _run_one_recipe_step(
                 }
                 if getattr(engine, "resolved_project_name", None):
                     scope_dict["project_name"] = engine.resolved_project_name
+                if getattr(engine, "resolved_folder_path", None):
+                    scope_dict["folder_path"] = engine.resolved_folder_path
                 # B7: audit provenance on the persisted history row (M1-6). The
                 # row is written AFTER the apply above, so the provenance is ready.
                 if vex_provenance is not None:
@@ -4037,7 +4165,15 @@ async def start_run(
     # for start_run AND _workflow_scope, no drift). The leaked project_filter is
     # already cleared by the #27 present-key fix, so the resolver reports the
     # honest effective scope, not a stale pinned project.
-    scope = _run_scope_label(eff, str(eff.get("domain", "")), str(eff.get("token", "")))
+    #
+    # C2: the label build resolves the folder breadcrumb via a BLOCKING httpx GET
+    # (``_project_folder_parts`` → ``GET /projects/{id}``). ``start_run`` is an
+    # async handler, so compute the label OFF the event loop to avoid stalling it
+    # up to the GET's 10s timeout. The value/format is unchanged — only where it
+    # runs. ``asyncio.to_thread`` runs the sync resolver in a worker thread.
+    scope = await asyncio.to_thread(
+        _run_scope_label, eff, str(eff.get("domain", "")), str(eff.get("token", ""))
+    )
 
     # ── Pass 4 Run canvas: detect a compound run + build the kind / canvas_nodes
     # / replay metadata the monitor + canvas read (spec §4/§8). A single recipe

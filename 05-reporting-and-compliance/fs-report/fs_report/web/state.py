@@ -41,6 +41,11 @@ DEFAULTS: dict[str, Any] = {
     "context_file": "",
     "pinned_report": "",
     "pinned_project": "",
+    # Unambiguous project ID companion to pinned_project (the name). The name is
+    # the displayed pin value; this ID resolves the exact project on a pinned /
+    # R-key / palette launch when several share a name across folders. Empty for
+    # a folder-only pin or an older pin saved before the ID companion existed.
+    "pinned_project_id": "",
     "pinned_version": "",
     # Folder-targeting (design §4): stores the pinned folder's ID (consistent
     # with the ID-keyed scope cascade). shell_context resolves its display name

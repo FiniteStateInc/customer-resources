@@ -1084,6 +1084,9 @@ def run_reports(
                                 "project_filter": config.project_filter,
                                 "project_name": engine.resolved_project_name,
                                 "folder_filter": config.folder_filter,
+                                "folder_path": getattr(
+                                    engine, "resolved_folder_path", None
+                                ),
                                 "period": period,
                             }.items()
                             if v

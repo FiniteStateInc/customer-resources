@@ -17,6 +17,10 @@ from typing import Any
 
 import pandas as pd
 
+# Pure cache-scope helpers. Imported at module level (not lazily like LLMClient)
+# so they are the real functions even when a test patches the llm_client module
+# to mock the client — and because they carry no optional-provider dependencies.
+from fs_report.llm_client import build_tenant_scope, normalize_project_ref
 from fs_report.transforms.pandas.comparison._shared import (
     VEX_RESOLVED_STATUSES as _VEX_RESOLVED_STATUSES_SHARED,
 )
@@ -2639,7 +2643,10 @@ def _build_triage_prompt(
     in_kev = row.get("in_kev", False)
     component = row.get("component_name", "Unknown")
     component_ver = row.get("component_version", "Unknown")
-    project = row.get("project_name", "Unknown")
+    # NB: the project name is deliberately NOT rendered into this prompt. It adds
+    # no remediation value and was the exact customer-identifying string that
+    # leaked when finding guidance was cached without project scope; keeping it
+    # out also means the shareable --ai-prompts file never names the customer.
     band = row.get("priority_band", "Unknown")
     score = row.get("triage_score", 0)
     gate = row.get("gate_assignment", "NONE")
@@ -2711,7 +2718,7 @@ If a current VEX status is present, factor it into your recommendations — for 
 {_build_scoring_methodology(scoring_config)}
 
 ## Affected Component
-{component} {component_ver} (in project: {project})
+{component} {component_ver}
 
 ## Reachability Analysis
 - Status: {reach_label} (score={reach_score})
@@ -3484,6 +3491,27 @@ def _generate_ai_guidance(
         logger.warning("LLM package not available; skipping AI guidance")
         return "", {}, {}, {}
 
+    # Cache scoping: the AI narrative caches are keyed by (tenant, project) so
+    # one account/project's text is never served to another sharing the local
+    # cache.db. The tenant token is the account boundary (domain + API token);
+    # the run-level project scope is the set of project-version ids in this run,
+    # used for the portfolio summary and component guidance which aggregate
+    # across the run's projects.
+    _ad = additional_data or {}
+    _config = _ad.get("config")
+    _auth_token = getattr(_config, "auth_token", None) if _config is not None else None
+    cache_scope = build_tenant_scope(domain, _auth_token)
+    _run_pvids = sorted(
+        {
+            normalize_project_ref(v)
+            for v in (
+                df["project_version_id"] if "project_version_id" in df.columns else []
+            )
+        }
+        - {""}
+    )
+    run_project_ref = ",".join(_run_pvids)
+
     try:
         llm = LLMClient(
             cache_dir=cache_dir,
@@ -3492,6 +3520,7 @@ def _generate_ai_guidance(
             model_high=model_high,
             model_low=model_low,
             deployment_context=deployment_context,
+            cache_scope=cache_scope,
         )
     except (ValueError, ImportError) as e:
         logger.warning(f"LLM client init failed: {e}")
@@ -3573,6 +3602,16 @@ def _generate_ai_guidance(
                 "component_name": row["component_name"],
                 "component_version": row["component_version"],
                 "cve_ids": row["cve_ids"][:10],  # Limit CVEs per component
+                # Run-level project scope: component guidance is aggregated
+                # across this run's projects, so it is cached per run-project-set
+                # (never served to a different run/customer). NOTE: the in-memory
+                # ai_components result dict (and ai_findings, below) is still
+                # keyed by component:version / finding_id only, so within a
+                # SINGLE run that mixes projects two projects sharing a
+                # component/CVE see the same guidance. Closing that intra-run
+                # path needs per-project generation + project-qualified result
+                # keys (which the templates also consume) — tracked follow-up.
+                "project_ref": run_project_ref,
             }
             for _, row in component_groups.iterrows()
         ]
@@ -3654,7 +3693,11 @@ def _generate_ai_guidance(
                     if snippet:
                         nvd_finding_snippets[str(fid)] = snippet
 
-        finding_prompts: list[tuple[str, str]] = []
+        # Each entry carries the finding's own project-version id so the
+        # per-finding triage narrative (which embeds this project's reachability
+        # and VEX context) is cached per project — never shared across projects,
+        # even within a single multi-project run.
+        finding_prompts: list[tuple[str, str, str | None]] = []
         for _, row in top_findings.iterrows():
             fid = row.get("finding_id", "")
             if fid:
@@ -3665,7 +3708,7 @@ def _generate_ai_guidance(
                     scoring_config=scoring_config,
                     deployment_context=deployment_context,
                 )
-                finding_prompts.append((fid, prompt))
+                finding_prompts.append((fid, prompt, row.get("project_version_id", "")))
 
         ai_findings = llm.generate_batch_finding_guidance(finding_prompts)
 
@@ -3701,12 +3744,23 @@ def _generate_ai_guidance(
             if not proj_comp_ai:
                 proj_comp_ai = None
 
+        _proj_ref = (
+            ",".join(
+                sorted(
+                    {normalize_project_ref(v) for v in proj_df["project_version_id"]}
+                    - {""}
+                )
+            )
+            if "project_version_id" in proj_df.columns
+            else ""
+        )
         ai_projects[project_name] = llm.generate_project_summary(
             project_name,
             findings_list,
             band_counts,
             nvd_snippets_map=proj_nvd,
             component_guidance=proj_comp_ai,
+            project_ref=_proj_ref,
         )
 
     # --- Portfolio summary (multi-project only) — receives NVD + project AI cascade ---
@@ -3730,6 +3784,7 @@ def _generate_ai_guidance(
             reachability_summary=reachability_summary,
             nvd_snippets_map=nvd_snippets_map if nvd_snippets_map else None,
             project_ai_summaries=ai_projects if ai_projects else None,
+            project_scope=run_project_ref,
         )
 
     stats = llm.get_stats()

@@ -123,6 +123,10 @@
              persisted-vs-run-only save split (M2-1) all behave identically. */
           global: {
             project_filter: "",
+            /* Unambiguous project ID companion to project_filter (the name).
+               Name stays the visible/saved value; the ID resolves the exact
+               project among same-named ones across folders. Empty = none. */
+            project_id: "",
             folder_filter: "",
             version_filter: "",
             period: "30d",
@@ -161,8 +165,8 @@
         /* Left and Right scope name components.  The cascade selects use IDs
            as option VALUES; onChange handlers read selectedOptions[0].textContent
            to get the NAME (label) and write it here. */
-        left: { project: "", folder: "", version: "" },
-        right: { project: "", folder: "", version: "" },
+        left: { project: "", projectId: "", folder: "", version: "" },
+        right: { project: "", projectId: "", folder: "", version: "" },
         /* sections: array of comparison facet slugs selected from the diff rail. */
         sections: [],
         output: {
@@ -174,6 +178,8 @@
            model.global or model.steps don't throw. */
         global: {
           project_filter: "",
+          /* Project ID companion (name stays visible/saved). Empty = none. */
+          project_id: "",
           folder_filter: "",
           version_filter: "",
           period: "30d",
@@ -198,6 +204,8 @@
       name: "",
       global: {
         project_filter: "",
+        /* Project ID companion (name stays visible/saved). Empty = none. */
+        project_id: "",
         folder_filter: "",
         version_filter: "",
         period: "30d",
@@ -616,6 +624,17 @@
         scope = scope || {};
         var project = scope.project || "";
         this.model.global.project_filter = project;
+        /* Project ID companion — set only alongside a project name; cleared
+           otherwise so a portfolio/folder scope can't carry a stale ID. During
+           the programmatic re-seed on load, PRESERVE the authoritative
+           project_id loaded from the saved spec: the name-based restore can
+           select the wrong same-named option, so its scope.projectId is not
+           trustworthy — only a real user change updates the ID. */
+        if (this._scopeSeeding) {
+          if (!project) this.model.global.project_id = "";
+        } else {
+          this.model.global.project_id = project ? (scope.projectId || "") : "";
+        }
         this.model.global.version_filter = scope.version || "";
         this.model.global.folder_filter = project ? "" : scope.folder || "";
         if (!this._scopeSeeding) this.model.global.target_dirty = true;
@@ -625,9 +644,13 @@
          write it, clear the version, and drop any folder (project wins).
          C2: same seed/dirty guards as onGlobalScopeChange — a programmatic seed
          never clobbers a dirty target nor marks dirty. */
-      onGlobalProjectChange: function (value) {
+      onGlobalProjectChange: function (value, projectId) {
         if (this._scopeSeeding && this.model.global.target_dirty) return;
         this.model.global.project_filter = value || "";
+        /* Project ID companion — set only alongside a project name. Read from
+           the option's data-pid via the @change binding; order-independent of
+           the cascade's onGlobalScopeChange (both write a consistent ID). */
+        this.model.global.project_id = value ? (projectId || "") : "";
         this.model.global.version_filter = "";
         if (value) this.model.global.folder_filter = "";
         if (!this._scopeSeeding) this.model.global.target_dirty = true;
@@ -645,6 +668,9 @@
         if (!project && !folder) return null;
         return {
           project: project,
+          /* Project ID companion (name stays the visible target); only with a
+             project, so a folder-only override can't carry a stale ID. */
+          project_id: project ? String(g.project_id || "").trim() : "",
           folder: project ? "" : folder,
           version: project ? g.version_filter || "" : "",
         };
@@ -1116,6 +1142,9 @@
         this._clearSecScopeRetry();
         this._secScopeTries = 0;
         this._secScopeIndex = idx; // mark ONLY now that we will actually bind
+        /* Seeding sentinel (mirrors _inspSeeding): preserve the loaded section
+           override project_id during the programmatic seed. */
+        this._secSeeding = true;
         window.initScopeDropdowns({
           root: root,
           folderId: "sec-insp-folder",
@@ -1123,6 +1152,9 @@
           versionId: "sec-insp-version",
           onChange: function (scope) {
             self.onSecScopeChange(scope);
+          },
+          onReady: function () {
+            self._secSeeding = false;
           },
         });
       },
@@ -1144,10 +1176,15 @@
         var project = scope.project || "";
         if (project) {
           this.secApplyOverride("project_filter", project);
+          /* Project ID companion (name stays visible/saved); resolves the exact
+             same-named project for this section's override. Preserve the loaded
+             override ID during the programmatic seed. */
+          if (!this._secSeeding) this.secApplyOverride("project_id", scope.projectId || "");
           this.secApplyOverride("version_filter", scope.version || "");
           this.secApplyOverride("folder_filter", "");
         } else {
           this.secApplyOverride("project_filter", "");
+          this.secApplyOverride("project_id", "");
           this.secApplyOverride("version_filter", "");
           this.secApplyOverride("folder_filter", scope.folder || "");
         }
@@ -1375,6 +1412,11 @@
         this._clearInspScopeRetry();
         this._inspScopeTries = 0;
         this._inspScopeStep = step.id; // mark ONLY now that we will actually bind
+        /* Seeding sentinel (mirrors the global _scopeSeeding): TRUE for the
+           programmatic seed cascade so onInspScopeChange preserves the loaded
+           override project_id (name-based restore can pick the wrong same-named
+           option). Cleared once the seed's async restore lands. */
+        this._inspSeeding = true;
         window.initScopeDropdowns({
           root: root,
           /* Folder targeting (design §6): the per-step inspector cascade gets a
@@ -1387,6 +1429,9 @@
           versionId: "insp-version",
           onChange: function (scope) {
             self.onInspScopeChange(scope);
+          },
+          onReady: function () {
+            self._inspSeeding = false;
           },
         });
       },
@@ -1413,10 +1458,16 @@
         var project = scope.project || "";
         if (project) {
           this.applyOverride("project_filter", project);
+          /* Project ID companion (name stays visible/saved); resolves the exact
+             same-named project for this step's override. Preserve the loaded
+             override ID during the programmatic seed (name-based restore can
+             pick the wrong same-named option). */
+          if (!this._inspSeeding) this.applyOverride("project_id", scope.projectId || "");
           this.applyOverride("version_filter", scope.version || "");
           this.applyOverride("folder_filter", "");
         } else {
           this.applyOverride("project_filter", "");
+          this.applyOverride("project_id", "");
           this.applyOverride("version_filter", "");
           this.applyOverride("folder_filter", scope.folder || "");
         }
@@ -2714,6 +2765,10 @@
              project (mirrors onGlobalScopeChange / the server drop). */
           if (project) {
             block.project_filter = project;
+            /* Project ID companion (name stays visible/saved) — persist it so a
+               target-bound compound resolves the exact project on reload/run. */
+            var pid = String(g.project_id || "").trim();
+            if (pid) block.project_id = pid;
             if (g.version_filter) block.version_filter = g.version_filter;
           } else if (folder) {
             block.folder_filter = folder;
@@ -3166,6 +3221,9 @@
             var lgEnd = lg.end || "";
             self.model.global = {
               project_filter: lg.project_filter || "",
+              /* Project ID companion — restored so a target-bound compound
+                 resolves the exact project on reload (name stays visible). */
+              project_id: lg.project_id || "",
               folder_filter: lg.folder_filter || "",
               version_filter: lg.version_filter || "",
               period: lgStart && lgEnd ? "" : (lg.period || "30d"),
@@ -3300,6 +3358,11 @@
           name: (this.model.name || "").trim(),
           global: {
             project_filter: project,
+            /* Project ID companion — sent only alongside a project name so the
+               run/save resolves the exact project among same-named ones. The
+               name remains the visible/persisted target; on-disk strip for a
+               general workflow removes both (server _model_to_yaml_dict). */
+            project_id: project ? (g.project_id || null) : null,
             /* Folder targeting (design §6): send the global folder scope only
                when no project is set (project wins — the server re-applies the
                same drop in _build_engine_config, but keeping the payload clean
@@ -3384,6 +3447,10 @@
                (target_agnostic) or a user-dirty target (scopeSrc resolves to
                whichever applies). */
             project_filter: scopeSrc.project_filter || "",
+            /* Project ID companion — restored from the same source as the name
+               so a saved target-bound workflow resolves the exact project on
+               reload (name stays the visible value). */
+            project_id: scopeSrc.project_id || "",
             /* Folder targeting (design §6): restore the saved global folder
                scope so the cascade re-seeds the folder select on load (unless
                keeping the current scope per C2). */

@@ -58,6 +58,11 @@ COMPOUND_OVERRIDE_WHITELIST: frozenset[str] = frozenset(
     {
         # Scope
         "project_filter",
+        # Project ID companion to project_filter (the name) — resolves the exact
+        # project among same-named ones across folders. Whitelisted so it's
+        # preserved on compound recipe section overrides + global block; folds
+        # into project_filter at run time (_build_engine_config).
+        "project_id",
         "folder_filter",
         "version_filter",
         # Finding-type + version selection
@@ -133,6 +138,9 @@ def normalize_compound_global(raw: Any) -> dict[str, Any]:
     # --- Non-date carry-through (only when set) -----------------------------
     for key in (
         "project_filter",
+        # Project ID companion (name stays visible/saved) — carried through so a
+        # target-bound compound's global scope resolves the exact project.
+        "project_id",
         "folder_filter",
         "version_filter",
         "finding_types",

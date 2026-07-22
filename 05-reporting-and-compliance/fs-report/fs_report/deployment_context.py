@@ -157,13 +157,24 @@ class DeploymentContext(BaseModel):
     # ── Helpers ──────────────────────────────────────────────────────
 
     def context_hash(self) -> str:
-        """Stable SHA256 hash of user-supplied fields (for cache keys)."""
+        """Stable SHA256 hash of the context fields rendered into prompts.
+
+        Includes ``root_component_name`` / ``root_component_type`` because
+        ``build_context_section`` renders them into prompts — omitting them would
+        let two different products that share the other context fields collide on
+        any cache key that relies on this hash for isolation. This hash is a
+        deployment-scenario discriminator, NOT a project/tenant identity: cache
+        scoping is handled separately in llm_client (see build_tenant_scope /
+        LLMClient._narrative_scope).
+        """
         data = json.dumps(
             {
                 "product_type": self.product_type,
                 "network_exposure": self.network_exposure,
                 "regulatory": self.regulatory,
                 "deployment_notes": self.deployment_notes,
+                "root_component_name": self.root_component_name,
+                "root_component_type": self.root_component_type,
             },
             sort_keys=True,
         )

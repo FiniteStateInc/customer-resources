@@ -440,6 +440,10 @@ def build_shell_context(
         "cache_ttl": state.get("cache_ttl"),
         "pinned_report": pinned_report,
         "pinned_project": state.get("pinned_project", ""),
+        # Unambiguous project ID companion to pinned_project (the name). Bootstraps
+        # into CC.pinned.projectId so a pinned/R-key/palette launch resolves the
+        # exact project among same-named ones. Display stays name-based.
+        "pinned_project_id": state.get("pinned_project_id", ""),
         "pinned_version": state.get("pinned_version", ""),
         # Folder-targeting (spec §4): resolved ID + display name. ``pinned_folder``
         # is "" when unpinned OR stale (invalidated above); ``pinned_folder_name``

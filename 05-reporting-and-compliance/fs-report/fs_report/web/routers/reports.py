@@ -134,14 +134,22 @@ def _recipe_label(recipe: str) -> str:
 
 
 def _scope_str(scope: dict) -> str:
-    """Human scope string from a run's recorded scope (superset of the feed)."""
-    return (
-        scope.get("project_name")
-        or scope.get("project_filter")
-        or scope.get("project")
-        or scope.get("folder_filter")
-        or "entire portfolio"
+    """Human scope string from a run's recorded scope (superset of the feed).
+
+    Prepends the folder breadcrumb (``folder_path``, root->leaf) with ' > ':
+    project scope renders 'Folder > Project'; folder scope renders the
+    breadcrumb. Falls back to the raw folder filter / 'entire portfolio' for
+    rows recorded before folder_path was stored.
+    """
+    folder_disp = " > ".join(scope.get("folder_path") or [])
+    project = (
+        scope.get("project_name") or scope.get("project_filter") or scope.get("project")
     )
+    if project:
+        return f"{folder_disp} > {project}" if folder_disp else project
+    if folder_disp:
+        return folder_disp
+    return scope.get("folder_filter") or "entire portfolio"
 
 
 def _run_when(timestamp: str) -> str:

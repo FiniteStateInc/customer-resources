@@ -17,13 +17,24 @@ CVE data comes from ``/public/v0/findings`` queried *per component* with
 ``filter=projectVersion==<pvid>;affected==<componentId>&type=cve`` — the
 same canonical join the platform UI uses, so no name+version guessing.
 
-Evidence comes from ``/api/fs/v1/projects/versions/{pvid}/components/
-{cid}/evidence`` — an internal endpoint not in the public OpenAPI spec;
-the existing X-Authorization token works against it.
+Evidence comes from the platform's match-evidence endpoint, which differs
+by back-end (both return ``related_file_paths`` — the union of firmware
+file paths where the component was detected):
 
-All HTTP calls go through ``APIClient.fetch_data``, so the existing
-SQLite cache (--cache-ttl) covers both findings and per-component
-evidence transparently.
+* Helix → ``/public/v0/components/{pvid}/{cid}/evidence``
+* Alloy/legacy → ``/fs/v1/projects/versions/{pvid}/components/{cid}/evidence``
+
+Each route 404s on the *other* back-end, so ``_fetch_evidence_for_component``
+tries one and falls back to the other (``_evidence_endpoints`` orders the
+attempts by id shape purely to avoid a wasted first call). The fallback —
+not the id shape — is what keeps the column populated on both back-ends,
+since an Alloy tenant may also use UUID ids.
+
+Findings are fetched via ``APIClient.fetch_all_with_resume``, so the
+SQLite cache (--cache-ttl) covers them across runs. Evidence is fetched
+via ``APIClient.fetch_data``, which only uses the in-memory per-run cache —
+--cache-ttl does NOT persist evidence across runs, so every run re-issues
+the full per-component evidence fan-out.
 """
 
 from __future__ import annotations
@@ -31,6 +42,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, cast
 
@@ -77,11 +89,41 @@ _COPYLEFT_DISPLAY: dict[str, str] = {
     "PERMISSIVE": "Permissive",
 }
 
-# Max parallel evidence requests. The endpoint is internal and not hardened
-# for bursts — testing shows 10 workers reliably trips 500s on large
+# Max parallel evidence requests. The Helix match-evidence endpoint isn't
+# hardened for bursts — testing shows 10 workers reliably trips 500s on large
 # projects.  Default to 5; override with FS_REPORT_EVIDENCE_WORKERS=N for
 # fast tokens, or =1 for sequential when the server is unhappy.
 _DEFAULT_EVIDENCE_WORKERS = 5
+
+
+def _is_uuid(value: str) -> bool:
+    """True when ``value`` parses as a UUID."""
+    try:
+        uuid.UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def _evidence_endpoints(pvid: str, component_id: str) -> list[str]:
+    """Return the match-evidence endpoints to try, in preference order.
+
+    Both back-ends expose match evidence at different routes, and both return
+    ``{related_file_paths: [...]}``:
+
+    * Helix    → ``/public/v0/components/{pvid}/{cid}/evidence``
+    * Alloy    → ``/fs/v1/projects/versions/{pvid}/components/{cid}/evidence``
+
+    Each route 404s on the *other* back-end, so we try one then fall back to
+    the other — the column stays populated on both. Id shape (UUID→Helix,
+    numeric→Alloy) only orders the attempts to avoid a wasted first call in
+    the common case; it is NOT a hard switch, because Alloy instances can also
+    use UUID ids (a UUID-id Alloy tenant would 404 on the Helix route and must
+    fall back to /fs/v1). The fallback is what makes both back-ends work.
+    """
+    helix = f"/public/v0/components/{pvid}/{component_id}/evidence"
+    alloy = f"/fs/v1/projects/versions/{pvid}/components/{component_id}/evidence"
+    return [helix, alloy] if _is_uuid(pvid) else [alloy, helix]
 
 
 def _evidence_workers() -> int:
@@ -269,6 +311,9 @@ def cve_component_evidence_pandas_transform(
         }
 
     surviving_cids = [str(cid) for cid in df["id"].tolist() if cid]
+    # Both back-ends serve match evidence (Helix and Alloy use different
+    # routes; _evidence_endpoints orders attempts by version-id shape but
+    # always falls back), so always fan out.
     evidence_by_component, evidence_fetch_errors = _fetch_evidence_parallel(
         api_client, pvid, surviving_cids
     )
@@ -421,17 +466,99 @@ def _cve_ids_from_finding(finding: dict[str, Any]) -> list[str]:
 # ----------------------------------------------------------------------
 
 
+# Archive/package extensions the unpacker descends into. A path that continues
+# *past* one of these (``…/foo.jar/…``) is an entry unpacked from that package,
+# not a real filesystem path — so we collapse it to the package itself.
+# ``.tar.gz`` etc. resolve via the trailing ``.gz`` boundary.
+#
+# Deliberately EXCLUDES firmware filesystem images (squashfs, cramfs, ubifs,
+# jffs2, ext*, iso, img, cpio): those unpack to the device's *root filesystem*,
+# where inner paths are the real, meaningful file locations (e.g.
+# ``/rootfs.img/usr/lib/libc.so`` is where libc actually lives) — collapsing
+# them would hide exactly the evidence a firmware analyst wants. Only true
+# archive/package containers, whose internal members are all "the package"
+# for match-evidence purposes, belong here.
+_ARCHIVE_EXTS: tuple[str, ...] = (
+    ".jar",
+    ".war",
+    ".ear",
+    ".aar",
+    ".zip",
+    ".apk",
+    ".jmod",
+    ".nupkg",
+    ".whl",
+    ".egg",
+    ".gem",
+    ".tar",
+    ".gz",
+    ".tgz",
+    ".bz2",
+    ".xz",
+    ".7z",
+    ".rar",
+    ".rpm",
+    ".deb",
+    ".ipk",
+    ".cab",
+)
+
+
+def _collapse_to_top_archive(path: str) -> str:
+    """Collapse a path that descends into an archive to the top-level archive.
+
+    Firmware unpacking recurses into nested archives, exploding a single
+    component into thousands of per-entry paths like
+    ``/BOOT-INF/lib/app.jar/META-INF/.../inner.jar/META-INF/BC2048KE.DSA``.
+    Rendering every entry makes the report unusable, so we truncate at the
+    FIRST (outermost) archive boundary — here ``/BOOT-INF/lib/app.jar``.
+
+    Boundaries are matched per path *segment*: a segment is a boundary only
+    when it ends with a known archive extension AND has segments after it (it
+    was unpacked into). This is exact — a directory that merely contains dots
+    (``com.thoughtworks.xstream``) or ends in a look-alike (``myjaring``) is
+    never a boundary, and mid-segment matches can't misfire. A path with no
+    boundary (loose file, or a bare archive with nothing listed after it) is
+    returned unchanged. ``.tar.gz`` resolves via its trailing ``.gz`` segment.
+    """
+    segments = path.split("/")
+    for i, seg in enumerate(segments[:-1]):  # last segment can't be a boundary
+        low = seg.lower()
+        if any(low.endswith(ext) for ext in _ARCHIVE_EXTS):
+            return "/".join(segments[: i + 1])
+    return path
+
+
 def _fetch_evidence_for_component(
     api_client: Any, pvid: str, component_id: str
 ) -> list[str]:
-    """Return the deduplicated list of file paths for one component."""
-    query = QueryConfig(
-        endpoint=(
-            f"/fs/v1/projects/versions/{pvid}/components/{component_id}/evidence"
-        ),
-        params=QueryParams(),
-    )
-    response = api_client.fetch_data(query)
+    """Return the deduplicated list of file paths for one component.
+
+    Tries each candidate endpoint in order (see ``_evidence_endpoints``),
+    falling back to the next when one fails — the wrong-back-end route 404s,
+    so the fallback is what keeps evidence working on both Helix and Alloy
+    regardless of project-version-id shape. A successful call (even one with
+    an empty ``related_file_paths``) wins immediately; if every endpoint
+    fails, the last error propagates so the caller counts it as a fetch error
+    rather than silently reporting no evidence.
+    """
+    endpoints = _evidence_endpoints(pvid, component_id)
+    last_exc: Exception | None = None
+    for endpoint in endpoints:
+        query = QueryConfig(endpoint=endpoint, params=QueryParams())
+        try:
+            response = api_client.fetch_data(query)
+        except Exception as exc:  # 404 on the wrong back-end, or a real error
+            last_exc = exc
+            continue
+        return _paths_from_evidence_response(response)
+    if last_exc is not None:
+        raise last_exc
+    return []
+
+
+def _paths_from_evidence_response(response: Any) -> list[str]:
+    """Extract, collapse, and dedupe file paths from an evidence response."""
     # fetch_data wraps a single dict in a one-element list.
     if not response:
         return []
@@ -441,13 +568,17 @@ def _fetch_evidence_for_component(
     paths = record.get("related_file_paths")
     if not isinstance(paths, list):
         return []
-    # Preserve API order; dedupe defensively.
+    # Collapse archive-internal entries to their top-level archive, preserve
+    # API order, and dedupe (the collapse makes many entries identical).
     seen: set[str] = set()
     out: list[str] = []
     for p in paths:
-        if isinstance(p, str) and p not in seen:
-            seen.add(p)
-            out.append(p)
+        if not isinstance(p, str):
+            continue
+        collapsed = _collapse_to_top_archive(p)
+        if collapsed not in seen:
+            seen.add(collapsed)
+            out.append(collapsed)
     return out
 
 
