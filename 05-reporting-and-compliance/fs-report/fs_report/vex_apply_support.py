@@ -32,10 +32,28 @@ logger = logging.getLogger(__name__)
 # characters the renderer sanitizes), so the directory name is the recipe name.
 TP_RECIPE_NAME = "Triage Prioritization"
 FP_RECIPE_NAME = "False Positive Analysis"
-# Default apply precedence when a recipe target isn't specified: TP first, then
+CAT_RECIPE_NAME = "Configuration Analysis Triage"
+RVC_RECIPE_NAME = "Reachability VEX Coverage"
+# Canonical apply precedence for the CLI, which has no allow-list. Callers that DO
+# have one (the web) must filter this through it — see apply_vex_from_run, whose
+# recipe_dirs argument is required for exactly that reason. Order: TP first, then
 # FP (a multi-recipe run that produced both applies TP's file, preserving the
-# pre-B7 behavior for interactive TP+other runs).
-_AUTOTRIAGE_RECIPE_DIRS = (TP_RECIPE_NAME, FP_RECIPE_NAME)
+# pre-B7 behavior for interactive TP+other runs), then Configuration Analysis
+# Triage, then Reachability VEX Coverage last — RVC's recs are the narrowest
+# (unreachable-only NOT_AFFECTED), so a run that also produced TP's broader set
+# should apply that one.
+#
+# This tuple MUST list every recipe that emits a recs file (see the emitting
+# tuple in report_engine), because --autotriage is a bare boolean with no recipe
+# gate: a recipe missing here makes `--recipe X --autotriage` a silent no-op.
+# CAT scores config/secrets findings, so it never competes with TP/FP over the
+# same findings — its position in the order is not contentious.
+_AUTOTRIAGE_RECIPE_DIRS = (
+    TP_RECIPE_NAME,
+    FP_RECIPE_NAME,
+    CAT_RECIPE_NAME,
+    RVC_RECIPE_NAME,
+)
 
 # Per-recipe recs are written at ``<output>/<sanitized recipe name>/
 # vex_recommendations.json`` (report_engine). "Triage Prioritization" has no
@@ -73,8 +91,9 @@ def select_recommendations_path(
 
     *recipe_dirs* is the per-recipe output directory names to look for (in
     precedence order) — e.g. ``(FP_RECIPE_NAME,)`` for an FP-only workflow apply,
-    or the default ``(TP, FP)`` for an interactive run.  Returns ``None`` if none
-    produced a ``vex_recommendations.json``.
+    ``web_autotriage_recipe_dirs()`` for the web, or the full
+    ``(TP, FP, CAT, RVC)`` default for the CLI. Returns ``None`` if none produced a
+    ``vex_recommendations.json``.
     """
     found: dict[str, str] = {}
     for f in generated_files:
@@ -85,6 +104,40 @@ def select_recommendations_path(
         if d in found:
             return found[d]
     return None
+
+
+def all_recommendations_dirs(generated_files: list[str]) -> list[str]:
+    """Every recipe dir in *generated_files* that produced a recs file.
+
+    Used to explain a no-op apply: when no file exists for any recipe the calling
+    surface is permitted to apply, the operator still needs to know which files
+    WERE produced.
+    """
+    return sorted(
+        {Path(f).parent.name for f in generated_files if Path(f).name == _RECS_FILENAME}
+    )
+
+
+def skipped_recommendations_dirs(
+    generated_files: list[str],
+    chosen: str | None,
+    recipe_dirs: tuple[str, ...] = _AUTOTRIAGE_RECIPE_DIRS,
+) -> list[str]:
+    """Recipe dirs that produced a recs file which *chosen* did not apply.
+
+    ``select_recommendations_path`` applies exactly ONE file by precedence, so a
+    multi-recipe run silently leaves the others on disk. Callers surface this so
+    an operator is never told "applied" while a second, possibly broader, set of
+    recommendations went unwritten — e.g. a TP + Reachability VEX Coverage run
+    applies TP's file and RVC's unreachable-only set is skipped entirely.
+    """
+    if not chosen:
+        return []
+    found = {
+        Path(f).parent.name for f in generated_files if Path(f).name == _RECS_FILENAME
+    }
+    chosen_dir = Path(chosen).parent.name
+    return [d for d in recipe_dirs if d in found and d != chosen_dir]
 
 
 def select_tp_recommendations_path(generated_files: list[str]) -> str | None:
@@ -136,13 +189,22 @@ def apply_vex_from_run(
     dry_run: bool,
     vex_override: bool,
     filter_statuses: list[str] | None,
+    recipe_dirs: tuple[str, ...],
     concurrency: int = 5,
-    recipe_dirs: tuple[str, ...] = _AUTOTRIAGE_RECIPE_DIRS,
 ) -> tuple[VexApplyResult | None, str | None]:
     """Apply an autotriage-capable recipe's VEX recommendations from a run.
 
-    Locates the recs file among ``recipe_dirs`` (default TP→FP precedence; pass
-    ``(FP_RECIPE_NAME,)`` to restrict a workflow apply to FP Analysis) and
+    ``recipe_dirs`` is REQUIRED and has deliberately no default. This function
+    performs a destructive platform write, and defaulting it to the CLI precedence
+    is what let the interactive web apply write Configuration Analysis Triage's
+    recommendations — a recipe the web's own allow-list excludes — after the
+    operator had confirmed on the strength of a different, permitted recipe. Every
+    caller must therefore state which recipes IT is permitted to apply
+    (``web_autotriage_recipe_dirs()`` on the web, ``(FP_RECIPE_NAME,)`` for a
+    workflow apply), so a new call site cannot silently inherit a broader set than
+    its surface allows. Safe by construction rather than by remembering.
+
+    Locates the recs file among ``recipe_dirs`` and
     applies it.  Returns ``(result, recs_path)``, or ``(None, None)`` when no
     matching recs file was produced (a logged no-op).
     """

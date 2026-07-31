@@ -36,6 +36,7 @@
     'Version Comparison':      'git-compare',
     'Customer Brief':          'file-text',
     'False Positive Analysis': 'flask-conical',
+    'Reachability VEX Coverage': 'shield-check',
   };
 
   /* Build palette items */

@@ -1155,6 +1155,13 @@ class Config(BaseModel):
         description="Only include findings detected on or after this date (ISO8601). "
         "Applies to Assessment reports (CVA, Findings by Project, Triage, Component List).",
     )
+    min_severity: str | None = Field(
+        None,
+        description="Reachability VEX Coverage: severity floor for the audit — "
+        "critical, high, medium, or low (stored uppercase). Applied server-side as "
+        "severity=in=(...) over the ranked tiers only, so NONE/INFO findings are "
+        "excluded by any floor. None (the default) applies no severity filter.",
+    )
     # AI remediation guidance options
     ai: bool = Field(
         False,

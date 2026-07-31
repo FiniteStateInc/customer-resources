@@ -18,6 +18,7 @@ This guide explains each report available in the Finite State Reporting Kit, wha
    - [Component List](#component-list) *(Assessment)*
    - [License Report](#license-report) *(Assessment, on-demand: license risk by category)*
    - [Triage Prioritization](#triage-prioritization) *(Assessment)*
+   - [Reachability VEX Coverage](#reachability-vex-coverage) *(Assessment, on-demand: how many findings could be auto-resolved)*
    - [Configuration Analysis Triage](#configuration-analysis-triage) *(Assessment, on-demand: config/secrets/crypto triage)*
    - [False Positive Analysis](#false-positive-analysis) *(Assessment, on-demand: FP candidate identification)*
    - [Scan Quality](#scan-quality) *(Assessment, on-demand: per-asset coverage and quality signals)*
@@ -91,6 +92,7 @@ Assessment reports show the current security state of the target — the latest 
 | **Component List** | Current software component inventory with license analysis |
 | **License Report** | License risk distribution by category (on-demand) |
 | **Triage Prioritization** | Current triage priorities based on today's data |
+| **Reachability VEX Coverage** | How many findings could be auto-resolved right now — unreachable findings still missing NOT_AFFECTED, rolled up per project version with severity breakdown (on-demand) |
 | **Configuration Analysis Triage** | Config/secrets/crypto triage with tiered gates (on-demand) |
 | **False Positive Analysis** | FP candidates identified by mechanical signals and AI (on-demand) |
 | **Scan Quality** | Per-asset scan type coverage and unpack quality scores (on-demand) |
@@ -927,6 +929,79 @@ The `--serve` flag starts a lightweight local server on `http://localhost:8321` 
 
 ---
 
+### Reachability VEX Coverage
+
+**Category:** Assessment (on-demand) — audits the current triage state, regardless of time period.
+
+**Purpose:** Answers one question — *how many findings could be auto-resolved right now?* When reachability analysis proves a vulnerable code path is not reachable in the deployed build, that finding should carry VEX status `NOT_AFFECTED` with justification `CODE_NOT_REACHABLE`. In practice the analysis produces the evidence and nobody applies the decision, leaving risk dashboards inflated with findings already known to be non-exploitable. This report puts a number on that backlog and shows which project versions hold it.
+
+**Who should use it:** Security teams and CSMs about to present a risk number that reachability analysis should already have reduced.
+
+```bash
+fs-report run --recipe "Reachability VEX Coverage" --project MyProject
+```
+
+**Scope.** Portfolio-capable. With `--project` it audits that project's current version (`--version` pins another); with no scope it sweeps every project's latest version.
+
+**What it shows.** The headline is the total that could be auto-resolved, with its severity breakdown. Below it, one row per project version:
+
+| Column | Meaning |
+|---|---|
+| **Folder** | Full folder path (root→leaf). The table is grouped by it |
+| **Unreachable** | Findings binary analysis proved unreachable — the coverage denominator |
+| **Already NOT_AFFECTED** | Correctly triaged already; nothing to do |
+| **Auto-resolvable** | What one `--autotriage` run would close on this version |
+| **Critical / High / Medium / Low** | Severity mix of the auto-resolvable findings |
+| **Needs review** | Unreachable but already carries a stored status (a person or gate set it) |
+| **Coverage %** | Already-NOT_AFFECTED ÷ unreachable, or `—` when there's no denominator |
+
+**Only versions with work are listed.** A row appears only where there is at least one auto-resolvable finding. Versions that are already fully covered, that hold only needs-review conflicts, or where reachability never ran are omitted from the table — but still counted in every KPI and in the coverage percentage, with the omitted count stated beneath the table so a shorter table is never mistaken for a smaller problem.
+
+**Grouped by folder.** Folders are the platform's access boundary, so rows are ordered by folder first and then by how much each version can shed — each folder is a contiguous section you can hand to its owning team or folder owner. Projects outside any folder sort last.
+
+**Individual findings are not listed.** A real run produced 522 gaps; a 500-row table is not something anyone reads, and it made the PDF 38 pages with the evidence column running off the edge. The table is a rollup, not a truncation — nothing is lost. `vex_recommendations.json` carries every gap that has the platform ids the VEX API needs — the auto-resolvable ones *and* the needs-review ones, since `--vex-override` exists to apply the latter — each row tagged with a `gap_class` so the file's row count is not the headline. Gaps missing those ids are in neither the file nor the headline; the `gap_detail` block of the `json` output is the only complete row-for-row artifact.
+
+**Three numbers, and the differences are deliberate:**
+
+1. **Auto-resolvable** counts unreachable findings that carry *no* stored VEX status *and* carry the platform ids the VEX API needs. It is intentionally smaller than the raw gap count, and the rule is the applier's own — it equals exactly what a default `--autotriage` run closes: the applier skips a finding whose status a person or gate already set, and cannot apply one with missing ids. Counting those would promise closures that never happen.
+2. **Needs review** counts unreachable findings already carrying some stored status — `EXPLOITABLE`/`FALSE_POSITIVE`/`RESOLVED`/`RESOLVED_WITH_PEDIGREE`, and also `IN_TRIAGE` or any unrecognized value. They conflict with an existing decision, are excluded from the headline, and need `--vex-override` to overwrite.
+3. **Reachability state** is inferred from the finding data, not scan history. A null reachability score means analysis never ran; `0` means it ran and was inconclusive. A `NOT_RUN` version is excluded from both sides of the coverage ratio and its zero counts mean *unknown*, not clean — the report will not print a coverage percentage it didn't measure.
+
+The `justification` value on findings that already are `NOT_AFFECTED` is **not** audited — status only.
+
+**How it differs from Triage Prioritization.** Triage Prioritization already emits the same `NOT_AFFECTED` recommendations, but it can't answer "how much can I close": it has no rollup, its `already_triaged` flag is a single boolean across all statuses, `--triage-n` truncates unreachable findings first because they score lowest, and it has no never-ran gate. Use Triage Prioritization to decide what to fix; use this to see how much noise you can remove. Triage Prioritization is unchanged.
+
+**Closing the findings.** The report writes `vex_recommendations.json` and never writes to the platform itself:
+
+```bash
+# Preview first:
+fs-report run --recipe "Reachability VEX Coverage" --project MyProject \
+  --autotriage --autotriage-status NOT_AFFECTED --dry-run
+# Then for real:
+fs-report run --recipe "Reachability VEX Coverage" --project MyProject \
+  --autotriage --autotriage-status NOT_AFFECTED
+```
+
+**Large organizations.** Pass `--cache-ttl 24h` on a portfolio sweep — findings are cached per project version as each batch lands, so an interrupted run resumes instead of restarting, but that resume is only active when a TTL is set. Add `--verbose` for a per-version progress line. Use `--min-severity high` to scope to CRITICAL and HIGH; when a floor is active every figure is labelled with it, because the denominator is then severity-scoped rather than portfolio-wide.
+
+**`--open-only` is ignored** for this report. `NOT_AFFECTED` findings are its coverage denominator, so excluding them would report 0% coverage on every project. The run logs a warning and the report renders a banner.
+
+**Charted by folder.** The lead chart plots auto-resolvable findings per folder,
+not per project — folders are the access boundary, so each bar is a team's queue,
+and there are few enough of them to stay legible where a per-project chart (a real
+sweep put 493 projects on one axis) overprinted into a smear. Versions where
+reachability never ran contribute nothing; unfoldered versions bucket under
+"(no folder)". A category-count backstop still suppresses even the folder chart in
+the rare event a tenant has more than 25 folders, pointing at the table instead.
+
+**Deep links.** Project and version names link into the platform — `https://<domain>/projects/<project_id>` and `https://<domain>/projects/<project_id>/versions/<project_version_id>` — in both HTML and Markdown. A cell with a missing id renders as plain text rather than a broken link.
+
+**Web UI.** A Command Center tile under **Remediation**. The severity floor is a **Minimum severity** select on the card's config back, in the prerun modal, and in the Workflow Builder step inspector.
+
+**Outputs:** HTML, CSV, XLSX, JSON, MD, PDF (**landscape A4** — the rollup renders fifteen columns; the CSV and XLSX carry seventeen, adding `project_id` and `project_version_id`, which the rendered table folds into deep links), plus `vex_recommendations.json`.
+
+---
+
 ### Configuration Analysis Triage
 
 **Category:** Assessment (on-demand) — triages current config/secrets/crypto findings regardless of time period.
@@ -1673,6 +1748,7 @@ Most reports generate output in multiple formats:
 | `--period` | Relative time period | Operational reports (used to scope Assessment reports to active projects) | `--period 30d` |
 | `--start` / `--end` | Specific date range | Same as `--period` | `--start 2026-01-01 --end 2026-01-31` |
 | `--detected-after` | Date floor for findings/components | Assessment reports only | `--detected-after 2026-01-01` |
+| `--min-severity` | Severity floor (`critical`/`high`/`medium`/`low`), applied server-side. Any floor excludes `none`/`info` | Reachability VEX Coverage only | `--min-severity high` |
 | `--project` | Filter by project name or ID | All reports | `--project "MyProject"` |
 | `--version` | Filter by version ID | All reports | `--version "1234567890"` |
 | `--recipe` | Run specific report only | N/A | `--recipe "Scan Analysis"` |

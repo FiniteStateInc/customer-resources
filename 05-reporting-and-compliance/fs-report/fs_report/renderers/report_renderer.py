@@ -27,6 +27,7 @@ from datetime import UTC
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from fs_report.models import Recipe, ReportData
@@ -719,6 +720,33 @@ class ReportRenderer:
             raise
         return generated_files
 
+    @staticmethod
+    def _scrub_non_finite(obj: Any) -> Any:
+        """Replace NaN/Infinity with ``None``, recursively.
+
+        ``json.dumps`` serializes them as the bare tokens ``NaN`` / ``Infinity``,
+        which Python's own reader accepts but which are NOT valid JSON — jq, Go,
+        Postgres and any strict parser reject the file. ``default=str`` does not
+        help: it is only consulted for objects json cannot serialize at all, and a
+        float is serializable. Transforms are expected to coerce their own
+        packages, but a single missed value silently produced an unparseable
+        artifact, so the write path scrubs as a backstop rather than trusting
+        every current and future transform.
+        """
+        # np.float64 subclasses float, but np.float32/np.float16 do NOT — a nested
+        # NaN in one of those would sail past an isinstance(obj, float) check and be
+        # written as a bare token. Normalize every numpy scalar to its Python value
+        # first.
+        if isinstance(obj, np.generic):
+            obj = obj.item()
+        if isinstance(obj, float):
+            return None if not math.isfinite(obj) else obj
+        if isinstance(obj, dict):
+            return {k: ReportRenderer._scrub_non_finite(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [ReportRenderer._scrub_non_finite(v) for v in obj]
+        return obj
+
     def _render_json(
         self,
         recipe: Recipe,
@@ -745,7 +773,9 @@ class ReportRenderer:
                 # Case 1: dedicated json_package (Remediation Package, etc.)
                 json_path = output_dir / f"{base_filename}.json"
                 json_path.write_text(
-                    json.dumps(json_package, indent=2, default=str),
+                    json.dumps(
+                        self._scrub_non_finite(json_package), indent=2, default=str
+                    ),
                     encoding="utf-8",
                 )
                 self.logger.debug(f"Generated JSON: {json_path}")
@@ -774,12 +804,16 @@ class ReportRenderer:
                     if filters:
                         metadata["filters"] = filters
 
-                records = report_data.data.to_dict(orient="records")
-                # Replace float NaN with None for valid JSON output
-                for rec in records:
-                    for k, v in rec.items():
-                        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-                            rec[k] = None
+                # Scrub RECURSIVELY. The previous loop only checked top-level
+                # scalars, so a non-finite float nested inside a list or dict cell
+                # (a per-record detail list, a nested score object) still reached
+                # json.dumps and was written as a bare NaN/Infinity token — valid
+                # for Python's reader, rejected by jq/Go/Postgres. Both JSON
+                # branches now use the same scrubber, so the guarantee is
+                # per-artifact rather than per-recipe.
+                records = self._scrub_non_finite(
+                    report_data.data.to_dict(orient="records")
+                )
                 output_obj = {
                     "metadata": metadata,
                     "data": records,

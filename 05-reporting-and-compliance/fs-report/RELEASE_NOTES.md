@@ -1,5 +1,169 @@
 # Release Notes
 
+## Version 2.0.3 (July 2026)
+
+### New report — Reachability VEX Coverage
+
+Answers one question: **how many findings could be auto-resolved right now?**
+
+When binary analysis proves a vulnerable code path is unreachable in the deployed
+build, that finding should carry VEX status `NOT_AFFECTED` with justification
+`CODE_NOT_REACHABLE`. In practice the analysis produces the evidence and nobody
+applies the decision, leaving risk dashboards inflated with findings already known
+to be non-exploitable. This report puts a number on that backlog and shows which
+project versions hold it.
+
+```bash
+fs-report run --recipe "Reachability VEX Coverage" --project MyProject
+# Portfolio sweep, CRITICAL+HIGH only, resumable after an interruption:
+fs-report run --recipe "Reachability VEX Coverage" \
+  --min-severity high --cache-ttl 24h --verbose
+```
+
+The headline total leads the report, with its severity breakdown. Below it, one row
+per project version: unreachable count, how many already carry the status, how many
+a single `--autotriage` run would close, that number split by severity, how many
+need human review, and the coverage percentage.
+
+**Individual findings are not listed.** A real run produced 522 of them; a 500-row
+table is not something anyone reads. The table is a rollup, not a truncation —
+nothing is lost. `vex_recommendations.json` carries every gap that has the platform
+ids the VEX API needs — the auto-resolvable ones *and* the needs-review ones, since
+`--vex-override` exists to apply the latter — each row tagged with a `gap_class`, so
+that file's row count is not the headline. Gaps missing those ids are in neither the
+file nor the headline; the `gap_detail` block of the `json` output is the only
+complete row-for-row artifact.
+
+Three numbers are kept deliberately distinct:
+
+- **Auto-resolvable** counts unreachable findings that carry *no* stored VEX status
+  *and* carry the platform ids the VEX API needs. It is intentionally smaller than
+  the raw gap count, and the rule is the applier's own — it equals exactly what a
+  default `--autotriage` run closes: the applier skips a finding whose status a
+  person or gate already set, and cannot apply one with missing ids. Counting those
+  would promise closures that never happen.
+- **Needs review** counts unreachable findings already carrying some stored status —
+  `EXPLOITABLE` / `FALSE_POSITIVE` / `RESOLVED` / `RESOLVED_WITH_PEDIGREE`, and also
+  `IN_TRIAGE`, the open/untriaged platform statuses `OPEN` / `UNKNOWN`, or any
+  unrecognized value. They are excluded from the headline and need `--vex-override`.
+  `OPEN` / `UNKNOWN` are the counter-intuitive case, and the report says so in its
+  notes: nobody has triaged those findings, but the applier's gate is "has a status
+  stored at all", so they still count as needs-review. On a tenant whose findings all
+  carry `OPEN`, a headline of 0 is the honest answer and the cause is that gate rather
+  than anyone's triage decision.
+- **Reachability state** is inferred from the finding data, keeping a null score
+  (analysis never ran) distinct from `0` (ran but inconclusive). A `NOT_RUN` version
+  is excluded from both sides of the coverage ratio and its zero counts mean
+  *unknown*, not clean — the report will not print a coverage percentage it didn't
+  measure.
+
+Triage Prioritization already emits the same `NOT_AFFECTED` recommendations, but it
+can't answer "how much can I close": no rollup, an `already_triaged` flag that is a
+single boolean across all statuses, `--triage-n` truncating unreachable findings
+first because they score lowest, and no never-ran gate. Triage Prioritization is
+unchanged by this release — use it to decide what to fix, and this to see how much
+noise you can remove.
+
+**The table is a work list.** A row appears only where there is at least one
+auto-resolvable finding — fully-covered versions, needs-review-only versions and
+versions where reachability never ran are left out of it. They are still counted in
+every KPI and in the coverage percentage, and the number omitted is stated beneath the
+table, so a shorter table never reads as a smaller problem. Rows are grouped by folder
+first, since folders are the platform's access boundary and each one can be handed to
+its owning team as a contiguous section. The complete per-version list is always in the
+`json` output's `coverage_by_version`.
+
+**Every input that narrows the audit is disclosed in the output**, so a partial audit is
+never presented as a complete one. That covers the severity floor, `--detected-after`,
+`--standalone`, whether the current version or every version was audited — and, on an
+unscoped portfolio run with no `--period`, that only projects scanned inside the default
+30-day window were discovered at all, with the flag to widen it. This matters more than
+it sounds: on a large tenant that default silently bounds which projects are audited, so
+the headline is a floor rather than a portfolio total unless you widen it.
+
+Project and version names are platform deep links —
+`https://<domain>/projects/<project_id>` and
+`https://<domain>/projects/<project_id>/versions/<project_version_id>` — in both the
+HTML and Markdown output. A cell whose domain or id is missing renders as plain text
+rather than a broken link.
+
+Outputs HTML, CSV, XLSX, JSON, MD and PDF (**landscape A4** — the rollup renders
+fifteen columns; the CSV and XLSX carry seventeen, adding the two platform ids the
+rendered table folds into deep links), and appears in `fs-report list recipes` and as a Command Center tile
+under **Remediation**. The severity floor is also settable from the UI — a **Minimum
+severity** select on the card's config back, in the prerun modal, and in the Workflow
+Builder step inspector.
+
+### New flag
+
+- **`--min-severity`** (`critical`/`high`/`medium`/`low`) scopes Reachability VEX
+  Coverage to a severity floor, applied server-side. Any floor excludes
+  `none`/`info` — the severity enum's tail has no defined rank — so omit the flag
+  to audit every severity. When a floor is set, every coverage figure in the
+  report is labelled with it, since the denominator is then severity-scoped
+  rather than portfolio-wide.
+
+### Notes
+
+- `--open-only` is **ignored** for Reachability VEX Coverage and logs a warning.
+  `NOT_AFFECTED` findings are that report's coverage denominator, so excluding
+  them would report 0% coverage on every project.
+- On large organizations pass `--cache-ttl 24h`. Findings are cached per project
+  version as each batch lands, so an interrupted sweep resumes rather than
+  restarting — but that resume is only active when a TTL is set.
+
+### Security fix — web VEX auto-apply
+
+- **The web could apply VEX recommendations for a report it is not permitted to
+  auto-apply.** The interactive auto-apply inherited the CLI's apply precedence, which
+  includes Configuration Analysis Triage — a report deliberately excluded from the web's
+  allow-list. Because it outranks Reachability VEX Coverage, a web run that selected both
+  cleared the destructive-write confirmation on the strength of the *permitted* report
+  and then wrote the *other* report's recommendations to the platform. The apply set is
+  now filtered through the web's own allow-list, and the underlying helper requires every
+  caller to state which reports it may apply, so a new call site cannot silently inherit
+  a broader scope. Workflow auto-apply remains a False-Positive-Analysis-only carve-out,
+  so no saved or unattended workflow can write VEX.
+
+### Changed — `--autotriage` apply precedence
+
+- `--autotriage` now honors a documented precedence — Triage Prioritization → False
+  Positive Analysis → Configuration Analysis Triage → Reachability VEX Coverage —
+  instead of applying whichever recommendations file happened to be found first. Exactly
+  one file is applied per run, so a run that produced more than one prints the reports it
+  skipped and points at `--apply-vex-triage <path>` for the rest. The web surfaces the
+  same information, including when a confirmed apply turns out to have nothing it is
+  permitted to write.
+
+### Fixed — affects every cached run
+
+- **Cached runs no longer exhaust the file-descriptor limit.**
+  `sqlite3.Connection.__exit__` commits but does not close, so every cache probe
+  leaked a connection and its three WAL file descriptors. A portfolio sweep
+  probes the cache once per project version, so on a 1,166-version tenant this
+  crossed macOS's 256 soft limit and SQLite started reporting
+  `unable to open database file` — which reads like a corrupt cache, so the
+  instinctive fix (clear it and retry) only forced a full refetch. Connections
+  are now closed on the way out, with commit/rollback semantics unchanged.
+  This is not specific to the new report: it affects any run using `--cache-ttl`.
+- **One report can no longer receive another's pruned findings data.** The
+  in-memory findings cache keyed on the query signature but stored the frame
+  *after* per-batch column pruning, so two recipes issuing the same query shared
+  an entry while expecting different columns. Triage Prioritization and
+  Reachability VEX Coverage collided this way, which would have turned
+  "reachability never ran" into "ran, nothing unreachable". The key now includes
+  a payload-shape token, closing the whole class.
+- **`NaN` and `Infinity` no longer reach JSON output.** They were emitted as bare
+  `NaN` / `Infinity` tokens — which Python's own reader accepts but `jq`, Go and
+  Postgres reject, so a file looked fine locally and failed in a pipeline. `default=str`
+  never caught them because a float is already serializable. They are now scrubbed
+  recursively on every JSON write path.
+- **A corrupt `+/-Infinity` reachability score no longer reads as certainty.** `NaN` was
+  handled but infinities were not, so an infinite score classified a finding as
+  REACHABLE or UNREACHABLE with full confidence and entered both the coverage
+  denominator and the headline. It now fails closed to never-ran and is flagged, exactly
+  as an unparseable value already was.
+
 ## Version 2.0.2 (July 2026)
 
 2.0.2 is a fix-and-hardening release on the 2.0 line: a cross-customer AI

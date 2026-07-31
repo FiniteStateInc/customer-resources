@@ -1,0 +1,840 @@
+{% import "_console_macros.html" as fs with context %}
+
+{% if render_mode != 'fragment' %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>Reachability VEX Coverage - Finite State Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+    {% include "_echarts_ready.html" %}
+{% endif %}
+
+{# Recipe-local styles render in BOTH standalone and fragment modes so
+   fragment_extractor (_STYLE_RE) collects them, scopes them under
+   .fs-section-reachability-vex-coverage, and re-emits at the top of the
+   fragment. #}
+<style>
+    /* Never-ran panel. Deliberately loud: the failure mode this report
+       exists to prevent is reading "0 gaps" as "clean" when the truth is
+       "never analyzed". */
+    .rvc-alert {
+        background: var(--sev-critical-bg);
+        color: var(--sev-critical-text);
+        border: 1px solid var(--sev-critical-text);
+        border-radius: 6px;
+        padding: 16px 18px;
+        margin-bottom: 20px;
+    }
+    .rvc-alert h3 { margin: 0 0 6px; font-size: 1.05em; }
+    .rvc-alert p  { margin: 0; font-size: 0.92em; }
+
+    .rvc-note {
+        background: var(--sev-medium-bg);
+        color: var(--sev-medium-text);
+        border: 1px solid var(--sev-medium-text);
+        border-radius: 6px;
+        padding: 10px 14px;
+        margin-bottom: 12px;
+        font-size: 0.9em;
+    }
+
+    /* Hero: the auto-resolvable count is the one number this report exists to
+       deliver, so it gets its own band above the KPI row rather than competing
+       as one cell among six. */
+    .rvc-hero {
+        display: flex;
+        gap: 24px;
+        align-items: center;
+        flex-wrap: wrap;
+        background: var(--surface-card);
+        border: 1px solid var(--hairline);
+        border-left: 4px solid var(--accent-teal, var(--accent));
+        border-radius: 8px;
+        padding: 18px 22px;
+        margin-bottom: 20px;
+    }
+    .rvc-hero-figure {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.05;
+        min-width: 190px;
+    }
+    .rvc-hero-num {
+        font-size: 3.1em;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        color: var(--accent-teal, var(--accent));
+        font-variant-numeric: tabular-nums;
+    }
+    .rvc-hero-label {
+        font-size: 0.9em;
+        color: var(--ink-mute);
+        margin-top: 4px;
+    }
+    .rvc-hero-body { flex: 1; min-width: 280px; }
+    .rvc-hero-body p { margin: 0 0 8px; font-size: 0.9em; }
+    .rvc-hero-caveat { color: var(--ink-mute); font-size: 0.85em !important; }
+    .rvc-hero-sev { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+
+    .rvc-sev-chip {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 10px;
+        font-size: 0.75em;
+        font-weight: 600;
+        white-space: nowrap;
+        background: var(--surface-2, rgba(127,127,127,0.12));
+        color: var(--ink-body);
+    }
+    .rvc-sev-critical { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .rvc-sev-high     { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .rvc-sev-medium   { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .rvc-sev-low      { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+
+    .rvc-hidden-note { color: var(--ink-mute); }
+
+    .rvc-folder {
+        font-size: 0.84em;
+        color: var(--ink-mute);
+    }
+
+    .rvc-state {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.78em;
+    }
+
+    .rvc-mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.8em;
+    }
+
+    .rvc-charts {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+        gap: 16px;
+        margin-bottom: 20px;
+    }
+    .rvc-chart { height: 320px; }
+
+    .rvc-no-data {
+        text-align: center;
+        padding: 40px;
+        color: var(--ink-mute);
+    }
+
+    /* Stands in for a chart whose category count made it unreadable. Sized to
+       roughly the chart it replaces so the grid doesn't jump. */
+    .rvc-chart-suppressed {
+        display: flex;
+        align-items: center;
+        min-height: 220px;
+        margin: 0;
+        padding: 0 20px;
+        color: var(--ink-mute);
+        font-size: 0.88em;
+        line-height: 1.5;
+    }
+</style>
+
+{% if render_mode != 'fragment' %}
+{# Unscoped page-box + print rules, deliberately in their own style block that
+   the fragment path never emits. css_scoper.py does not prefix @page selectors,
+   so emitting these in a fragment would let this recipe override the host
+   document's page geometry in a compound bundle (same reasoning as
+   customer_brief.html). #}
+<style>
+    @page {
+        /* Landscape: the rollup renders fifteen columns (folder, project, version,
+           state, then the counts and the severity breakdown) and the right-hand
+           ones ran off the edge of portrait A4. Margins are tightened from the
+           browser default to buy back width. (``MAIN_COLUMNS`` is seventeen — the
+           two platform ids are carried in the CSV/XLSX but folded into deep links
+           in the rendered table, so fifteen is the count the widths must match.) */
+        size: A4 landscape;
+        margin: 10mm 9mm 12mm 9mm;
+    }
+
+    @media print {
+        /* The console shell sets `page-break-inside: avoid` on every
+           .table-panel. That is right for a KPI card and wrong for a table with
+           one row per project version on a large portfolio — it pushes the whole
+           panel onto a fresh page and wastes most of the one before it. Let the
+           table break, repeat its header on each page, keep rows intact. */
+        .rvc-longtable { page-break-inside: auto; break-inside: auto; }
+        .rvc-longtable thead { display: table-header-group; }
+        .rvc-longtable tbody tr { page-break-inside: avoid; break-inside: avoid; }
+
+        /* `overflow-x: auto` reflows on screen but CLIPS in print, which is what
+           cut the right-hand columns off the page. Fixed layout + explicit widths
+           + hard wrapping keeps all fifteen rendered columns inside the page box. */
+        .rvc-longtable .body { overflow: visible !important; }
+        .rvc-longtable .data-table { table-layout: fixed; width: 100%; }
+        .rvc-longtable .data-table th,
+        .rvc-longtable .data-table td { overflow-wrap: anywhere; }
+
+        /* Folder / project / version are the free-text columns; the nine numeric
+           ones need just enough room for their headers. */
+        /* Sized for the FIFTEEN rendered columns: Folder, Project, Version,
+           Reachability, then eleven numerics (Unreachable, Already NOT_AFFECTED,
+           Auto-resolvable, Critical, High, Medium, Low, Other, Needs review,
+           Unscored, Coverage). 13 + 15 + 8 + 8 = 44%, leaving 56% over eleven
+           numeric columns at ~5.09% each — total 100%, so nothing overflows the
+           page. `overflow-x: auto` reflows on screen but CLIPS in print, which is
+           why these are explicit and why they must be recounted whenever a column
+           is added (a test pins the count against MAIN_COLUMNS). */
+        .rvc-rollup-table th:nth-child(1), .rvc-rollup-table td:nth-child(1) { width: 13%; }
+        .rvc-rollup-table th:nth-child(2), .rvc-rollup-table td:nth-child(2) { width: 15%; }
+        .rvc-rollup-table th:nth-child(3), .rvc-rollup-table td:nth-child(3) { width: 8%; }
+        .rvc-rollup-table th:nth-child(4), .rvc-rollup-table td:nth-child(4) { width: 8%; }
+        .rvc-rollup-table th:nth-child(n+5), .rvc-rollup-table td:nth-child(n+5) { width: 5.09%; }
+
+        /* Trim the row padding the screen table uses for touch comfort. */
+        .rvc-longtable .data-table td { padding-top: 4px; padding-bottom: 4px; }
+
+        /* The hero band must not be split across a page boundary. */
+        .rvc-hero { page-break-inside: avoid; break-inside: avoid; }
+
+        /* Two charts per row reads better than four squeezed across the page. */
+        .rvc-charts { grid-template-columns: repeat(2, 1fr); }
+        .rvc-chart { height: 260px; }
+    }
+</style>
+</head>
+<body class="console">
+{% endif %}
+
+{# Defensive defaults — keep the template renderable when the transform
+   short-circuited or a caller rendered it without a full result dict. #}
+{% set cov = coverage_summary | default({}) %}
+{% if not cov is mapping %}{% set cov = {} %}{% endif %}
+{% set rvc_notes = notes | default([]) %}
+{# `data` is now the per-project-version rollup, not a per-finding list. #}
+{% set main_rows = data | default([]) %}
+{% set by_version = coverage_by_version | default([]) %}
+{% set by_folder = coverage_by_folder | default([]) %}
+{% set status_mix = gap_status_breakdown | default([]) %}
+{% set reach_mix = reachability_mix | default([]) %}
+{% set sev_mix = gaps_by_severity | default([]) %}
+{% set ran_anywhere = cov.get('reachability_ran_anywhere', False) %}
+
+{# Platform deep links. Both macros fall back to plain text when the domain or
+   the required id is missing, so a record with incomplete metadata still renders
+   its name rather than a broken href. #}
+{% macro project_link(name, project_id) -%}
+{%- if domain and project_id -%}
+<a href="https://{{ domain }}/projects/{{ project_id }}" target="_blank" rel="noopener" class="entity-link" title="View project in Finite State">{{ name }}</a>
+{%- else -%}{{ name }}{%- endif -%}
+{%- endmacro %}
+{% macro version_link(label, project_id, project_version_id) -%}
+{%- if domain and project_id and project_version_id -%}
+<a href="https://{{ domain }}/projects/{{ project_id }}/versions/{{ project_version_id }}" target="_blank" rel="noopener" class="entity-link" title="View project version in Finite State">{{ label }}</a>
+{%- else -%}{{ label }}{%- endif -%}
+{%- endmacro %}
+{% set floor = cov.get('min_severity') %}
+{% set coverage_pct = cov.get('coverage_pct') %}
+{% set auto_total = cov.get('auto_resolvable_total', 0) %}
+{% set auto_sev = cov.get('auto_resolvable_by_severity', {}) %}
+{% if not auto_sev is mapping %}{% set auto_sev = {} %}{% endif %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "Reachability VEX Coverage"],
+    meta=[
+        {"label": "Domain", "value": domain or "—"},
+        {"label": "Severity floor", "value": floor or "All severities"},
+        {"label": "Generated", "value": generated_at or "—"},
+    ],
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>Reachability VEX Coverage</h1>
+        <p class="subtitle">
+            Findings proven UNREACHABLE by binary analysis should carry VEX status
+            <code>NOT_AFFECTED</code>. This is how much of that triage is
+            outstanding, by project version.
+            {% if floor %}Scoped to severity {{ floor }} and above.{% endif %}
+        </p>
+    </div>
+
+    {# The headline. This is the number an operator is here for: how much noise
+       a single --autotriage run would remove. It counts UNTRIAGED gaps that also
+       carry the platform ids the VEX API needs — not the raw gap count, which
+       would promise closures the apply step skips. #}
+    {% if ran_anywhere %}
+    <div class="rvc-hero">
+        <div class="rvc-hero-figure">
+            <span class="rvc-hero-num">{{ "{:,}".format(auto_total) }}</span>
+            <span class="rvc-hero-label">
+                finding{{ "" if auto_total == 1 else "s" }} could be auto-resolved
+            </span>
+        </div>
+        <div class="rvc-hero-body">
+            <p>
+                Unreachable, still untriaged, and appliable — closing them with
+                <code>--autotriage --autotriage-status NOT_AFFECTED</code> marks each
+                <code>NOT_AFFECTED</code> / <code>CODE_NOT_REACHABLE</code>.
+                {% if floor %}Counted at severity {{ floor }} and above only.{% endif %}
+            </p>
+            {% if auto_total %}
+            <div class="rvc-hero-sev">
+                {% for tier, cls in [('critical','critical'), ('high','high'), ('medium','medium'), ('low','low')] %}
+                {% set n = auto_sev.get('sev_' ~ tier, 0) %}
+                {% if n %}<span class="rvc-sev-chip rvc-sev-{{ cls }}">{{ n }} {{ tier }}</span>{% endif %}
+                {% endfor %}
+                {% if auto_sev.get('sev_other', 0) %}<span class="rvc-sev-chip">{{ auto_sev.get('sev_other') }} none/info</span>{% endif %}
+            </div>
+            {% endif %}
+            {% if cov.get('needs_review_total', 0) %}
+            <p class="rvc-hero-caveat">
+                A further <strong>{{ cov.get('needs_review_total') }}</strong> unreachable
+                finding{{ "" if cov.get('needs_review_total') == 1 else "s" }} need a person,
+                not automation, and {{ "is" if cov.get('needs_review_total') == 1 else "are" }}
+                <em>not</em> in the number above.
+                {{ cov.get('needs_review_status_conflict', 0) }} already carry a status
+                someone chose — those need a decision, or
+                <code>--vex-override</code>.
+                {{ cov.get('needs_review_missing_ids', 0) }} lack the platform ids the VEX
+                API needs — those need the id recovered, which no override will do.
+                A gap with both problems is counted under each, so the two need not sum.
+            </p>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    {% if not ran_anywhere %}
+    <div class="rvc-alert">
+        <h3>Reachability analysis has not run in this scope</h3>
+        <p>
+            No finding here carries a reachability score, so VEX coverage cannot be
+            measured. A gap count of zero means <strong>unknown</strong>, not clean —
+            run a reachability (<code>VULNERABILITY_ANALYSIS</code>) scan before
+            reading anything below as coverage.
+        </p>
+    </div>
+    {% endif %}
+
+    {% for note in rvc_notes %}
+    <div class="rvc-note">{{ note }}</div>
+    {% endfor %}
+
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell(
+            ("VEX Coverage" ~ (" (" ~ floor ~ "+)" if floor else "")),
+            (("%.1f" | format(coverage_pct)) ~ "%") if coverage_pct is not none else "—",
+            dot=("critical" if (coverage_pct is not none and coverage_pct < 50)
+                 else ("high" if (coverage_pct is not none and coverage_pct < 100) else None)),
+        ) }}
+        {# An em dash, not 0, when reachability never ran anywhere. "0" in this cell
+           reads as "nothing to close"; the truth is "not measured", which the hero
+           band and the alert both say — but a reader scanning only the KPI row would
+           take the zero at face value. The same reason coverage_pct prints an em dash
+           rather than 0%. #}
+        {{ fs.kpi_cell(
+            "Auto-Resolvable",
+            auto_total if ran_anywhere else "—",
+            dot=("high" if (ran_anywhere and auto_total > 0) else None),
+        ) }}
+        {# Every measured figure reads n/a when reachability never ran. A 0 here is
+           indistinguishable from a measured "nothing to do", which is precisely the
+           null-vs-zero conflation this report exists to prevent — it would be odd to
+           preserve that distinction in the data and then discard it in the KPI row. #}
+        {{ fs.kpi_cell("Needs Review",
+                       cov.get('needs_review_total', 0) if ran_anywhere else "—",
+                       dot=("critical" if (ran_anywhere and cov.get('needs_review_total', 0) > 0) else None)) }}
+        {{ fs.kpi_cell("Unreachable Findings",
+                       cov.get('unreachable_findings', 0) if ran_anywhere else "—") }}
+        {{ fs.kpi_cell("Already NOT_AFFECTED",
+                       cov.get('unreachable_not_affected', 0) if ran_anywhere else "—") }}
+        {{ fs.kpi_cell(
+            "Versions Without Reachability",
+            cov.get('versions_without_reachability', 0),
+            dot=("high" if cov.get('versions_without_reachability', 0) > 0 else None),
+        ) }}
+    </div>
+
+    <p class="subtitle" style="margin: -8px 0 20px;">
+        Coverage is the share of UNREACHABLE findings carrying <code>NOT_AFFECTED</code>,
+        counted only across the {{ cov.get('versions_with_reachability', 0) }} version(s)
+        where reachability analysis actually ran. Reachability status is inferred from the
+        finding data itself, not from scan history.
+        {% if coverage_pct is none %}There is no coverage denominator in this scope.{% endif %}
+    </p>
+
+    {% include "_columns_schema.html" %}
+
+    {# Fragment rendering (compound / workflow output) strips the chart <script>,
+       so each panel falls back to the server-rendered SVG the renderer supplies —
+       the pattern license_report / executive_summary already use. Without it a
+       declared chart renders an empty box in every embedded surface. #}
+    <div class="rvc-charts">
+        {# A bar chart of every project is legible up to a couple of dozen; past
+           that the axis labels overprint into a smear. The transform decides
+           (it has the count) and we render the reason instead of a broken chart. #}
+        {% set folder_suppressed = (chart_suppression | default({})).get('coverage_by_folder') %}
+        <div class="table-panel">
+            {{ fs.panel_head("Auto-resolvable by folder") }}
+            <div class="body">
+                {% if folder_suppressed %}
+                <p class="rvc-chart-suppressed">
+                    Chart not shown — {{ folder_suppressed.get('reason') }}
+                </p>
+                {% elif not by_folder %}
+                <p class="rvc-chart-suppressed">
+                    No folder has an <em>auto-resolvable</em> finding to chart in this
+                    scope. Unreachable findings may still exist here — already
+                    <code>NOT_AFFECTED</code>, or needing review — and they are counted
+                    in the figures above and listed complete in the JSON output; this
+                    chart plots only what a single <code>--autotriage</code> run could
+                    close, so it has no bar to draw.
+                </p>
+                {% else %}
+                {% if render_mode == 'fragment' and not fragment_scripts_enabled %}<div class="chart-server-svg">{{ server_svgs.get('coverage_by_folder', '') | safe }}</div>{% else %}<div id="rvc-chart-folder" class="rvc-chart"></div>{% endif %}
+                {% endif %}
+            </div>
+        </div>
+        <div class="table-panel">
+            {{ fs.panel_head("Outstanding findings by current status") }}
+            <div class="body">
+                {# Explicit empty state, like the folder chart: an empty 320px box in
+                   HTML and PDF looks like a rendering failure rather than "nothing to
+                   chart", and a fully covered scope is a legitimate outcome. #}
+                {% if not status_mix %}
+                <p class="rvc-chart-suppressed">No unreachable finding is missing <code>NOT_AFFECTED</code> in this scope, so there is no outstanding-status breakdown to chart.</p>
+                {% elif render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('gap_status_breakdown', '') | safe }}</div>
+                {% else %}
+                <div id="rvc-chart-status" class="rvc-chart"></div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="table-panel">
+            {{ fs.panel_head("Reachability classification mix") }}
+            <div class="body">
+                {# Explicit empty state, like the folder chart: an empty 320px box in
+                   HTML and PDF looks like a rendering failure rather than "nothing to
+                   chart", and a fully covered scope is a legitimate outcome. #}
+                {% if not reach_mix %}
+                <p class="rvc-chart-suppressed">No findings were returned for this scope, so there is no reachability mix to chart.</p>
+                {% elif render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('reachability_mix', '') | safe }}</div>
+                {% else %}
+                <div id="rvc-chart-mix" class="rvc-chart"></div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="table-panel">
+            {{ fs.panel_head("Auto-resolvable by severity") }}
+            <div class="body">
+                {# Explicit empty state, like the folder chart: an empty 320px box in
+                   HTML and PDF looks like a rendering failure rather than "nothing to
+                   chart", and a fully covered scope is a legitimate outcome. #}
+                {% if not sev_mix %}
+                <p class="rvc-chart-suppressed">Nothing is auto-resolvable in this scope, so there is no severity breakdown to chart. Unreachable findings may still exist — see the figures above.</p>
+                {% elif render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('gaps_by_severity', '') | safe }}</div>
+                {% else %}
+                <div id="rvc-chart-severity" class="rvc-chart"></div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="table-panel rvc-longtable" style="margin-bottom: 20px;">
+        {{ fs.panel_head(
+            "Outstanding triage by project version",
+            meta=((main_rows | length) | string) ~ " version" ~ ("s" if (main_rows | length) != 1 else "") ~ " with work",
+        ) }}
+        <p class="subtitle" style="padding: 0 16px;">
+            One row per project version, grouped by <strong>folder</strong> — the platform's
+            access boundary, so each folder is a contiguous section you can hand to its
+            owning team — and within a folder ordered by how much each version can shed.
+            <strong>Auto-resolvable</strong> counts unreachable findings that carry no
+            stored VEX status and are appliable — exactly what one
+            <code>--autotriage</code> run closes; the severity columns break that number
+            down. <strong>Needs review</strong> counts the rest: anything already carrying a
+            status (<code>IN_TRIAGE</code> as much as <code>EXPLOITABLE</code>), or missing
+            the ids the VEX API needs. Individual findings are not listed here.
+            <code>vex_recommendations.json</code> carries every gap that has the ids the
+            VEX API needs — auto-resolvable <em>and</em> needs-review, since
+            <code>--vex-override</code> exists to apply the latter — each tagged with its
+            <code>gap_class</code>, so that file's row count is not this headline. Gaps
+            missing those ids are in neither; they are in the <code>gap_detail</code> block
+            of the <code>json</code> output, the only complete row-for-row artifact.
+            {% set hidden = cov.get('versions_hidden_no_action', 0) %}
+            {% if hidden %}
+            <br><span class="rvc-hidden-note">
+                {{ hidden }} further version{{ "" if hidden == 1 else "s" }} in scope
+                {{ "has" if hidden == 1 else "have" }} nothing to auto-resolve — already
+                fully covered, holding only needs-review conflicts, or reachability never
+                ran — so {{ "it is" if hidden == 1 else "they are" }} omitted from this
+                work list. {{ "It is" if hidden == 1 else "They are" }} still counted in
+                every figure above.
+            </span>
+            {% endif %}
+        </p>
+        <div class="body" style="overflow-x: auto;">
+            {% if main_rows %}
+            <table class="data-table rvc-rollup-table">
+                <thead>
+                    <tr>
+                        <th>Folder</th>
+                        <th>Project</th>
+                        <th>Version</th>
+                        <th>Reachability</th>
+                        <th class="num">Unreachable</th>
+                        <th class="num">Already NOT_AFFECTED</th>
+                        <th class="num">Auto-resolvable</th>
+                        <th class="num">Critical</th>
+                        <th class="num">High</th>
+                        <th class="num">Medium</th>
+                        <th class="num">Low</th>
+                        {# Without Other the four tiers do not sum to Auto-resolvable
+                           whenever a gap's severity is none/info or off-ladder. #}
+                        <th class="num">Other</th>
+                        <th class="num">Needs review</th>
+                        {# A RAN version is not necessarily FULLY analyzed: coverage
+                           is computed over the scored findings only, so this is what
+                           stops "100%" on a barely-scored version being read as
+                           whole-version coverage. #}
+                        <th class="num">Unscored</th>
+                        <th class="num">Coverage</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in main_rows %}
+                    <tr>
+                        <td class="rvc-folder">{{ row.get('folder_name') or '—' }}</td>
+                        <td><strong>{{ project_link(row.get('project_name', ''), row.get('project_id')) }}</strong></td>
+                        <td>{{ version_link(row.get('version_name', '') or '(current)', row.get('project_id'), row.get('project_version_id')) }}</td>
+                        <td class="rvc-state">{{ row.get('reachability_state', '') }}</td>
+                        <td class="num">{{ row.get('unreachable', 0) }}</td>
+                        <td class="num">{{ row.get('already_not_affected', 0) }}</td>
+                        <td class="num"><strong>{{ row.get('auto_triageable', 0) }}</strong></td>
+                        <td class="num">{{ row.get('sev_critical', 0) or '' }}</td>
+                        <td class="num">{{ row.get('sev_high', 0) or '' }}</td>
+                        <td class="num">{{ row.get('sev_medium', 0) or '' }}</td>
+                        <td class="num">{{ row.get('sev_low', 0) or '' }}</td>
+                        <td class="num">{{ row.get('sev_other', 0) or '' }}</td>
+                        <td class="num">{{ row.get('needs_review', 0) or '' }}</td>
+                        <td class="num">{{ row.get('findings_not_analyzed', 0) or '' }}</td>
+                        <td class="num">
+                            {% if row.get('coverage_pct') is not none %}{{ "%.1f" | format(row.get('coverage_pct')) }}%{% else %}—{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="rvc-no-data">
+                {% if ran_anywhere %}
+                <h3>Nothing to auto-resolve</h3>
+                <p>
+                    No version in scope has an unreachable finding that is still
+                    auto-resolvable. Any remaining unreachable findings are already
+                    <code>NOT_AFFECTED</code>, carry a status a person chose, or lack
+                    the platform ids the VEX API needs — that last group needs the id
+                    recovered rather than a triage decision, and is listed in the
+                    <code>gap_detail</code> block of the <code>json</code> output.
+                </p>
+                {% else %}
+                <h3>Nothing to audit</h3>
+                <p>Reachability analysis has not run in this scope — see the warning above.</p>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</main>
+
+{% if render_mode != 'fragment' %}
+
+{# The bar prints n/a, not 0, when nothing was measured — matching the KPI cell and
+   the coverage figure. PDF and print readers scan this bar on its own. #}
+{{ fs.status_bar(items=[
+    "Recipe: Reachability VEX Coverage",
+    "Auto-resolvable: " ~ ((auto_total | string) if ran_anywhere else "n/a"),
+    "Coverage: " ~ ((("%.1f" | format(coverage_pct)) ~ "%") if coverage_pct is not none else "n/a"),
+    generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+<script>
+(function () {
+    if (typeof echarts === 'undefined' || typeof window.fsEChartsInit !== 'function') {
+        return;  // Fragment/PDF paths without the CDN — tables still render.
+    }
+
+    var folderRows   = {{ by_folder | tojson }};
+    var statusRows   = {{ status_mix | tojson }};
+    var mixRows      = {{ reach_mix | tojson }};
+    var severityRows = {{ sev_mix | tojson }};
+
+    /* Live chart instances, so a theme change can dispose and re-init them. */
+    var _charts = [];
+
+    /* Read tokens FRESH on every render. ECharts paints to a canvas, so it bakes
+       whatever colour it was given at init — reading these once at load meant the
+       labels kept the load-time theme's ink and went invisible the moment the user
+       toggled. Note --line does not exist in tokens.css; the grid colour is
+       --hairline (this previously fell back to a translucent white that was also
+       near-invisible in light mode). */
+    function tokens() {
+        var css = getComputedStyle(document.documentElement);
+        function t(name, fallback) {
+            var v = css.getPropertyValue(name);
+            return (v && v.trim()) || fallback;
+        }
+        return {
+            ink: t('--ink', '#e6e6e6'),
+            mute: t('--ink-mute', '#8893a8'),
+            grid: t('--hairline', 'rgba(127,127,127,0.25)'),
+            card: t('--surface-card', '#ffffff'),
+            accent: t('--accent', '#5eead4')
+        };
+    }
+
+    /* Truncate a long folder breadcrumb for the axis, keeping the TAIL. The
+       breadcrumb's shared "Root > …" prefix is not what distinguishes one folder
+       from another — the leaf (the team) is — so drop from the front. The full
+       path stays in the tooltip. ECharts' own width/overflow only clips, so do
+       it here. */
+    function ellipsizeTail(s, n) {
+        s = String(s);
+        return s.length > n ? '…' + s.slice(s.length - (n - 1)) : s;
+    }
+
+    /* Compact large counts on the value axis: 5000 -> "5k", 180000 -> "180k".
+       Full counts (up to "30,000") are wide, and enough of them on one axis
+       overprinted in a quarter-width panel — the abbreviation keeps every tick
+       short. Exact values stay in the tooltip. */
+    function fmtCount(v) {
+        v = Number(v);
+        if (Math.abs(v) >= 1000) {
+            var k = v / 1000;
+            return (k % 1 === 0 ? k : k.toFixed(1)) + 'k';
+        }
+        return String(v);
+    }
+
+    function axisBar(el, rows, labelKey, valueKey, opts) {
+        opts = opts || {};
+        if (!el || !rows.length) { return; }
+        var c = tokens();
+        var chart = window.fsEChartsInit(el);
+        _charts.push(chart);
+        var cats = rows.map(function (r) { return r[labelKey]; });
+        var vals = rows.map(function (r) { return r[valueKey]; });
+        var valAxis = {
+            type: 'value',
+            max: opts.percent ? 100 : null,
+            /* Cap the tick count so wide labels can't crowd a narrow panel, and
+               drop any that would still collide. */
+            splitNumber: 4,
+            axisLabel: {
+                color: c.ink,
+                hideOverlap: true,
+                formatter: opts.percent
+                    ? function (v) { return v + '%'; }
+                    : function (v) { return fmtCount(v); }
+            },
+            splitLine: { lineStyle: { color: c.grid } }
+        };
+        try {
+            if (opts.horizontal) {
+                /* Horizontal bars for long category labels (folder breadcrumbs):
+                   the name reads left-to-right instead of at an unreadable 30°.
+                   Categories run bottom-up, so reverse to put the biggest on top.
+                   The label is ellipsized to keep the plot area usable; the full
+                   name is in the tooltip. */
+                chart.setOption({
+                    animation: false,
+                    grid: { left: 8, right: 24, top: 12, bottom: 8, containLabel: true },
+                    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
+                        valueFormatter: function (v) {
+                            return opts.percent ? v + '%' : Number(v).toLocaleString();
+                        } },
+                    xAxis: valAxis,
+                    yAxis: {
+                        type: 'category',
+                        inverse: true,
+                        data: cats,
+                        axisLabel: {
+                            color: c.ink,
+                            /* Truncation is done in the formatter (tail-keeping);
+                               do NOT set width+overflow:'truncate' here — ECharts
+                               clips from the RIGHT, which would re-hide the leaf
+                               the formatter just preserved. containLabel:true on
+                               the grid sizes the label column to fit. */
+                            formatter: function (v) { return ellipsizeTail(v, 30); }
+                        },
+                        axisLine: { lineStyle: { color: c.grid } },
+                        axisTick: { show: false }
+                    },
+                    series: [{
+                        type: 'bar',
+                        data: vals,
+                        itemStyle: { color: c.accent, borderRadius: [0, 3, 3, 0] }
+                    }]
+                });
+            } else {
+                chart.setOption({
+                    animation: false,
+                    grid: { left: 8, right: 16, top: 24, bottom: 8, containLabel: true },
+                    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
+                        valueFormatter: function (v) {
+                            return opts.percent ? v + '%' : Number(v).toLocaleString();
+                        } },
+                    xAxis: {
+                        type: 'category',
+                        data: cats,
+                        axisLabel: {
+                            color: c.ink,
+                            rotate: opts.rotate || 0,
+                            interval: 0,
+                            /* Backstop: interval:0 forces every label to draw,
+                               which is what let long category names overprint each
+                               other. hideOverlap drops a label rather than painting
+                               it over its neighbour. */
+                            hideOverlap: true
+                        },
+                        axisLine: { lineStyle: { color: c.grid } }
+                    },
+                    yAxis: valAxis,
+                    series: [{
+                        type: 'bar',
+                        data: vals,
+                        itemStyle: { color: c.accent, borderRadius: [3, 3, 0, 0] }
+                    }]
+                });
+            }
+        } catch (e) {
+            /* The wrapper acquired the beacon before init returned; release it
+               here or the PDF renderer waits out the full 30s timeout. Only the
+               FIRST setOption is guarded this way — per _echarts_ready.html, a
+               release on a later call would prematurely flip fsReportReady. */
+            window.fsBeaconRelease();
+            throw e;
+        }
+    }
+
+    function doughnut(el, rows, labelKey, valueKey) {
+        if (!el || !rows.length) { return; }
+        var c = tokens();
+        var chart = window.fsEChartsInit(el);
+        _charts.push(chart);
+        try {
+            chart.setOption({
+                animation: false,
+                tooltip: { trigger: 'item', valueFormatter: function (v) {
+                    return Number(v).toLocaleString();
+                } },
+                /* Vertical legend on the right. A horizontal legend laid these
+                   long status names out in rows and they overprinted each other:
+                   canvas text is measured, and NO_STATUS / RESOLVED_WITH_PEDIGREE
+                   in a narrow panel do not fit a row. Stacking them makes label
+                   width irrelevant, so no measurement drift can cause a
+                   collision. `scroll` bounds it if a tenant ever shows more
+                   statuses than fit the panel height. */
+                legend: {
+                    type: 'scroll',
+                    orient: 'vertical',
+                    /* Held clear of the pie: at right:8 the donut's right edge
+                       reached the legend column and painted over the first
+                       item's colour swatch. */
+                    right: 10,
+                    top: 'middle',
+                    itemWidth: 10,
+                    itemHeight: 10,
+                    itemGap: 8,
+                    textStyle: { color: c.ink, fontSize: 11 },
+                    pageTextStyle: { color: c.mute }
+                },
+                series: [{
+                    type: 'pie',
+                    /* Offset left and sized to leave the legend column clear. */
+                    center: ['24%', '50%'],
+                    radius: ['38%', '58%'],
+                    /* Leader-line labels are off: with several sub-1% slices they
+                       stacked into an unreadable, truncated cluster
+                       ("RESOLVED_WITH_PEDI..."). The legend names every slice and
+                       the tooltip gives exact counts, so nothing is lost. */
+                    label: { show: false },
+                    labelLine: { show: false },
+                    /* Hairline between slices so the dominant arc doesn't merge
+                       visually with an adjacent legend swatch of the same colour. */
+                    itemStyle: { borderColor: c.card, borderWidth: 2 },
+                    data: rows.map(function (r) {
+                        return { name: String(r[labelKey]), value: r[valueKey] };
+                    })
+                }]
+            });
+        } catch (e) {
+            window.fsBeaconRelease();
+            throw e;
+        }
+    }
+
+    /* Disposes and re-inits every chart against the ACTIVE theme's tokens.
+       Matches the pattern the other ECharts reports use (see
+       triage_prioritization.html) rather than inventing a second one. */
+    function renderCharts() {
+        _charts.forEach(function (c) { c.dispose(); });
+        _charts.length = 0;
+
+        /* Horizontal: folder breadcrumbs are long, and read far better as
+           left-to-right y-axis labels than rotated on an x-axis. */
+        axisBar(document.getElementById('rvc-chart-folder'), folderRows,
+                'folder_name', 'auto_triageable', { horizontal: true });
+        /* slice_label, not current_vex_status: NO_STATUS appears in two classes
+           (auto-resolvable, and needs-review when ids are missing), so the bare
+           status drew two identically-named slices. */
+        doughnut(document.getElementById('rvc-chart-status'), statusRows,
+                 'slice_label', 'count');
+        /* REACHABLE / UNREACHABLE / INCONCLUSIVE / UNKNOWN are long enough to
+           collide side by side in a quarter-width panel. */
+        axisBar(document.getElementById('rvc-chart-mix'), mixRows,
+                'reachability_label', 'count', { rotate: 20 });
+        axisBar(document.getElementById('rvc-chart-severity'), severityRows,
+                'severity', 'count');
+    }
+
+    renderCharts();
+
+    window.addEventListener('resize', function () {
+        _charts.forEach(function (c) { c.resize(); });
+    });
+
+    /* The theme toggle only flips data-theme on <html> and dispatches no event,
+       so observing the attribute is the available hook. */
+    new MutationObserver(function (mutations) {
+        for (var i = 0; i < mutations.length; i++) {
+            if (mutations[i].attributeName === 'data-theme') {
+                renderCharts();
+                return;
+            }
+        }
+    }).observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme']
+    });
+})();
+</script>
+
+{% if render_mode != 'fragment' %}
+{% include '_action_buttons.html' %}
+</body>
+</html>
+{% endif %}

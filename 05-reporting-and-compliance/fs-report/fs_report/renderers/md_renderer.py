@@ -62,6 +62,21 @@ def _safe_float(val: Any, decimals: int = 1, default: str = "") -> str:
         return default
 
 
+def _as_frame(val: Any) -> pd.DataFrame:
+    """Coerce a transform-result value to a DataFrame.
+
+    Transform results reach the renderers as DataFrames on the direct path but
+    as lists of records once html_renderer's context conversion has run, and a
+    short-circuited transform may omit the key entirely. Returns an empty frame
+    for anything else rather than raising.
+    """
+    if isinstance(val, pd.DataFrame):
+        return val
+    if isinstance(val, list):
+        return pd.DataFrame(val)
+    return pd.DataFrame()
+
+
 def _escape_pipe(val: str) -> str:
     """Escape pipe characters in markdown table cells."""
     return val.replace("|", "\\|").replace("\n", " ")
@@ -95,6 +110,7 @@ class MarkdownRenderer:
             "Component Impact": self._render_component_impact,
             "Scan Quality": self._render_scan_quality,
             "CRA Compliance": self._render_cra_compliance,
+            "Reachability VEX Coverage": self._render_reachability_vex_coverage,
         }
 
         # Try exact match first, then prefix match (handles scoped names
@@ -2261,6 +2277,248 @@ class MarkdownRenderer:
                 for proj, issue in attention_rows:
                     parts.append(f"| {proj} | {issue} |")
                 parts.append("")
+
+        parts.append(self._footer())
+        return "\n".join(parts) + "\n"
+
+    # ── Reachability VEX Coverage ─────────────────────────────────────
+
+    #: The per-project-version rollup. Individual findings are deliberately not
+    #: tabulated — a real run produced 522 of them, and every one is still in
+    #: vex_recommendations.json (appliable gaps) / the json output's gap_detail
+    #: block (every gap).
+    _RVC_ROLLUP_COLS: list[tuple[str, str]] = [
+        ("folder_name", "Folder"),
+        ("project_link", "Project"),
+        ("version_link", "Version"),
+        ("reachability_state", "Reachability"),
+        ("unreachable", "Unreachable"),
+        ("already_not_affected", "Already NOT_AFFECTED"),
+        ("auto_triageable", "Auto-resolvable"),
+        ("sev_critical", "Critical"),
+        ("sev_high", "High"),
+        ("sev_medium", "Medium"),
+        ("sev_low", "Low"),
+        # Without Other the four tiers do not sum to Auto-resolvable when a gap's
+        # severity is none/info or off-ladder.
+        ("sev_other", "Other"),
+        ("needs_review", "Needs review"),
+        # A RAN version is not necessarily FULLY analyzed — coverage is computed
+        # over the scored findings only. Must stay in step with MAIN_COLUMNS and the
+        # HTML table; a test pins all three.
+        ("findings_not_analyzed", "Unscored"),
+        ("coverage_pct", "Coverage %"),
+    ]
+
+    @staticmethod
+    def _rvc_add_links(df: pd.DataFrame, domain: str) -> pd.DataFrame:
+        """Add markdown-link columns for project and project version.
+
+        Falls back to the bare name whenever the domain or the required id is
+        missing, so an incomplete record still shows its name instead of a
+        broken link. Pipes in the label are escaped because these land in a
+        markdown table cell.
+        """
+        if df.empty:
+            return df
+        out = df.copy()
+
+        def _link(label: Any, url: str | None) -> str:
+            text = _escape_pipe(_safe_str(label))
+            if not url or not text:
+                return text
+            return f"[{text}]({url})"
+
+        def _project(row: Any) -> str:
+            pid = _safe_str(row.get("project_id", ""))
+            url = f"https://{domain}/projects/{pid}" if domain and pid else None
+            return _link(row.get("project_name", ""), url)
+
+        def _version(row: Any) -> str:
+            pid = _safe_str(row.get("project_id", ""))
+            vid = _safe_str(row.get("project_version_id", ""))
+            url = (
+                f"https://{domain}/projects/{pid}/versions/{vid}"
+                if domain and pid and vid
+                else None
+            )
+            return _link(row.get("version_name", "") or "(current)", url)
+
+        out["project_link"] = out.apply(_project, axis=1)
+        out["version_link"] = out.apply(_version, axis=1)
+        return out
+
+    def _render_reachability_vex_coverage(
+        self, recipe: Recipe, report_data: ReportData
+    ) -> str:
+        """Markdown for the reachability VEX audit.
+
+        Leads with the auto-resolvable total, then a per-project-version rollup.
+        Mirrors the HTML's honesty rules: an unmeasured scope leads with a warning
+        instead of a coverage figure, and an empty denominator renders as ``—``
+        rather than 0%.
+        """
+        # The engine exposes a transform's dict result twice — nested under
+        # additional_data["transform_result"] AND flattened to top-level
+        # additional_data keys. Read the nested form first and fall back to the
+        # flat one so this renders correctly on either shape (html_renderer
+        # consumes the flat one, so a flat-only caller is a real case).
+        ad = self._get_additional_data(report_data)
+        nested = self._get_transform_result(report_data)
+        tr = {**{k: v for k, v in ad.items() if k != "transform_result"}, **nested}
+
+        summary = tr.get("coverage_summary", {})
+        if not isinstance(summary, dict):
+            summary = {}
+
+        domain = str(tr.get("domain") or report_data.metadata.get("domain") or "")
+
+        rollup_df = _as_frame(tr.get("main"))
+        if rollup_df.empty:
+            rollup_df = _as_frame(report_data.data)
+        rollup_df = self._rvc_add_links(rollup_df, domain)
+
+        notes = tr.get("notes", [])
+        if not isinstance(notes, list):
+            notes = []
+
+        floor = summary.get("min_severity")
+        coverage = summary.get("coverage_pct")
+        coverage_str = "—" if coverage is None else f"{_safe_float(coverage)}%"
+        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+
+        parts = [
+            "# Reachability VEX Coverage",
+            f"**Generated:** {date_str} | **Severity floor:** "
+            f"{floor or 'All severities'}",
+            "",
+        ]
+
+        if not summary.get("reachability_ran_anywhere", False):
+            parts += [
+                "> **Reachability analysis has not run in this scope.**",
+                "> No finding carries a reachability score, so VEX coverage cannot be",
+                "> measured. A gap count of zero here means *unknown*, not clean.",
+                "",
+            ]
+
+        for note in notes:
+            parts.append(f"> {note}")
+        if notes:
+            parts.append("")
+
+        auto_total = _safe_int(summary.get("auto_resolvable_total", 0))
+        needs_review = _safe_int(summary.get("needs_review_total", 0))
+        # The remediation fork the JSON exposes: a status a person set needs a
+        # decision or --vex-override; a missing id needs the id recovered. A gap
+        # with both is counted in each, so these need not sum to the total.
+        nr_conflict = _safe_int(summary.get("needs_review_status_conflict", 0))
+        nr_missing = _safe_int(summary.get("needs_review_missing_ids", 0))
+        auto_sev = summary.get("auto_resolvable_by_severity", {})
+        if not isinstance(auto_sev, dict):
+            auto_sev = {}
+
+        # The headline leads, because it is the number the report exists to give.
+        if summary.get("reachability_ran_anywhere", False):
+            plural = "" if auto_total == 1 else "s"
+            parts.append(f"## {auto_total:,} finding{plural} could be auto-resolved")
+            parts.append("")
+            parts.append(
+                "Unreachable, still untriaged, and appliable. Close them with "
+                "`--autotriage --autotriage-status NOT_AFFECTED`."
+            )
+            sev_bits = [
+                f"{_safe_int(auto_sev.get('sev_' + tier, 0))} {tier}"
+                for tier in ("critical", "high", "medium", "low")
+                if _safe_int(auto_sev.get("sev_" + tier, 0))
+            ]
+            if _safe_int(auto_sev.get("sev_other", 0)):
+                sev_bits.append(f"{_safe_int(auto_sev.get('sev_other'))} none/info")
+            if sev_bits:
+                parts.append("")
+                parts.append(f"**By severity:** {', '.join(sev_bits)}")
+            if needs_review:
+                parts.append("")
+                parts.append(
+                    f"A further **{needs_review}** unreachable finding"
+                    f"{'' if needs_review == 1 else 's'} already carry a different "
+                    "status a person chose, or lack the platform ids the VEX API "
+                    "needs (those need the id recovered, not an override). "
+                    f"Of those, {nr_conflict} carry a status and {nr_missing} are "
+                    "missing ids — a gap with both is counted in each, so these "
+                    "need not sum. Those are *not* in the number above — "
+                    "they need review, not automation."
+                )
+            parts.append("")
+
+        parts.append("## Summary")
+        parts.append(f"- **VEX Coverage:** {coverage_str}")
+        parts.append(
+            f"- **Unreachable findings:** "
+            f"{_safe_int(summary.get('unreachable_findings', 0))} "
+            f"({_safe_int(summary.get('unreachable_not_affected', 0))} already "
+            f"NOT_AFFECTED)"
+        )
+        parts.append(f"- **Could be auto-resolved:** {auto_total}")
+        parts.append(f"- **Needs human review:** {needs_review}")
+        parts.append(
+            f"- **Versions without reachability data:** "
+            f"{_safe_int(summary.get('versions_without_reachability', 0))} "
+            f"of {_safe_int(summary.get('versions_in_scope', 0))}"
+        )
+        if coverage is None:
+            parts.append(
+                "- *No coverage denominator in this scope — no finding was proven "
+                "unreachable.*"
+            )
+        parts.append("")
+
+        parts.append("## Outstanding triage by project version")
+        parts.append("")
+        parts.append(
+            "Only versions with something to auto-resolve are listed, grouped by "
+            "folder — the platform's access boundary, so each folder is a contiguous "
+            "section you can hand to its owning team."
+        )
+        hidden = _safe_int(summary.get("versions_hidden_no_action", 0))
+        if hidden:
+            parts.append("")
+            parts.append(
+                f"*{hidden} further version{'' if hidden == 1 else 's'} in scope "
+                f"{'has' if hidden == 1 else 'have'} nothing to auto-resolve and "
+                f"{'is' if hidden == 1 else 'are'} omitted here — still counted in "
+                "every figure above.*"
+            )
+        parts.append("")
+        if rollup_df.empty:
+            parts.append(
+                "Nothing to auto-resolve — every unreachable finding in scope is "
+                "already NOT_AFFECTED, carries a status a person chose, or lacks "
+                "the platform ids the VEX API needs — that last group needs the id "
+                "recovered rather than a triage decision, and is listed in the "
+                "`gap_detail` block of the `json` output."
+                if summary.get("reachability_ran_anywhere", False)
+                else "Nothing to audit — see the warning above."
+            )
+        else:
+            parts.append(
+                self._df_to_table(
+                    rollup_df,
+                    columns=[c for c, _ in self._RVC_ROLLUP_COLS],
+                    headers=dict(self._RVC_ROLLUP_COLS),
+                )
+            )
+            parts.append("")
+            parts.append(
+                "Individual findings are not listed. "
+                "`vex_recommendations.json` carries every gap that has the ids the "
+                "VEX API needs — auto-resolvable *and* needs-review, since "
+                "`--vex-override` exists to apply the latter — each tagged with its "
+                "`gap_class`, so that file's row count is not this headline. Gaps "
+                "missing those ids are in neither; they are in the `gap_detail` "
+                "block of the `json` output, the only complete row-for-row artifact."
+            )
+        parts.append("")
 
         parts.append(self._footer())
         return "\n".join(parts) + "\n"

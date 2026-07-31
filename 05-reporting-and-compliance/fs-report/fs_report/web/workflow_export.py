@@ -124,6 +124,7 @@ _CONFIG_KEY_TO_FLAG: dict[str, str] = {
     "threat_context": "--context",
     "baseline_date": "--baseline-date",
     "detected_after": "--detected-after",
+    "min_severity": "--min-severity",
     "scan_types": "--scan-type",
     "scan_statuses": "--scan-status",
     "open_only": "--open-only",
@@ -149,6 +150,7 @@ _GHA_UNSUPPORTED_NEW_KEYS: frozenset[str] = frozenset(
         "threat_context",
         "baseline_date",
         "detected_after",
+        "min_severity",
         "scan_types",
         "scan_statuses",
         "open_only",
@@ -353,6 +355,13 @@ def _effective_config(
 # ---------------------------------------------------------------------------
 
 
+#: Recipes whose exported command may carry ``--min-severity``. Mirrors
+#: report_engine.MIN_SEVERITY_RECIPES (exact-case) in the router's lowercase form;
+#: an export that emits the flag for any other recipe produces a command whose
+#: severity scope is silently ignored.
+_MIN_SEVERITY_RECIPES = {"reachability vex coverage"}
+
+
 def serialize_cli(model: dict[str, Any]) -> str:
     """Serialize *model* to a shell script (.sh) reproducing the workflow.
 
@@ -493,6 +502,15 @@ def serialize_cli(model: dict[str, Any]) -> str:
         detected_after = eff.get("detected_after")
         if _nonempty(detected_after):
             parts.append(f"--detected-after {_shquote(str(detected_after))}")
+
+        # Gated to the recipes the engine actually honors it for. A global or
+        # copied step override could otherwise put --min-severity on an exported
+        # command for a sibling recipe that ignores it, so the exported script
+        # LOOKS severity-scoped while running an unfiltered audit — the same
+        # false-confidence the CLI now warns about at run time.
+        min_severity = eff.get("min_severity")
+        if _nonempty(min_severity) and ref.strip().lower() in _MIN_SEVERITY_RECIPES:
+            parts.append(f"--min-severity {_shquote(str(min_severity).lower())}")
 
         scan_types = eff.get("scan_types")
         if _nonempty(scan_types):

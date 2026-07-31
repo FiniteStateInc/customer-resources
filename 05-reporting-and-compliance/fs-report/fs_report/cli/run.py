@@ -26,7 +26,7 @@ from fs_report.cra import tiers as cra_tiers
 from fs_report.models import Config
 from fs_report.period_parser import PeriodParser
 from fs_report.renderers.pdf_renderer import cleanup_pdf_engines
-from fs_report.report_engine import ReportEngine
+from fs_report.report_engine import SEVERITY_FLOORS, ReportEngine
 from fs_report.scope_ref import ScopeRefError as _ScopeRefError
 from fs_report.scope_ref import parse as _parse_scope_ref
 from fs_report.sqlite_cache import parse_ttl
@@ -234,6 +234,7 @@ def create_config(
     cache_dir: Union[str, None] = None,
     cache_refresh: bool = False,
     detected_after: Union[str, None] = None,
+    min_severity: Union[str, None] = None,
     ai: bool = False,
     ai_provider: Union[str, None] = None,
     ai_model_high: Union[str, None] = None,
@@ -525,6 +526,23 @@ def create_config(
             )
             raise typer.Exit(1)
 
+    # Validate + normalize min_severity. Stored uppercase so the RSQL builder
+    # needs no further casing logic (the portfolio /findings endpoint filters on
+    # the uppercase enum, case-sensitively).
+    if min_severity:
+        min_severity = str(min_severity).strip().upper()
+        if min_severity not in SEVERITY_FLOORS:
+            console.print(
+                f"[red]Error: --min-severity must be one of "
+                f"{', '.join(s.lower() for s in SEVERITY_FLOORS)}; "
+                f"got '{min_severity.lower()}'[/red]"
+            )
+            console.print(
+                "[yellow]NONE and INFO are not valid floors — omit the flag to "
+                "include every severity.[/yellow]"
+            )
+            raise typer.Exit(1)
+
     # Merge cross-server comparison flags from env vars
     compare_domain = merge_config(
         compare_domain, "FINITE_STATE_COMPARE_DOMAIN", None, None, config_data=cfg
@@ -569,6 +587,7 @@ def create_config(
         cache_dir=cache_dir,
         cache_refresh=cache_refresh,
         detected_after=detected_after,
+        min_severity=min_severity,
         ai=ai,
         ai_provider=ai_provider,
         ai_model_high=ai_model_high,
@@ -655,6 +674,7 @@ def run_reports(
     cache_dir: Union[str, None] = None,
     refresh: bool = False,
     detected_after: Union[str, None] = None,
+    min_severity: Union[str, None] = None,
     ai: bool = False,
     ai_provider: Union[str, None] = None,
     ai_model_high: Union[str, None] = None,
@@ -749,6 +769,7 @@ def run_reports(
             cache_dir=cache_dir,
             cache_refresh=refresh,
             detected_after=detected_after,
+            min_severity=min_severity,
             ai=ai,
             ai_provider=ai_provider,
             ai_model_high=ai_model_high,
@@ -854,6 +875,8 @@ def run_reports(
             logger.info("  Current version only: Yes (filtering to latest versions)")
         if config.detected_after:
             logger.info(f"  Detected after: {config.detected_after}")
+        if config.min_severity:
+            logger.info(f"  Minimum severity: {config.min_severity}")
         if config.open_only:
             logger.info("  Open findings only: Yes")
         if config.cache_ttl > 0:
@@ -1100,14 +1123,35 @@ def run_reports(
 
             # ── Auto-triage: apply VEX after reports are fully written ──
             if autotriage:
-                vex_path = next(
-                    (
-                        f
-                        for f in engine.generated_files
-                        if f.endswith("vex_recommendations.json")
-                    ),
-                    None,
+                # Honor the documented TP → FP → Configuration Analysis Triage →
+                # Reachability VEX Coverage precedence instead of first-file-wins. A multi-recipe run that
+                # produced more than one vex_recommendations.json (e.g. TP + RVC)
+                # would otherwise apply whichever landed first in generated_files
+                # — which could be RVC's narrower unreachable-only set, silently
+                # skipping TP's broader recommendations.
+                from fs_report.vex_apply_support import (
+                    _AUTOTRIAGE_RECIPE_DIRS,
+                    select_recommendations_path,
+                    skipped_recommendations_dirs,
                 )
+
+                vex_path = select_recommendations_path(engine.generated_files)
+                _skipped = skipped_recommendations_dirs(
+                    engine.generated_files, vex_path
+                )
+                if _skipped:
+                    # Exactly one recs file is applied, by precedence. Saying so
+                    # out loud is the difference between "applied" and "applied
+                    # SOME": a run that reports success while another recipe's
+                    # recommendations went unwritten is the failure mode worth a
+                    # loud line.
+                    console.print(
+                        "[yellow]Note: only one recommendations file is applied "
+                        f"per run. Skipped: {', '.join(_skipped)}. "
+                        "Apply the others with "
+                        "--apply-vex-triage <path/to/vex_recommendations.json>."
+                        "[/yellow]"
+                    )
                 if vex_path:
                     console.print(
                         f"\n[cyan]Applying VEX triage recommendations "
@@ -1139,10 +1183,30 @@ def run_reports(
                             "Reports were generated successfully.[/yellow]"
                         )
                 else:
-                    logger.warning(
-                        "--autotriage requested but no "
-                        "vex_recommendations.json was generated"
+                    # Distinguish "nothing was generated" from "something was
+                    # generated by a recipe autotriage can't apply" — the second
+                    # message used to claim the first, which sent people looking
+                    # for a missing file that was sitting right there.
+                    _orphans = sorted(
+                        {
+                            Path(f).parent.name
+                            for f in engine.generated_files
+                            if Path(f).name == "vex_recommendations.json"
+                        }
                     )
+                    if _orphans:
+                        logger.warning(
+                            "--autotriage requested but the recs file(s) produced "
+                            "by %s are not from an autotriage-capable recipe (%s), "
+                            "so nothing was applied.",
+                            ", ".join(_orphans),
+                            ", ".join(_AUTOTRIAGE_RECIPE_DIRS),
+                        )
+                    else:
+                        logger.warning(
+                            "--autotriage requested but no "
+                            "vex_recommendations.json was generated"
+                        )
         else:
             # Surface an actionable validation message (axis scope-flag check,
             # axis-compound missing-scope precheck, standalone-comparison
@@ -1500,6 +1564,16 @@ def run_command(
         "--detected-after",
         help="Only include findings detected on or after this date (YYYY-MM-DD).",
         rich_help_panel=_TIME_RANGE,
+    ),
+    min_severity: Union[str, None] = typer.Option(
+        None,
+        "--min-severity",
+        help=(
+            "Reachability VEX Coverage: audit only findings at or above this "
+            "severity (critical, high, medium, low). Applied server-side. "
+            "Omit to audit every severity — any floor excludes none/info."
+        ),
+        rich_help_panel=_SCOPE,
     ),
     ai: bool = typer.Option(
         False,
@@ -1975,6 +2049,7 @@ def run_command(
         cache_dir=str(Path.home() / ".fs-report") if cache_ttl_seconds > 0 else None,
         refresh=refresh,
         detected_after=detected_after,
+        min_severity=min_severity,
         ai=ai,
         ai_provider=ai_provider,
         ai_model_high=ai_model_high,

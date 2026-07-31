@@ -64,6 +64,10 @@ _STR_KEYS: tuple[str, ...] = (
     "threat_context",
     "baseline_date",
     "detected_after",
+    # Reachability VEX Coverage severity floor. No DEFAULTS entry (a global
+    # default severity floor would silently narrow every future audit), so it is
+    # also listed in _NO_GLOBAL_KEYS below.
+    "min_severity",
     "scan_types",
     "scan_statuses",
     # SP2: VEX-write status filter (comma-joined multi-select, no DEFAULTS entry
@@ -108,6 +112,7 @@ _NO_GLOBAL_KEYS: frozenset[str] = frozenset(
         "threat_context",
         "baseline_date",
         "detected_after",
+        "min_severity",
         "scan_types",
         "scan_statuses",
         "autotriage_status",  # SP2: comma-joined status filter, no DEFAULTS entry
@@ -663,8 +668,9 @@ async def card_config_save(
         )
 
     # SP2: recipe-aware destructive check — a saved autotriage card override is
-    # only valid on a Triage Prioritization card. (Confirm is enforced at run
-    # time, not save time — saving an autotriage card writes nothing.)
+    # only valid on an autotriage-capable card (AUTOTRIAGE_RECIPES: Triage
+    # Prioritization, False Positive Analysis, or Reachability VEX Coverage).
+    # (Confirm is enforced at run time, not save time — saving writes nothing.)
     from fs_report.web.routers.run import validate_destructive_overrides
 
     destr_errors = validate_destructive_overrides(

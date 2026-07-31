@@ -34,6 +34,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Component List | Software inventory (SBOM) for compliance |
 | CVE Component Evidence | For a project version, lists CVE-bearing components with their associated CVE IDs and the firmware file paths where each was detected; intended for per-version triage *(on-demand, requires `--project`; `--version` optional — defaults to the current version)* |
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
+| Reachability VEX Coverage | How many findings could be auto-resolved right now: findings proven UNREACHABLE that still lack the `NOT_AFFECTED` VEX status, rolled up per project version with a severity breakdown and a headline total. Emits an appliable `vex_recommendations.json`. Reports "analysis never ran" separately from "nothing to do", so a coverage number is never claimed without a denominator *(on-demand; optional `--min-severity`)* |
 | Configuration Analysis Triage | Config/secrets/crypto triage — private keys, hardcoded credentials, insecure configs *(on-demand)* |
 | License Report | Component license risk classification (Permissive, Copyleft, Proprietary) with policy analysis |
 | Executive Dashboard | Portfolio-level security overview with KPI cards, risk donut, severity trends, policy health, and more. Runs in fast **summary mode** by default; use `--detailed` for the legacy per-finding pipeline *(on-demand)* |

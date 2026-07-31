@@ -276,6 +276,7 @@ _RUN_FLAGS = {
     "--no-cache",
     "--refresh",
     "--detected-after",
+    "--min-severity",
     "--ai",
     "--ai-provider",
     "--ai-model-high",

@@ -51,7 +51,14 @@
      `.active` / `[hidden]` on the panels below. #}
   <div class="wf-tabs" role="tablist">
     {% if show_report_tab %}<button type="button" class="wf-tab cardcfg-tab" data-tab="report" role="tab" aria-selected="true">Report</button>{% endif %}
-    {% if show_triage %}<button type="button" class="wf-tab cardcfg-tab" data-tab="triage" role="tab" aria-selected="false">Triage</button>{% endif %}
+    {# Gate must match the triage PANEL's gate below (`show_triage or
+       show_vex_apply`). command-center.js only activates a panel whose
+       `data-tab` exists as a button here, so a panel rendered without its
+       button is unreachable — which is what made show_vex_apply dead for
+       Reachability VEX Coverage (in AUTOTRIAGE_RECIPES, not
+       TRIAGE_TAB_RECIPES): the VEX-write controls rendered into a panel with
+       no tab to select it. #}
+    {% if show_triage or show_vex_apply %}<button type="button" class="wf-tab cardcfg-tab" data-tab="triage" role="tab" aria-selected="false">{{ "Triage" if show_triage else "VEX apply" }}</button>{% endif %}
     {% if show_ai %}<button type="button" class="wf-tab cardcfg-tab" data-tab="ai" role="tab" aria-selected="false">AI</button>{% endif %}
     <button type="button" class="wf-tab cardcfg-tab" data-tab="advanced" role="tab" aria-selected="{{ 'true' if not show_report_tab else 'false' }}">Advanced</button>
   </div>
@@ -241,7 +248,12 @@
     </div>
 
     {# ── Triage tab ─────────────────────────────────────────────── #}
-    {% if show_triage %}
+    {# Opens for a triage recipe OR any autotriage-capable one: the VEX-apply
+       control below lives in this panel, so gating the panel on show_triage
+       alone made show_vex_apply dead for Reachability VEX Coverage (which is
+       in AUTOTRIAGE_RECIPES but not TRIAGE_TAB_RECIPES). Every control inside
+       stays individually gated. #}
+    {% if show_triage or show_vex_apply %}
     <div class="wf-cfg-panel" data-tabpanel="triage" hidden>
       {# tp_gate / vex_override are Triage-Prioritization-only (show_tp_gate);
          top / triage are shared with Config Analysis Triage (show_triage). #}
@@ -256,7 +268,11 @@
         </select>
       </div>
       {% endif %}
-      {# Top N / Triage N — consumed by TP and Config Analysis Triage. #}
+      {# Top N / Triage N — consumed by TP and Config Analysis Triage only.
+         Explicitly gated so they stay hidden for an autotriage-only recipe:
+         Reachability VEX Coverage never truncates, so offering a row cap
+         would advertise a control it ignores. #}
+      {% if show_triage %}
       <div class="form-group">
         <label for="cardcfg-top">Top N findings</label>
         <input type="number" id="cardcfg-top" name="top" min="0" step="1"
@@ -269,7 +285,13 @@
                value="{{ eff.get('triage', '') }}" placeholder="0 = all eligible"
                data-override="{{ '1' if is_ov('triage') else '0' }}">
       </div>
-      {% if show_tp_gate %}
+      {% endif %}
+      {# Reachable wherever autotriage is, not just for Triage Prioritization.
+         For Reachability VEX Coverage this is the ONLY way to act on the
+         needs-review class the report reports: those gaps carry a status a
+         person set, so the applier skips them unless --vex-override. Offering
+         auto-apply without it left that KPI actionable from the CLI only. #}
+      {% if show_tp_gate or show_vex_apply %}
       <div class="form-group form-row">
         <label for="cardcfg-vex-override">Override existing VEX</label>
         <label class="toggle">
@@ -279,7 +301,10 @@
       </div>
       {% endif %}
 
-      {# ── SP2/B7: destructive VEX-write apply (autotriage) — TP or FP ────
+      {# ── SP2/B7: destructive VEX-write apply (autotriage) — every recipe in
+         AUTOTRIAGE_RECIPES (Triage Prioritization, False Positive Analysis,
+         Reachability VEX Coverage). Gate on show_vex_apply, never on
+         show_triage — RVC is autotriage-capable but not a Triage-tab recipe. ──
          Shown for any autotriage-capable recipe (Triage Prioritization or False
          Positive Analysis — gated by show_vex_apply / AUTOTRIAGE_RECIPES).
          Auto-apply WRITES VEX statuses to the platform after the report runs.
@@ -510,6 +535,22 @@
         <input type="date" id="cardcfg-detected-after" name="detected_after"
                value="{{ eff.get('detected_after','') }}"
                data-override="{{ '1' if is_ov('detected_after') else '0' }}">
+      </div>
+      {% endif %}
+
+      {% if show_min_severity %}
+      <div class="form-group">
+        <label for="cardcfg-min-severity">Minimum severity</label>
+        {% set cur_ms = eff.get('min_severity','')|lower %}
+        <select id="cardcfg-min-severity" name="min_severity"
+                data-override="{{ '1' if is_ov('min_severity') else '0' }}">
+          <option value="" {% if not cur_ms %}selected{% endif %}>All severities</option>
+          <option value="critical" {% if cur_ms == 'critical' %}selected{% endif %}>Critical only</option>
+          <option value="high" {% if cur_ms == 'high' %}selected{% endif %}>High and above</option>
+          <option value="medium" {% if cur_ms == 'medium' %}selected{% endif %}>Medium and above</option>
+          <option value="low" {% if cur_ms == 'low' %}selected{% endif %}>Low and above</option>
+        </select>
+        <small class="form-hint">Audit only findings at or above this severity. Any floor excludes <code>none</code>/<code>info</code>, so leave it on <em>All severities</em> to cover everything.</small>
       </div>
       {% endif %}
 

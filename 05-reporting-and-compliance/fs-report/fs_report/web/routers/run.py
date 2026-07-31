@@ -230,6 +230,7 @@ _RUN_STR_KEYS: tuple[str, ...] = (
     "threat_context",
     "baseline_date",
     "detected_after",
+    "min_severity",
     "scan_types",
     "scan_statuses",
     # SP2: destructive VEX-write status filter (comma-joined multi-select, like
@@ -661,6 +662,12 @@ EXEC_DASHBOARD_RECIPES = {"executive dashboard"}
 # detected_after / standalone functional there. ED is deliberately NOT added to
 # FINDING_TYPES_RECIPES (forced to "all") or PERIOD_RECIPES (not operational).
 _ED = {"executive dashboard"}
+# Reachability VEX Coverage. Routed through /public/v0/findings, but deliberately
+# NOT unioned into GENERIC_FINDINGS_RECIPES: OPEN_ONLY_RECIPES derives from that
+# set, and --open-only is *exempted* for this recipe in the engine (NOT_AFFECTED
+# findings are its coverage denominator), so surfacing the control would offer a
+# setting that is ignored. Unioned individually into the sets that do apply.
+_RVC = {"reachability vex coverage"}
 # Recipes routed through /public/v0/findings (report_engine.py:5376+).
 GENERIC_FINDINGS_RECIPES = {
     "executive summary",
@@ -704,6 +711,7 @@ FINDING_TYPES_RECIPES = {
 CURRENT_VERSION_ONLY_RECIPES = (
     GENERIC_FINDINGS_RECIPES
     | _ED
+    | _RVC
     | {"component list", "license report", "cve component evidence", "cve impact"}
 )
 # open_only lives only at report_engine.py 5593/6556 (generic findings); the
@@ -714,9 +722,13 @@ OPEN_ONLY_RECIPES = GENERIC_FINDINGS_RECIPES | _ED
 # "Assessment reports without date vars" branch), plus the /components and /cves
 # fetch paths.  Operational recipes (Executive Summary uses --period instead) and
 # Security Progress / Version Comparison (alt fetch path) never apply it.
+# report_engine applies --detected-after to any non-operational recipe without its
+# own date filter, which includes Reachability VEX Coverage — so the control must
+# be offered here or the CLI and the web silently disagree about the audit window.
 DETECTED_AFTER_RECIPES = (
     (GENERIC_FINDINGS_RECIPES - {"executive summary"})
     | _ED
+    | _RVC
     | {"component list", "license report", "cve component evidence", "cve impact"}
 )
 PERIOD_RECIPES = {
@@ -727,7 +739,10 @@ PERIOD_RECIPES = {
     "version comparison",
 }
 SCAN_FILTER_RECIPES = {"scan analysis", "scan quality"}
-STANDALONE_RECIPES = GENERIC_FINDINGS_RECIPES | _ED
+STANDALONE_RECIPES = GENERIC_FINDINGS_RECIPES | _ED | _RVC
+# --min-severity is honored only where report_engine's MIN_SEVERITY_RECIPES
+# allow-list applies it. Keep the two in step.
+MIN_SEVERITY_RECIPES = _RVC
 AI_RECIPES = {
     "cve impact",
     "triage prioritization",
@@ -745,14 +760,40 @@ DEPLOYMENT_CONTEXT_RECIPES = {
 }
 # top / triage consumed by both Triage Prioritization and Config Analysis Triage.
 TRIAGE_TAB_RECIPES = {"triage prioritization", "configuration analysis triage"}
-# tp_gate, vex_override — Triage Prioritization only.
+# tp_gate — Triage Prioritization only (show_tp_gate). vex_override is NOT:
+# the templates gate it on `show_tp_gate or show_vex_apply`, so every recipe in
+# AUTOTRIAGE_RECIPES offers it — it is the only way to act on a needs-review gap,
+# which the applier skips without it.
 TP_ONLY_RECIPES = {"triage prioritization"}
 # B7 (#10B): the recipes whose autotriage can write VEX recommendations. ONE
 # shared source of truth so the UI gate (``show_vex_apply``) and the validation
 # recipe-check can't drift (M3-1). Both TP and FP autotriage apply interactively;
 # workflow-context permission is FP-only (validate_destructive_overrides) — TP
 # autotriage in a workflow stays blocked.
-AUTOTRIAGE_RECIPES = {"triage prioritization", "false positive analysis"}
+AUTOTRIAGE_RECIPES = {
+    "triage prioritization",
+    "false positive analysis",
+} | _RVC
+
+
+def web_autotriage_recipe_dirs() -> tuple[str, ...]:
+    """Apply precedence restricted to what the WEB permits to autotriage.
+
+    ``_AUTOTRIAGE_RECIPE_DIRS`` is the CLI's precedence and includes
+    Configuration Analysis Triage, which is deliberately NOT in
+    :data:`AUTOTRIAGE_RECIPES` — the web does not let CAT auto-apply. Passing the
+    CLI default here let a web run that cleared the confirm gate on the strength
+    of an allow-listed recipe (e.g. Reachability VEX Coverage) apply CAT's
+    recommendations instead, because CAT outranks RVC in that tuple. That is a
+    destructive platform write the operator never authorized, so the dirs handed
+    to the applier are filtered through the web's own allow-list. Order still
+    comes from the canonical precedence tuple, so there is one definition of
+    precedence and one definition of who may autotriage.
+    """
+    from fs_report.vex_apply_support import _AUTOTRIAGE_RECIPE_DIRS
+
+    return tuple(d for d in _AUTOTRIAGE_RECIPE_DIRS if d.lower() in AUTOTRIAGE_RECIPES)
+
 
 # Effective-scope resolver (#26/#14/#15). Lives in the renderer-importable shared
 # module (fs_report.scope_resolution) so the web routers AND the HTML renderers
@@ -1009,7 +1050,8 @@ def compute_prerun_fields(
         "show_deployment_context": bool(selected & DEPLOYMENT_CONTEXT_RECIPES),
         # top / triage — Triage Prioritization AND Config Analysis Triage.
         "show_triage": bool(selected & TRIAGE_TAB_RECIPES),
-        # tp_gate / vex_override — Triage Prioritization only.
+        # tp_gate — Triage Prioritization only. vex_override is offered wherever
+        # autotriage is (show_tp_gate or show_vex_apply); see the note above.
         "show_tp_gate": bool(selected & TP_ONLY_RECIPES),
         # VEX auto-apply — any autotriage-capable recipe (TP or FP), B7 #10B.
         "show_vex_apply": bool(selected & AUTOTRIAGE_RECIPES),
@@ -1046,6 +1088,7 @@ def compute_prerun_fields(
         "show_current_version_only": bool(selected & CURRENT_VERSION_ONLY_RECIPES),
         "show_open_only": bool(selected & OPEN_ONLY_RECIPES),
         "show_detected_after": bool(selected & DETECTED_AFTER_RECIPES),
+        "show_min_severity": bool(selected & MIN_SEVERITY_RECIPES),
         "show_standalone": bool(selected & STANDALONE_RECIPES),
         # Scan ingest filters — Scan Analysis / Scan Quality only.
         "show_scan_filters": bool(selected & SCAN_FILTER_RECIPES),
@@ -1175,6 +1218,19 @@ def validate_run_overrides(overrides: dict[str, Any]) -> list[str]:
                     f"{_date_key} must be ISO YYYY-MM-DD, got {str(_date_raw).strip()!r}"
                 )
 
+    # ── min_severity (enum floor; mirrors the CLI's validation) ──────
+    _min_sev = overrides.get("min_severity")
+    if _is_set(_min_sev):
+        # Function-local import: this router deliberately avoids a module-level
+        # report_engine import (see the compute_effective_scope note above).
+        from fs_report.report_engine import SEVERITY_FLOORS
+
+        if str(_min_sev).strip().upper() not in SEVERITY_FLOORS:
+            errors.append(
+                "min_severity must be one of critical, high, medium, low, got "
+                f"{str(_min_sev).strip()!r}"
+            )
+
     # ── top / triage (non-negative integers) ─────────────────────────
     for _int_key in ("top", "triage"):
         _int_raw = overrides.get(_int_key)
@@ -1294,8 +1350,9 @@ def validate_destructive_overrides(
       the workflow GLOBAL block (``recipes=[]``) — is blocked, so the opt-in can
       never be a global that silently autotriages every step.
     - **Interactive**: autotriage requires an **autotriage-capable** recipe in
-      the selection — Triage Prioritization or False Positive Analysis
-      (``AUTOTRIAGE_RECIPES``); allowed in a multi-recipe run that includes one.
+      the selection (``AUTOTRIAGE_RECIPES`` — Triage Prioritization, False
+      Positive Analysis, or Reachability VEX Coverage); allowed in a multi-recipe
+      run that includes one.
     - ``autotriage_status`` / ``dry_run`` are meaningful only with ``autotriage``.
     """
     errors: list[str] = []
@@ -1325,8 +1382,9 @@ def validate_destructive_overrides(
     if autotriage_on:
         if not (recipes_lc & AUTOTRIAGE_RECIPES):
             errors.append(
-                "autotriage (VEX auto-apply) requires a Triage Prioritization "
-                "or False Positive Analysis recipe in the run"
+                "autotriage (VEX auto-apply) requires an autotriage-capable recipe "
+                "in the run (Triage Prioritization, False Positive Analysis, or "
+                "Reachability VEX Coverage)"
             )
     else:
         if status_set:
@@ -1613,6 +1671,11 @@ def _build_engine_config(
         "tp_gate": effective.get("tp_gate") or None,
         "baseline_date": effective.get("baseline_date") or None,
         "detected_after": effective.get("detected_after") or None,
+        # Passed through in the select's lowercase form on purpose: this dict is
+        # create_config kwargs, and create_config validates AND upper-cases the
+        # floor. Normalizing here too would put the same rule in two places, which
+        # is how it drifts.
+        "min_severity": effective.get("min_severity") or None,
         "scan_types": effective.get("scan_types") or None,
         "scan_statuses": effective.get("scan_statuses") or None,
         "open_only": bool(effective.get("open_only", False)),
@@ -2006,12 +2069,15 @@ def _execute_run(
         if success and effective.get("autotriage"):
             try:
                 from fs_report.vex_apply_support import (
+                    all_recommendations_dirs,
                     apply_vex_from_run,
+                    skipped_recommendations_dirs,
                     summarize_apply_result,
                 )
 
                 _filter = _split_status_list(effective.get("autotriage_status"))
                 _override = bool(effective.get("vex_override", False))
+                _dirs = web_autotriage_recipe_dirs()
                 result, recs_path = apply_vex_from_run(
                     domain=domain,
                     auth_token=token,
@@ -2019,11 +2085,45 @@ def _execute_run(
                     dry_run=dry_run,
                     vex_override=_override,
                     filter_statuses=_filter,
+                    recipe_dirs=_dirs,
                 )
+                if result is None or recs_path is None:
+                    # The operator cleared a destructive-write confirm and nothing
+                    # was applied — no recs file existed for any web-permitted
+                    # recipe (e.g. only Configuration Analysis Triage produced one,
+                    # which the web may not apply). Silence here reads as success.
+                    _runs[run_id]["vex_apply"] = {
+                        "state": "nothing_to_apply",
+                        "reason": (
+                            "No applicable vex_recommendations.json was produced by "
+                            "a recipe this surface can auto-apply. Nothing was "
+                            "written to the platform."
+                        ),
+                        "skipped_recipes": skipped_recommendations_dirs(
+                            engine.generated_files, None
+                        )
+                        or [
+                            d
+                            for d in all_recommendations_dirs(engine.generated_files)
+                            if d not in _dirs
+                        ],
+                    }
                 if result is not None and recs_path is not None:
                     _runs[run_id]["vex_apply"] = {
                         "state": "preview" if dry_run else "applied",
                         "recs_path": recs_path,
+                        # Exactly one recs file is applied. The CLI prints this;
+                        # without it the web reports "applied" while another
+                        # recipe's recommendations sat unwritten on disk.
+                        # Reported across the FULL canonical precedence, not just
+                        # the web-permitted subset: a run that generated
+                        # Configuration Analysis Triage recs must still tell the
+                        # operator that file exists and was NOT applied here, or
+                        # restricting the apply set would itself become a silent
+                        # omission.
+                        "skipped_recipes": skipped_recommendations_dirs(
+                            engine.generated_files, recs_path
+                        ),
                         "domain": domain,
                         "vex_override": _override,
                         "autotriage_status": _filter,
@@ -4335,9 +4435,19 @@ async def vex_preview(run_id: str) -> JSONResponse:
         {
             "run_id": run_id,
             "state": vex.get("state"),
+            # Present when a confirmed apply wrote nothing because no recipe this
+            # surface may auto-apply produced a recs file. Without it the dry-run
+            # poller waits for a `summary` that will never arrive, and the run reads
+            # as a normal completion.
+            "reason": vex.get("reason"),
             "autotriage_status": vex.get("autotriage_status"),
             "vex_override": vex.get("vex_override"),
             "summary": vex.get("summary"),
+            # Recorded at apply time but previously not returned, so the UI could
+            # show "applied" for a multi-recipe run while another recipe's
+            # recommendations sat unapplied on disk — the CLI prints this, and the
+            # web must be able to say it too.
+            "skipped_recipes": vex.get("skipped_recipes") or [],
         }
     )
 
@@ -4407,7 +4517,17 @@ async def vex_apply_for_real(
     summary = summarize_apply_result(result)
     vex["state"] = "applied"
     vex["summary"] = summary
-    return JSONResponse({"run_id": run_id, "state": "applied", "summary": summary})
+    return JSONResponse(
+        {
+            "run_id": run_id,
+            "state": "applied",
+            "summary": summary,
+            # Echoed so the success toast reports what was ACTUALLY skipped rather
+            # than replaying the preview's list — a destructive write should be
+            # confirmed from the apply, not from a prediction made before it.
+            "skipped_recipes": vex.get("skipped_recipes") or [],
+        }
+    )
 
 
 @router.get("/api/run/{run_id}/events")

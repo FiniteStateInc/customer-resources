@@ -30,6 +30,7 @@ This module provides a persistent cache that:
 is unchanged unless --cache-ttl is specified.
 """
 
+import contextlib
 import gc
 import hashlib
 import json
@@ -39,7 +40,7 @@ import re
 import sqlite3
 import threading
 import time
-from collections.abc import Collection
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -741,14 +742,51 @@ class SQLiteCache:
                         "report."
                     )
 
-    def _get_connection(self) -> sqlite3.Connection:
-        """Get a database connection with concurrency settings."""
+    @contextlib.contextmanager
+    def _get_connection(self) -> Iterator[sqlite3.Connection]:
+        """Yield a database connection, and CLOSE it on the way out.
+
+        This is a context manager rather than a bare factory because
+        ``sqlite3.Connection.__exit__`` does **not** close the connection — it
+        only commits or rolls back the transaction. Every ``with
+        self._get_connection() as conn:`` therefore used to leak the connection
+        and its file descriptors (three per connection in WAL mode: the db, the
+        ``-wal`` and the ``-shm``), left for the garbage collector to reap
+        whenever it felt like it.
+
+        That went unnoticed for as long as no caller probed the cache hundreds of
+        times in one run. A portfolio sweep that checks the cache once per project
+        version does exactly that: on a 1,166-version tenant it exhausted the
+        process file-descriptor limit (macOS defaults the soft limit to 256) and
+        SQLite began failing with "unable to open database file" — a confusing
+        error that looks like a missing or corrupt cache rather than fd
+        exhaustion.
+
+        Commit-on-success / rollback-on-error is preserved explicitly so the
+        semantics callers already relied on are unchanged; only the leak is fixed.
+        """
         conn = sqlite3.connect(self.db_path, timeout=30.0)  # Wait up to 30s for locks
-        conn.row_factory = sqlite3.Row
-        # Enable WAL mode for better concurrency (readers don't block writers)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")  # 30 second timeout
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            # Enable WAL mode for better concurrency (readers don't block writers)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")  # 30 second timeout
+        except BaseException:
+            # Setup runs INSIDE a guard because it can fail — a locked db, a
+            # read-only WAL directory, a corrupt header. Raising here used to skip
+            # the try/finally below entirely and strand the connection, which is
+            # the same fd leak this context manager exists to prevent, on exactly
+            # the unstable-cache path where it would repeat.
+            conn.close()
+            raise
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def close(self) -> None:
         """Release database file handles (needed on Windows before temp dir cleanup)."""

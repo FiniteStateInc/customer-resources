@@ -1,0 +1,151 @@
+name: "Reachability VEX Coverage"
+category: assessment  # Current state: today's triage coverage, no period semantics
+card_description: "Audit whether UNREACHABLE findings carry the NOT_AFFECTED VEX status."
+nav_category: Remediation
+chart_libraries: ["echarts"]
+template: "reachability_vex_coverage.html"
+# Ordered next to Triage Prioritization (25) because the two are read together,
+# NOT to share its fetch: TP prunes reachabilityScore/project/projectVersion out
+# of the frame it caches, so this recipe must fetch its own raw-shape data. The
+# engine's payload-shape cache token enforces that (_FINDINGS_PAYLOAD_SHAPES).
+execution_order: 26
+auto_run: false
+# Deliberately NOT requires_project: portfolio-capable. With --project it audits
+# that project's current version (--version to pin another); with no scope it
+# sweeps every project's latest version.
+description: >
+  Answers one question: how many findings could be auto-resolved right now. Every
+  finding whose reachability score is negative (UNREACHABLE — binary analysis proved
+  the vulnerable code path is not reachable in the deployed build) should carry VEX
+  status NOT_AFFECTED with justification CODE_NOT_REACHABLE. This report rolls that
+  up per project version: how many are unreachable, how many already carry the
+  status, how many a single --autotriage run would close, and the severity breakdown
+  of those. The total that could be auto-resolved is the headline figure at the top.
+  Individual findings are deliberately NOT listed — a real run produced 522 gaps, and
+  a 500-row table is not something anyone reads. vex_recommendations.json carries
+  every gap that has the platform ids the VEX API needs (auto-resolvable and
+  needs-review both, each tagged with a gap_class, since --vex-override exists to
+  apply the latter), so its row count is not the headline; the gap_detail block of
+  the json output carries every gap without exception, including those missing those
+  ids. Findings that already carry any stored status
+  (EXPLOITABLE / FALSE_POSITIVE / RESOLVED / RESOLVED_WITH_PEDIGREE, and also
+  IN_TRIAGE or any unrecognized value) are counted separately as "needs review" and
+  excluded from the auto-resolvable number, because the applier skips them unless
+  --vex-override is passed. Reachability status
+  is inferred from the finding data itself — a version whose findings all carry a
+  null reachability score is reported as "analysis never ran", never as "fully
+  covered", because a zero count there means unknown, not clean. The justification
+  value on findings that already are NOT_AFFECTED is not audited; status only. Use
+  --min-severity to scope the audit to a severity floor, and pass --cache-ttl 24h on
+  large-org sweeps so an interrupted run resumes instead of restarting.
+
+# No `parameters:` block. "Auto-resolvable" is defined by what the applier will
+# actually close (no stored status + appliable ids — see the transform's
+# _is_auto_resolvable), not by a configurable status list; an earlier
+# untriaged_statuses param wrongly implied IN_TRIAGE was auto-closable.
+
+query:
+  endpoint: "/public/v0/findings"
+  params:
+    # The shared page size, as every other findings recipe uses. Deliberately NOT
+    # capped at 1000 as a helix workaround: the v2/helix compat layer was removed
+    # on purpose ("alloy contract" — fs-report sends the same wire requests to
+    # every backend, and the 1000 cap went with it). A per-recipe cap here would
+    # reintroduce a backend-specific branch AND be misleading, because the default
+    # current-version path fetches via the engine's _get_findings_for_versions and
+    # never reads this value. Helix's `limit <= 1000` validator is a platform gap
+    # tracked on the platform side, not something this recipe works around.
+    limit: 10000
+
+transform_function: reachability_vex_coverage_transform
+
+output:
+  table: true
+  formats:
+    - csv
+    - xlsx
+    - html
+    - json
+    - md
+    - pdf
+  charts:
+    - name: coverage_by_folder
+      chart: bar
+      title: "Auto-Resolvable Findings by Folder"
+      description: "How many findings each folder could auto-resolve with a single --autotriage run. Folders are the platform's access boundary, so each bar is a team's queue — and there are few enough of them to stay legible where a per-project chart would not. Versions where reachability never ran contribute nothing (they have no measurement); unfoldered versions bucket under \"(no folder)\"."
+      x_column: folder_name
+      y_column: auto_triageable
+    - name: gaps_by_severity
+      chart: bar
+      title: "Auto-Resolvable Findings by Severity"
+      description: "Severity mix of the auto-resolvable findings. Counts only the findings a single --autotriage run would actually close, so it matches the headline figure rather than overstating it."
+      x_column: severity
+      y_column: count
+    - name: gap_status_breakdown
+      chart: doughnut
+      title: "Outstanding Findings by Current VEX Status"
+      description: "The status each unreachable-but-not-NOT_AFFECTED finding carries today. NO_STATUS is the only auto-closable one — every other value, IN_TRIAGE included, is a stored status the applier skips without --vex-override, so it needs review rather than automation."
+      # slice_label, NOT current_vex_status: NO_STATUS appears in two classes
+      # (auto-resolvable, and needs-review when platform ids are missing), so the
+      # bare status yields two identically-named slices. The custom JS path already
+      # uses slice_label; a schema-driven renderer must not recreate the bug.
+      x_column: slice_label
+      y_column: count
+    - name: reachability_mix
+      chart: bar
+      title: "Reachability Classification Mix"
+      description: "Findings in scope by reachability label. A large UNKNOWN bar means reachability analysis has not run for those findings — it does not mean they are safe."
+      x_column: reachability_label
+      y_column: count
+  columns:
+    - name: folder_name
+      source: "Engine-injected folder breadcrumb (root->leaf); falls back to the leaf folder name"
+      description: "Folder the project is filed under, as a full path (e.g. \"Root > Team A\") so same-named folders in different trees stay distinguishable. Folders are the platform's access boundary, so the table is grouped by this column — each folder is a contiguous section that can be handed to its owning team. Blank (rendered as an em dash) when the project is not in a folder, or on a single-project run where no folder resolve is performed."
+    - name: project_name
+      source: "API /findings: project.name"
+      description: "Project the findings belong to. Shows \"Unknown\" when the API records carried no project metadata; the row is still counted."
+    - name: version_name
+      source: "API /findings: projectVersion.version"
+      description: "Project version audited. Defaults to the project's current version unless --version pins another."
+    - name: project_id
+      source: "API /findings: project.id"
+      description: "Internal project identifier. Used to build the platform deep link on the Project column in the HTML and Markdown output; a blank value renders the cell as plain text."
+    - name: project_version_id
+      source: "API /findings: projectVersion.id"
+      description: "Internal project-version identifier. Used for the version deep link, and required by the VEX status API when applying recommendations."
+    - name: reachability_state
+      source: "Derived: whether any finding on the version has a non-null reachabilityScore"
+      description: "RAN when reachability analysis produced scores for this version, NOT_RUN when no finding on it carries a score. A NOT_RUN row has no coverage figure — its zero counts mean unknown, not clean. (There is no third state: versions are discovered from the findings themselves, so one with zero findings never appears here at all.)"
+    - name: unreachable
+      source: "Derived from reachabilityScore < 0"
+      description: "Findings on this version that binary analysis proved unreachable. This is the denominator for the version's coverage percentage."
+    - name: already_not_affected
+      source: "Derived: unreachable findings whose status is NOT_AFFECTED"
+      description: "Unreachable findings that already carry the correct VEX status. Nothing to do for these."
+    - name: auto_triageable
+      source: "Derived: unreachable findings carrying NO stored VEX status AND the platform ids the VEX API requires"
+      description: "Findings on this version that a single --autotriage run would mark NOT_AFFECTED. Defined by the applier's own gate, so it equals what actually gets closed: excludes anything already carrying a status (see needs_review) and any record missing the ids the VEX API requires."
+    - name: needs_review
+      source: "Derived: gap_count - auto_triageable — every unreachable gap a default --autotriage run would NOT close"
+      description: "Unreachable findings a default --autotriage run will not close, so a person has to look. Three ways in: a stored status the applier respects (EXPLOITABLE, FALSE_POSITIVE, RESOLVED, RESOLVED_WITH_PEDIGREE, and equally IN_TRIAGE or an unrecognized value), or missing platform ids that make the finding unappliable. Overriding a recorded decision needs --vex-override."
+    - name: sev_critical
+      source: "Derived: severity breakdown of the auto_triageable findings"
+      description: "How many of this version's auto-resolvable findings are critical severity."
+    - name: sev_high
+      source: "Derived: severity breakdown of the auto_triageable findings"
+      description: "How many of this version's auto-resolvable findings are high severity."
+    - name: sev_medium
+      source: "Derived: severity breakdown of the auto_triageable findings"
+      description: "How many of this version's auto-resolvable findings are medium severity."
+    - name: sev_low
+      source: "Derived: severity breakdown of the auto_triageable findings"
+      description: "How many of this version's auto-resolvable findings are low severity."
+    - name: sev_other
+      source: "Derived: severity breakdown of the auto_triageable findings"
+      description: "Auto-resolvable findings whose severity is none, info, or a value outside the four ranked tiers. Present so the severity columns always sum to auto_triageable."
+    - name: findings_not_analyzed
+      source: "Derived: total_findings minus the findings carrying a reachability score"
+      description: "Findings on this version that carry NO reachability score at all, even though the version is reported RAN. The state is RAN when ANY finding was scored, and coverage_pct is computed over the scored findings only — so a non-zero value here means the percentage beside it describes part of this version, not all of it. Zero means every finding was analyzed."
+    - name: coverage_pct
+      source: "Derived: already_not_affected / unreachable for this version"
+      description: "Share of this version's unreachable findings that already carry NOT_AFFECTED. Blank when the version has no unreachable findings or reachability never ran — an empty denominator has no percentage, and printing 0% or 100% there would be a false statement."

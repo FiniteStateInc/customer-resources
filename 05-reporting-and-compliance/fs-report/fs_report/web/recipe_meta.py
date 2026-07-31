@@ -30,6 +30,7 @@ RECIPE_ICONS: dict[str, str] = {
     "security progress": "trending-up",
     "component impact": "crosshair",
     "component vulnerability analysis": "bug",
+    "reachability vex coverage": "shield-check",
 }
 
 CATEGORY_ICONS: dict[str, str] = {

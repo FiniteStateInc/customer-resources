@@ -242,6 +242,7 @@ _VALID_OVERRIDE_STR_KEYS = frozenset(
         "threat_context",
         "baseline_date",
         "detected_after",
+        "min_severity",
         "scan_types",
         "scan_statuses",
         "error_policy",  # workflow-special — NOT passed to the engine

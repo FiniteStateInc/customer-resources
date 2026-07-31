@@ -134,6 +134,68 @@ _TRIAGE_DROP_AFTER_SCORE: frozenset[str] = frozenset(
 )
 
 
+# Recipes that rewrite the *shape* of the findings frame in-flight — per-batch
+# scoring, flattening, or column pruning — before it is stored in the in-memory
+# ``_findings_cache``.
+#
+# That cache is keyed by the QUERY signature (endpoint + filter + finding type +
+# project ids), but the value stored is the frame as it exists AFTER per-batch
+# processing.  Two recipes issuing an identical query therefore collide on the
+# key while expecting different column sets, and the second one silently reads
+# the first one's mangled frame.
+#
+# Triage Prioritization and Reachability VEX Coverage are the live example: both
+# resolve to ``/public/v0/findings`` + ``category==CVE`` + an empty finding type,
+# and TP drops ``reachabilityScore``/``project``/``projectVersion`` (see
+# ``_TRIAGE_DROP_AFTER_SCORE``) and ``fillna(0)``s ``reachability_score``.
+# Serving that frame to RVC would read a null score as a measured ``0.0`` —
+# flipping "reachability analysis never ran" into "ran, nothing unreachable",
+# a false statement about the platform, and blanking every project name.
+#
+# Folding a shape token into the key fixes the whole class, not just that pair.
+_FINDINGS_PAYLOAD_SHAPES: dict[str, str] = {
+    "Triage Prioritization": "triage",
+    "Findings by Project": "fbp",
+    "Executive Summary": "exec-summary",
+    "Executive Dashboard": "exec-dashboard",
+    "Component Vulnerability Analysis": "cva",
+    "Configuration Analysis Triage": "config-triage",
+}
+
+
+def _findings_payload_shape(recipe_name: str) -> str:
+    """Shape token for the frame ``recipe_name`` stores in ``_findings_cache``.
+
+    ``"raw"`` means the frame keeps the API's own columns.  Any recipe that
+    prunes or rewrites columns during fetch gets its own token, so its frame is
+    never served to a recipe that expects the raw API shape.
+
+    New recipes default to ``"raw"``; add an entry here when a recipe gains
+    per-batch pruning, or it will hand its pruned frame to raw-shape readers.
+    """
+    return _FINDINGS_PAYLOAD_SHAPES.get(recipe_name, "raw")
+
+
+def _findings_cache_key(
+    endpoint: str,
+    combined_filter: str | None,
+    finding_type: str,
+    project_ids: Iterable[Any],
+    recipe_name: str,
+) -> str:
+    """Key for the in-memory ``_findings_cache`` on the batched-by-project path.
+
+    Covers the query signature AND the payload shape — see
+    ``_FINDINGS_PAYLOAD_SHAPES`` for why the shape half is load-bearing.
+    """
+    parts = (
+        f"{endpoint}|{combined_filter or ''}|{finding_type}"
+        f"|pids:{','.join(str(p) for p in sorted(project_ids))}"
+        f"|shape:{_findings_payload_shape(recipe_name)}"
+    )
+    return hashlib.sha256(parts.encode()).hexdigest()[:16]
+
+
 # Columns the Executive Summary actually uses.  Everything else is
 # dropped per-batch during fetch to avoid accumulating ~50+ columns
 # (nested dicts, exploit info, etc.) across 500K+ rows.
@@ -358,10 +420,40 @@ def _inject_folder_names_df(
     """
 
     def _extract_pid(row: pd.Series) -> str:
+        # `project_id` / `project.id` are the SQLite cache's own column names
+        # (sqlite_cache.FINDING_FIELDS maps project.id -> project_id). Reading only
+        # the nested API shape meant a --cache-ttl run resolved no project id, so
+        # every row got a blank folder — and folder grouping is the whole point of
+        # this report's rollup, on the path it recommends.
+        def _clean(val: Any) -> str:
+            """Stringified id, or "" for anything that is not really an id.
+
+            ``str(None)`` is ``"None"`` and ``str(float("nan"))`` is ``"nan"`` —
+            both TRUTHY — so a nested ``{"id": None}`` short-circuited the flat
+            fallback below and returned a sentinel that matches no project,
+            blanking the folder. Same trap the transform hit reading nested ids.
+            """
+            if val is None:
+                return ""
+            text = str(val).strip()
+            return "" if text.lower() in {"", "none", "nan", "nat", "<na>"} else text
+
         p = row.get("project") or row.get("projectId")
         if isinstance(p, dict):
-            return str(p.get("id", ""))
-        return str(p) if p else ""
+            pid = _clean(p.get("id"))
+            if pid:
+                return pid
+        elif p is not None:
+            pid = _clean(p)
+            if pid:
+                return pid
+        # The SQLite cache's own column names (FINDING_FIELDS: project.id ->
+        # project_id), so a --cache-ttl run resolves a folder too.
+        for flat in ("project_id", "project.id", "projectId"):
+            pid = _clean(row.get(flat))
+            if pid:
+                return pid
+        return ""
 
     df[column] = df.apply(_extract_pid, axis=1).map(pf_map).fillna("")
 
@@ -407,6 +499,108 @@ def _inject_project_names_df(df: pd.DataFrame, project_map: dict[str, str]) -> N
 # deprecation warning before reaching this function.
 CATEGORY_VALUES = {"credentials", "config_issues", "crypto_material", "sast_analysis"}
 TYPE_VALUES = {"cve", "sast", "thirdparty"}
+
+# --min-severity floors → the RSQL `severity=in=(...)` tier set.
+#
+# The API's severity enum (CRITICAL, HIGH, MEDIUM, LOW, NONE, INFO) is NOT a
+# total order — NONE vs INFO has no defined rank — so the ladder is spelled out
+# rather than derived. Only the four ranked tiers are valid floors; NONE and
+# INFO are never included, which means `--min-severity low` DOES exclude a
+# finding whose severity is `none`. That is deliberate (`=in=` is an explicit
+# set, not a `>=`), and the only way to include those findings is to leave the
+# flag unset. Values are uppercase because the portfolio /findings endpoint
+# filters on the uppercase enum and RSQL filtering is case-sensitive — the
+# per-version endpoint uses lowercase, and response bodies are lowercase, but
+# neither is what this clause targets.
+SEVERITY_FLOORS: dict[str, tuple[str, ...]] = {
+    "CRITICAL": ("CRITICAL",),
+    "HIGH": ("CRITICAL", "HIGH"),
+    "MEDIUM": ("CRITICAL", "HIGH", "MEDIUM"),
+    "LOW": ("CRITICAL", "HIGH", "MEDIUM", "LOW"),
+}
+
+# Recipes that honor --min-severity. Deliberately a narrow allow-list rather
+# than a global filter: every other findings recipe's denominator semantics
+# would need review before a severity clause could be applied to it safely.
+MIN_SEVERITY_RECIPES = frozenset({"Reachability VEX Coverage"})
+
+# Recipes that MUST fetch CVE findings via the category==CVE RSQL filter,
+# regardless of --finding-types, because they read reachabilityScore — a field
+# the ?type=cve URL param drops and non-CVE finding types never carry. Mirrors
+# the gate-recipe rationale below; kept as an explicit set so the reason travels
+# with the recipe rather than living only in a branch condition.
+REACHABILITY_FORCES_CVE = frozenset({"Reachability VEX Coverage"})
+
+# Recipes for which --open-only must be ignored rather than honored.
+# Reachability VEX Coverage measures the share of unreachable findings that
+# carry NOT_AFFECTED, so NOT_AFFECTED findings ARE its denominator — applying
+# `status=out=(NOT_AFFECTED,...)` would strip the numerator entirely and report
+# 0% coverage on every project. The transform emits a banner saying the flag was
+# ignored, so the operator is never left guessing.
+OPEN_ONLY_EXEMPT_RECIPES = frozenset({"Reachability VEX Coverage"})
+
+#: The RSQL clause ``--open-only`` adds when it is honored.
+OPEN_ONLY_CLAUSE = (
+    "status=out=(NOT_AFFECTED,FALSE_POSITIVE,RESOLVED,RESOLVED_WITH_PEDIGREE)"
+)
+
+
+def should_apply_open_only(recipe_name: str, open_only: bool) -> bool:
+    """Whether ``--open-only`` should actually be honored for ``recipe_name``.
+
+    The exemption has to hold at BOTH enforcement points — the API-level filter
+    clause and the client-side post-filter on the entity-cached path — because
+    on the cached path the API clause is never built, and a check applied at only
+    one of them still strips the denominator. Routing both through one predicate
+    is what keeps them from drifting apart.
+    """
+    return bool(open_only) and recipe_name not in OPEN_ONLY_EXEMPT_RECIPES
+
+
+# Recipes that need the FULL folder path per record (root->leaf), not just the
+# leaf folder name every recipe gets. Costs an extra projects+folders resolve, so
+# it stays an opt-in list.
+FOLDER_BREADCRUMB_RECIPES = frozenset({"License Report", "Reachability VEX Coverage"})
+
+
+def apply_min_severity(
+    category_filter: str | None, min_severity: str | None
+) -> str | None:
+    """AND a ``severity=in=(...)`` clause onto *category_filter*.
+
+    Folding the clause into ``category_filter`` — rather than appending it as a
+    separate filter fragment — is what keeps the per-version caches correct
+    without any new plumbing. ``category_filter`` is already threaded through
+    every findings cache key (``_cache_key("findings", vid, finding_type,
+    category_filter)``), through both synthetic per-version ``filter_str``
+    builders, and into the RSQL assembly, and ``generate_query_hash`` hashes the
+    whole params dict. So a severity-filtered run lands under a different key
+    and cannot be served to a later unfiltered run.
+
+    Appending the clause anywhere downstream of the cache key instead would let
+    a ``--min-severity high`` run write CRITICAL/HIGH-only per-version entries
+    that a later unfiltered run reads as complete — silent under-reporting for
+    the whole TTL, and cross-recipe poisoning via the shared in-memory cache.
+    """
+    if not min_severity:
+        return category_filter
+    tiers = SEVERITY_FLOORS.get(str(min_severity).strip().upper())
+    if not tiers:
+        # Fail loudly. The CLI and the web validator both reject unknown floors, but
+        # a stale persisted config or a programmatic caller can still reach here —
+        # and silently returning the unfiltered clause produced a full-severity audit
+        # that the summary and the notes still labelled as severity-scoped. For an
+        # audit artifact, presenting an unfiltered result as filtered is worse than
+        # refusing to run.
+        raise ValueError(
+            f"Unknown --min-severity floor {min_severity!r}; expected one of "
+            f"{', '.join(sorted(SEVERITY_FLOORS))}. Refusing to run an unfiltered "
+            "audit that would be reported as severity-scoped."
+        )
+    clause = f"severity=in=({','.join(tiers)})"
+    return f"{category_filter};{clause}" if category_filter else clause
+
+
 # TTL for the per-version SBOM-derived group lookup (raw cache,
 # ``sbom_group_lookup:{version_id}``). Deliberately much longer than row-data
 # cache_ttl: the full-SBOM download it replaces is the dominant cost of
@@ -2049,16 +2243,29 @@ class ReportEngine:
                 params["archived"] = False
                 params["excluded"] = False
 
-            if self.api_client.sqlite_cache.is_cache_valid(
-                endpoint, params, self.api_client.cache_ttl
-            ):
-                cached = self.api_client.sqlite_cache.get_cached_data(
-                    endpoint, params, allow_empty=True
+            # Guarded like the write path in _split_and_cache_by_version: a cache
+            # read that fails must degrade to a live fetch, not abort the recipe.
+            # This is called once per project version, so on a large portfolio it
+            # is also the most likely place for a cache-layer problem to surface —
+            # previously an unguarded sqlite error here killed the whole run.
+            try:
+                if self.api_client.sqlite_cache.is_cache_valid(
+                    endpoint, params, self.api_client.cache_ttl
+                ):
+                    cached = self.api_client.sqlite_cache.get_cached_data(
+                        endpoint, params, allow_empty=True
+                    )
+                    if cached is not None:
+                        # Promote to in-memory cache for fast re-reads
+                        self._version_findings_cache[cache_key] = cached
+                        return cached
+            except Exception as exc:
+                self.logger.warning(
+                    "SQLite cache read failed for version %s (%s); "
+                    "fetching from the API instead",
+                    vid,
+                    exc,
                 )
-                if cached is not None:
-                    # Promote to in-memory cache for fast re-reads
-                    self._version_findings_cache[cache_key] = cached
-                    return cached
 
         return None
 
@@ -5840,6 +6047,34 @@ class ReportEngine:
         self._version_comparison_data = {"projects": projects_data}
         return [{"_vc_placeholder": True}]
 
+    def _sanitized_recipe_dir(self, recipe_name: str) -> Path:
+        """The per-recipe output directory, matching the renderer's sanitization."""
+        sanitized = recipe_name
+        for ch in ("/", "\\", ":", "*", "?", '"', "<", ">", "|"):
+            sanitized = sanitized.replace(ch, "_")
+        return Path(self.config.output_dir) / sanitized.strip(" .")
+
+    def _write_empty_vex_recs(self, recipe_name: str) -> None:
+        """Write ``[]`` over any recs file a previous run left behind.
+
+        Only touches a file that already exists: a run that never had
+        recommendations should not create an artifact, but it must not leave a
+        stale one that reads as its own.
+        """
+        import json as _json
+
+        try:
+            path = self._sanitized_recipe_dir(recipe_name) / "vex_recommendations.json"
+            if path.exists():
+                path.write_text(_json.dumps([], indent=2), encoding="utf-8")
+                self.logger.info(
+                    "Cleared a previous run's %s (this run produced none)", path
+                )
+        except Exception:
+            self.logger.warning(
+                "Could not clear a stale vex_recommendations.json", exc_info=True
+            )
+
     def _process_recipe(self, recipe: Recipe) -> ReportData | None:
         """Process a single recipe and return report data."""
         try:
@@ -6344,6 +6579,26 @@ class ReportEngine:
                         )
                         if recipe.name == "Executive Dashboard":
                             type_params = build_findings_type_params("all")
+                        elif recipe.name in REACHABILITY_FORCES_CVE:
+                            # This recipe audits reachabilityScore, which the API
+                            # omits under the ?type=cve URL param and never
+                            # populates for non-CVE findings. Force the category
+                            # RSQL filter regardless of --finding-types so a stray
+                            # `--finding-types sast` can't make a tenant with real
+                            # reachability data look entirely NOT_RUN.
+                            _ft = str(self.config.finding_types or "").strip().lower()
+                            if _ft and _ft not in ("cve", "all"):
+                                self.logger.info(
+                                    "%s ignores --finding-types %s: it audits CVE "
+                                    "reachability, so the fetch is pinned to "
+                                    "category==CVE.",
+                                    recipe.name,
+                                    self.config.finding_types,
+                                )
+                            type_params = {
+                                "type": None,
+                                "category_filter": "category==CVE",
+                            }
                         elif _uses_gates:
                             # Check if the recipe defines its own default finding types
                             _recipe_default_ft = (
@@ -6371,6 +6626,38 @@ class ReportEngine:
                             )
                         finding_type = type_params.get("type", "cve") or ""
                         category_filter = type_params.get("category_filter")
+
+                        # --min-severity: fold the severity clause into
+                        # category_filter so it reaches the API AND changes every
+                        # findings cache key (see apply_min_severity). Gated on the
+                        # recipe allow-list — other recipes' denominators haven't
+                        # been reviewed for a severity floor.
+                        _min_sev_cfg = getattr(self.config, "min_severity", None)
+                        if _min_sev_cfg and recipe.name not in MIN_SEVERITY_RECIPES:
+                            # Silently ignoring a scope-narrowing flag lets an
+                            # operator believe a severity floor was applied to a
+                            # run that audited everything — the same class of
+                            # false-confidence the --open-only exemption warns
+                            # about, so it warns the same way.
+                            self.logger.warning(
+                                "Ignoring --min-severity %s for %s: only %s "
+                                "honor a severity floor. This report covers ALL "
+                                "severities.",
+                                _min_sev_cfg,
+                                recipe.name,
+                                ", ".join(sorted(MIN_SEVERITY_RECIPES)),
+                            )
+                        if recipe.name in MIN_SEVERITY_RECIPES:
+                            _min_sev = _min_sev_cfg
+                            if _min_sev:
+                                category_filter = apply_min_severity(
+                                    category_filter, _min_sev
+                                )
+                                self.logger.info(
+                                    "Severity floor %s active — findings filter: %s",
+                                    _min_sev,
+                                    category_filter,
+                                )
 
                         # Whether we need to post-filter by date (set True when entity-
                         # level caching is used and date filters are NOT in the API query)
@@ -6546,9 +6833,17 @@ class ReportEngine:
                             )
 
                         if getattr(self.config, "open_only", False):
-                            filters.append(
-                                "status=out=(NOT_AFFECTED,FALSE_POSITIVE,RESOLVED,RESOLVED_WITH_PEDIGREE)"
-                            )
+                            if should_apply_open_only(
+                                recipe.name, self.config.open_only
+                            ):
+                                filters.append(OPEN_ONLY_CLAUSE)
+                            else:
+                                self.logger.warning(
+                                    "Ignoring --open-only for %s: NOT_AFFECTED findings "
+                                    "are this report's coverage denominator, so "
+                                    "excluding them would report 0%% coverage everywhere.",
+                                    recipe.name,
+                                )
 
                         # Scoped Remediation Package: CVE filter is applied in the
                         # transform (not at API level) so sibling CVEs on the
@@ -6900,13 +7195,19 @@ class ReportEngine:
                                     raw_data = _config_extract(raw_data)
                                 needs_date_postfilter = True
                             else:
-                                # Batch by project IDs — all versions
-                                # Build a cache key from the query signature
-                                _pid_str = ",".join(str(p) for p in sorted(folder_pids))
-                                _cache_parts = f"{recipe.query.endpoint}|{combined_filter or ''}|{finding_type}|pids:{_pid_str}"
-                                _cache_key = hashlib.sha256(
-                                    _cache_parts.encode()
-                                ).hexdigest()[:16]
+                                # Batch by project IDs — all versions.
+                                # Keyed on the query signature AND the payload
+                                # shape: the frame cached below is the one that
+                                # exists AFTER per-batch pruning/scoring, so a
+                                # pruning recipe must never share a key with a
+                                # raw-shape reader issuing the same query.
+                                _cache_key = _findings_cache_key(
+                                    recipe.query.endpoint,
+                                    combined_filter,
+                                    finding_type,
+                                    folder_pids,
+                                    recipe.name,
+                                )
 
                                 if _cache_key in self._findings_cache:
                                     raw_data = self._findings_cache[_cache_key]
@@ -7506,9 +7807,14 @@ class ReportEngine:
             # --- Status post-filtering for entity-cached paths ---
             # Entity cache stores ALL findings per version (no status filter).
             # When --open-only is set, exclude resolved/suppressed statuses here.
+            # The exemption must be repeated here: on the entity-cached path the
+            # API-level clause above is never built, so without this the flag
+            # would still strip the denominator client-side.
             if (
                 needs_date_postfilter
-                and getattr(self.config, "open_only", False)
+                and should_apply_open_only(
+                    recipe.name, getattr(self.config, "open_only", False)
+                )
                 and isinstance(raw_data, pd.DataFrame)
                 and not raw_data.empty
             ):
@@ -7657,20 +7963,24 @@ class ReportEngine:
                     raw_data = raw_data.copy()
                 _inject_folder_names_df(raw_data, pf_map)
 
-            # --- License Report: per-component folder BREADCRUMB (root->leaf) ---
-            # The detail Folder column disambiguates same-named projects that
-            # live in different folders. The leaf ``folder_name`` above isn't
-            # enough when the differing folders are nested; inject the FULL path
-            # under a separate column so the other reports' leaf column is intact.
+            # --- Per-record folder BREADCRUMB (root->leaf) ---
+            # The Folder column disambiguates same-named projects that live in
+            # different folders. The leaf ``folder_name`` above isn't enough when
+            # the differing folders are nested; inject the FULL path under a
+            # separate column so the other reports' leaf column is intact.
             # Only needed for MULTI-project scopes (folder / portfolio); a
             # single-project run's Folder is fully covered by the scope-level
             # breadcrumb, so skip the extra projects+folders resolve there.
+            #
+            # Reachability VEX Coverage groups and sorts its rollup by folder:
+            # folders are the platform's access boundary, so a folder-ordered
+            # report can be handed to the owning team as a contiguous section.
             _single_project_scope = (
                 bool(str(self.config.project_filter or "").strip())
                 and not str(self.config.folder_filter or "").strip()
             )
             if (
-                recipe.name == "License Report"
+                recipe.name in FOLDER_BREADCRUMB_RECIPES
                 and not raw_data.empty
                 and not _single_project_scope
                 and "folder_breadcrumb" not in raw_data.columns
@@ -8298,12 +8608,20 @@ class ReportEngine:
                         "Triage Prioritization",
                         "Configuration Analysis Triage",
                         "False Positive Analysis",
+                        "Reachability VEX Coverage",
                     ):
                         vex_recs = transform_result.get("vex_recommendations", [])
                         if not vex_recs:
                             self.logger.info(
                                 "No VEX recommendations generated (no eligible findings)"
                             )
+                            # Overwrite any file a PREVIOUS run left in this output
+                            # directory. Skipping the write left a stale
+                            # vex_recommendations.json on disk that --apply-vex-triage
+                            # or an automation reading the path would happily apply,
+                            # attributing an earlier run's recommendations to this one.
+                            # An empty array is the honest artifact.
+                            self._write_empty_vex_recs(recipe.name)
                         if vex_recs:
                             import json
 
@@ -8324,7 +8642,21 @@ class ReportEngine:
                             vex_dir.mkdir(parents=True, exist_ok=True)
                             vex_path = vex_dir / "vex_recommendations.json"
                             with open(vex_path, "w") as f:
-                                json.dump(vex_recs, f, indent=2, default=str)
+                                # Scrubbed like every other JSON artifact: a
+                                # non-finite reachability_score would otherwise be
+                                # written as a bare NaN/Infinity token, which
+                                # Python's reader accepts and jq/Go/Postgres reject
+                                # — and this is the file automations consume.
+                                from fs_report.renderers.report_renderer import (
+                                    ReportRenderer as _RR,
+                                )
+
+                                json.dump(
+                                    _RR._scrub_non_finite(vex_recs),
+                                    f,
+                                    indent=2,
+                                    default=str,
+                                )
                             self.logger.info(
                                 f"Wrote {len(vex_recs)} VEX recommendations to {vex_path}"
                             )

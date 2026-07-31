@@ -388,6 +388,14 @@
     fetch('/api/run/' + encodeURIComponent(runId) + '/vex-preview')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {
+        // A confirmed apply that could write nothing reports state
+        // 'nothing_to_apply' with a reason and NO summary. Polling on `summary`
+        // alone meant that state never surfaced: the poller retried until it gave
+        // up and the run read as a normal completion.
+        if (data && data.state === 'nothing_to_apply') {
+          _showToast(data.reason || 'No VEX recommendations were applicable.');
+          return;
+        }
         if (!data || !data.summary) {
           setTimeout(function () { __sp2PollPreview(runId, nonce, tries + 1); }, 1500);
           return;
@@ -395,8 +403,19 @@
         var s = data.summary;
         var by = s.by_status || {};
         var lines = Object.keys(by).map(function (k) { return '  ' + by[k] + ' → ' + k; });
+        // Exactly one recommendations file is applied per run, by precedence. The
+        // CLI prints the skipped recipes; the confirm dialog must say it too, or a
+        // multi-recipe run reads as a clean single-file apply and the operator
+        // never learns another recipe's recommendations went unwritten.
+        var skipped = (data.skipped_recipes || []);
+        var skippedMsg = skipped.length
+          ? '\n\nNOT applied (only one recommendations file is applied per run): '
+            + skipped.join(', ')
+            + '.\nApply those separately with --apply-vex-triage <path>.'
+          : '';
         var msg = 'VEX dry-run preview: ' + (s.total || 0) + ' finding(s) would be written'
           + (lines.length ? ':\n' + lines.join('\n') : '')
+          + skippedMsg
           + '\n\nApply these VEX statuses to the platform for real? This cannot be undone.';
         if (window.confirm(msg)) {
           fetch('/api/run/' + encodeURIComponent(runId) + '/vex-apply', {
@@ -406,7 +425,16 @@
           }).then(function (r) { return r.json().then(function (b) { return { ok: r.ok, b: b }; }); })
             .then(function (res) {
               if (res.ok && res.b && res.b.summary) {
-                _showToast('VEX applied: ' + (res.b.summary.succeeded || 0) + ' written');
+                // Prefer the APPLY response's skipped list over the preview's: the
+                // set can differ between preview and apply, and a destructive-write
+                // confirmation should report what actually happened, not what was
+                // predicted.
+                var appliedSkipped = (res.b.skipped_recipes || skipped);
+                _showToast('VEX applied: ' + (res.b.summary.succeeded || 0) + ' written'
+                  + (appliedSkipped.length
+                      ? ' (' + appliedSkipped.length + ' recs file(s) skipped: '
+                        + appliedSkipped.join(', ') + ')'
+                      : ''));
               } else {
                 _showToast('VEX apply failed: ' + ((res.b && res.b.error) || 'error'));
               }

@@ -189,6 +189,13 @@
             </div>
             {% endif %}
 
+            {# Opens for a triage recipe OR any autotriage-capable one: the
+               VEX-apply control below is inside this block, so gating on
+               show_triage alone made show_vex_apply dead for Reachability VEX
+               Coverage (in AUTOTRIAGE_RECIPES, not TRIAGE_TAB_RECIPES). #}
+            {% if show_triage or show_vex_apply %}
+            {# Top N / Triage N are TP + Config Analysis Triage only — RVC never
+               truncates, so don't offer it a row cap it ignores. #}
             {% if show_triage %}
             <div class="form-group">
                 <label for="pre-top">Top N findings</label>
@@ -204,8 +211,10 @@
                        placeholder="0 = all eligible">
                 <small class="form-hint">Generate VEX recommendations for only the top N findings. Full list is still shown.</small>
             </div>
-            {# tp_gate / vex_override are Triage-Prioritization-only (show_tp_gate);
-               top / triage above are shared with Config Analysis Triage. #}
+            {% endif %}
+            {# tp_gate is Triage-Prioritization-only (show_tp_gate); top / triage
+               above are shared with Config Analysis Triage. vex_override is gated
+               separately below — it is meaningful wherever autotriage is. #}
             {% if show_tp_gate %}
             <div class="form-group">
                 <label for="pre-tp-gate">Triage gate</label>
@@ -216,6 +225,12 @@
                     <option value="NONE" {% if state.get('tp_gate') == 'NONE' %}selected{% endif %}>NONE</option>
                 </select>
             </div>
+            {% endif %}
+            {# Reachable wherever autotriage is, not just for Triage Prioritization.
+               For Reachability VEX Coverage this is the ONLY way to act on the
+               needs-review class the report reports: those gaps carry a status a
+               person set, so the applier skips them unless --vex-override. #}
+            {% if show_tp_gate or show_vex_apply %}
             <div class="form-group form-row">
                 <label for="pre-vex-override">VEX override</label>
                 <label class="toggle">
@@ -226,7 +241,9 @@
             </div>
             {% endif %}
 
-            {# ── SP2: destructive VEX-write apply (autotriage) — TP-only ── #}
+            {# ── SP2: destructive VEX-write apply (autotriage) — every recipe in
+                 AUTOTRIAGE_RECIPES (TP, False Positive Analysis, Reachability VEX
+                 Coverage). Gate on show_vex_apply, never show_triage. ── #}
             {% if show_vex_apply %}
             <div class="form-group form-row">
                 <label for="pre-autotriage">Auto-apply VEX to platform</label>
@@ -424,7 +441,7 @@
 
         {# Filters — hide the whole section when no child filter is consumed by
            the selected recipe(s) (Round-1 M1-11). #}
-        {% if show_component_match or show_component_version or show_standalone or show_detected_after or show_scan_filters %}
+        {% if show_component_match or show_component_version or show_standalone or show_detected_after or show_min_severity or show_scan_filters %}
         <details class="form-section">
             <summary class="form-section-title">Filters</summary>
             {% if show_component_match %}
@@ -461,6 +478,20 @@
                 <label for="pre-detected-after">Detected after</label>
                 <input type="date" id="pre-detected-after" name="detected_after"
                        value="{{ state.get('detected_after', '') }}">
+            </div>
+            {% endif %}
+            {% if show_min_severity %}
+            <div class="form-group">
+                <label for="pre-min-severity">Minimum severity</label>
+                {% set cur_ms = state.get('min_severity', '')|lower %}
+                <select id="pre-min-severity" name="min_severity">
+                    <option value="" {% if not cur_ms %}selected{% endif %}>All severities</option>
+                    <option value="critical" {% if cur_ms == 'critical' %}selected{% endif %}>Critical only</option>
+                    <option value="high" {% if cur_ms == 'high' %}selected{% endif %}>High and above</option>
+                    <option value="medium" {% if cur_ms == 'medium' %}selected{% endif %}>Medium and above</option>
+                    <option value="low" {% if cur_ms == 'low' %}selected{% endif %}>Low and above</option>
+                </select>
+                <small class="form-hint">Audit only findings at or above this severity. Any floor excludes <code>none</code>/<code>info</code> — leave on <em>All severities</em> to cover everything.</small>
             </div>
             {% endif %}
             {% if show_scan_filters %}

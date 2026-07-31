@@ -1193,7 +1193,7 @@
               {# ── Filters group — each knob gated to the recipes that consume
                  it; the whole group hides when none apply (report-config-card-
                  gating §5c). #}
-              <div x-show="stepApplies(inspStep(), 'show_component') || stepApplies(inspStep(), 'show_component_match') || stepApplies(inspStep(), 'show_component_version') || stepApplies(inspStep(), 'show_standalone') || stepApplies(inspStep(), 'show_detected_after') || stepApplies(inspStep(), 'show_scan_filters')" x-cloak>
+              <div x-show="stepApplies(inspStep(), 'show_component') || stepApplies(inspStep(), 'show_component_match') || stepApplies(inspStep(), 'show_component_version') || stepApplies(inspStep(), 'show_standalone') || stepApplies(inspStep(), 'show_detected_after') || stepApplies(inspStep(), 'show_min_severity') || stepApplies(inspStep(), 'show_scan_filters')" x-cloak>
                 <div class="wfb-sec-label" style="margin-top:10px"><i data-lucide="sliders-horizontal"></i> Filters</div>
                 {# B4 #25: component NAME — required for a requires_component step
                    (Component Impact / Component Remediation Package), which
@@ -1237,6 +1237,25 @@
                   <input class="wfb-inp" type="date" id="insp-detected-after"
                          :value="inspStep().overrides.detected_after || ''"
                          @change="applyOverride('detected_after', $event.target.value)">
+                </div>
+                <div class="wfb-field" x-show="stepApplies(inspStep(), 'show_min_severity')" x-cloak>
+                  <label for="insp-min-severity">Minimum severity</label>
+                  {# :value on the <select> — the pattern every other step-inspector
+                     select uses (cache_ttl, error_policy, ai_depth, product_type).
+                     Per-option :selected was the odd one out here and does not
+                     re-evaluate the same way when the inspector is reopened on a
+                     different step, so a saved floor could display as "All
+                     severities". Values are lowercase on the wire; the CLI and the
+                     override validator both upper-case before use. #}
+                  <select class="wfb-inp" id="insp-min-severity"
+                          :value="(inspStep().overrides.min_severity || '').toLowerCase()"
+                          @change="applyOverride('min_severity', $event.target.value)">
+                    <option value="">All severities</option>
+                    <option value="critical">Critical only</option>
+                    <option value="high">High and above</option>
+                    <option value="medium">Medium and above</option>
+                    <option value="low">Low and above</option>
+                  </select>
                 </div>
                 <div class="wfb-field" x-show="stepApplies(inspStep(), 'show_scan_filters')" x-cloak>
                   <label>Scan types</label>
