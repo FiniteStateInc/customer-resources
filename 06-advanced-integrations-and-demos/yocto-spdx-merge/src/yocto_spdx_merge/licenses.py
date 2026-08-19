@@ -9,14 +9,22 @@ _DOC_REF_PATTERN = re.compile(r"DocumentRef-([^:]+):(\S+)")
 
 # Deprecated SPDX license IDs that spdx-tools rejects.
 # Map to their valid SPDX 2.3 equivalents.
+#
+# Grouped by exception, GPL-2.0 before GPL-3.0 within each group, so a
+# missing sibling variant is visible at a glance. This covers all 7
+# deprecated compound GPL-*-with-*-exception ids in the official SPDX
+# License List as of the date below - bison/classpath/font only ever had
+# a GPL-2.0 form; autoconf and GCC have both.
+# Source of truth: https://github.com/spdx/license-list-data/blob/main/json/licenses.json
+# (filter for isDeprecatedLicenseId=true and "-with-" in licenseId). Checked 2026-08-19.
 _DEPRECATED_LICENSE_MAP = {
-    "GPL-3.0-with-GCC-exception": "GPL-3.0-only WITH GCC-exception-3.1",
-    "GPL-2.0-with-classpath-exception": "GPL-2.0-only WITH Classpath-exception-2.0",
-    "GPL-2.0-with-font-exception": "GPL-2.0-only WITH Font-exception-2.0",
-    "GPL-2.0-with-bison-exception": "GPL-2.0-only WITH Bison-exception-2.2",
     "GPL-2.0-with-autoconf-exception": "GPL-2.0-only WITH Autoconf-exception-2.0",
     "GPL-3.0-with-autoconf-exception": "GPL-3.0-only WITH Autoconf-exception-2.0",
+    "GPL-2.0-with-bison-exception": "GPL-2.0-only WITH Bison-exception-2.2",
+    "GPL-2.0-with-classpath-exception": "GPL-2.0-only WITH Classpath-exception-2.0",
+    "GPL-2.0-with-font-exception": "GPL-2.0-only WITH Font-exception-2.0",
     "GPL-2.0-with-GCC-exception": "GPL-2.0-only WITH GCC-exception-2.0",
+    "GPL-3.0-with-GCC-exception": "GPL-3.0-only WITH GCC-exception-3.1",
 }
 
 
