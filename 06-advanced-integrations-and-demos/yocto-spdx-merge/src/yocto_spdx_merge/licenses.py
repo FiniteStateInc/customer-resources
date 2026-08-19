@@ -16,6 +16,7 @@ _DEPRECATED_LICENSE_MAP = {
     "GPL-2.0-with-bison-exception": "GPL-2.0-only WITH Bison-exception-2.2",
     "GPL-2.0-with-autoconf-exception": "GPL-2.0-only WITH Autoconf-exception-2.0",
     "GPL-3.0-with-autoconf-exception": "GPL-3.0-only WITH Autoconf-exception-2.0",
+    "GPL-2.0-with-GCC-exception": "GPL-2.0-only WITH GCC-exception-2.0",
 }
 
 

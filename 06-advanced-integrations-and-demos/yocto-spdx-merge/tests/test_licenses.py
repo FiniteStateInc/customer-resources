@@ -36,6 +36,10 @@ class TestResolveLicenseExpression:
             # passed through unnormalized and failed spdx-tools SPDX 2.3
             # validation with a bare, unmerged output.
             ("GPL-3.0-with-autoconf-exception", "GPL-3.0-only WITH Autoconf-exception-2.0"),
+            # The official SPDX License List has 7 deprecated compound
+            # GPL-*-with-*-exception ids; this was the one other one missing
+            # from the map alongside the autoconf-2.0 gap above.
+            ("GPL-2.0-with-GCC-exception", "GPL-2.0-only WITH GCC-exception-2.0"),
         ],
     )
     def test_normalizes_deprecated_license_ids(self, deprecated, expected):
