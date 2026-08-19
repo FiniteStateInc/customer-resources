@@ -79,6 +79,10 @@ def extract_packages(
             license_declared = resolve_license_expression(
                 license_declared, namespace_index, all_external_doc_refs
             )
+            license_concluded = pkg.get("licenseConcluded", "NOASSERTION")
+            license_concluded = resolve_license_expression(
+                license_concluded, namespace_index, all_external_doc_refs
+            )
 
             # Backfill downloadLocation from the recipe doc's source packages
             # (Yocto leaves it NOASSERTION on runtime package documents).
@@ -99,7 +103,7 @@ def extract_packages(
                 "name": pkg["name"],
                 "versionInfo": pkg.get("versionInfo", ""),
                 "downloadLocation": download_location,
-                "licenseConcluded": pkg.get("licenseConcluded", "NOASSERTION"),
+                "licenseConcluded": license_concluded,
                 "licenseDeclared": license_declared,
                 "copyrightText": pkg.get("copyrightText", "NOASSERTION"),
                 "supplier": pkg.get("supplier", "NOASSERTION"),
