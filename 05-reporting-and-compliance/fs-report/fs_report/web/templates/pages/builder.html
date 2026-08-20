@@ -1170,6 +1170,39 @@
                 </div>
               </div>
 
+              {# Human Readable SBOM only (show_sbom_options / SBOM_OPTION_RECIPES).
+                 Same three knobs the Command Center card back and the prerun
+                 modal expose — a step configurable on those two surfaces but not
+                 here would be settable everywhere except the one screen whose
+                 whole job is composing steps. Policy columns and Finding counts
+                 default ON, so they use the default-true toggle pair. #}
+              <div x-show="stepApplies(inspStep(), 'show_sbom_options')" x-cloak>
+                <div class="wfb-toggle">
+                  <span class="tl">Include file components</span>
+                  <div class="wfb-sw" :class="{ on: !!inspStep().overrides.include_file_components }"
+                       role="switch" :aria-checked="!!inspStep().overrides.include_file_components" tabindex="0"
+                       @click="toggleStepBool('include_file_components')"
+                       @keydown.enter.prevent="toggleStepBool('include_file_components')"
+                       @keydown.space.prevent="toggleStepBool('include_file_components')"></div>
+                </div>
+                <div class="wfb-toggle">
+                  <span class="tl">Policy columns</span>
+                  <div class="wfb-sw" :class="{ on: defaultTrueOn(inspStep(), 'policy_status') }"
+                       role="switch" :aria-checked="defaultTrueOn(inspStep(), 'policy_status')" tabindex="0"
+                       @click="toggleDefaultTrue('policy_status')"
+                       @keydown.enter.prevent="toggleDefaultTrue('policy_status')"
+                       @keydown.space.prevent="toggleDefaultTrue('policy_status')"></div>
+                </div>
+                <div class="wfb-toggle">
+                  <span class="tl">Finding counts</span>
+                  <div class="wfb-sw" :class="{ on: defaultTrueOn(inspStep(), 'finding_counts') }"
+                       role="switch" :aria-checked="defaultTrueOn(inspStep(), 'finding_counts')" tabindex="0"
+                       @click="toggleDefaultTrue('finding_counts')"
+                       @keydown.enter.prevent="toggleDefaultTrue('finding_counts')"
+                       @keydown.space.prevent="toggleDefaultTrue('finding_counts')"></div>
+                </div>
+              </div>
+
               <div x-show="stepApplies(inspStep(), 'show_baseline_date')" x-cloak>
                 <div class="wfb-field">
                   <label for="insp-baseline-date">Baseline date</label>

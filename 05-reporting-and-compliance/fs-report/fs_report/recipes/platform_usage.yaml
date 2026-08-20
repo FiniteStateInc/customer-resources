@@ -1,0 +1,240 @@
+name: "Platform Usage"
+# Assessment, NOT operational. Two reasons, both load-bearing:
+#   1. The subject is "what does this org's platform footprint look like right
+#      now" — inventory and freshness as of report run time, per spec §"Grain".
+#   2. report_engine's generic /public/v0/scans branch widens the scan fetch to
+#      the full history for assessment recipes. Lifetime scan counts, the
+#      trailing-12-month trend and "never scanned, ever" all depend on that; an
+#      operational run would truncate the fetch at --period and silently report
+#      every older project as never scanned.
+# --period is therefore ignored. Freshness windows are recipe parameters below.
+category: assessment
+nav_category: Executive
+card_description: "Superuser view of platform footprint: inventory, freshness, hygiene."
+chart_libraries: ["echarts"]
+template: "platform_usage.html"
+# 12, just after Scan Analysis (10). Not 10: this recipe's scan fetch spans all
+# history while Scan Analysis's is period-truncated, so the two do NOT share a
+# cache entry and ordering them together buys nothing. 12 keeps them adjacent in
+# the run log, where they are read together.
+execution_order: 12
+auto_run: false
+# Deliberately NOT requires_project: this is a portfolio report by definition.
+# --project narrows it to one project and --folder to one tree; both are
+# disclosed in the output rather than changing what the numbers mean.
+description: >
+  A superuser's view of how the platform is actually being used across the
+  organization — with no per-user or seat-based metric anywhere in it (that is
+  User Activity's job). Three layers. **Inventory**: every folder, project and
+  version, with folder breadcrumbs so same-named folders in different trees stay
+  distinguishable. **Activity and freshness**: days since each project's most
+  recent COMPLETED scan, bucketed Current / Aging / Stale / Dormant / Never
+  scanned, plus trailing-12-month trends for scan volume, new projects, new
+  versions and the failed-scan rate — a bad pipeline makes every usage number
+  above it untrustworthy, so it is shown next to them rather than assumed away.
+  **Hygiene**: the short "needs attention" list that explains anomalies in the
+  counts — projects with no recorded creator, projects filed under no folder,
+  empty folders, versions uploaded but never scanned, active projects nobody has
+  shipped a version to, and near-duplicate project names that suggest teams are
+  creating projects instead of reusing them.
+
+  Three columns mean less than their names suggest, and the report says so in
+  its own output rather than leaving a reader to assume: the platform has **no
+  owner field** (Created by is the recording user's `createdBy`), **no tags or
+  labels** on projects (project `type` is shown in their place), and **no
+  artifact type or ingestion method on a version** — both are derived from that
+  version's scans (`scan.type` and `scan.mechanism`), so a version with neither
+  is precisely the "never scanned" flag. Never-scanned projects satisfy the
+  Stale definition too; the tiles overlap by construction and that is stated.
+
+  **Project dependencies are followed.** A project holding versions but no
+  completed scan of its own is an assembly — the scanning happens in the
+  projects it is built from — so its dependency tree is resolved transitively
+  and its last-scan date, days-since and freshness bucket come from the newest
+  completed scan anywhere in that tree. `scan_source` says which side supplied
+  them, and dependency scan volume gets its own column rather than being added
+  to the project's own counts, which would double-count scans the dependency
+  already reports on its own row. Without this such a project read "Never
+  scanned / Stale / Dormant", which is the opposite of true.
+
+  Runs four org-wide inventory sweeps (folders, active projects, archived
+  projects, versions) on top of the full scan history, so pass
+  `--cache-ttl 24h` on a large tenant to make an interrupted run resume rather
+  than restart. The dependency walk adds one request per version, but only for
+  the projects above and only up to `dependency_lookup_versions`. A `--folder` or
+  `--project` run narrows the scan fetch API-side, so it additionally re-fetches
+  the scan history of dependency projects that fall outside the scope, by id —
+  otherwise the narrowing would reintroduce the mislabelling on exactly the runs
+  most likely to hit it. That top-up feeds the freshness columns only; every tile
+  and chart still counts in-scope scans alone.
+
+query:
+  endpoint: "/public/v0/scans"
+  params:
+    sort: "created:desc"
+    limit: 10000
+
+transform_function: platform_usage_transform
+
+# Thresholds, not constants (spec §4: "thresholds should be configurable, not
+# hardcoded"). The defaults below are a starting point — a fleet that is
+# re-scanned quarterly should raise stale_project_days rather than read an
+# over-flagged report. A non-integer, non-positive, or non-increasing freshness
+# triple is rejected at load with a warning and the default used instead, so a
+# bad override cannot produce a bucket nothing lands in.
+parameters:
+  # Freshness buckets, in days since the last COMPLETED scan.
+  current_days: 30      # <= this -> Current
+  aging_days: 90        # <= this -> Aging
+  stale_days: 180       # <= this -> Stale; above -> Dormant
+  # "Active project" tile window. Measures SCANNING, not engagement: a project
+  # counts as active only if a scan COMPLETED inside this window, so one that
+  # shipped a version yesterday without being scanned is not counted.
+  activity_window_days: 30
+  # Window for the per-project scan count column and the scan-volume tile
+  # (whose trend indicator compares it against the immediately prior window of
+  # the same length).
+  scan_window_days: 90
+  # "Stale project" tile: zero completed scans in this many days.
+  stale_project_days: 90
+  # Hygiene flag: active project with no new version in this many days.
+  no_new_version_days: 180
+  # Trailing months in every trend series.
+  trend_months: 12
+  # Ceiling on the dependency walk. There is no bulk dependency endpoint — they
+  # are readable only per version — so the tree is resolved ONLY for projects
+  # that hold versions but have no completed scan of their own, and only for the
+  # first N such versions. Counts root versions resolved, not HTTP calls: one
+  # root can fan out across its whole tree. Anything past the cap is disclosed in
+  # the report's notes rather than silently left as "Never scanned".
+  dependency_lookup_versions: 250
+
+output:
+  table: true
+  formats:
+    - csv
+    - xlsx
+    - html
+    - json
+    - md
+  # Chart spec names match the transform's returned keys exactly, so the
+  # fragment/embedded path's server-side SVG renderer resolves each chart's own
+  # data instead of falling through to the projects table.
+  charts:
+    - name: freshness_mix
+      chart: doughnut
+      title: "Projects by Freshness"
+      description: "How many projects fall in each freshness bucket. “Never scanned” is a separate slice rather than the far end of the age scale — a project nobody ever scanned is a different problem from one scanned a year ago, and only one of them has a date to age from."
+      x_column: bucket
+      y_column: count
+    - name: scans_trend
+      chart: line
+      title: "Scans per Month (trailing 12 months)"
+      description: "Completed scans per month. Failed and in-progress counts ride the same chart so a volume dip caused by a broken pipeline is visible as such rather than read as reduced usage."
+      x_column: month
+      # All three series are declared, not just the headline one: the
+      # server-side SVG path plots exactly what is listed here, so a single
+      # y_column would make the embedded and PDF output tell a shorter story
+      # than the interactive HTML. The rows also carry failure_rate_pct, which
+      # is deliberately NOT listed — it is a percentage and would be drawn
+      # against a count axis; it has its own chart below.
+      y_columns: [completed, failed, in_progress]
+    - name: growth_trend
+      chart: line
+      title: "New Projects and Versions per Month"
+      description: "New projects and new versions created per month, trailing 12 months. Version growth is the better engagement signal of the two — a project is created once, versions are created every release."
+      x_column: month
+      y_columns: [new_versions, new_projects]
+    - name: scans_by_folder
+      chart: bar
+      title: "Scan Volume by Folder"
+      description: "Scans in the configured window per folder. Folders are the platform's access boundary, so each bar is one team's throughput. Projects filed under no folder bucket under “(no folder)”; folders with zero scans in the window are omitted rather than drawn as empty bars."
+      # folder_path_short (server-truncated to match the interactive chart's
+      # ellipsizeTail), not folder_path: a deep breadcrumb plotted raw here
+      # would overflow the server-SVG/PDF bar chart in a way the interactive
+      # HTML never shows, since only that path used to truncate.
+      x_column: folder_path_short
+      y_column: scans
+    - name: failure_rate_trend
+      chart: line
+      title: "Failed Scan Rate by Month"
+      description: "Share of each month's finished scans that failed. Charted beside the volume trend rather than tucked away, because a broken pipeline makes every usage number above it untrustworthy — a volume dip caused by failing scans must not read as reduced adoption. Months with no finished scan are omitted rather than plotted as 0%: an idle month has no rate, and drawing zero would claim a clean one."
+      x_column: month
+      y_column: failure_rate_pct
+    - name: ingestion_mix
+      chart: bar
+      title: "Ingestion Method Mix"
+      description: "How scans arrived over the trend window — scan.mechanism (API_UPLOAD, UI_UPLOAD, …), charted under the same reader-facing names the tables use (API, GUI) rather than the raw enum. Answers whether the platform is wired into CI or driven by hand, which is the difference between a habit and a project."
+      # Bars are labelled from the derived `label` column so the chart and the
+      # chips in the tables beside it name the same thing identically; the raw
+      # `mechanism` stays on every row for the CSV/XLSX/JSON consumers.
+      x_column: label
+      y_column: count
+  # Documents the projects table (the primary detail view and the CSV / first
+  # XLSX sheet). The Folders, Versions and Hygiene tables ship as extra sheets
+  # and sibling CSVs; the json output carries all four plus the trend series.
+  columns:
+    - name: project_name
+      source: "API /projects: name"
+      description: "Project name. Both active and archived projects appear; see the status column."
+    - name: folder_path
+      source: "Derived: /projects folder.id resolved against /folders parentFolderId chain"
+      description: "Full folder breadcrumb (e.g. \"Root > Team A\"), so same-named folders in different trees stay distinguishable. Blank when the project is filed under no folder — which is also the “Orphaned (no folder)” hygiene flag. The table is grouped by this column so each folder is a contiguous section that can be handed to its owning team."
+    - name: created_by
+      source: "API /projects: createdBy"
+      description: "The user who created the project. NOT an owner: the platform has no owner field, so this is the closest available attribution and a blank value is a metadata gap, not an unowned asset."
+    - name: status
+      source: "Derived: which archived= sweep returned the project"
+      description: "active or archived. Archived projects are excluded from the Active and Stale tiles and from the no-new-version flag, but counted in inventory and listed here."
+    - name: project_type
+      source: "API /projects: type"
+      description: "application / firmware / container / … Shown in place of tags: the projects API exposes no tags or labels, so this is the only classification available."
+    - name: created_date
+      source: "API /projects: created"
+      description: "When the project was created (UTC date)."
+    - name: version_count
+      source: "Derived: /versions filtered to this project"
+      description: "Versions on the project across every branch. Zero is the “Empty project” hygiene flag — nothing has been uploaded, so there is nothing to scan and the project is excluded from the Stale tile."
+    - name: latest_version
+      source: "Derived: newest /versions record by created"
+      description: "Label of the most recently created version. Falls back to an arbitrary version's label if none of them carry a parseable created date, rather than rendering blank as if the project had no versions."
+    - name: latest_version_created
+      source: "Derived: MAX(version.created)"
+      description: "When the newest version was created. Older than the no_new_version_days threshold on an active project raises a hygiene flag — a lifecycle question, distinct from Stale, which is about scanning."
+    - name: last_scan_date
+      source: "Derived: MAX(scan.completed) over COMPLETED scans on this project's versions, else over its dependency tree"
+      description: "Most recent completed scan, in UTC. When the project has none of its own but has project dependencies, this is the newest completed scan anywhere in its dependency tree — an assembly is scanned through the components it is built from, and reporting it blank read as neglect. See the scan_source column. Blank means neither the project nor anything it depends on has ever completed a scan. Non-completed scans are deliberately excluded on both paths: an in-flight or failed scan does not make anything fresh."
+    - name: days_since_last_scan
+      source: "Derived: report run time − last_scan_date"
+      description: "Whole days since the last completed scan, from whichever source last_scan_date came from. Blank when there has never been one — printing a number there would imply a measurement that does not exist."
+    - name: freshness_bucket
+      source: "Derived: days_since_last_scan bucketed by the recipe's thresholds"
+      description: "Current (<= current_days) / Aging (<= aging_days) / Stale (<= stale_days) / Dormant (above) / Never scanned. “Never scanned” is the absence of a completed scan on the project AND on everything it depends on, not the oldest bucket, so it can never be confused with merely old."
+    - name: scan_source
+      source: "Derived: whether last_scan_date came from this project's scans or its dependencies'"
+      description: "own — the project has its own scans. dependencies — it has none, so the freshness columns were inherited from its dependency tree. Blank — neither. Read this before treating a fresh date as evidence that this project itself was scanned."
+    - name: dependency_projects
+      source: "Derived: DISTINCT projects in this project's transitive dependency tree"
+      description: "How many other projects this one is built from, counted only for projects with no completed scan of their own (the dependency tree is not resolved for the rest — the API exposes it per version only, so an org-wide walk is unaffordable). Zero for a project with its own scans, which is a not-looked-up zero rather than a no-dependencies one."
+    - name: dependency_scans
+      source: "Derived: COUNT(scans) across the dependency tree's versions, any status"
+      description: "Scan volume sitting under an assembly. Deliberately NOT added to scans_lifetime or scans_in_window, the folder chart or any org total: each dependency project has its own row in this report, so folding its scans into the parent would count them twice."
+    - name: scans_lifetime
+      source: "Derived: COUNT(scans) with this project id, any status"
+      description: "Every scan record ever created for the project, including failed and in-progress ones and every rescan. Counts attempts, so it reads as engagement rather than success — pair it with the failed-scan rate."
+    - name: scans_in_window
+      source: "Derived: COUNT(scans) since now − scan_window_days, any status"
+      description: "Scans in the configured recent window (default 90 days). Rescans of the same version count, per the spec's decision that a rescan signals ongoing engagement just as a first scan does."
+    - name: ingestion_methods
+      source: "Derived: DISTINCT scan.mechanism across the project's scans"
+      description: "How this project's scans arrived — API_UPLOAD, UI_UPLOAD, … Multiple values are comma-separated. Not stored on a project or version, so a project with no scans shows nothing here."
+    - name: artifact_types
+      source: "Derived: DISTINCT scan.type across the project's scans"
+      description: "SCA / SOURCE_SCA / SAST / CONFIG / SBOM_IMPORT / VULNERABILITY_ANALYSIS / SPDX / SARIF — the raw API values, which the HTML renders as friendlier labels (SAST reads \"Binary SAST\"). Stands in for the spec's per-version artifact type, which the API does not store on a version; derived from what was actually scanned."
+    - name: folder_id
+      source: "API /projects: folder.id"
+      description: "Internal folder identifier. Present so the folder and project tables can be joined by machine; blank for unfoldered projects."
+    - name: project_id
+      source: "API /projects: id"
+      description: "Internal project identifier, and the join key to the version table and to the platform's own URLs."
+  slide_title: "Platform Usage"

@@ -411,15 +411,19 @@ def _assemble_findings_filter(
 ) -> str:
     """Semicolon-join threshold + status RSQL fragments.
 
-    RSQL semicolon is logical AND; comma is OR.  A threshold_filter that
-    contains a comma (multiple clauses ORed together) is wrapped in parens
-    so the AND binding is correct.
+    RSQL semicolon is logical AND. The fragments are ANDed as-is and not
+    parenthesised, because ``build_threshold_filter`` guarantees a single
+    clause with no top-level comma — there is nothing left to group.
+
+    Note this is *not* because /findings rejects grouping. An earlier version
+    of this docstring claimed it answers 400 "Invalid RSQL filter syntax" to
+    parens; that is false. Grouping parens and cross-field OR both work (see
+    ``cra.tiers.SUPPORTED_FILTER_FIELDS`` for the probe results). The run
+    0dae6bb1 failure was an unsupported *field*, ``inVcKev``, not the wrap.
     """
     fragments: list[str] = []
     if threshold_filter:
-        fragments.append(
-            f"({threshold_filter})" if "," in threshold_filter else threshold_filter
-        )
+        fragments.append(threshold_filter)
     if include_status:
         fragments.append(f"status=in=({','.join(include_status)})")
     if exclude_status:
@@ -687,7 +691,15 @@ def _fetch_findings(
                 f"_fetch_findings pagination failed at offset={params['offset']} "
                 f"(filter={rsql_filter!r}): {exc}. A partial CRA notification "
                 "report is more dangerous than a hard failure — refusing to "
-                "render an incomplete result."
+                "render an incomplete result. If the response was HTTP 400 "
+                "'<field> is not a supported filter field', this deployment "
+                "does not expose a field the threshold filter used: re-run "
+                "with --unfilterable-tier-strategy wide-fetch to narrow "
+                "client-side instead (identical rows, one wider fetch). To fix "
+                "it permanently, drop that field from "
+                "cra.tiers.SUPPORTED_FILTER_FIELDS — cra.tiers.FILTERABLE_TIERS "
+                "is derived from it, so the tier stops being pushed with no "
+                "second edit."
             ) from exc
 
         if not batch:
@@ -787,6 +799,7 @@ def cra_compliance_transform(
             fetch_c_rows: list[dict[str, Any]] = []
             row_id_to_cve: dict[str, str] = {}
             current_kev_rows: set[str] = set()
+            selected_kev_rows: set[str] = set()
             current_signals: dict[str, list[str]] = {}
             fetch_c_succeeded = False
         else:
@@ -807,6 +820,16 @@ def cra_compliance_transform(
             current_kev_rows = {
                 str(r["id"]) for r in fetch_c_rows if r.get("inKev") or r.get("inVcKev")
             }
+            # Crossing detection only sees the catalog(s) the threshold
+            # selected; the persisted baseline below stays the union so a
+            # `--exploit-maturity cisa-kev` run can't shrink it and make every
+            # VulnCheck-only row look newly-crossed on the next `kev` run.
+            _cisa_on, _vc_on = tiers.kev_signals(threshold)
+            selected_kev_rows = {
+                str(r["id"])
+                for r in fetch_c_rows
+                if (_cisa_on and r.get("inKev")) or (_vc_on and r.get("inVcKev"))
+            }
             current_signals = {
                 str(r["id"]): list(r.get("exploitInfo") or []) for r in fetch_c_rows
             }
@@ -814,6 +837,7 @@ def cra_compliance_transform(
         fetch_c_rows = []
         row_id_to_cve = {}
         current_kev_rows = set()
+        selected_kev_rows = set()
         current_signals = {}
         fetch_c_succeeded = False
 
@@ -883,7 +907,7 @@ def cra_compliance_transform(
     # for why row-level is required for KEV/token crossings.
     kev_crossed_rows = snapshot.snapshot_diff_kev_crossings(
         prior,
-        current_kev_rows=current_kev_rows,
+        current_kev_rows=selected_kev_rows,
         row_id_to_cve=row_id_to_cve,
         threshold=threshold,
     )

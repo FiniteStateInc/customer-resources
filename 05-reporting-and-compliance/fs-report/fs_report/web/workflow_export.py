@@ -128,6 +128,12 @@ _CONFIG_KEY_TO_FLAG: dict[str, str] = {
     "scan_types": "--scan-type",
     "scan_statuses": "--scan-status",
     "open_only": "--open-only",
+    "include_file_components": "--include-file-components",
+    # Default-TRUE pair: the flag named here is the ON form, but ON is the
+    # default, so ``serialize_cli`` only ever emits their --no- counterparts
+    # (--no-policy-status / --no-finding-counts).
+    "policy_status": "--policy-status",
+    "finding_counts": "--finding-counts",
     "detailed": "--detailed",
     "standalone": "--standalone",
     "vex_override": "--vex-override",
@@ -135,7 +141,14 @@ _CONFIG_KEY_TO_FLAG: dict[str, str] = {
 
 # Keys that are boolean flags (emitted as bare ``--flag``, no value argument).
 _BOOL_FLAGS: frozenset[str] = frozenset(
-    {"ai", "open_only", "detailed", "standalone", "vex_override"}
+    {
+        "ai",
+        "open_only",
+        "include_file_components",
+        "detailed",
+        "standalone",
+        "vex_override",
+    }
 )
 
 # SP1 report-config keys that are NOT finite-state-actions GHA inputs.  When a
@@ -154,6 +167,9 @@ _GHA_UNSUPPORTED_NEW_KEYS: frozenset[str] = frozenset(
         "scan_types",
         "scan_statuses",
         "open_only",
+        "include_file_components",
+        "policy_status",
+        "finding_counts",
         "detailed",
         "standalone",
         "vex_override",
@@ -198,6 +214,14 @@ _BOOL_OVERRIDE_KEYS: frozenset[str] = frozenset(
         # B7 (#10B): coerce the destructive FP autotriage opt-in so a string
         # ``"autotriage": "false"`` doesn't emit --autotriage in the CLI export.
         "autotriage",
+        # SBOM toggles. Two are DEFAULT-TRUE, so an uncoerced string "false"
+        # from a hand-edited workflow would read as truthy and invert the export:
+        # emitting --include-file-components when it was explicitly off, or
+        # failing to emit --no-policy-status / --no-finding-counts when they were
+        # explicitly turned off.
+        "include_file_components",
+        "policy_status",
+        "finding_counts",
     }
 )
 
@@ -359,6 +383,16 @@ def _effective_config(
 #: report_engine.MIN_SEVERITY_RECIPES (exact-case) in the router's lowercase form;
 #: an export that emits the flag for any other recipe produces a command whose
 #: severity scope is silently ignored.
+# Recipes that read the SBOM column/scope toggles — mirrors report_engine
+# SBOM_OPTION_RECIPES, lowercased for the ref comparison used here.
+_SBOM_OPTION_RECIPES: frozenset[str] = frozenset({"human readable sbom"})
+
+#: The SBOM toggles, as engine config keys. Excluded from the blanket truthy
+#: scan in ``serialize_github_action`` — two of them default TRUE, so presence
+#: at a truthy value says nothing about whether the user changed anything.
+_SBOM_TOGGLE_KEYS: frozenset[str] = frozenset(
+    {"include_file_components", "policy_status", "finding_counts"}
+)
 _MIN_SEVERITY_RECIPES = {"reachability vex coverage"}
 
 
@@ -532,6 +566,17 @@ def serialize_cli(model: dict[str, Any]) -> str:
         # SP1 new bool flags (bare flag when truthy).
         if eff.get("open_only"):
             parts.append("--open-only")
+        # Gated to the owning recipe, like --min-severity above: emitting an
+        # SBOM-only flag on a Component List step would produce a command that
+        # looks configured but that the engine warns about and ignores.
+        if ref.strip().lower() in _SBOM_OPTION_RECIPES:
+            if eff.get("include_file_components"):
+                parts.append("--include-file-components")
+            # These default ON, so only the OFF state needs emitting.
+            if "policy_status" in eff and not eff.get("policy_status"):
+                parts.append("--no-policy-status")
+            if "finding_counts" in eff and not eff.get("finding_counts"):
+                parts.append("--no-finding-counts")
         if eff.get("detailed"):
             parts.append("--detailed")
         if eff.get("standalone"):
@@ -860,8 +905,15 @@ def serialize_github_action(model: dict[str, Any]) -> str:
 
         # SP1 new keys are not finite-state-actions inputs — document in a single
         # comment line per step so the user knows where to configure them.
+        #
+        # The SBOM toggles are handled separately below: two of the three default
+        # TRUE, so a truthy scan reports them on every step that merely carries
+        # the default — a note telling the user to go configure something they
+        # never changed.
         unsupported_set_keys = [
-            k for k in _GHA_UNSUPPORTED_NEW_KEYS if bool(eff.get(k))
+            k
+            for k in _GHA_UNSUPPORTED_NEW_KEYS
+            if k not in _SBOM_TOGGLE_KEYS and bool(eff.get(k))
         ]
         # current_version_only is also NOT a finite-state-actions input (the
         # action has no current-version-only / all-versions input). It is a
@@ -872,6 +924,19 @@ def serialize_github_action(model: dict[str, Any]) -> str:
         # latest-only default with no warning).
         if "current_version_only" in eff and eff["current_version_only"] is False:
             unsupported_set_keys.append("current_version_only")
+        # The three SBOM toggles, at NON-DEFAULT values only, and only on the
+        # recipe that reads them — the same gate serialize_cli applies. Noting a
+        # default is noise, and noting an SBOM flag on a Component List step
+        # points the user at a knob that recipe ignores. Their non-default states
+        # still must be surfaced: the exported action would otherwise run with
+        # the columns ON while the saved config says OFF, which is config drift
+        # that looks valid.
+        if ref.strip().lower() in _SBOM_OPTION_RECIPES:
+            if eff.get("include_file_components"):
+                unsupported_set_keys.append("include_file_components")
+            for _default_true in ("policy_status", "finding_counts"):
+                if _default_true in eff and _coerce_bool(eff[_default_true]) is False:
+                    unsupported_set_keys.append(_default_true)
         if unsupported_set_keys:
             step_lines.append(
                 f"          # note: {', '.join(sorted(unsupported_set_keys))} "

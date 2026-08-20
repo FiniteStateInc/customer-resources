@@ -19,6 +19,7 @@ from typing import Any
 
 # Canonical exploitInfo token → CRA tier map lives in tiers.py so crossing
 # detection here can never drift from derive_tiers.
+from fs_report.cra.tiers import KEV_TIERS as _KEV_TIERS
 from fs_report.cra.tiers import TOKEN_TO_TIER as _TOKEN_TO_TIER
 
 _STATE_ROOT = Path.home() / ".fs-report" / "state" / "cra-compliance"
@@ -83,15 +84,18 @@ def snapshot_diff_kev_crossings(
     the whole CVE would create false "newly above" alerts for sibling rows
     that did not themselves cross. Spec §6 morning-queue contract.
 
-    Returns the empty set when 'kev' is not in `threshold` — the operator
-    excluded the KEV tier from scope, so a KEV-only crossing must not
-    surface in NEW / REPEAT even when the snapshot detects it (spec §0
-    line ~501).
+    Returns the empty set when no KEV tier (kev / cisa-kev / vc-kev) is in
+    `threshold` — the operator excluded the KEV tier from scope, so a
+    KEV-only crossing must not surface in NEW / REPEAT even when the
+    snapshot detects it (spec §0 line ~501). When only one catalog is
+    selected, the caller passes a `current_kev_rows` already narrowed to
+    that catalog; the persisted baseline stays the CISA∪VulnCheck union so
+    switching tiers between runs can't manufacture crossings.
 
     First-run behavior: if prior.last_run_at is None, return empty set
     (don't flood the operator with the entire KEV universe on day one).
     """
-    if "kev" not in threshold:
+    if not (threshold & _KEV_TIERS):
         return set()
     if prior.last_run_at is None:
         return set()

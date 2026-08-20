@@ -192,6 +192,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "target_agnostic": False,
     "ai": False,
     "ai_depth": "summary",
+    # 4h of cross-run caching, as the web run path uses. Safe only because the
+    # cache file carries the account digest (fs_report/tenant_scope.py); a
+    # domain-only cache would serve one tenant's data to another for 4 hours.
     "cache_ttl": "4h",
     # SP3: a workflow GLOBAL uploaded scoring/context path — must be in
     # _GLOBAL_DEFAULTS so _normalize_global preserves it (else it's dropped on
@@ -260,6 +263,9 @@ _VALID_OVERRIDE_BOOL_KEYS = frozenset(
         "overwrite",
         "current_version_only",
         "open_only",
+        "include_file_components",
+        "policy_status",
+        "finding_counts",
         "detailed",
         "standalone",
         "vex_override",

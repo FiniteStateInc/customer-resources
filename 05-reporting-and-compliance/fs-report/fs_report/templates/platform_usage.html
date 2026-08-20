@@ -1,0 +1,1091 @@
+{% import "_console_macros.html" as fs with context %}
+
+{% if render_mode != 'fragment' %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>Platform Usage - Finite State Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+    {% include "_echarts_ready.html" %}
+{% endif %}
+
+{# Recipe-local styles render in BOTH standalone and fragment modes so
+   fragment_extractor (_STYLE_RE) collects them, scopes them under
+   .fs-section-platform-usage, and re-emits at the top of the fragment. #}
+<style>
+    .pu-charts {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+        gap: 16px;
+        margin-bottom: 20px;
+    }
+    .pu-chart { height: 320px; }
+
+    .pu-empty-chart {
+        display: flex;
+        align-items: center;
+        min-height: 220px;
+        margin: 0;
+        padding: 0 20px;
+        color: var(--ink-mute);
+        font-size: 0.88em;
+        line-height: 1.5;
+    }
+
+    /* Deliberately loud: a broken project↔scan join makes every freshness
+       figure below read "Never scanned", which looks like a finding about the
+       tenant rather than a bug. It must not be possible to skim past. */
+    .pu-integrity {
+        background: var(--sev-critical-bg);
+        color: var(--sev-critical-text);
+        border: 1px solid var(--sev-critical-text);
+        border-left: 4px solid var(--sev-critical-text);
+        border-radius: 6px;
+        padding: 16px 18px;
+        margin-bottom: 20px;
+    }
+    .pu-integrity h3 { margin: 0 0 6px; font-size: 1.05em; }
+    .pu-integrity p  { margin: 0; font-size: 0.92em; line-height: 1.55; }
+
+    .pu-no-data {
+        text-align: center;
+        padding: 40px;
+        color: var(--ink-mute);
+    }
+
+    /* Freshness chips double as the projects-table filter. Colour maps onto the
+       severity token scale so "Dormant" and "Never scanned" read as loud as
+       they are, and the same palette is reused by the doughnut. */
+    .pu-chip {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 10px;
+        font-size: 0.78em;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    .pu-chip-current      { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .pu-chip-aging        { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .pu-chip-stale        { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .pu-chip-dormant      { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .pu-chip-neverscanned { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+
+    /* Artifact-type and ingestion chips. Same shape and weight as the freshness
+       chips so the table reads as one system, and the colours come from the same
+       theme-aware token pairs rather than raw hex, so they follow a theme toggle
+       and the print override. Several chips can sit in one cell: a version
+       scanned more than one way lists every type it was scanned with. */
+    .pu-chip + .pu-chip { margin-left: 4px; }
+
+    .pu-chip-config       { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+    .pu-chip-sca          { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .pu-chip-sast         { background: var(--sev-info-bg);     color: var(--sev-info); }
+    .pu-chip-reachability { background: var(--sev-high-bg);     color: var(--sev-high-text); }
+    .pu-chip-sbom         { background: var(--type-app-bg);     color: var(--type-app-text); }
+    .pu-chip-ngp          { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .pu-chip-gui          { background: var(--sev-info-bg);     color: var(--sev-info); }
+    .pu-chip-api          { background: var(--sev-medium-bg);   color: var(--sev-medium-text); }
+
+    /* Indigo is the one requested colour with no token pair in tokens.css, so it
+       is declared locally in the same shape the token file uses: a Material-50
+       pastel for light, a 14%-alpha tint for dark. The :root-prefixed override is
+       left unscoped by the fragment CSS scoper by design, matching
+       _design_system.html and scan_analysis.html. */
+    .pu-chip-sourcesca    { background: #e8eaf6; color: #3730a3; }
+    :root[data-theme="dark"] .pu-chip-sourcesca {
+        background: rgba(129, 140, 248, 0.14);
+        color: #a5b4fc;
+    }
+    /* Print forces light everywhere else (tokens.css @media print); this chip
+       carries its own colours, so it needs the same reset or a dark-themed page
+       would print pale indigo text on white. */
+    @media print {
+        .pu-chip-sourcesca,
+        :root[data-theme="dark"] .pu-chip-sourcesca {
+            background: #e8eaf6;
+            color: #3730a3;
+        }
+    }
+
+    /* Any value the maps below don't cover — a new scan type, a new ingestion
+       mechanism — renders as a neutral chip showing the RAW value rather than
+       being dropped or mislabelled. */
+    .pu-chip-other        { background: var(--sev-unspecified-bg); color: var(--sev-unspecified-text); }
+
+    .pu-filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        padding: 10px 16px 0;
+        font-size: 0.85em;
+    }
+    .pu-filter-btn {
+        cursor: pointer;
+        padding: 3px 10px;
+        border: 1px solid var(--hairline);
+        border-radius: 12px;
+        background: transparent;
+        color: var(--ink);
+        font: inherit;
+    }
+    .pu-filter-btn[aria-pressed="true"] {
+        border-color: var(--accent);
+        color: var(--ink-strong);
+        /* Two declarations, in this order, on purpose: color-mix() is
+           unsupported on older Chromium/Firefox and in some headless renderers,
+           where the whole property is dropped. The token fallback keeps the
+           pressed state visible there; a browser that parses color-mix()
+           overrides it with the tinted version. */
+        background: var(--surface-muted);
+        background: color-mix(in srgb, var(--accent) 18%, transparent);
+    }
+    .pu-filter-note { color: var(--ink-mute); }
+    /* Print/PDF: a filter nobody can click is noise on paper. */
+    @media print { .pu-filters { display: none; } }
+
+    .pu-hidden-row { display: none; }
+
+    .pu-archived { color: var(--ink-mute); }
+    .pu-muted { color: var(--ink-mute); }
+
+    /* Long identifiers (folder breadcrumbs, project names) wrap rather than
+       forcing a horizontal scroll that CLIPS in print. */
+    .pu-wrap { word-break: break-word; }
+
+    .pu-notes { font-size: 0.88em; line-height: 1.55; }
+    .pu-notes li { margin-bottom: 6px; }
+
+    .pu-truncated {
+        text-align: center;
+        padding: 14px;
+        color: var(--ink-mute);
+        font-style: italic;
+    }
+</style>
+
+{% if render_mode != 'fragment' %}
+<style>
+    /* Landscape A4: the projects table has 12 rendered columns and reflows off
+       the page in portrait. Fixed layout + repeating header, same approach as
+       Reachability VEX Coverage. */
+    @page { size: A4 landscape; margin: 12mm 10mm; }
+    @media print {
+        .pu-charts { grid-template-columns: repeat(2, 1fr); }
+        .pu-chart { height: 260px; }
+        table.data-table { table-layout: fixed; width: 100%; }
+        table.data-table thead { display: table-header-group; }
+    }
+</style>
+</head>
+<body class="console">
+{% endif %}
+
+{# Defensive defaults — keep the template renderable when the transform
+   short-circuited or a caller rendered it without a full result dict. #}
+{% set s = usage_summary | default({}) %}
+{% if not s is mapping %}{% set s = {} %}{% endif %}
+{% set projects = project_table | default([]) %}
+{% set folders = folder_table | default([]) %}
+{% set versions = version_table | default([]) %}
+{% set hygiene_rows = hygiene | default([]) %}
+{% set hygiene_counts = hygiene_summary | default([]) %}
+{% set ingestion_labels = ingestion_labels | default({}) %}
+{# Report-integrity rows (fetch failures, broken joins, truncated scan
+   history) ride in hygiene_rows so CSV/XLSX readers see them too, but they
+   describe THIS RUN, not the tenant, so they must not count toward "N flags
+   need attention" — that number should answer "how much of this tenant's
+   inventory needs a look", not conflate it with why the run itself may be
+   unreliable. #}
+{% set hygiene_flag_count = hygiene_rows | rejectattr('entity_type', 'equalto', 'report') | list | length %}
+{% set notes = usage_notes | default([]) %}
+{% set thresholds = s.get('freshness_thresholds', {}) %}
+{% set scan_window = s.get('scan_window_days', 90) %}
+{# Same 500 the Markdown renderer caps at, so the two rendered formats truncate
+   at the same place and reconcile against each other row for row. #}
+{% set version_cap = 500 %}
+
+{# Presentation-only mapping from the platform's raw enum values to the labels a
+   reader recognises, plus the chip colour class. Deliberately NOT done in the
+   transform: the CSV, XLSX, JSON and Markdown exports keep the raw API values
+   (SOURCE_SCA, VULNERABILITY_ANALYSIS, UI_UPLOAD) so a machine consumer joining
+   against the API or another report still matches, and only the rendered HTML
+   substitutes. A value missing from these maps falls through to a neutral chip
+   carrying the raw text, so a scan type the platform adds later shows up as
+   itself rather than silently disappearing. #}
+{% set artifact_chips = {
+    'CONFIG': ('Config', 'config'),
+    'SCA': ('SCA', 'sca'),
+    'SAST': ('Binary SAST', 'sast'),
+    'FS': ('NGP', 'ngp'),
+    'VULNERABILITY_ANALYSIS': ('Reachability', 'reachability'),
+    'SBOM_IMPORT': ('SBOM', 'sbom'),
+    'SOURCE_SCA': ('Source SCA', 'sourcesca'),
+    'UNKNOWN': ('Unknown', 'other'),
+} %}
+{# Label text comes from ``ingestion_labels`` (the transform's
+   INGESTION_LABELS, the same map the ingestion-mix chart uses) rather than
+   being retyped here — that is the one thing that must read identically in
+   the chart legend and this chip, and a second hand-copied literal would
+   silently drift from it. Only the CSS class slug, a display-only concern
+   the chart has no equivalent of, is local to this template. #}
+{% set ingestion_chips = {
+    'UI_UPLOAD': (ingestion_labels.get('UI_UPLOAD', 'GUI'), 'gui'),
+    'API_UPLOAD': (ingestion_labels.get('API_UPLOAD', 'API'), 'api'),
+    'UNKNOWN': (ingestion_labels.get('UNKNOWN', 'Unknown'), 'other'),
+} %}
+
+{% macro value_chips(raw, mapping) -%}
+    {%- set text = (raw if raw is string else '') | trim -%}
+    {%- if not text -%}
+        —
+    {%- else -%}
+        {%- for token in text.split(',') -%}
+            {%- set key = token | trim -%}
+            {%- if key -%}
+                {%- set mapped = mapping.get(key) -%}
+                <span class="pu-chip pu-chip-{{ mapped[1] if mapped else 'other' }}">{{ mapped[0] if mapped else key }}</span>
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+{%- endmacro %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "Platform Usage"],
+    meta=[
+        {"label": "Domain", "value": domain or "—"},
+        {"label": "Generated", "value": s.get('generated_at') or generated_at or "—"},
+    ],
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>Platform Usage</h1>
+        <p class="subtitle">
+            Inventory, activity and hygiene across the organization, as of the report run time.
+            No per-user or seat metrics — see User Activity for those.
+        </p>
+    </div>
+
+    {% if s.get('fetch_failures') %}
+    <div class="pu-integrity">
+        <h3>This report is incomplete</h3>
+        <p>
+            The {{ s.get('fetch_failures') | join(', ') }} sweep(s) failed, so every count
+            below is a floor rather than a total and its zeros mean &ldquo;not
+            fetched&rdquo;, not &ldquo;none exist&rdquo;. Re-run; if it persists, check the
+            token's permissions for those endpoints.
+        </p>
+    </div>
+    {% endif %}
+
+    {% if s.get('join_broken') %}
+    <div class="pu-integrity">
+        <h3>Every scan-derived figure below is invalid</h3>
+        <p>
+            None of the scans fetched reference any project in scope, so all of them were
+            excluded: the scan counts, the monthly trends, the ingestion mix and every
+            freshness value read zero or &ldquo;Never scanned&rdquo; regardless of the real
+            state. Only the inventory columns &mdash; folders, projects, versions and their
+            dates &mdash; are trustworthy here. This is a broken join, not a finding about
+            this organization &mdash; most often a cached scan set belonging to a different
+            account. Re-run with <code>--refresh</code>, or
+            <code>fs-report cache clear --api</code>, and confirm the token and domain
+            belong to the same tenant.
+        </p>
+    </div>
+    {% endif %}
+
+    {% if s.get('scans_truncated') %}
+    <div class="pu-integrity">
+        <h3>Scan history is a floor, not a total</h3>
+        <p>
+            The scan fetch hit its page/record ceiling before reaching full history, so
+            scan counts, freshness dates and &ldquo;Never scanned&rdquo; may understate
+            reality for older or high-volume tenants &mdash; some pre-cutoff scans may be
+            missing entirely. Narrow with <code>--folder</code> or <code>--project</code>
+            to bring the population under the ceiling.
+        </p>
+    </div>
+    {% endif %}
+
+    {# ── §A executive summary tiles ─────────────────────────────────── #}
+    <div class="kpi-bar" style="margin-bottom: 16px;">
+        {{ fs.kpi_cell("Folders", s.get('total_folders', 0)) }}
+        {{ fs.kpi_cell(
+            "Projects",
+            s.get('total_projects', 0),
+            delta=(s.get('active_projects', 0) | string) ~ " active · " ~ (s.get('archived_projects', 0) | string) ~ " archived",
+        ) }}
+        {{ fs.kpi_cell("Versions", s.get('total_versions', 0)) }}
+        {{ fs.kpi_cell(
+            "Scans · " ~ (scan_window | string) ~ "d",
+            s.get('scans_in_window', 0),
+            delta=(("+" if s.get('scans_window_delta', 0) > 0 else "") ~ (s.get('scans_window_delta', 0) | string) ~ " vs prior " ~ (scan_window | string) ~ "d"),
+            delta_class=("up" if s.get('scans_window_delta', 0) > 0 else ("down" if s.get('scans_window_delta', 0) < 0 else None)),
+        ) }}
+        {{ fs.kpi_cell(
+            "Active · " ~ (s.get('activity_window_days', 30) | string) ~ "d",
+            s.get('active_recent_projects', 0),
+            delta="of " ~ (s.get('active_projects', 0) | string) ~ " active projects",
+        ) }}
+        {# "Inactive", not "Stale" — the freshness bucket below is ALSO
+           called Stale but uses a different threshold (stale_days, default
+           180d) over a different population (every project, not just
+           active ones with versions). Two tiles both reading "Stale" with
+           different day counts invited exactly the confusion this label
+           avoids. #}
+        {{ fs.kpi_cell(
+            "Inactive · " ~ (s.get('stale_project_days', 90) | string) ~ "d",
+            s.get('stale_projects', 0),
+            dot=("high" if s.get('stale_projects', 0) > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "Never scanned",
+            s.get('never_scanned_projects', 0),
+            delta="has versions, no completed scan",
+            dot=("critical" if s.get('never_scanned_projects', 0) > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "Empty projects",
+            s.get('empty_projects', 0),
+            delta="zero versions",
+            dot=("medium" if s.get('empty_projects', 0) > 0 else None),
+        ) }}
+    </div>
+
+    {# The disclosure block is not an appendix. Three of this report's columns
+       stand in for platform fields that do not exist, and the tiles overlap by
+       construction; a reader who skips this will over-read them. #}
+    {% if notes %}
+    <details class="table-panel" style="margin-bottom: 20px;">
+        <summary style="cursor: pointer; padding: 12px 16px; font-weight: 600;">
+            How to read these numbers — {{ notes | length }} note{{ "s" if (notes | length) != 1 }}
+        </summary>
+        <div class="body pu-notes" style="padding: 0 16px 14px;">
+            <ul>
+                {% for note in notes %}<li>{{ note }}</li>{% endfor %}
+            </ul>
+        </div>
+    </details>
+    {% endif %}
+
+    {# ── §E activity & trend ────────────────────────────────────────── #}
+    <div class="pu-charts">
+        <div class="table-panel">
+            {{ fs.panel_head("Projects by freshness") }}
+            <div class="body">
+                {% if not freshness_mix or (freshness_mix | sum(attribute='count')) == 0 %}
+                <p class="pu-empty-chart">No projects in scope, so there is no freshness distribution to chart.</p>
+                {% elif render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('freshness_mix', '') | safe }}</div>
+                {% else %}
+                <div id="pu-chart-freshness" class="pu-chart"></div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="table-panel">
+            {{ fs.panel_head("Scans per month", meta="trailing " ~ ((scans_trend | default([])) | length | string) ~ " months") }}
+            <div class="body">
+                {% if not scans_trend %}
+                <p class="pu-empty-chart">No scan history in scope, so there is no monthly volume to chart.</p>
+                {% elif render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('scans_trend', '') | safe }}</div>
+                {% else %}
+                <div id="pu-chart-scans" class="pu-chart"></div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="table-panel">
+            {{ fs.panel_head("New projects and versions per month") }}
+            <div class="body">
+                {% if not growth_trend %}
+                <p class="pu-empty-chart">No creation dates in scope, so there is no growth trend to chart.</p>
+                {% elif render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('growth_trend', '') | safe }}</div>
+                {% else %}
+                <div id="pu-chart-growth" class="pu-chart"></div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="table-panel">
+            {{ fs.panel_head("Scan volume by folder", meta="last " ~ (scan_window | string) ~ "d") }}
+            <p class="subtitle" style="padding: 0 16px;">
+                Includes archived projects' scans, unlike the Active tile above — this is a volume
+                breakdown, not an engagement metric, and archived projects still have real scan history.
+            </p>
+            <div class="body">
+                {% if not scans_by_folder %}
+                <p class="pu-empty-chart">
+                    No folder recorded a scan in the last {{ scan_window }} days. Folders with zero
+                    scans in the window are omitted rather than drawn as empty bars.
+                </p>
+                {% elif render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('scans_by_folder', '') | safe }}</div>
+                {% else %}
+                <div id="pu-chart-folders" class="pu-chart"></div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="table-panel">
+            {{ fs.panel_head("Ingestion method mix") }}
+            <div class="body">
+                {% if not ingestion_mix %}
+                <p class="pu-empty-chart">No scans in the trend window, so there is no ingestion mix to chart.</p>
+                {% elif render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('ingestion_mix', '') | safe }}</div>
+                {% else %}
+                <div id="pu-chart-ingestion" class="pu-chart"></div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="table-panel">
+            {{ fs.panel_head("Failed scan rate by month") }}
+            <div class="body">
+                {# Keys off failure_rate_trend, not scans_trend: a scope whose
+                   months all lack a finished scan has months to plot but no rate,
+                   and an empty axis reads as a rendering failure. #}
+                {% if not (failure_rate_trend | default([]) | rejectattr('failure_rate_pct', 'none') | list) %}
+                <p class="pu-empty-chart">
+                    No month in scope finished a scan, so there is no failure rate to chart.
+                    A month with no completed or failed scan has no denominator &mdash; it is a
+                    gap, not 0%.
+                </p>
+                {% elif render_mode == 'fragment' and not fragment_scripts_enabled %}
+                <div class="chart-server-svg">{{ server_svgs.get('failure_rate_trend', '') | safe }}</div>
+                {% else %}
+                <div id="pu-chart-failrate" class="pu-chart"></div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    {# ── §F hygiene ─────────────────────────────────────────────────── #}
+    <div class="table-panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Needs attention", meta=((hygiene_flag_count) | string) ~ " flag" ~ ("s" if hygiene_flag_count != 1 else "")) }}
+        <p class="subtitle" style="padding: 0 16px;">
+            These explain anomalies in the counts above rather than being counts themselves.
+            Every flag is a metadata, lifecycle or report-integrity condition, not a security finding.
+        </p>
+        <div class="body" style="overflow-x: auto;">
+            {% if hygiene_rows %}
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Flag</th>
+                        <th class="num">Count</th>
+                        <th>Affected</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for entry in hygiene_counts %}
+                    {% set matching = hygiene_rows | selectattr('flag', 'equalto', entry.flag) | list %}
+                    <tr>
+                        <td><strong>{{ entry.flag }}</strong></td>
+                        <td class="num">{{ entry.count }}</td>
+                        <td class="pu-wrap">
+                            {{ (matching[:8] | map(attribute='entity') | join(', ')) }}{% if matching | length > 8 %} … and {{ (matching | length) - 8 }} more{% endif %}
+                            <div class="subtitle" style="margin: 2px 0 0;">{{ matching[0].detail if matching else '' }}</div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="pu-no-data">
+                <h3>Nothing flagged</h3>
+                <p>Every project in scope has a recorded creator, a folder, at least one version, and a completed scan; no folder is empty and no two project names collide.</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {# ── §C projects (primary detail view) ──────────────────────────── #}
+    <div class="table-panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Projects", meta=((projects | length) | string) ~ " row" ~ ("s" if (projects | length) != 1 else "")) }}
+        <p class="subtitle" style="padding: 0 16px;">
+            Grouped by folder, oldest-scanned first inside each folder. Freshness buckets:
+            Current &le; {{ thresholds.get('current_days', 30) }}d ·
+            Aging &le; {{ thresholds.get('aging_days', 90) }}d ·
+            Stale &le; {{ thresholds.get('stale_days', 180) }}d · Dormant beyond that.
+        </p>
+        {% if s.get('dependency_scanned_projects', 0) %}
+        <p class="subtitle" style="padding: 0 16px;">
+            {{ s.get('dependency_scanned_projects', 0) }} project(s) have no scan of their own and take
+            their last-scan date, days and freshness from their project dependencies &mdash;
+            <strong>Source</strong> reads &ldquo;dependencies&rdquo; on those rows. They are assemblies:
+            the scanning happens one edge down, so counting them as never scanned would be wrong.
+            Their own scan columns stay at zero because the dependency has its own row here; the
+            dependency total is in <strong>Dep. scans</strong>.
+        </p>
+        {% endif %}
+
+        {% if projects %}
+        {# Client-side filter over the rendered rows of THIS table only. The
+           Folders, Versions and Hygiene tables are deliberately unfiltered: they
+           have different grains, so a projects-level bucket filter has no
+           meaning on them, and filtering them independently would let three
+           tables disagree about the same scope. Hard scoping belongs on the CLI
+           — --folder / --project — because it changes what was fetched and
+           therefore what every tile above means. #}
+        <div class="pu-filters" id="pu-filters">
+            <span class="pu-filter-note">Filter:</span>
+            {% for bucket in ['Current', 'Aging', 'Stale', 'Dormant', 'Never scanned'] %}
+            <button type="button" class="pu-filter-btn" data-pu-bucket="{{ bucket }}" aria-pressed="false">{{ bucket }}</button>
+            {% endfor %}
+            <button type="button" class="pu-filter-btn" data-pu-status="archived" aria-pressed="false">Archived only</button>
+            <button type="button" class="pu-filter-btn" data-pu-reset="1" aria-pressed="false">Clear</button>
+            <span class="pu-filter-note" id="pu-filter-count"></span>
+        </div>
+        {% endif %}
+
+        {% include "_columns_schema.html" %}
+
+        <div class="body" style="overflow-x: auto;">
+            {% if projects %}
+            <table class="data-table" id="pu-projects-table">
+                <thead>
+                    <tr>
+                        <th>Folder</th>
+                        <th>Project</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Created by</th>
+                        <th>Created</th>
+                        <th class="num">Versions</th>
+                        <th>Latest version</th>
+                        <th>Last scan</th>
+                        <th class="num">Days</th>
+                        <th>Freshness</th>
+                        <th>Source</th>
+                        <th class="num">Scans (all)</th>
+                        <th class="num">Scans ({{ scan_window }}d)</th>
+                        <th class="num">Dep. scans</th>
+                        <th>Artifact types</th>
+                        <th>Ingestion</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in projects %}
+                    <tr data-pu-bucket="{{ row.freshness_bucket }}" data-pu-status="{{ row.status }}">
+                        <td class="pu-wrap">{{ row.folder_path or '—' }}</td>
+                        <td class="pu-wrap"><strong>{{ row.project_name }}</strong></td>
+                        <td>{{ row.project_type or '—' }}</td>
+                        <td class="{{ 'pu-archived' if row.status == 'archived' }}">{{ row.status }}</td>
+                        <td class="pu-wrap">{{ row.created_by or '—' }}</td>
+                        <td>{{ row.created_date or '—' }}</td>
+                        <td class="num">{{ row.version_count }}</td>
+                        <td class="pu-wrap">{{ row.latest_version or '—' }}</td>
+                        <td>{{ row.last_scan_date or '—' }}</td>
+                        {# Blank, not 0, when nothing ever completed — a zero here
+                           would read as "scanned today". #}
+                        <td class="num">{{ row.days_since_last_scan if row.days_since_last_scan is not none else '—' }}</td>
+                        <td>
+                            <span class="pu-chip pu-chip-{{ row.freshness_bucket | lower | replace(' ', '') }}">{{ row.freshness_bucket }}</span>
+                        </td>
+                        {# "dependencies" means the three columns to the left were
+                           inherited from this project's dependency tree, because
+                           the project itself has never completed a scan. #}
+                        <td>{{ 'dependencies' if row.scan_source == 'dependencies' else (row.scan_source or '—') }}</td>
+                        <td class="num">{{ row.scans_lifetime }}</td>
+                        <td class="num">{{ row.scans_in_window }}</td>
+                        <td class="num">{{ row.dependency_scans or '—' }}{% if row.dependency_projects %} <span class="pu-muted">({{ row.dependency_projects }} dep)</span>{% endif %}</td>
+                        <td class="pu-wrap">{{ value_chips(row.artifact_types, artifact_chips) }}</td>
+                        <td class="pu-wrap">{{ value_chips(row.ingestion_methods, ingestion_chips) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="pu-no-data">
+                <h3>No projects in scope</h3>
+                <p>No project was returned for this scope. On a <code>--folder</code> or <code>--project</code> run, confirm the name resolves; otherwise confirm the token can see projects.</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {# ── §B folders ─────────────────────────────────────────────────── #}
+    <div class="table-panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head("Folders", meta=((folders | length) | string) ~ " row" ~ ("s" if (folders | length) != 1 else "")) }}
+        <div class="body" style="overflow-x: auto;">
+            {% if folders %}
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Folder</th>
+                        <th>Parent</th>
+                        <th>Created by</th>
+                        <th>Created</th>
+                        <th class="num">Projects</th>
+                        <th class="num">Active</th>
+                        <th class="num">Archived</th>
+                        <th class="num">Versions</th>
+                        <th>Last scan (any project)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in folders %}
+                    <tr>
+                        <td class="pu-wrap"><strong>{{ row.folder_path or row.folder_name }}</strong></td>
+                        <td class="pu-wrap">{{ row.parent_folder or '—' }}</td>
+                        <td class="pu-wrap">{{ row.created_by or '—' }}</td>
+                        <td>{{ row.created_date or '—' }}</td>
+                        <td class="num">{{ row.projects }}</td>
+                        <td class="num">{{ row.active_projects }}</td>
+                        <td class="num">{{ row.archived_projects }}</td>
+                        <td class="num">{{ row.versions }}</td>
+                        <td>{{ row.last_scan_date or '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="pu-no-data"><p>No folders in scope.</p></div>
+            {% endif %}
+        </div>
+    </div>
+
+    {# ── §D versions ────────────────────────────────────────────────── #}
+    <div class="table-panel">
+        {{ fs.panel_head("Versions", meta=((versions | length) | string) ~ " row" ~ ("s" if (versions | length) != 1 else "")) }}
+        <p class="subtitle" style="padding: 0 16px;">
+            One row per version, across every branch. Rescan count is the engagement signal here —
+            a version scanned repeatedly is one somebody is iterating on.
+        </p>
+        <div class="body" style="overflow-x: auto;">
+            {% if versions %}
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Project</th>
+                        <th>Version</th>
+                        <th>Branch</th>
+                        <th>Folder</th>
+                        <th>Created</th>
+                        <th>Artifact type</th>
+                        <th>Ingestion</th>
+                        <th>Latest scan status</th>
+                        <th>Latest scan</th>
+                        <th class="num">Scans</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in versions[:version_cap] %}
+                    <tr>
+                        <td class="pu-wrap">{{ row.project_name or '—' }}</td>
+                        <td class="pu-wrap">{{ row.version_label or '—' }}</td>
+                        <td>{{ row.branch or '—' }}</td>
+                        <td class="pu-wrap">{{ row.folder_path or '—' }}</td>
+                        <td>{{ row.created_date or '—' }}</td>
+                        <td>{{ value_chips(row.artifact_types, artifact_chips) }}</td>
+                        <td>{{ value_chips(row.ingestion_methods, ingestion_chips) }}</td>
+                        <td>{{ row.latest_scan_status }}</td>
+                        <td>{{ row.latest_scan_date or '—' }}</td>
+                        <td class="num">{{ row.scan_count }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if versions | length > version_cap %}
+            <p class="pu-truncated">
+                Showing {{ version_cap }} of {{ versions | length }} versions. The full list is in
+                <code>Platform Usage_Versions.csv</code>, the XLSX Versions sheet, and the JSON output.
+            </p>
+            {% endif %}
+            {% else %}
+            <div class="pu-no-data"><p>No versions in scope.</p></div>
+            {% endif %}
+        </div>
+    </div>
+</main>
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.status_bar(items=[
+    "Recipe: Platform Usage",
+    "Projects: " ~ (s.get('total_projects', 0) | string),
+    "Inactive: " ~ (s.get('stale_projects', 0) | string),
+    "Never scanned: " ~ (s.get('never_scanned_projects', 0) | string),
+    s.get('generated_at') or generated_at | default(''),
+], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
+
+{% endif %}
+
+<script>
+(function () {
+    /* ── Projects-table filter ──────────────────────────────────────────
+       Plain DOM, no dependency: the table is already fully rendered, so
+       filtering is a class toggle. Bucket buttons are additive (an empty
+       selection means "all"); the archived toggle is an independent AND. */
+    var table = document.getElementById('pu-projects-table');
+    var bar = document.getElementById('pu-filters');
+    if (table && bar) {
+        var rows = Array.prototype.slice.call(table.tBodies[0].rows);
+        var countEl = document.getElementById('pu-filter-count');
+        var buckets = Object.create(null);
+        var archivedOnly = false;
+
+        function apply() {
+            var keys = Object.keys(buckets);
+            var shown = 0;
+            rows.forEach(function (row) {
+                var okBucket = keys.length === 0 || buckets[row.getAttribute('data-pu-bucket')];
+                var okStatus = !archivedOnly || row.getAttribute('data-pu-status') === 'archived';
+                var visible = Boolean(okBucket) && okStatus;
+                row.classList.toggle('pu-hidden-row', !visible);
+                if (visible) { shown += 1; }
+            });
+            if (countEl) {
+                countEl.textContent = (shown === rows.length)
+                    ? ''
+                    : shown + ' of ' + rows.length + ' shown';
+            }
+        }
+
+        bar.addEventListener('click', function (event) {
+            var btn = event.target.closest('.pu-filter-btn');
+            if (!btn) { return; }
+            if (btn.hasAttribute('data-pu-reset')) {
+                buckets = Object.create(null);
+                archivedOnly = false;
+                Array.prototype.forEach.call(
+                    bar.querySelectorAll('.pu-filter-btn'),
+                    function (b) { b.setAttribute('aria-pressed', 'false'); }
+                );
+                apply();
+                return;
+            }
+            var pressed = btn.getAttribute('aria-pressed') !== 'true';
+            btn.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+            var bucket = btn.getAttribute('data-pu-bucket');
+            if (bucket) {
+                if (pressed) { buckets[bucket] = true; } else { delete buckets[bucket]; }
+            } else if (btn.getAttribute('data-pu-status') === 'archived') {
+                archivedOnly = pressed;
+            }
+            apply();
+        });
+    }
+
+    /* ── Charts ─────────────────────────────────────────────────────── */
+    if (typeof echarts === 'undefined' || typeof window.fsEChartsInit !== 'function') {
+        return;  /* Fragment/PDF paths without the CDN — tables still render. */
+    }
+
+    var freshness = {{ freshness_mix | default([]) | tojson }};
+    var scans     = {{ scans_trend   | default([]) | tojson }};
+    var growth    = {{ growth_trend  | default([]) | tojson }};
+    var byFolder  = {{ scans_by_folder | default([]) | tojson }};
+    var ingestion = {{ ingestion_mix | default([]) | tojson }};
+    /* Same series the declared chart spec renders server-side, so the
+       interactive and SVG paths cannot tell different stories. */
+    var failRate  = {{ failure_rate_trend | default([]) | tojson }};
+
+    var _charts = [];
+
+    /* Read tokens FRESH on every render: ECharts bakes colours into a canvas at
+       setOption time, so reading them once at load makes every label invisible
+       the moment the user toggles theme. --line does not exist in tokens.css;
+       the grid colour is --hairline. */
+    function tokens() {
+        var css = getComputedStyle(document.documentElement);
+        function t(name, fallback) {
+            var v = css.getPropertyValue(name);
+            return (v && v.trim()) || fallback;
+        }
+        return {
+            ink: t('--ink', '#e6e6e6'),
+            mute: t('--ink-mute', '#8893a8'),
+            grid: t('--hairline', 'rgba(127,127,127,0.25)'),
+            accent: t('--accent', '#5eead4'),
+            low: t('--sev-low-text', '#4ade80'),
+            medium: t('--sev-medium-text', '#facc15'),
+            high: t('--sev-high-text', '#fb923c'),
+            critical: t('--sev-critical-text', '#f87171'),
+            /* --sev-info-text does not exist in tokens.css (only --sev-info-bg);
+               the cyan accent is the theme-aware token that does. */
+            info: t('--accent-cyan', '#60a5fa')
+        };
+    }
+
+    function fmtCount(v) {
+        v = Number(v);
+        if (Math.abs(v) >= 1000) {
+            var k = v / 1000;
+            return (k % 1 === 0 ? k : k.toFixed(1)) + 'k';
+        }
+        return String(v);
+    }
+
+    function mount(id) {
+        var el = document.getElementById(id);
+        if (!el) { return null; }
+        var chart = window.fsEChartsInit(el);
+        _charts.push(chart);
+        return chart;
+    }
+
+    /* fsEChartsInit acquires the PDF-readiness beacon before returning, and the
+       'finished' listener that releases it only fires once the chart paints. A
+       throwing FIRST setOption would therefore strand the counter and force the
+       PDF renderer through its full 30s timeout — see _echarts_ready.html
+       "CALLER RESPONSIBILITY". Every draw here re-mounts (theme changes dispose
+       and re-init, which re-acquires), so releasing on throw is correct on every
+       pass, not just the first. */
+    function safeSet(chart, option) {
+        if (!chart) { return; }
+        try {
+            chart.setOption(option);
+        } catch (e) {
+            if (typeof window.fsBeaconRelease === 'function') {
+                window.fsBeaconRelease();
+            }
+        }
+    }
+
+    function valueAxis(c) {
+        return {
+            type: 'value',
+            splitNumber: 4,
+            axisLabel: { color: c.ink, hideOverlap: true, formatter: fmtCount },
+            splitLine: { lineStyle: { color: c.grid } }
+        };
+    }
+
+    function monthAxis(c, rows) {
+        return {
+            type: 'category',
+            data: rows.map(function (r) { return r.month; }),
+            axisLabel: { color: c.ink, hideOverlap: true },
+            axisLine: { lineStyle: { color: c.grid } },
+            axisTick: { show: false }
+        };
+    }
+
+    function draw() {
+        var c = tokens();
+        /* Bucket colour must match the .pu-chip classes in the table, or the
+           doughnut and the rows disagree about what "Stale" looks like. */
+        var bucketColor = {
+            'Current': c.low,
+            'Aging': c.medium,
+            'Stale': c.high,
+            'Dormant': c.critical,
+            /* critical, NOT mute: the table chip renders this bucket as critical,
+               and a muted slice told the eye to de-prioritise the one freshness
+               state that has no measurement at all. */
+            'Never scanned': c.critical
+        };
+
+        var freshChart = freshness.length ? mount('pu-chart-freshness') : null;
+        if (freshChart) {
+            safeSet(freshChart, {
+                animation: false,
+                tooltip: { trigger: 'item' },
+                legend: { bottom: 0, textStyle: { color: c.ink } },
+                series: [{
+                    type: 'pie',
+                    radius: ['45%', '70%'],
+                    center: ['50%', '44%'],
+                    label: { color: c.ink, formatter: '{b}: {c}' },
+                    data: freshness.map(function (r) {
+                        return {
+                            name: r.bucket,
+                            value: r.count,
+                            itemStyle: { color: bucketColor[r.bucket] || c.accent }
+                        };
+                    })
+                }]
+            });
+        }
+
+        var scanChart = scans.length ? mount('pu-chart-scans') : null;
+        if (scanChart) {
+            safeSet(scanChart, {
+                animation: false,
+                grid: { left: 8, right: 16, top: 32, bottom: 8, containLabel: true },
+                tooltip: { trigger: 'axis' },
+                legend: { top: 0, textStyle: { color: c.ink } },
+                xAxis: monthAxis(c, scans),
+                yAxis: valueAxis(c),
+                series: [
+                    { name: 'Completed', type: 'line', smooth: false, showSymbol: false,
+                      itemStyle: { color: c.low },
+                      data: scans.map(function (r) { return r.completed; }) },
+                    { name: 'Failed', type: 'line', smooth: false, showSymbol: false,
+                      itemStyle: { color: c.critical },
+                      data: scans.map(function (r) { return r.failed; }) },
+                    { name: 'In progress', type: 'line', smooth: false, showSymbol: false,
+                      itemStyle: { color: c.mute },
+                      data: scans.map(function (r) { return r.in_progress; }) }
+                ]
+            });
+        }
+
+        var growthChart = growth.length ? mount('pu-chart-growth') : null;
+        if (growthChart) {
+            safeSet(growthChart, {
+                animation: false,
+                grid: { left: 8, right: 16, top: 32, bottom: 8, containLabel: true },
+                tooltip: { trigger: 'axis' },
+                legend: { top: 0, textStyle: { color: c.ink } },
+                xAxis: monthAxis(c, growth),
+                yAxis: valueAxis(c),
+                series: [
+                    { name: 'New versions', type: 'bar',
+                      itemStyle: { color: c.accent, borderRadius: [3, 3, 0, 0] },
+                      data: growth.map(function (r) { return r.new_versions; }) },
+                    { name: 'New projects', type: 'line', showSymbol: true,
+                      itemStyle: { color: c.info },
+                      data: growth.map(function (r) { return r.new_projects; }) }
+                ]
+            });
+        }
+
+        var folderChart = byFolder.length ? mount('pu-chart-folders') : null;
+        if (folderChart) {
+            /* Horizontal: breadcrumbs read left-to-right instead of at an
+               unreadable angle. Categories run bottom-up, so inverse puts the
+               busiest folder on top. */
+            safeSet(folderChart, {
+                animation: false,
+                grid: { left: 8, right: 24, top: 12, bottom: 8, containLabel: true },
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { type: 'shadow' },
+                    /* Full breadcrumb on hover — the axis itself plots the
+                       server-truncated folder_path_short so this chart
+                       matches the server-SVG/PDF render exactly, but a
+                       reader hovering shouldn't lose the part that got cut. */
+                    formatter: function (params) {
+                        var p = params[0];
+                        var row = byFolder[p.dataIndex];
+                        var name = row ? row.folder_path : p.name;
+                        return name + '<br/>' + p.marker + ' ' + p.value;
+                    }
+                },
+                xAxis: valueAxis(c),
+                yAxis: {
+                    type: 'category',
+                    inverse: true,
+                    data: byFolder.map(function (r) { return r.folder_path_short; }),
+                    axisLabel: { color: c.ink },
+                    axisLine: { lineStyle: { color: c.grid } },
+                    axisTick: { show: false }
+                },
+                series: [{
+                    type: 'bar',
+                    data: byFolder.map(function (r) { return r.scans; }),
+                    itemStyle: { color: c.accent, borderRadius: [0, 3, 3, 0] }
+                }]
+            });
+        }
+
+        var ingestChart = ingestion.length ? mount('pu-chart-ingestion') : null;
+        if (ingestChart) {
+            safeSet(ingestChart, {
+                animation: false,
+                grid: { left: 8, right: 16, top: 24, bottom: 8, containLabel: true },
+                tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+                xAxis: {
+                    type: 'category',
+                    /* label, not the raw mechanism: the chart sits beside tables
+                       that chip the same field as API / GUI, and one report must
+                       not name the same value two ways. */
+                    data: ingestion.map(function (r) { return r.label || r.mechanism; }),
+                    axisLabel: { color: c.ink, hideOverlap: true, rotate: 20 },
+                    axisLine: { lineStyle: { color: c.grid } },
+                    axisTick: { show: false }
+                },
+                yAxis: valueAxis(c),
+                series: [{
+                    type: 'bar',
+                    data: ingestion.map(function (r) { return r.count; }),
+                    itemStyle: { color: c.accent, borderRadius: [3, 3, 0, 0] }
+                }]
+            });
+        }
+
+        /* Failed-scan rate: only months that actually finished a scan carry a
+           rate. A month with no finished scans is a gap in the line, NOT a 0% —
+           drawing zero there would claim a clean month that was simply idle. */
+        var rateRows = failRate.filter(function (r) { return r.failure_rate_pct !== null; });
+        var rateChart = rateRows.length ? mount('pu-chart-failrate') : null;
+        if (rateChart) {
+            safeSet(rateChart, {
+                animation: false,
+                grid: { left: 8, right: 16, top: 24, bottom: 8, containLabel: true },
+                tooltip: {
+                    trigger: 'axis',
+                    valueFormatter: function (v) { return v === null ? 'n/a' : v + '%'; }
+                },
+                xAxis: monthAxis(c, failRate),
+                yAxis: {
+                    type: 'value',
+                    max: 100,
+                    splitNumber: 4,
+                    axisLabel: { color: c.ink, formatter: function (v) { return v + '%'; } },
+                    splitLine: { lineStyle: { color: c.grid } }
+                },
+                series: [{
+                    name: 'Failed %',
+                    type: 'line',
+                    connectNulls: false,
+                    showSymbol: true,
+                    itemStyle: { color: c.critical },
+                    areaStyle: { opacity: 0.12 },
+                    data: failRate.map(function (r) { return r.failure_rate_pct; })
+                }]
+            });
+        }
+    }
+
+    draw();
+
+    window.addEventListener('resize', function () {
+        _charts.forEach(function (chart) {
+            try { chart.resize(); } catch (e) { /* disposed */ }
+        });
+    });
+
+    /* The theme toggle only flips data-theme on <html> and dispatches no event,
+       so observing the attribute is the available hook. ECharts paints to a
+       canvas and bakes the colours it was given, so a repaint is mandatory —
+       without it every axis label keeps the load-time theme's ink and goes
+       invisible on toggle. Dispose first: re-initialising over a live instance
+       leaks it and double-counts the readiness beacon. */
+    new MutationObserver(function (mutations) {
+        for (var i = 0; i < mutations.length; i++) {
+            if (mutations[i].attributeName === 'data-theme') {
+                _charts.forEach(function (chart) {
+                    try { chart.dispose(); } catch (e) { /* already gone */ }
+                });
+                _charts = [];
+                draw();
+                return;
+            }
+        }
+    }).observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme']
+    });
+}());
+</script>
+
+{% if render_mode != 'fragment' %}
+{% include '_action_buttons.html' %}
+</body>
+</html>
+{% endif %}

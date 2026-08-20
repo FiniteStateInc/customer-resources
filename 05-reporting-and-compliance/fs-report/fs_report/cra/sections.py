@@ -26,7 +26,7 @@ from typing import Any
 
 import pandas as pd
 
-from fs_report.cra.tiers import derive_tiers
+from fs_report.cra.tiers import derive_tiers, kev_signals
 from fs_report.models import Config
 
 logger = logging.getLogger(__name__)
@@ -406,12 +406,14 @@ def _classify_row(
     if not (row_tiers & effective_threshold) and not row_crossed:
         return _DROP
 
-    # 1. sla_breach — KEV findings not yet resolved, only when kev in
-    # threshold AND the operator hasn't disabled the SLA model via
+    # 1. sla_breach — KEV findings not yet resolved, only for the KEV
+    # catalog(s) the threshold selected (kev = both, cisa-kev / vc-kev = one)
+    # AND when the operator hasn't disabled the SLA model via
     # `--kev-due-date-source=none` (in which case there's no breach clock
     # to compute and the section ships empty per F3).
-    if kev_sla_enabled and "kev" in effective_threshold:
-        if (row.get("inKev") or row.get("inVcKev")) and not in_resolved:
+    if kev_sla_enabled and not in_resolved:
+        cisa_on, vc_on = kev_signals(effective_threshold)
+        if (cisa_on and row.get("inKev")) or (vc_on and row.get("inVcKev")):
             return "sla_breach"
 
     # 2. newly_above — stage1 crossing, not yet resolved

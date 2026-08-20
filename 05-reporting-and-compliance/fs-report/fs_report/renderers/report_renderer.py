@@ -400,6 +400,42 @@ class ReportRenderer:
             )
             license_detail_df = license_detail if has_license_detail else pd.DataFrame()
 
+            # Generic secondary tables — recipe-agnostic. A transform that
+            # returns ``extra_tables: {"<Sheet name>": DataFrame|records}``
+            # gets one sibling CSV per entry plus one XLSX sheet per entry,
+            # with no branch of its own here. Added for Platform Usage, whose
+            # spec defines four tables at different grains (projects, folders,
+            # versions, hygiene) that cannot be one frame; keyed off the
+            # transform result rather than the recipe name so the next
+            # multi-table report needs no renderer change at all.
+            extra_tables: list[tuple[str, pd.DataFrame]] = []
+            raw_extra = (
+                transform_result.get("extra_tables")
+                if isinstance(transform_result, dict)
+                else None
+            )
+            if isinstance(raw_extra, dict):
+                for sheet_name, value in raw_extra.items():
+                    if isinstance(value, pd.DataFrame):
+                        frame = value
+                    else:
+                        try:
+                            frame = pd.DataFrame(value)
+                        except (ValueError, TypeError) as exc:
+                            self.logger.warning(
+                                "%s: extra_tables[%r] is not table-shaped (%s); "
+                                "skipping.",
+                                recipe.name,
+                                sheet_name,
+                                exc,
+                            )
+                            continue
+                    # An empty frame is skipped rather than written as a
+                    # header-only file: a zero-row hygiene table means "nothing
+                    # flagged", and an empty artifact reads as a failed run.
+                    if not frame.empty:
+                        extra_tables.append((str(sheet_name), frame))
+
             # Generate main files
             base_filename = self._sanitize_filename(recipe.name)
 
@@ -446,6 +482,13 @@ class ReportRenderer:
                     detail_csv = output_dir / f"{base_filename}_Detail.csv"
                     self.csv_renderer.render(license_detail_df, detail_csv)
                     generated_files.append(str(detail_csv))
+                for sheet_name, frame in extra_tables:
+                    extra_csv = (
+                        output_dir
+                        / f"{base_filename}_{self._sanitize_filename(sheet_name)}.csv"
+                    )
+                    self.csv_renderer.render(frame, extra_csv)
+                    generated_files.append(str(extra_csv))
                 if vc_progression_df is not None and not vc_progression_df.empty:
                     progression_csv = output_dir / f"{base_filename}_Progression.csv"
                     self.csv_renderer.render(vc_progression_df, progression_csv)
@@ -472,6 +515,17 @@ class ReportRenderer:
             # need for each branch to repeat the construction.
             schema_sheet = self._schema_sheet(recipe)
 
+            # extra_tables are appended by EVERY branch below, via this list,
+            # rather than living in a terminal `elif` of the recipe-specific
+            # chain. As an `elif` they were silently dropped from the XLSX for
+            # any recipe that also hit an earlier branch — while the sibling CSVs
+            # above are written unconditionally, so CSV and XLSX would disagree
+            # about what the export contains. Keeping them additive is what makes
+            # "a new multi-table report needs no renderer change" actually true.
+            trailing_sheets: list[tuple[str, Any]] = [*extra_tables]
+            if schema_sheet is not None:
+                trailing_sheets.append(schema_sheet)
+
             # XLSX output
             if "xlsx" in formats:
                 xlsx_path = output_dir / f"{base_filename}.xlsx"
@@ -489,8 +543,7 @@ class ReportRenderer:
                         and not detail_component_churn_df.empty
                     ):
                         sheets.append(("Component Churn", detail_component_churn_df))
-                    if schema_sheet is not None:
-                        sheets.append(schema_sheet)
+                    sheets.extend(trailing_sheets)
                     self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
                 elif recipe.name == "Executive Dashboard":
                     # Executive Dashboard: multi-sheet with Project Summary +
@@ -502,8 +555,7 @@ class ReportRenderer:
                         ed_sheets.append(("Project Summary", ed_project_df))
                     if ed_top_risk_df is not None:
                         ed_sheets.append(("Top Risk Products", ed_top_risk_df))
-                    if schema_sheet is not None:
-                        ed_sheets.append(schema_sheet)
+                    ed_sheets.extend(trailing_sheets)
                     if ed_sheets:
                         self.xlsx_renderer.render_multi_sheet(ed_sheets, xlsx_path)
                     else:
@@ -586,32 +638,40 @@ class ReportRenderer:
                         if isinstance(cop_dist, pd.DataFrame) and not cop_dist.empty:
                             cl_sheets.append(("Copyleft Distribution", cop_dist))
 
-                        if schema_sheet is not None:
-                            cl_sheets.append(schema_sheet)
+                        cl_sheets.extend(trailing_sheets)
                         self.xlsx_renderer.render_multi_sheet(cl_sheets, xlsx_path)
+                    elif trailing_sheets:
+                        # No component summary to build a Summary/Detail
+                        # split from, but there are still extra tables/schema
+                        # docs to carry — same reasoning as the Executive
+                        # Dashboard branch above: don't drop them just
+                        # because this recipe's OWN multi-sheet condition
+                        # didn't apply, or CSV (written unconditionally)
+                        # and XLSX disagree about what the export contains.
+                        self.xlsx_renderer.render_multi_sheet(
+                            [(recipe.name, table_data), *trailing_sheets],
+                            xlsx_path,
+                        )
                     else:
                         self.xlsx_renderer.render(table_data, xlsx_path, recipe.name)
                 elif has_scan_quality_detail:
                     sheets = [("Summary", table_data)]
                     if not scan_quality_detail_df.empty:
                         sheets.append(("Version Detail", scan_quality_detail_df))
-                    if schema_sheet is not None:
-                        sheets.append(schema_sheet)
+                    sheets.extend(trailing_sheets)
                     self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
                 elif has_license_detail:
                     sheets = [
                         ("Summary", table_data),
                         ("Detail", license_detail_df),
                     ]
-                    if schema_sheet is not None:
-                        sheets.append(schema_sheet)
+                    sheets.extend(trailing_sheets)
                     self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
-                elif schema_sheet is not None:
-                    # Recipe defines per-column schema docs but hits none of
-                    # the recipe-specific multi-sheet branches above; emit
-                    # data + Schema sheet directly.
+                elif trailing_sheets:
+                    # No recipe-specific branch applies, but there are extra
+                    # tables and/or documented columns to carry.
                     self.xlsx_renderer.render_multi_sheet(
-                        [(recipe.name, table_data), schema_sheet],
+                        [(recipe.name, table_data), *trailing_sheets],
                         xlsx_path,
                     )
                 else:

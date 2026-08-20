@@ -84,6 +84,12 @@ class DependencyResolver:
     def __init__(self, api_client: APIClient) -> None:
         self._api_client = api_client
         self._cache: dict[int | str, DependencyNode] = {}
+        # Version ids whose direct-dependency fetch returned exactly the
+        # page limit — a signal, not a certainty, that the true dependency
+        # set is larger and this tree is a lower bound. Populated by
+        # _fetch_dependencies; callers that need complete trees (as opposed
+        # to "good enough for a dashboard") should check this after resolving.
+        self.truncated_versions: set[int | str] = set()
 
     def resolve(
         self, project_id: int | str, project_name: str, version_id: int | str
@@ -166,6 +172,7 @@ class DependencyResolver:
                     version_id,
                     len(result),
                 )
+                self.truncated_versions.add(version_id)
             return result
         except Exception:
             logger.warning(

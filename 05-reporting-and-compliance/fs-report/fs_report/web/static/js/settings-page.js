@@ -224,8 +224,32 @@
         headers: { 'X-FS-Session': nonce() }
       })
         .then(function (r) {
-          toast(r.ok ? key.toUpperCase() + ' cache cleared' : 'Clear failed (' + r.status + ')');
-          return _refreshCache();
+          if (!r.ok) {
+            toast('Clear failed (' + r.status + ')');
+            return _refreshCache();
+          }
+          /* A 200 does not mean every file went away. The endpoint reports
+             "partial" with a `failed` list when a delete did not succeed, and
+             "error" when the cache directory could not even be read. Toasting
+             an unconditional success over either is the same false "cleared"
+             this whole change exists to remove. */
+          return r.json().then(function (d) {
+            var label = key.toUpperCase();
+            if (d && d.status === 'error') {
+              toast(label + ' clear failed: ' + (d.error || 'unreadable cache dir'));
+            } else if (d && d.status === 'partial') {
+              toast(label + ' cache only partly cleared — ' +
+                    (d.failed || []).length + ' file(s) could not be removed');
+            } else {
+              toast(label + ' cache cleared');
+            }
+            return _refreshCache();
+          }, function () {
+            /* Body absent or not JSON (other cache endpoints return plain
+               statuses) — fall back to the old optimistic message. */
+            toast(key.toUpperCase() + ' cache cleared');
+            return _refreshCache();
+          });
         })
         .catch(function () {
           toast('Clear failed');

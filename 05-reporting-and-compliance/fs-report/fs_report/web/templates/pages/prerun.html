@@ -526,6 +526,46 @@
         </details>
         {% endif %}
 
+        {# Human Readable SBOM only (show_sbom_options / SBOM_OPTION_RECIPES).
+           Its own section rather than a tail on Filters: two of the three
+           toggle COLUMNS rather than filtering anything, and for this recipe
+           the Filters section carries no other control, so its heading would
+           have been the only label on the page for a group it does not
+           describe. #}
+        {% if show_sbom_options %}
+        <details class="form-section" open>
+            <summary class="form-section-title">SBOM options</summary>
+            <div class="form-group form-row">
+                <label for="pre-include-file-components">Include file components</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-include-file-components"
+                           name="include_file_components"
+                           {% if state.get('include_file_components') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <small class="form-hint">Off by default — file entries are SAST placeholders with no license or supplier data.</small>
+            <div class="form-group form-row">
+                <label for="pre-policy-status">Policy columns</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-policy-status" name="policy_status"
+                           {% if state.get('policy_status', True) %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <small class="form-hint">Per-component violation and warning counts. On by default.</small>
+            <div class="form-group form-row">
+                <label for="pre-finding-counts">Finding counts</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-finding-counts" name="finding_counts"
+                           {% if state.get('finding_counts', True) %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <small class="form-hint">Total findings plus the Critical/High/Medium/Low breakdown. On by default.</small>
+        </details>
+        {% endif %}
+
         <!-- Advanced Options (collapsed by default) -->
         <details class="form-section">
             <summary class="form-section-title">Advanced Options</summary>

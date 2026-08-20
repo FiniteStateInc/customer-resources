@@ -1,0 +1,323 @@
+{% if render_mode != 'fragment' %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {% if domain %}<meta name="fs-domain" content="{{ domain }}">{% endif %}
+    <title>Human Readable SBOM - Finite State Report</title>
+
+    {# No charts by design (output.charts: []) — the table IS the deliverable.
+       ECharts is deliberately NOT included: a chart on a 795-row inventory
+       pushes the actual content below the fold. #}
+
+    {% include "_design_system.html" %}
+    {% include "_console_shell.html" %}
+{% endif %}
+
+{# Recipe-local styles — emitted in BOTH modes so fragment_extractor collects
+   and scopes them under .fs-section-human-readable-sbom. #}
+<style>
+    /* Severity counts read as a row of small numeric cells, like the platform's
+       Components table. Tabular figures so the columns line up vertically —
+       a count column that jitters is harder to scan than one that doesn't. */
+    .sbom-num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+    }
+
+    /* Zero is present but recessive: the reader is scanning for non-zero. */
+    .sbom-zero { opacity: 0.35; }
+
+    /* Severity counts are colour-coded with the design system's severity text
+       tokens, which carry separate light and dark values tuned for contrast
+       against the page background (#b71c1c on light, #FECACA on dark for
+       critical). Earlier drafts referenced --critical / --high, which do not
+       exist in tokens.css — every value silently fell back to a hardcoded hex
+       that ignored the theme. Use the --sev-*-text family. */
+    /* Specificity is deliberate: the console shell sets
+       `.table-panel tbody td { color: var(--ink-strong) }` (0,1,2), which beats
+       a bare `.sbom-sev-*` class (0,1,0) and flattens every count to body ink.
+       Scoping to the panel + cell matches that weight and wins on source order.
+       Verified against the browser's computed colour, not by reading the CSS —
+       this exact override is invisible to a source-level check. */
+    .table-panel .data-table td.sbom-sev-critical,
+    .table-panel .data-table th.sbom-sev-critical { color: var(--sev-critical-text); font-weight: 700; }
+    .table-panel .data-table td.sbom-sev-high,
+    .table-panel .data-table th.sbom-sev-high     { color: var(--sev-high-text);     font-weight: 700; }
+    .table-panel .data-table td.sbom-sev-medium,
+    .table-panel .data-table th.sbom-sev-medium   { color: var(--sev-medium-text);   font-weight: 600; }
+    .table-panel .data-table td.sbom-sev-low,
+    .table-panel .data-table th.sbom-sev-low      { color: var(--sev-low-text);      font-weight: 500; }
+
+    /* A zero stays recessive even in a coloured column — the reader is scanning
+       for non-zero, and a grid of coloured zeros is noise. Wins over the
+       severity colours above via the extra class. */
+    .table-panel .data-table td.sbom-zero { color: var(--ink-muted, inherit); opacity: 0.35; font-weight: 400; }
+
+    /* Colour is reinforced by weight, not carrying the meaning alone: the
+       severity is already named in the column header, and a reader with a
+       colour-vision deficiency still gets the ordering from the emphasis. */
+
+    /* Policy counts mirror the platform's red/amber dots. */
+    .sbom-policy {
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+    }
+    .sbom-dot {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        margin-right: 4px;
+        vertical-align: baseline;
+    }
+    /* Only critical and high have a -strong variant; medium uses the base
+       token. (A var() fallback would have hidden the difference — the phantom
+       name still resolves, so nothing errors and the wrong colour ships.) */
+    .sbom-dot-violation { background: var(--sev-critical-strong); }
+    .sbom-dot-warning   { background: var(--sev-medium); }
+
+    /* The component id is a reference value, not something you read across —
+       de-emphasized and monospaced so it never competes with the name. */
+    .sbom-id {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.76em;
+        opacity: 0.7;
+        white-space: nowrap;
+    }
+
+    .sbom-name { font-weight: 600; }
+
+    /* Long SPDX expressions ("GPL-2.0-only OR LGPL-2.1-or-later") would
+       otherwise force the table wider than the viewport. */
+    .sbom-license {
+        max-width: 20ch;
+        overflow-wrap: anywhere;
+        font-size: 0.86em;
+    }
+
+    .sbom-muted { opacity: 0.5; }
+
+    /* Print: this is an inventory, so let it break across pages. The console
+       shell's blanket page-break-inside:avoid on table panels is right for a
+       KPI card and wrong for a several-hundred-row table. */
+    @media print {
+        /* The recipe emits no PDF, but the HTML is printable and Print to
+           PDF from the browser is the way a reader gets one. Print engines
+           strip colour adjustments by default, which would flatten the whole
+           severity breakdown to black — the one thing the colour carries. */
+        .sbom-sev-critical, .sbom-sev-high,
+        .sbom-sev-medium, .sbom-sev-low,
+        .sbom-dot-violation, .sbom-dot-warning {
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+        .table-panel { page-break-inside: auto; }
+        .data-table thead { display: table-header-group; }
+        .data-table tr { page-break-inside: avoid; }
+    }
+</style>
+
+{% if render_mode != 'fragment' %}
+</head>
+<body class="console">
+{% endif %}
+
+{% import "_console_macros.html" as fs with context %}
+
+{# Defensive defaults — keep the template renderable if the transform
+   short-circuited. Mirrors cve_component_evidence.html. #}
+{% set transform_result = transform_result | default({}) %}
+{% if not transform_result is mapping %}{% set transform_result = {} %}{% endif %}
+{% set sbom = transform_result.get('sbom_summary', {}) %}
+{% set notes = transform_result.get('notes', []) %}
+{% set data = data | default([]) %}
+{% set show_policy = sbom.get('include_policy_status', True) %}
+{% set show_findings = sbom.get('include_finding_counts', True) %}
+{% set sev = sbom.get('severity_totals', {}) %}
+
+{% if render_mode != 'fragment' %}
+
+{{ fs.topbar(
+    crumbs=["Finite State", "Human Readable SBOM"],
+    meta=[
+        {"label": "Domain", "value": domain or "—"},
+        {"label": "Project", "value": sbom.get('project_name') or project_label or "—"},
+        {"label": "Version", "value": sbom.get('version_name') or "—"},
+        {"label": "Generated", "value": generated_at or "—"},
+    ],
+    controls=[],
+) }}
+
+{% endif %}
+
+<main class="main">
+    <div class="page-head">
+        <h1 data-fs-section-title>Human Readable SBOM</h1>
+        <p class="subtitle">
+            Every component in this project version, with its licensing and origin{% if show_findings %} and
+            finding counts{% endif %}. Nothing is truncated.
+        </p>
+    </div>
+
+    {% if sbom %}
+    <div class="kpi-bar" style="margin-bottom: 20px;">
+        {{ fs.kpi_cell("Components", "{:,}".format(sbom.get('total_components', 0))) }}
+        {% if show_findings %}
+        {{ fs.kpi_cell("With Findings", "{:,}".format(sbom.get('components_with_findings', 0))) }}
+        {{ fs.kpi_cell("Total Findings", "{:,}".format(sbom.get('total_findings', 0))) }}
+        {{ fs.kpi_cell(
+            "Critical",
+            "{:,}".format(sev.get('CRITICAL', 0)),
+            dot=("critical" if sev.get('CRITICAL', 0) > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "High",
+            "{:,}".format(sev.get('HIGH', 0)),
+            dot=("high" if sev.get('HIGH', 0) > 0 else None),
+        ) }}
+        {# All four tiers, not just the top two: the table breaks findings out
+           into four severity columns and the Markdown summary and JSON
+           severity_totals both carry four. Stopping at High made HTML the one
+           format whose summary disagreed with its own table. The bar is an
+           auto-fit grid, so the extra cells wrap rather than crowd. #}
+        {{ fs.kpi_cell(
+            "Medium",
+            "{:,}".format(sev.get('MEDIUM', 0)),
+            dot=("medium" if sev.get('MEDIUM', 0) > 0 else None),
+        ) }}
+        {{ fs.kpi_cell(
+            "Low",
+            "{:,}".format(sev.get('LOW', 0)),
+            dot=("low" if sev.get('LOW', 0) > 0 else None),
+        ) }}
+        {% endif %}
+        {% if show_policy %}
+        {{ fs.kpi_cell(
+            "Policy Violations",
+            "{:,}".format(sbom.get('total_violations', 0)),
+            dot=("critical" if sbom.get('total_violations', 0) > 0 else None),
+        ) }}
+        {# Warnings alongside violations: the table's Policy cell carries both,
+           the Markdown summary prints both and JSON has total_warnings. A
+           headline showing only violations reads amber as zero. #}
+        {{ fs.kpi_cell(
+            "Policy Warnings",
+            "{:,}".format(sbom.get('total_warnings', 0)),
+            dot=("medium" if sbom.get('total_warnings', 0) > 0 else None),
+        ) }}
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if notes %}
+    <div class="table-panel" style="margin-bottom: 20px;">
+        <div class="body" style="padding: 12px 16px;">
+            <ul style="margin: 0; padding-left: 18px;">
+                {% for note in notes %}
+                <li class="subtitle" style="margin: 4px 0;">{{ note }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="table-panel" style="margin-bottom: 20px;">
+        {{ fs.panel_head(
+            "Components",
+            meta=("{:,}".format(data | length)) ~ " component" ~ ("s" if (data | length) != 1 else "")
+        ) }}
+        <div class="body" style="overflow-x: auto;">
+            {% if data and data | length > 0 %}
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Version</th>
+                        {% if show_policy %}<th>Policy</th>{% endif %}
+                        {% if show_findings %}
+                        <th class="sbom-num">Findings</th>
+                        <th class="sbom-num sbom-sev-critical" title="Critical">C</th>
+                        <th class="sbom-num sbom-sev-high" title="High">H</th>
+                        <th class="sbom-num sbom-sev-medium" title="Medium">M</th>
+                        <th class="sbom-num sbom-sev-low" title="Low">L</th>
+                        {% endif %}
+                        <th>Type</th>
+                        <th>Supplier</th>
+                        <th>Licenses</th>
+                        <th>Release Date</th>
+                        <th>Source</th>
+                        <th>Status</th>
+                        <th>Component ID</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in data %}
+                    <tr>
+                        <td class="sbom-name">{{ row.get('component_name') or '—' }}</td>
+                        <td>{{ row.get('version') or '—' }}</td>
+                        {% if show_policy %}
+                        <td class="sbom-policy">
+                            {% set v = row.get('violations', 0) or 0 %}
+                            {% set w = row.get('warnings', 0) or 0 %}
+                            {# Zero renders as 0, not an em dash: these are count
+                               columns, and CSV/JSON carry 0 here. An em dash would
+                               make "no violations" indistinguishable from "not
+                               measured" in the primary human-readable artifact. #}
+                            <span class="{{ '' if v else 'sbom-zero' }}"><span class="sbom-dot sbom-dot-violation"></span>{{ "{:,}".format(v) }}</span>
+                            &nbsp;&nbsp;
+                            <span class="{{ '' if w else 'sbom-zero' }}"><span class="sbom-dot sbom-dot-warning"></span>{{ "{:,}".format(w) }}</span>
+                        </td>
+                        {% endif %}
+                        {% if show_findings %}
+                        <td class="sbom-num">{{ "{:,}".format(row.get('findings', 0) or 0) }}</td>
+                        {% for key, cls in [('critical', 'sbom-sev-critical'), ('high', 'sbom-sev-high'), ('medium', 'sbom-sev-medium'), ('low', 'sbom-sev-low')] %}
+                        {% set n = row.get(key, 0) or 0 %}
+                        <td class="sbom-num {{ cls if n else 'sbom-zero' }}">{{ "{:,}".format(n) }}</td>
+                        {% endfor %}
+                        {% endif %}
+                        <td>{{ row.get('component_type') or '—' }}</td>
+                        <td>{{ row.get('supplier') or '—' }}</td>
+                        <td class="sbom-license">{{ row.get('licenses') or '—' }}</td>
+                        <td>{{ row.get('release_date') or '—' }}</td>
+                        <td>{{ row.get('source') or '—' }}</td>
+                        <td>{{ row.get('status') or '—' }}</td>
+                        <td class="sbom-id">{{ row.get('component_id') or '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="subtitle" style="padding: 16px;">
+                No components were returned for this project version.
+                {% if not sbom.get('include_file_components', False) %}
+                File-type components are excluded by default — pass
+                <code>--include-file-components</code> if this version contains only
+                file entries.
+                {% endif %}
+            </p>
+            {% endif %}
+        </div>
+    </div>
+
+    {% include "_columns_schema.html" ignore missing %}
+</main>
+
+{% if render_mode != 'fragment' %}
+
+{# status_bar takes plain strings, not (label, value) pairs — a tuple renders
+   as its Python repr. #}
+{{ fs.status_bar(items=[
+    "Components: " ~ "{:,}".format(sbom.get('total_components', 0)),
+    "File components: " ~ ("included" if sbom.get('include_file_components', False) else "excluded"),
+    "Domain: " ~ (domain or "—"),
+]) }}
+
+{% endif %}
+
+{% if render_mode != 'fragment' %}
+</body>
+</html>
+{% endif %}

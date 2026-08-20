@@ -11,10 +11,12 @@ This directory contains YAML recipe files that define the available reports in t
 | `findings_by_project.yaml` | Findings by Project | Comprehensive inventory of security findings by project with CVE details and direct links |
 | `scan_analysis.yaml` | Scan Analysis | Scanning infrastructure performance with throughput, failure analysis, and new vs existing project tracking |
 | `component_list.yaml` | Component List | Complete inventory of software components across projects |
+| `human_readable_sbom.yaml` | Human Readable SBOM | Readable single-version component inventory with per-severity finding counts |
 | `user_activity.yaml` | User Activity | Platform usage tracking with user engagement metrics |
 | `version_comparison.yaml` | Version Comparison | Full version and component changelog (every version pair); fixed/new findings and component churn per step; CSV/XLSX include summary + detail *(on-demand)* |
 | `triage_prioritization.yaml` | Triage Prioritization | Context-aware vulnerability triage with optional AI guidance *(on-demand)* |
 | `reachability_vex_coverage.yaml` | Reachability VEX Coverage | How many findings could be auto-resolved — unreachable findings missing NOT_AFFECTED, rolled up per project version with severity breakdown; emits appliable VEX recommendations *(on-demand)* |
+| `platform_usage.yaml` | Platform Usage | Org-wide inventory, scan freshness and metadata hygiene for a superuser — folders/projects/versions, freshness buckets, trailing-12-month trends, and a needs-attention list; no per-user metrics *(on-demand)* |
 | `remediation_package.yaml` | Remediation Package | Actionable remediation plan with fix-version validation and structured options *(on-demand)* |
 | `executive_dashboard.yaml` | Executive Dashboard | 11-section executive-level security report with KPI cards, severity trends, and exploit intelligence *(on-demand)* |
 | `cve_impact.yaml` | CVE Impact | CVE-centric dossier with affected projects, reachability, and exploit intelligence *(on-demand)* |

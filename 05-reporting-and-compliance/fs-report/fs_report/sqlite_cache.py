@@ -45,6 +45,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from fs_report.tenant_scope import tenant_cache_suffix
+
 logger = logging.getLogger(__name__)
 
 
@@ -90,6 +92,12 @@ SCAN_FIELDS = {
     "created": "created",
     "completed": "completed",
     "errorMessage": "error_message",
+    # How the scan was submitted (API_UPLOAD / UI_UPLOAD / CLT_UPLOAD / …). The
+    # ONLY place the platform records an ingestion method — it is on the scan,
+    # not the project or version — so Platform Usage's Ingestion column reads it
+    # from here. Omitting it from the projection meant every cached run rendered
+    # that column blank, and the web UI caches by default.
+    "mechanism": "mechanism",
     "project.id": "project_id",
     "project.name": "project_name",
     "projectVersion.id": "project_version_id",
@@ -258,6 +266,7 @@ CREATE TABLE IF NOT EXISTS scans (
     created TEXT,
     completed TEXT,
     error_message TEXT,
+    mechanism TEXT,
     project_id TEXT,
     project_name TEXT,
     project_version_id TEXT,
@@ -394,6 +403,102 @@ CREATE INDEX IF NOT EXISTS idx_audit_query ON audit_events(query_hash);
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+
+#: Files in the cache directory that are NOT API-response caches. Owned by other
+#: subsystems and destroyed by anything that guesses with a bare "*.db" glob:
+#: ``cache.db`` is the AI narrative cache, ``history.db`` is report history (not a
+#: cache at all — losing it loses the run log), ``report-server.db`` is the report
+#: server's state, and the NVD/OSV caches are project-blind fact stores.
+NON_API_CACHE_FILES: frozenset[str] = frozenset(
+    {
+        "cache.db",
+        "nvd_cache.db",
+        "osv_cache.db",
+        "history.db",
+        "report-server.db",
+    }
+)
+
+
+def api_cache_files(cache_dir: Path | str) -> list[Path]:
+    """Every API-response cache database in *cache_dir*.
+
+    Single source of truth for "which files is the API cache", because three
+    call sites each hand-rolled a different glob and each was wrong:
+
+    * ``*.finitestate.io.db`` missed self-hosted/preview domains entirely, and
+      would have missed every tenant-scoped filename once the account digest
+      joined the name — turning a "Clear API cache" button into a no-op.
+    * ``*.db`` minus a three-name allow-list swept up ``history.db``, deleting
+      the user's report history on a cache clear.
+    * A domain-scoped sweep is right for a targeted clear but cannot answer
+      "clear everything".
+
+    Ordered for stable output. Sidecar ``-wal``/``-shm`` files are NOT returned;
+    callers deleting a database should remove those alongside it.
+
+    A missing directory yields ``[]``; an UNREADABLE one raises ``OSError``.
+    Callers rendering cache status must be able to tell "no cached data" from
+    "could not look", or the panel shows a reassuring empty cache when it in
+    fact failed to read the directory.
+
+    That distinction is enforced with an explicit ``scandir`` rather than left
+    to ``Path.glob``, whose behaviour on an unreadable directory is an
+    implementation detail (it has swallowed ``PermissionError`` in some
+    versions) and so cannot carry a contract.
+    """
+    directory = Path(cache_dir)
+    if not directory.exists():
+        return []
+    with os.scandir(directory) as entries:  # raises PermissionError if unreadable
+        names = [e.name for e in entries if e.name.endswith(".db")]
+    return sorted(directory / name for name in names if name not in NON_API_CACHE_FILES)
+
+
+def normalize_domain(domain: str | None) -> str:
+    """Canonical filename-safe form of a platform host.
+
+    The cache filename is only a tenant boundary if every entry path spells the
+    host the same way: ``https://Host/`` and ``host`` must not resolve to two
+    different cache files, or a ``cache clear`` empties one while runs keep
+    reading the other.
+
+    Host canonicalization (lowercase, strip scheme and trailing slash) is
+    delegated to ``models.normalize_domain``, which ``Config`` validation and
+    ``fs-report doctor`` already use — two independent normalizers would drift
+    and desync ``cache clear`` from ``fs-report run`` on exactly the edge-case
+    spellings this exists to handle. Only the filename-safety step (characters
+    that cannot appear in a path) is added here.
+    """
+    from fs_report.models import normalize_domain as canonical_host
+
+    value = (domain or "").strip()
+    if not value:
+        return ""
+    return canonical_host(value).replace("/", "_").replace(":", "_")
+
+
+def remove_cache_db(path: Path) -> bool:
+    """Delete a cache database and its WAL/SHM sidecars. True if all succeeded.
+
+    Sidecars are named ``<file>.db-wal`` / ``<file>.db-shm`` — the suffix is
+    appended to the whole filename. Building them by appending is simply the
+    direct spelling; ``with_suffix(".db-wal")`` on a path that already ends in
+    ``.db`` produces the same string, so this is not correcting a defect.
+
+    Returns False if any unlink failed, so callers do not report a file as
+    removed when it is still on disk — announcing a clear that did not happen is
+    how an operator ends up trusting stale data.
+    """
+    ok = True
+    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove cache file %s", candidate, exc_info=True)
+            ok = False
+    return ok
 
 
 def parse_ttl(ttl_string: str) -> int:
@@ -640,11 +745,45 @@ class SQLiteCache:
     [BETA] This feature is experimental.
     """
 
+    @staticmethod
+    def db_path_for(
+        cache_dir: Path | str, domain: str | None, auth_token: str | None
+    ) -> Path:
+        """The cache file a given (domain, account) resolves to.
+
+        Public and side-effect-free so callers can ask "which file WOULD this
+        use" without constructing a cache — ``SQLiteCache.__init__`` creates the
+        database, so probing by instantiation conjures an empty file and then
+        reports success against it.
+
+        Normalize FIRST and feed the same value to both the filename and the
+        tenant digest. Two spellings of one host ("https://Host/" vs "host")
+        would otherwise mint two different files AND two different digests, so a
+        clear would empty one while runs kept reading the other.
+        """
+        safe_domain = normalize_domain(domain)
+        tenant = tenant_cache_suffix(safe_domain or None, auth_token)
+        # NOT "cache.db" for the domain-less case: that is the AI narrative
+        # cache's file (llm_client), and pointing the API cache at it put two
+        # subsystems' schemas in one file — so `cache clear --ai` deleted API
+        # data and vice versa.
+        stem = safe_domain or "api-cache"
+        return Path(cache_dir) / f"{stem}{tenant}.db"
+
+    # Pre-scoping ``<domain>.db`` files are deliberately NOT migrated to the new
+    # name, so the first run after upgrade refetches. That cost is the point: the
+    # old file is exactly the one that may hold two accounts' records mixed
+    # together, and nothing in it says which account any row came from. Renaming
+    # it onto a tenant-scoped filename would launder that mixture into a file
+    # asserting it belongs to one tenant — reinstating the leak under a name that
+    # claims isolation. The orphans are swept by ``cache clear --api``.
+
     def __init__(
         self,
         cache_dir: str | None = None,
         default_ttl: int = 0,  # 0 = no caching across runs
         domain: str | None = None,  # Domain for instance-specific cache
+        auth_token: str | None = None,  # Account identity — see tenant_scope
     ):
         """
         Initialize the SQLite cache.
@@ -655,6 +794,13 @@ class SQLiteCache:
             default_ttl: Default TTL in seconds. 0 disables cross-run caching.
             domain: Finite State domain (e.g., "customer.finitestate.io").
                    Creates domain-specific cache file to avoid mixing data.
+            auth_token: The API token the cached data was fetched with. REQUIRED
+                   for tenant isolation: the domain alone does NOT identify an
+                   account (``platform.finitestate.io`` fronts every tenant), so
+                   without it two accounts on one host share this cache file and
+                   whichever ran last serves its records to the other. Callers
+                   that genuinely have no account (offline / ``--data-file``
+                   runs) may omit it and get the legacy domain-only filename.
         """
         self.default_ttl = default_ttl
         self.cache_hits = 0
@@ -677,14 +823,14 @@ class SQLiteCache:
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Use domain-specific cache file to avoid mixing data between instances
-        if domain:
-            # Sanitize domain for filename (replace dots, remove protocol)
-            safe_domain = domain.replace("https://", "").replace("http://", "")
-            safe_domain = safe_domain.replace("/", "_").replace(":", "_")
-            self.db_path = self.cache_dir / f"{safe_domain}.db"
-        else:
-            self.db_path = self.cache_dir / "cache.db"
+        # Cache file identity = domain + ACCOUNT. The domain alone is not a
+        # tenant boundary — one host fronts many accounts — so the token digest
+        # is folded into the filename. File-level separation (rather than mixing
+        # the tenant into generate_query_hash) isolates every table plus
+        # raw_cache plus any table added later, by construction; a hash-level fix
+        # would have to be threaded through each call site and would still leave
+        # raw_cache keys (e.g. "versions_history:<pid>") unscoped.
+        self.db_path = self.db_path_for(self.cache_dir, domain, auth_token)
 
         # Initialize database
         self._init_db()
@@ -719,6 +865,7 @@ class SQLiteCache:
             ("components", "declared_license_details", "TEXT"),
             ("components", "concluded_license_details", "TEXT"),
             ("components", "licenses", "TEXT"),
+            ("scans", "mechanism", "TEXT"),
         ]
         # ``_USER_VISIBLE_NEW_COLUMNS`` (module-level) enumerates the columns
         # whose absence on already-cached rows is user-visible; adding one emits

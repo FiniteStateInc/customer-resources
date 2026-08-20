@@ -37,6 +37,7 @@
     'Customer Brief':          'file-text',
     'False Positive Analysis': 'flask-conical',
     'Reachability VEX Coverage': 'shield-check',
+    'Platform Usage':          'layout-dashboard',
   };
 
   /* Build palette items */

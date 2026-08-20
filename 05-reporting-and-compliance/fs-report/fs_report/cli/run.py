@@ -199,15 +199,18 @@ def _make_progress_writer(
     return _ProgressFileWriter(path, run_id)
 
 
-def _invalidate_findings_cache_for_versions(domain: str, results: list[dict]) -> None:
+def _invalidate_findings_cache_for_versions(
+    domain: str, results: list[dict], auth_token: str | None
+) -> None:
     """Invalidate cached findings for versions affected by VEX apply.
 
     Delegates to the shared implementation in ``fs_report.vex_apply_support``
-    (also used by the serve web post-report apply path, SP2).
+    (also used by the serve web post-report apply path, SP2). ``auth_token``
+    selects the tenant's cache file — see that function's docstring.
     """
     from fs_report.vex_apply_support import invalidate_findings_cache_for_versions
 
-    invalidate_findings_cache_for_versions(domain, results)
+    invalidate_findings_cache_for_versions(domain, results, auth_token)
 
 
 # ── create_config ────────────────────────────────────────────────────
@@ -249,6 +252,9 @@ def create_config(
     baseline_version: Union[str, None] = None,
     current_version: Union[str, None] = None,
     open_only: bool = False,
+    include_file_components: bool = False,
+    policy_status: bool = True,
+    finding_counts: bool = True,
     request_delay: float = 0.5,
     batch_size: int = 5,
     cve_filter: Union[str, None] = None,
@@ -607,6 +613,9 @@ def create_config(
         baseline_version=baseline_version,
         current_version=current_version,
         open_only=open_only,
+        include_file_components=include_file_components,
+        policy_status=policy_status,
+        finding_counts=finding_counts,
         request_delay=request_delay,
         batch_size=batch_size,
         cve_filter=cve_filter,
@@ -689,6 +698,9 @@ def run_reports(
     baseline_version: Union[str, None] = None,
     current_version: Union[str, None] = None,
     open_only: bool = False,
+    include_file_components: bool = False,
+    policy_status: bool = True,
+    finding_counts: bool = True,
     request_delay: float = 0.5,
     batch_size: int = 5,
     cve_filter: Union[str, None] = None,
@@ -787,6 +799,9 @@ def run_reports(
             baseline_version=baseline_version,
             current_version=current_version,
             open_only=open_only,
+            include_file_components=include_file_components,
+            policy_status=policy_status,
+            finding_counts=finding_counts,
             request_delay=request_delay,
             batch_size=batch_size,
             cve_filter=cve_filter,
@@ -977,7 +992,9 @@ def run_reports(
             result = applier.apply_file(config.apply_vex_triage)
             _print_vex_summary(result)
             if not dry_run:
-                _invalidate_findings_cache_for_versions(config.domain, result.results)
+                _invalidate_findings_cache_for_versions(
+                    config.domain, result.results, config.auth_token
+                )
             return
 
         # Build deployment context (shared helper — also used by the serve web
@@ -1172,7 +1189,7 @@ def run_reports(
                         _print_vex_summary(vex_result)
                         if not dry_run:
                             _invalidate_findings_cache_for_versions(
-                                config.domain, vex_result.results
+                                config.domain, vex_result.results, config.auth_token
                             )
                     except Exception:
                         logger.exception(
@@ -1364,10 +1381,15 @@ def run_command(
         "--exploit-maturity",
         help=(
             "CRA threshold tiers, comma-separated. Values: "
-            "kev,weaponized,poc,ransomware,threat_actor,botnet,commercial,reported. "
+            "kev,cisa-kev,vc-kev,weaponized,poc,ransomware,threat_actor,"
+            "botnet,commercial,reported. "
             "Default (from recipe YAML): "
             "kev,ransomware,threat_actor,weaponized,botnet. "
-            "poc/commercial/reported are recognized but opt-in."
+            "kev = CISA KEV OR VulnCheck KEV; cisa-kev / vc-kev narrow to one "
+            "catalog. poc/commercial/reported are recognized but opt-in. "
+            "Only cisa-kev is pushed into the /findings query; every other "
+            "tier narrows client-side (identical rows, one wider fetch) — "
+            "see --unfilterable-tier-strategy."
         ),
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
@@ -1421,9 +1443,15 @@ def run_command(
         "wide-fetch",
         "--unfilterable-tier-strategy",
         help=(
-            "How to handle tiers (ransomware, threat_actor, botnet, "
-            "commercial, reported) that the /findings API cannot filter "
-            "directly. Choices: wide-fetch (default), drop-tier, require-rsql."
+            "How to handle tiers the /findings API cannot filter directly — "
+            "everything except cisa-kev: vc-kev, the kev union, weaponized, "
+            "poc, and the exploitInfo-token tiers (ransomware, threat_actor, "
+            "botnet, commercial, reported). Choices: wide-fetch (default, "
+            "narrows client-side — identical rows, one wider fetch), "
+            "drop-tier (omits them; requires a pushable cisa-kev tier in the "
+            "threshold and errors otherwise — the default threshold has "
+            "none), require-rsql (errors unless the whole threshold is "
+            "pushable)."
         ),
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
@@ -1689,6 +1717,33 @@ def run_command(
         False,
         "--open-only",
         help="Only count open findings in Security Progress.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    include_file_components: bool = typer.Option(
+        False,
+        "--include-file-components",
+        help=(
+            "Human Readable SBOM: include type=file components. Off by default "
+            "— they are SAST placeholders with no license or supplier data."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    policy_status: bool = typer.Option(
+        True,
+        "--policy-status/--no-policy-status",
+        help=(
+            "Human Readable SBOM: include the policy violation and warning "
+            "columns. On by default."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    finding_counts: bool = typer.Option(
+        True,
+        "--finding-counts/--no-finding-counts",
+        help=(
+            "Human Readable SBOM: include the finding-count columns (total plus "
+            "the Critical/High/Medium/Low breakdown). On by default."
+        ),
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
     request_delay: float = typer.Option(
@@ -2067,6 +2122,9 @@ def run_command(
         baseline_version=baseline_version,
         current_version=current_version,
         open_only=open_only,
+        include_file_components=include_file_components,
+        policy_status=policy_status,
+        finding_counts=finding_counts,
         request_delay=request_delay,
         batch_size=batch_size,
         cve_filter=cve_filter,

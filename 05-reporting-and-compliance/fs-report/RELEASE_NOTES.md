@@ -1,5 +1,156 @@
 # Release Notes
 
+## Version 2.0.4 (August 2026)
+
+2.0.4 ships two new reports — **Human Readable SBOM**, a component inventory for
+one project version that is meant to be read rather than parsed, and **Platform
+Usage**, an org-wide adoption and hygiene view — alongside a cache
+tenant-scoping security fix and two CRA Compliance improvements. See
+`fs_report/changelog.yaml` for the full per-recipe diff.
+
+### New report — Human Readable SBOM
+
+A component inventory you can hand to someone and have them read.
+
+```bash
+fs-report run --recipe "Human Readable SBOM" --project MyProject
+```
+
+One row per component in the selected project version, with the same columns as
+the platform's Components table — version, policy violation/warning counts,
+findings split by Critical/High/Medium/Low, type, supplier, licenses, release
+date, source, review status — plus the platform component id last, so any row can
+be cross-referenced against the UI or an API call.
+
+No charts, and no truncation. The table is the deliverable, and an SBOM that
+silently drops rows is not an SBOM. Outputs HTML, CSV, XLSX, JSON and Markdown;
+no PDF, because several hundred rows across fifteen columns is not a document
+anyone reads.
+
+**Three options:**
+
+- `--include-file-components` — include `type=file` rows. **Off by default**:
+  they are SAST placeholders with no license, supplier or release data, and on a
+  firmware project they can outnumber real components ten to one. The exclusion
+  is applied server-side. The report's notes always state that file components
+  were excluded, so a shorter table is never mistaken for a smaller inventory;
+  a count appears only when the filtering happened client-side, since
+  server-side-filtered rows are never fetched and cannot be counted.
+- `--no-policy-status` — drop the violation and warning columns for a narrower,
+  license-focused sheet. They are on by default.
+- `--no-finding-counts` — drop the finding-count columns (total plus the
+  Critical/High/Medium/Low breakdown). On by default, and toggled as one group:
+  the platform shows the total and the severity badges as a single Findings
+  column, and a total with no breakdown is a half-answer. With them hidden the
+  table sorts alphabetically rather than worst-first. Turn both this and
+  `--no-policy-status` off for a pure inventory sheet.
+
+**On the counts:** the four severity columns cover CRITICAL/HIGH/MEDIUM/LOW.
+NONE and INFO findings are included in the Findings total but have no column, so
+the columns do not always sum to it — the report says so when that happens
+rather than inventing a bucket the platform does not show.
+
+**Version strings are shown percent-decoded.** Versions originate from purl
+coordinates, where `+` must be escaped, so Debian and ipk components are stored
+as e.g. `2.9.1%2Bdfsg1-5%2Bdeb8u6` and are shown as `2.9.1+dfsg1-5+deb8u6`. The
+report says how many rows it decoded; the platform's stored value is unchanged.
+
+**Not a replacement for Component List**, which is unchanged: that one is
+portfolio-wide, charted, reports findings as a single number, and its "Policy
+Status" column means *license* policy. The two share their license and source
+resolution code, so a component's license can never differ between them.
+
+### New report — Platform Usage
+
+Answers a superuser's question: **how is this organization actually using the
+platform?** It deliberately carries **no per-user or seat-based metric** —
+that remains [User Activity](REPORT_GUIDE.md#user-activity)'s job.
+
+```bash
+fs-report run --recipe "Platform Usage"
+fs-report run --recipe "Platform Usage" --folder "EU-Routers"
+fs-report run --recipe "Platform Usage" --cache-ttl 24h   # recommended on large tenants
+```
+
+Three layers over four org-wide sweeps (`/folders`, `/projects` twice —
+active and archived — and `/versions`, alongside the full scan history):
+
+- **Inventory** — every folder, project and version, with folder labels as
+  full breadcrumbs (`Root > Team A`) so same-named folders in different trees
+  stay distinguishable.
+- **Activity and freshness** — days since each project's most recent
+  COMPLETED scan, bucketed Current / Aging / Stale / Dormant / **Never
+  scanned** (its own bucket, not the far end of the age scale — a project
+  nobody ever scanned has no date to age from), plus trailing-12-month trends
+  for scan volume, new projects, new versions, ingestion-method mix, and
+  per-folder throughput. A project holding versions but no completed scan of
+  its own is usually an **assembly** — the scanning happens in the projects
+  it depends on — so its freshness is inherited from that dependency tree
+  instead of misreporting it as neglected.
+- **Hygiene** — a short needs-attention list explaining anomalies in the
+  counts rather than being one: no recorded creator, no folder, empty
+  project, never-scanned project, version uploaded but never scanned, active
+  project with no new version, and near-duplicate project names.
+
+Report-level integrity is treated the same way a broken data feed anywhere
+else in fs-report is: a failed inventory sweep, a scan-to-project join that
+matches nothing, or the primary scan fetch hitting its own page/record
+ceiling on a very large or old tenant each banner the HTML/Markdown output
+above the KPI tiles they invalidate — rather than rendering a confident,
+wrong report. Every threshold (freshness buckets, activity windows, the
+dependency-walk cap) is a recipe parameter, not a constant.
+
+Outputs: HTML (four tables + six charts), CSV/XLSX (projects plus
+`_Folders`/`_Versions`/`_Hygiene` sibling tables), JSON (every table, all six
+trend series, resolved thresholds, disclosure notes), and Markdown. (#207)
+
+### Security fix
+
+- **One tenant's cached platform data could be served under another
+  tenant's name.** The on-disk API cache identified itself by **domain
+  alone** — one shared multi-tenant host fronts every account, so two
+  environments pointing at the same domain shared one cache file and one key
+  space, and with a TTL set (the web UI and workflows enable a 4h cache by
+  default) whichever ran last served its records to the other: findings,
+  components, projects and scans alike. The cache filename now carries an
+  HMAC-keyed digest of the account, reusing the same tenant-identity helper
+  the AI narrative cache has used since 2.0.2. Offline / `--data-file` runs,
+  which have no account, are unaffected. Two diagnostic bugs that had made
+  this hard to catch are also fixed: `fs-report cache clear` with no flags
+  printed a status table and deleted nothing while exiting 0 (reading as
+  success), and `cache clear` / `cache status` ignored `~/.fs-report/config.yaml`
+  when resolving the domain, so with the environment variable unset they
+  reported on a different file than any run would actually read. (#209)
+
+### CRA Compliance
+
+- **New `cisa-kev` and `vc-kev` exploit-maturity tiers**, scoping
+  `--exploit-maturity` to a single KEV catalog. `kev` keeps its existing
+  CISA-or-VulnCheck union semantics and stays the recipe default;
+  `cisa-kev,vc-kev` together is equivalent to it.
+- **Fixed:** `--exploit-maturity kev` (or `weaponized`) could 400 the whole
+  run — the live `/findings` RSQL dialect is narrower than assumed (no
+  grouping parens, no cross-field OR). Only `cisa-kev`/`vc-kev` are pushed as
+  a single RSQL clause now; every other tier routes through the existing
+  wide-fetch strategy and narrows client-side, returning the same rows. (#208)
+
+### Fixed
+
+- **The per-version component cache no longer mixes component scopes.** The key
+  covered only the endpoint and version, so two fetches of the same version
+  asking for different component sets shared one entry. Nothing triggered it
+  before — every component recipe excluded `type=file` — but
+  `--include-file-components` would have quietly returned no file rows whenever
+  an ordinary run had warmed the cache first. Existing cache sharing between
+  Component List and Component Diff is unaffected.
+
+- **Markdown output named the project by its resolved ID.** The `## Metadata`
+  block read the project *filter*, which the engine rewrites to the resolved ID
+  during scope resolution, so every Markdown report opened with a line like
+  `| Project | 773e6419-4b61-5c46-aaaf-a6b62958f5f8 |` where the reader expects
+  `| Project | dd-wrt |`. It now prefers the resolved name and falls back to the
+  filter. Affects all fifteen Markdown renderers.
+
 ## Version 2.0.3 (July 2026)
 
 ### New report — Reachability VEX Coverage

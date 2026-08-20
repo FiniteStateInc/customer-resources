@@ -39,7 +39,6 @@ Results are cached in SQLite to avoid redundant API calls.
 """
 
 import hashlib
-import hmac
 import json
 import logging
 import os
@@ -127,20 +126,15 @@ _NULL_REF_TOKENS = frozenset({"", "nan", "none", "null", "<na>", "na"})
 # require a per-install secret key, which we do not have here. Digests are
 # 128-bit (32 hex) to keep accidental cross-account collisions far out of reach,
 # since the scope IS the confidentiality boundary.
-_SCOPE_HMAC_SALT = b"fs-report/ai-cache-scope/v1"
-_SCOPE_DIGEST_HEX = 32
+# Tenant-scope identity moved to fs_report/tenant_scope.py so the API-response
+# cache (sqlite_cache) can share it without importing the LLM client, and so the
+# two caches cannot drift on what "same tenant" means. Re-exported here:
+# build_tenant_scope is part of this module's existing surface, and the salt is
+# unchanged, so scopes already minted stay valid.
+from fs_report.tenant_scope import build_tenant_scope  # noqa: E402
+from fs_report.tenant_scope import scope_digest as _scope_digest  # noqa: E402
 
-# Placeholder API tokens that do NOT identify a real account. Offline/data-file
-# runs use "dummy_token" (see cli/run.py); such runs have no account boundary,
-# so build_tenant_scope must not mint a (constant) tenant token from them.
-_PLACEHOLDER_AUTH_TOKENS = frozenset({"", "dummy_token"})
-
-
-def _scope_digest(data: str) -> str:
-    """Keyed, non-reversible digest of a cache-scope string."""
-    return hmac.new(_SCOPE_HMAC_SALT, data.encode(), hashlib.sha256).hexdigest()[
-        :_SCOPE_DIGEST_HEX
-    ]
+__all__ = ["build_tenant_scope"]
 
 
 def normalize_project_ref(value: Any) -> str:
@@ -171,30 +165,6 @@ def normalize_project_ref(value: Any) -> str:
     if text.endswith(".0") and text[:-2].isdigit():
         text = text[:-2]
     return text
-
-
-def build_tenant_scope(domain: str | None, auth_token: str | None) -> str:
-    """Build a stable tenant-boundary token from the platform host + API token.
-
-    The confidentiality boundary is the *account*, identified by the API token —
-    NOT the host: a single host (e.g. ``platform.finitestate.io``) serves many
-    accounts. A real token is therefore REQUIRED; without one this returns ``""``
-    (no tenant boundary). That covers domain-only callers and offline/data-file
-    runs, whose token is the shared placeholder ``dummy_token`` — treating it as
-    a real tenant would give every offline user the same constant token and
-    defeat callers that rely on the tenant boundary (e.g. the name-scoped CRP
-    path, which bypasses its cache when there is no tenant).
-
-    An empty tenant token is safe: cross-project isolation still comes from the
-    per-item ``project_version_id`` scope, which bypasses the cache when absent.
-    The domain is folded in (so the same token across staging/prod differs), but
-    only once a real token is present.
-    """
-    token = (auth_token or "").strip()
-    if token in _PLACEHOLDER_AUTH_TOKENS:
-        return ""
-    domain = (domain or "").strip().lower()
-    return _scope_digest(f"{domain}\x1f{token}")
 
 
 def _is_auth_error(exc: Exception) -> bool:

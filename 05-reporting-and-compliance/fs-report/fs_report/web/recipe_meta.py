@@ -31,6 +31,7 @@ RECIPE_ICONS: dict[str, str] = {
     "component impact": "crosshair",
     "component vulnerability analysis": "bug",
     "reachability vex coverage": "shield-check",
+    "platform usage": "layout-dashboard",
 }
 
 CATEGORY_ICONS: dict[str, str] = {

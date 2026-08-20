@@ -557,6 +557,46 @@ def should_apply_open_only(recipe_name: str, open_only: bool) -> bool:
     return bool(open_only) and recipe_name not in OPEN_ONLY_EXEMPT_RECIPES
 
 
+# Recipes allowed to opt back into type=file components via
+# --include-file-components. Every other component recipe excludes them
+# unconditionally: file rows are SAST placeholders with no license, supplier or
+# release data, and Component List / License Report / CVE Component Evidence all
+# assume that exclusion in their denominators.
+FILE_COMPONENT_OPT_IN_RECIPES = frozenset({"Human Readable SBOM"})
+
+# Recipes for which --detected-after must be ignored rather than honored.
+# Human Readable SBOM is a point-in-time inventory: "what is in this build" has
+# no date dimension, so a created-date filter would quietly shrink an SBOM that
+# reports itself as complete. There is deliberately no UI control for it on this
+# recipe either, so an inherited global value would otherwise apply invisibly.
+DETECTED_AFTER_EXEMPT_RECIPES = frozenset({"Human Readable SBOM"})
+
+# Recipes that read the SBOM column/scope toggles. Used to warn when one is
+# passed to a recipe that would silently ignore it.
+SBOM_OPTION_RECIPES = frozenset({"Human Readable SBOM"})
+
+# Recipes that are single-project-version by contract and must never run a
+# multi-version fetch, whatever --all-versions / current_version_only says.
+# Forced BEFORE the fetch: the transform also guards (defense in depth), but a
+# guard that fires after the fetch means a large firmware project pays for a
+# full multi-version component download only to raise — and on a fetch whose
+# rows lack version metadata the guard cannot fire at all, so enforcement here
+# is the one that actually holds.
+FORCE_CURRENT_VERSION_RECIPES = frozenset({"Human Readable SBOM"})
+
+#: Cache-scope token for a file-inclusive component fetch. Deliberately not
+#: RSQL-shaped: it is only ever a cache-key component, never a query sent to the
+#: API (see the call site in the components branch).
+#:
+#: The invariant this rests on, stated once here because several call sites now
+#: depend on it: the BARE ``_cache_key("components", version_id)`` means the
+#: default component scope. Every fetch that widens or narrows that scope must
+#: append a discriminator, or it shares the default entry and whichever fetch
+#: ran first silently decides what every later reader sees for the rest of the
+#: TTL. Adding a scope-varying component fetch without a discriminator is the
+#: way this breaks.
+_CACHE_SCOPE_WITH_FILES = "scope:with-file-components"
+
 # Recipes that need the FULL folder path per record (root->leaf), not just the
 # leaf folder name every recipe gets. Costs an extra projects+folders resolve, so
 # it stays an opt-in list.
@@ -980,6 +1020,18 @@ class ReportEngine:
         # Stores DataFrames (not list[dict]) to reduce peak memory.
         # Scans cache entries may still store list[dict] for internal reuse.
         self._findings_cache: dict[str, Any] = {}
+        # Per-recipe: set by _resolve_single_version_scope, never persisted to
+        # Config (that would leak the narrowing into later recipes).
+        self._single_version_recipe = False
+        # Display name of the version a single-version component fetch resolved
+        # to. Rows normally carry it (projectVersion.version), but an EMPTY
+        # result has no rows to read it off — and an empty inventory is exactly
+        # where the reader most needs to know which version came back empty.
+        # config.version_filter is not a substitute: it is blank on a
+        # current-version run and holds a bare numeric ID otherwise.
+        self._resolved_version_label: str = ""
+        # SBOM-flag warnings are emitted once per run, not once per recipe.
+        self._warned_sbom_flags: set[str] = set()
 
         # In-memory cache: per-version findings keyed by (endpoint, version_id, finding_type)
         # Shared across Version Comparison within the same run
@@ -1012,11 +1064,25 @@ class ReportEngine:
         # Resolved project name (populated by _validate_and_resolve_filters)
         self.resolved_project_name: str | None = None
 
+        # Set by _fetch_scans_with_early_termination when a fetch hit the
+        # max_pages ceiling or returned partial results after exhausting
+        # retries. Consumers that claim complete scan history (Platform Usage)
+        # read this immediately after their fetch to disclose the gap instead
+        # of rendering a silently incomplete population as a confident total.
+        self._scan_fetch_truncated: bool = False
+        # Per-cache-key record of whether THAT fetch was truncated, so a
+        # cache hit (in-memory or SQLite) restores the same disclosure a live
+        # fetch would have made instead of silently reporting
+        # scans_truncated=False for a population that was truncated when it
+        # was originally fetched.
+        self._scan_fetch_truncated_cache: dict[str, bool] = {}
+
         # Resolved folder breadcrumb path (populated by _resolve_folder_scope in run())
         self.resolved_folder_path: list[str] = []
 
         # Folder scoping state (populated by _resolve_folder_scope in run())
         self._folder_project_ids: set[str] | None = None
+        self._folder_scope_folder_ids: set[str] | None = None
         self._project_folder_map: dict[str, str] = {}  # project_id -> folder_name
         self._folder_name: str | None = None
         self._folder_path: str | None = None  # e.g. "Division A / Medical Products"
@@ -1649,14 +1715,17 @@ class ReportEngine:
     ) -> tuple[set[str], dict[str, str], list[dict], dict[str, str], dict[str, str]]:
         """
         Walk the folder tree starting from *target_folder_id* and collect:
-        1. All descendant folder IDs (including the target itself).
+        1. All project IDs in those folders (the tuple's FIRST element — the
+           descendant folder IDs are stashed on ``self._folder_scope_folder_ids``
+           rather than returned, so this signature stays a 5-tuple).
         2. project_id -> folder_name mapping for every project in those folders.
         3. The list of subfolder dicts (for logging/display).
         4. project_name(lowercased) -> project_id (for case-insensitive lookup).
         5. project_id -> project_name (ORIGINAL case, for provenance labels).
 
-        Returns (folder_ids, project_folder_map, subfolder_list,
-        project_name_to_id, project_id_to_name).
+        Returns (project_ids, project_folder_map, subfolder_list,
+        project_name_to_id, project_id_to_name). The docstring previously named
+        the first element ``folder_ids``, which it has never been.
         """
         if all_folders is None:
             all_folders = self._fetch_all_folders()
@@ -1717,6 +1786,12 @@ class ReportEngine:
             f"Folder tree: {len(all_folder_ids)} folder(s), "
             f"{len(all_project_ids)} project(s)"
         )
+
+        # Stashed rather than returned: callers unpack a 5-tuple and only
+        # Platform Usage needs the folder ids. Without them a folder-scoped run
+        # cannot tell "this folder is empty" from "this folder is outside the
+        # selection", and flags every out-of-scope folder as empty.
+        self._folder_scope_folder_ids = set(all_folder_ids)
 
         return (
             all_project_ids,
@@ -2165,7 +2240,14 @@ class ReportEngine:
                     "findings", vid, finding_type, category_filter
                 )
             else:
-                cache_key = self._cache_key("components", vid)
+                # Must mirror the read side in _check_version_in_cache — see
+                # the comment there for why this discriminator matters and why
+                # it is appended only when non-empty.
+                cache_key = (
+                    self._cache_key("components", vid, category_filter)
+                    if category_filter
+                    else self._cache_key("components", vid)
+                )
             if cache_key not in self._version_findings_cache:
                 self._version_findings_cache[cache_key] = version_records
                 stored_versions += 1
@@ -2220,7 +2302,22 @@ class ReportEngine:
         if entity_type == "findings":
             cache_key = self._cache_key("findings", vid, finding_type, category_filter)
         else:
-            cache_key = self._cache_key("components", vid)
+            # A component scope discriminator, when the caller supplies one.
+            # Appended ONLY when non-empty so the bare two-part key keeps its
+            # meaning as "the shared default-scope fetch" (inventory / Component
+            # Diff sharing depends on that, and _cache_key joins with \x00, so a
+            # trailing empty part would be a different string).
+            #
+            # Load-bearing for --include-file-components: without a
+            # discriminator, a run that includes type=file components and one
+            # that excludes them share an entry, and whichever populated the
+            # cache first silently decides what the other sees for the whole TTL
+            # — an --include-file-components run quietly returning no file rows.
+            cache_key = (
+                self._cache_key("components", vid, category_filter)
+                if category_filter
+                else self._cache_key("components", vid)
+            )
 
         # 1. In-memory cache
         if cache_key in self._version_findings_cache:
@@ -3786,6 +3883,11 @@ class ReportEngine:
         saved_api_config = self.api_client.config
         saved_resolved_name = self.resolved_project_name
         saved_folder_ids = self._folder_project_ids
+        # Saved for the same reason as _folder_project_ids: Platform Usage scopes
+        # its FOLDER inventory from this set, so a leak across sections silently
+        # produces wrong folder totals and false or missing hygiene flags in a
+        # later section of the same compound run.
+        saved_folder_scope_ids = self._folder_scope_folder_ids
         saved_folder_path = self.resolved_folder_path
         child_config = self.config.model_copy(update=update)
         self.config = child_config
@@ -3794,6 +3896,7 @@ class ReportEngine:
         # child's glob/folder expansion doesn't leak in.
         if scope_overridden:
             self._folder_project_ids = None
+            self._folder_scope_folder_ids = None
             self.resolved_project_name = None
             self.resolved_folder_path = []
         try:
@@ -3804,6 +3907,7 @@ class ReportEngine:
             self.api_client.config = saved_api_config
             self.resolved_project_name = saved_resolved_name
             self._folder_project_ids = saved_folder_ids
+            self._folder_scope_folder_ids = saved_folder_scope_ids
             self.resolved_folder_path = saved_folder_path
 
     # ------------------------------------------------------------------
@@ -5621,6 +5725,10 @@ class ReportEngine:
                 ),
             )
             result = self.api_client.fetch_all_with_resume(q, show_progress=False)
+            # Bare two-part key = the DEFAULT component scope. A fetch that
+            # widens the scope (see _CACHE_SCOPE_WITH_FILES) must append its own
+            # discriminator instead, or it shares this entry and whichever ran
+            # first decides what the other sees for the rest of the TTL.
             cache_key = self._cache_key("components", version_id)
             self._version_findings_cache[cache_key] = result
             return result
@@ -6075,11 +6183,90 @@ class ReportEngine:
                 "Could not clear a stale vex_recommendations.json", exc_info=True
             )
 
+    def _resolve_single_version_scope(self, recipe: "Recipe") -> None:
+        """Pin a single-version recipe to one version before anything is fetched.
+
+        ``--all-versions`` (or an inherited ``current_version_only=False`` from a
+        saved global) would otherwise make the components fetch span every
+        version of the project, and the report would label that mixed set with
+        one version name.
+
+        Sets a PER-RECIPE flag rather than writing ``self.config``: the engine
+        runs every recipe against one shared Config, so mutating it here would
+        permanently narrow every later recipe in a compound run — a Component
+        List step after this one would silently lose the ``--all-versions``
+        coverage the operator asked for. The flag is reset on each recipe.
+        """
+        self._single_version_recipe = False
+        if recipe.name not in FORCE_CURRENT_VERSION_RECIPES:
+            return
+        if getattr(self.config, "version_filter", None):
+            return  # an explicit --version already pins it
+        if getattr(self.config, "current_version_only", True):
+            return
+        self.logger.warning(
+            "Ignoring --all-versions for %s: it inventories a single project "
+            "version. Using the project's current version — pass --version "
+            "<project_version_id> to inventory a different one. Other recipes "
+            "in this run keep their --all-versions scope.",
+            recipe.name,
+        )
+        self._single_version_recipe = True
+
+    def _warn_ignored_sbom_flags(self, recipe: "Recipe") -> None:
+        """Warn when an SBOM-only toggle was set for a recipe that ignores it.
+
+        Silently ignoring a flag that changes output shape lets an operator
+        believe a narrower report was produced than actually was — the same
+        false-confidence the --open-only and --min-severity exemptions warn
+        about, so it warns the same way.
+        """
+        if recipe.name in SBOM_OPTION_RECIPES:
+            return
+        for flag, default in (
+            ("include_file_components", False),
+            ("policy_status", True),
+            ("finding_counts", True),
+        ):
+            if getattr(self.config, flag, default) != default:
+                # Once per flag per RUN. A compound run sets these for its SBOM
+                # step, so re-warning for every other recipe is pure noise — and
+                # warning fatigue is how a genuinely actionable line gets missed.
+                if flag in self._warned_sbom_flags:
+                    continue
+                self._warned_sbom_flags.add(flag)
+                # Name the flag the operator actually typed. The two default-TRUE
+                # toggles can only be non-default via their --no- form, so
+                # deriving the spelling from the config key alone would print
+                # "--policy-status" at someone who typed --no-policy-status and
+                # leave them looking for a flag they never passed.
+                spelling = ("--no-" if default is True else "--") + flag.replace(
+                    "_", "-"
+                )
+                self.logger.warning(
+                    "Ignoring %s for %s: only %s reads it.",
+                    spelling,
+                    recipe.name,
+                    ", ".join(sorted(SBOM_OPTION_RECIPES)),
+                )
+
     def _process_recipe(self, recipe: Recipe) -> ReportData | None:
         """Process a single recipe and return report data."""
         try:
+            # Warn about recipe-scoped flags this recipe will ignore. Deliberately
+            # at the TOP of _process_recipe, not inside an endpoint branch: these
+            # are global CLI flags read by exactly one recipe, so a stale alias or
+            # a compound run would otherwise ignore them in total silence — and
+            # the recipes most likely to be paired with an SBOM flag (Component
+            # List, License Report) never reach the findings branch at all.
+            self._warn_ignored_sbom_flags(recipe)
+            self._resolve_single_version_scope(recipe)
+
             # Reset per-recipe state
             self._component_search_results = None
+            # Per-recipe, like _single_version_recipe: a label resolved for an
+            # earlier recipe must never be attributed to this one's scope.
+            self._resolved_version_label = ""
 
             # Track whether entity-level caching was used (needs date post-filtering)
             needs_date_postfilter = False
@@ -6388,19 +6575,51 @@ class ReportEngine:
                         "Component List",
                         "License Report",
                         "CVE Component Evidence",
+                        "Human Readable SBOM",
                     ):
                         # Assessment report: shows current component inventory
                         # No date filtering by default (current state, not period-bound)
                         filters = []
 
-                        # Exclude file type components (SAST placeholders without meaningful data)
-                        filters.append("type!=file")
+                        # Exclude file type components (SAST placeholders without
+                        # meaningful data). Human Readable SBOM can opt back in
+                        # via --include-file-components; every other component
+                        # recipe excludes them unconditionally, as before.
+                        # Applied server-side so a firmware project's file rows
+                        # are never fetched rather than fetched and discarded —
+                        # they can outnumber real components 10:1.
+                        if recipe.name in FILE_COMPONENT_OPT_IN_RECIPES and getattr(
+                            self.config, "include_file_components", False
+                        ):
+                            self.logger.info(
+                                "%s: including type=file components "
+                                "(--include-file-components).",
+                                recipe.name,
+                            )
+                        else:
+                            filters.append("type!=file")
 
                         # Apply --detected-after if specified (opt-in period filtering)
                         if getattr(self.config, "detected_after", None):
-                            filters.append(
-                                f"created>={self.config.detected_after}T00:00:00"
-                            )
+                            if recipe.name in DETECTED_AFTER_EXEMPT_RECIPES:
+                                # An SBOM answers "what is in this build", which
+                                # has no date semantics — filtering components by
+                                # created date would silently drop older ones
+                                # from an inventory that promises completeness,
+                                # and the web UI offers no control for it on this
+                                # recipe, so a globally-set value would apply
+                                # invisibly.
+                                self.logger.warning(
+                                    "Ignoring --detected-after for %s: it is a "
+                                    "point-in-time inventory, and date-filtering "
+                                    "components would drop rows from an SBOM that "
+                                    "reports itself as complete.",
+                                    recipe.name,
+                                )
+                            else:
+                                filters.append(
+                                    f"created>={self.config.detected_after}T00:00:00"
+                                )
 
                         # Short-circuit on empty folder: `_folder_project_ids`
                         # is an empty set when --folder resolves to a real
@@ -6466,10 +6685,17 @@ class ReportEngine:
                             # URL). Backfill it so downstream transforms that
                             # read projectVersion.version (Component List,
                             # License Report) don't render "Unknown".
+                            #
+                            # Resolved OUTSIDE the emptiness check: a transform
+                            # that reports on an empty result still needs the
+                            # version label, and there are no rows to read it
+                            # off. The lookup is served from the cached version
+                            # list, so doing it unconditionally is free.
+                            _v_name = self._lookup_version_display_name(
+                                self.config.project_filter or "", pvid
+                            )
+                            self._resolved_version_label = _v_name
                             if not raw_data.empty:
-                                _v_name = self._lookup_version_display_name(
-                                    self.config.project_filter or "", pvid
-                                )
                                 _pv_obj = {"id": pvid, "version": _v_name}
                                 raw_data["projectVersion"] = pd.Series(
                                     [_pv_obj] * len(raw_data),
@@ -6504,8 +6730,20 @@ class ReportEngine:
                                 ),
                             )
 
-                            # Use batched version filtering if current_version_only is enabled
-                            if self.config.current_version_only:
+                            # Use batched version filtering if current_version_only
+                            # is enabled, OR if this recipe was narrowed to a single
+                            # version by _resolve_single_version_scope. The narrowing
+                            # is per-recipe (it must not mutate the shared Config), so
+                            # it has to be consulted at every scope gate the narrowed
+                            # recipes actually reach — this is the components branch,
+                            # which is the ONLY one Human Readable SBOM takes. Reading
+                            # config alone here let --all-versions fan the fetch out
+                            # across every version after the log line had already said
+                            # it was ignored, and the transform's guard then killed
+                            # the recipe outright.
+                            if self.config.current_version_only or (
+                                self._single_version_recipe
+                            ):
                                 # Scope version resolution to only the projects
                                 # being queried — avoids fetching version IDs (and
                                 # then components) for projects that the filter will
@@ -6527,6 +6765,25 @@ class ReportEngine:
                                 else:
                                     # No project/folder filter → resolve all
                                     version_ids = self._get_latest_version_ids()
+                                # Single-version scope → remember the label so a
+                                # transform can name the version even when the
+                                # fetch comes back with no rows to read it off.
+                                # Gated to the recipes that report a single
+                                # version: _get_project_versions is cached per
+                                # project per run, but for a portfolio-wide
+                                # Component List this would still be a fresh
+                                # call bought for a label nothing reads.
+                                if (
+                                    recipe.name in FORCE_CURRENT_VERSION_RECIPES
+                                    and len(version_ids) == 1
+                                    and self.config.project_filter
+                                ):
+                                    self._resolved_version_label = (
+                                        self._lookup_version_display_name(
+                                            self.config.project_filter,
+                                            version_ids[0],
+                                        )
+                                    )
                                 self.logger.info(
                                     f"Fetching components for {recipe.name} with --current-version-only ({len(version_ids)} versions), base filter: {combined_filter}"
                                 )
@@ -6534,6 +6791,30 @@ class ReportEngine:
                                     unified_query,
                                     version_ids,
                                     entity_type="components",
+                                    # Only a file-inclusive fetch gets its own
+                                    # cache scope; the default (type!=file) keeps
+                                    # the bare key so existing recipes go on
+                                    # sharing one per-version entry.
+                                    category_filter=(
+                                        # Not RSQL — a cache-scope token only.
+                                        # It reaches _check_version_in_cache /
+                                        # _split_and_cache_by_version, which
+                                        # concatenate it into the SQLite entry's
+                                        # synthetic `filter` param. That param is
+                                        # a KEY, never a query: components are
+                                        # fetched by the version-scoped URL above,
+                                        # so this string is never sent to the API.
+                                        # Prefixed to make that unmistakable if it
+                                        # ever shows up in a cache dump.
+                                        _CACHE_SCOPE_WITH_FILES
+                                        if recipe.name in FILE_COMPONENT_OPT_IN_RECIPES
+                                        and getattr(
+                                            self.config,
+                                            "include_file_components",
+                                            False,
+                                        )
+                                        else None
+                                    ),
                                 )
                                 raw_data = (
                                     pd.DataFrame(_fetched)
@@ -7127,7 +7408,10 @@ class ReportEngine:
                                 ),
                             )
 
-                            if self.config.current_version_only:
+                            if (
+                                self.config.current_version_only
+                                or self._single_version_recipe
+                            ):
                                 # Entity-level caching: fetch per-version (shared across reports)
                                 version_ids = sorted(
                                     self._get_latest_version_ids_for_projects(
@@ -7669,7 +7953,15 @@ class ReportEngine:
                             # not just those in the --period window.
                             _saved_start = self.config.start_date
                             if recipe.category == "assessment":
-                                self.config.start_date = "2020-01-01"
+                                # "All-time" floor. Not the epoch: an
+                                # early-termination fetch sorted by
+                                # -created still has to walk every page back
+                                # to this date, and no fs-report tenant
+                                # predates the platform itself. Must stay
+                                # earlier than any real scan's created date —
+                                # widen it, never narrow it.
+                                self.config.start_date = "2000-01-01"
+                            self._scan_fetch_truncated = False
                             try:
                                 # Batch folder project IDs to avoid 414 URL Too Long
                                 if (
@@ -8069,6 +8361,12 @@ class ReportEngine:
             # this (2026-06-06 visual QA: IDs leaked into five topbars).
             if self.resolved_project_name:
                 additional_data["project_name"] = self.resolved_project_name
+            # Companion to project_name for single-version reports. Same reason
+            # it exists: config.version_filter is a bare ID (or blank on a
+            # current-version run), so a transform building a scope label has
+            # nothing human-readable to fall back on when the frame is empty.
+            if self._resolved_version_label:
+                additional_data["scope_version_name"] = self._resolved_version_label
             # Folder breadcrumb (root->leaf) of the scoped project's containing
             # folder — transforms that show a per-row Folder column (e.g. License
             # Report detail) render it as "Folder > Folder > ...". Set only for a
@@ -8195,12 +8493,37 @@ class ReportEngine:
                 "Customer Brief Detailed",
                 "CRA Compliance",  # added 2026-05-24 per CRA compliance spec step 2
                 "CVE Component Evidence",
+                # Platform Usage sweeps /folders, /projects — twice, archived
+                # and not — and /versions itself; none of those is the recipe's
+                # primary query, and only the transform knows how they join.
+                "Platform Usage",
             ):
                 additional_data["api_client"] = self.api_client
                 if "domain" not in additional_data:
                     additional_data["domain"] = self.config.domain
-                if recipe.name == "CRA Compliance" and self._folder_project_ids:
+                if (
+                    recipe.name in ("CRA Compliance", "Platform Usage")
+                    and self._folder_project_ids
+                ):
                     additional_data["folder_project_ids"] = self._folder_project_ids
+                if recipe.name == "Platform Usage":
+                    additional_data["scans_fetch_truncated"] = (
+                        self._scan_fetch_truncated
+                    )
+                if recipe.name == "Platform Usage" and self.config.folder_filter:
+                    # Keyed on folder_filter, NOT on the truthiness of the id set.
+                    # A folder that resolves to ZERO projects is a legitimate
+                    # scope, and the guard above skips injection for it — so the
+                    # transform saw no scope signal and reported the whole
+                    # organization for a run that asked for one empty folder.
+                    additional_data["folder_scope_active"] = True
+                    additional_data["folder_project_ids"] = (
+                        self._folder_project_ids or set()
+                    )
+                    if self._folder_scope_folder_ids:
+                        additional_data["folder_scope_folder_ids"] = (
+                            self._folder_scope_folder_ids
+                        )
 
             # Inject API client and domain for Remediation Package / CRP (SBOM fetching)
             if recipe.name in ("Remediation Package", "Component Remediation Package"):
@@ -9401,6 +9724,9 @@ class ReportEngine:
         if _cache_key in self._findings_cache:
             cached: list[dict[Any, Any]] = self._findings_cache[_cache_key]
             self.logger.info(f"Using in-memory cached scans ({len(cached)} records)")
+            self._scan_fetch_truncated = self._scan_fetch_truncated or (
+                self._scan_fetch_truncated_cache.get(_cache_key, False)
+            )
             return cached
 
         # --- SQLite cache (cross-run) ---
@@ -9426,6 +9752,18 @@ class ReportEngine:
                     f"Using SQLite cached scans ({len(sqlite_cached)} records)"
                 )
                 self._findings_cache[_cache_key] = sqlite_cached
+                # The truncation flag rides a separate raw_cache entry keyed
+                # on the same hash: the structured scans cache has no column
+                # for it, and adding one would be a schema migration for a
+                # single boolean this report alone reads.
+                _truncated_raw = self.api_client.sqlite_cache.get_raw(
+                    f"scan_fetch_truncated:{_cache_key}", self.api_client.cache_ttl
+                )
+                _was_truncated = bool((_truncated_raw or {}).get("truncated", False))
+                self._scan_fetch_truncated_cache[_cache_key] = _was_truncated
+                self._scan_fetch_truncated = (
+                    self._scan_fetch_truncated or _was_truncated
+                )
                 return sqlite_cached
 
         # --- Fetch from API with early termination ---
@@ -9453,6 +9791,13 @@ class ReportEngine:
         offset = 0
         limit = sorted_query.params.limit or 100
         done = False
+        # Local to THIS call/page-loop, unlike the instance-level
+        # self._scan_fetch_truncated, which OR-accumulates across every call
+        # in a batched folder loop. This is what gets cached against
+        # _cache_key below, so a later cache hit restores exactly this call's
+        # outcome rather than whatever the instance flag happened to be
+        # after some other batch.
+        truncated_this_call = False
         consecutive_old_pages = 0
         old_page_threshold = (
             3  # Stop after N consecutive pages where majority of scans are old
@@ -9499,6 +9844,7 @@ class ReportEngine:
                                     f"Max retries exceeded at offset {offset}. "
                                     f"Returning {len(all_scans)} partial results."
                                 )
+                                truncated_this_call = True
                                 done = True
                                 break
                             self.logger.error(
@@ -9585,12 +9931,15 @@ class ReportEngine:
                 f"Scan fetch hit max_pages limit ({max_pages}). "
                 f"Results may be incomplete."
             )
+            truncated_this_call = True
         self.logger.info(
             f"Fetched {len(all_scans)} scans (early termination saved fetching older scans)"
         )
+        self._scan_fetch_truncated = self._scan_fetch_truncated or truncated_this_call
 
         # --- Store in caches ---
         self._findings_cache[_cache_key] = all_scans
+        self._scan_fetch_truncated_cache[_cache_key] = truncated_this_call
 
         # Store in SQLite for cross-run reuse
         if self.api_client.sqlite_cache and self.api_client.cache_ttl > 0:
@@ -9601,6 +9950,13 @@ class ReportEngine:
                 qh, "/public/v0/scans", all_scans
             )
             self.api_client.sqlite_cache.complete_fetch(qh)
+            # See the SQLite cache-hit branch above: this rides beside the
+            # structured scans cache under the same key rather than a new
+            # column, since it is a single boolean only this report reads.
+            self.api_client.sqlite_cache.put_raw(
+                f"scan_fetch_truncated:{_cache_key}",
+                {"truncated": truncated_this_call},
+            )
 
         return all_scans
 

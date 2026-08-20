@@ -52,6 +52,12 @@ DEFAULTS: dict[str, Any] = {
     # at render time and clears the pin if the ID is no longer a known folder.
     "pinned_folder": "",
     "open_only": False,
+    # Human Readable SBOM. Baselines match Config's defaults so a card override
+    # stores only on a real change: file components off (SAST placeholders),
+    # policy columns on (they are in the platform's own Components table).
+    "include_file_components": False,
+    "policy_status": True,
+    "finding_counts": True,
     "detailed": False,
     "standalone": False,
     "vex_override": False,

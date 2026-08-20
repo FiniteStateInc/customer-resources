@@ -1,0 +1,97 @@
+name: "Human Readable SBOM"
+category: assessment  # Current state: today's component inventory, no period semantics
+card_description: "Readable component inventory for one project version, with finding counts."
+nav_category: Compliance
+chart_libraries: []
+template: "human_readable_sbom.html"
+execution_order: 32  # After Component List (30) / CVE Component Evidence (31)
+auto_run: false
+requires_project: true
+description: >
+  The project version's component inventory, laid out to be read rather than
+  parsed: one row per component with its version, type, supplier, licenses,
+  release date, source, review status, finding counts broken out by severity,
+  and the component id for cross-referencing against the platform or an API
+  call. Mirrors the platform's Components table.
+
+  File-type components are EXCLUDED by default — they are SAST placeholders
+  that carry no license, supplier or release data, and on a firmware project
+  they outnumber real components by an order of magnitude. Pass
+  --include-file-components to keep them.
+
+  Two column groups are optional and on by default. Policy columns (violation
+  and warning counts) drop with --no-policy-status; the finding-count columns
+  (total plus the Critical/High/Medium/Low breakdown) drop with
+  --no-finding-counts, which leaves a pure inventory sheet. With both off the
+  report is name, version, type, supplier, license, release date, source,
+  status and component id.
+
+  This is an inventory, not a ranking: output is never truncated, because an
+  SBOM that silently drops rows is not an SBOM. There are deliberately no
+  charts — the table is the deliverable.
+
+query:
+  endpoint: "/public/v0/components"
+  params:
+    limit: 10000
+
+transform_function: human_readable_sbom_transform
+
+output:
+  table: true
+  charts: []
+  formats: ["csv", "xlsx", "html", "json", "md"]
+  columns:
+  # Documented in RENDER order, matching _columns_for() in the transform, so the
+  # schema sidecar and column-reference tooling describe the layout the artifacts
+  # actually have. The two optional groups (policy, then findings) sit between
+  # version and type; when a group is toggled off its columns are absent from
+  # every output but stay documented here.
+    - name: component_name
+      source: "API /components: name"
+      description: "Component name as the platform records it."
+    - name: version
+      source: "API /components: version (percent-escapes decoded for display)"
+      description: "Component version string. Blank when the scanner could not resolve one. Versions originate from purl coordinates, where `+` must be percent-encoded, so Debian and ipk components are stored escaped (`2.9.1%2Bdfsg1-5%2Bdeb8u6`); this column shows the decoded form (`2.9.1+dfsg1-5+deb8u6`) and the report discloses when it did so. A lone `%` is not an escape and is left untouched. The platform's stored value is unchanged — look the row up by its component id to see it."
+    - name: violations
+      source: "API /components: violations"
+      description: "Policy violations triggered by this component — the red count in the platform's Policy Status column. Omitted entirely when --no-policy-status is passed."
+    - name: warnings
+      source: "API /components: warnings"
+      description: "Policy warnings triggered by this component — the amber count in the platform's Policy Status column. Omitted entirely when --no-policy-status is passed."
+    - name: findings
+      source: "API /components: findings (omitted entirely with --no-finding-counts)"
+      description: "Total findings associated with the component. The severity columns cover CRITICAL/HIGH/MEDIUM/LOW only, so they do not always sum to this total — NONE and INFO findings are counted here but not broken out."
+    - name: critical
+      source: "Derived: severityCounts.CRITICAL"
+      description: "Critical-severity findings on this component. The API omits zero counts, so a missing entry is rendered as 0."
+    - name: high
+      source: "Derived: severityCounts.HIGH"
+      description: "High-severity findings on this component."
+    - name: medium
+      source: "Derived: severityCounts.MEDIUM"
+      description: "Medium-severity findings on this component."
+    - name: low
+      source: "Derived: severityCounts.LOW"
+      description: "Low-severity findings on this component."
+    - name: component_type
+      source: "API /components: type"
+      description: "Component category, title-cased for reading (library, operating-system -> Library, Operating System). Shown as CDX Type in the platform UI. Rows of type 'file' appear only with --include-file-components."
+    - name: supplier
+      source: "API /components: supplier"
+      description: "Supplier or originator of the component. Often blank for binary-identified components."
+    - name: licenses
+      source: "API /components: concludedLicenses, then declaredLicenses, then licenses; then concludedLicenseDetails, declaredLicenseDetails, licenseDetails (LicenseDetail.spdx)"
+      description: "Effective license, preferring a user-set concluded license over the auto-detected declared one. Falls back to the legacy flat licenses field, which is the only place some components carry a license at all. When all three flat fields are blank the structured *LicenseDetails arrays are read in the same precedence and their SPDX ids are used — some components carry a license ONLY there, and a blank in this column would read as unlicensed. A multi-license value is joined with commas."
+    - name: release_date
+      source: "API /components: releaseDate"
+      description: "Upstream release date of this component version, when known. Blank is common and is not a data error."
+    - name: source
+      source: "API /components: source"
+      description: "How the component was introduced (for example Binary SCA, Upload). Multiple sources are joined with a comma."
+    - name: status
+      source: "API /components: status"
+      description: "Review status: NEEDS_REVIEW, IN_REVIEW, CONFIRMED, FALSE_POSITIVE or UNKNOWN. Blank when nobody has triaged the component."
+    - name: component_id
+      source: "API /components: id"
+      description: "Platform component identifier, kept last as a reference column. Use it to cross-reference a row against the platform UI or an API call (for example the affected==<id> findings filter)."

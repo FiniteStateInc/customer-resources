@@ -554,6 +554,41 @@
       </div>
       {% endif %}
 
+      {# Human Readable SBOM only (show_sbom_options / SBOM_OPTION_RECIPES). #}
+      {% if show_sbom_options %}
+      <div class="form-group form-row">
+        <label for="cardcfg-include-file-components">Include file components</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-include-file-components"
+                 name="include_file_components"
+                 {% if eff.get('include_file_components') %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('include_file_components') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <small class="form-hint">Off by default. File entries are SAST placeholders with no license, supplier or release data, and on firmware projects they can outnumber real components 10:1.</small>
+      <div class="form-group form-row">
+        <label for="cardcfg-policy-status">Policy columns</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-policy-status" name="policy_status"
+                 {% if eff.get('policy_status', True) %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('policy_status') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <small class="form-hint">Violation and warning counts per component, as the platform's Components table shows them. On by default.</small>
+      <div class="form-group form-row">
+        <label for="cardcfg-finding-counts">Finding counts</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-finding-counts" name="finding_counts"
+                 {% if eff.get('finding_counts', True) %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('finding_counts') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <small class="form-hint">Total findings plus the Critical/High/Medium/Low breakdown. On by default; off leaves a pure inventory sheet.</small>
+      {% endif %}
+
       {% if show_scan_filters %}
       <div class="form-group">
         <label>Scan types</label>

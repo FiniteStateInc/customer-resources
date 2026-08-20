@@ -248,6 +248,9 @@ _RUN_BOOL_KEYS: tuple[str, ...] = (
     "ai_prompts",
     "ai_analysis",
     "open_only",
+    "include_file_components",
+    "policy_status",
+    "finding_counts",
     "detailed",
     "standalone",
     "vex_override",
@@ -743,6 +746,11 @@ STANDALONE_RECIPES = GENERIC_FINDINGS_RECIPES | _ED | _RVC
 # --min-severity is honored only where report_engine's MIN_SEVERITY_RECIPES
 # allow-list applies it. Keep the two in step.
 MIN_SEVERITY_RECIPES = _RVC
+# Human Readable SBOM owns both SBOM toggles. Mirrors report_engine's
+# FILE_COMPONENT_OPT_IN_RECIPES — every other component recipe excludes
+# type=file unconditionally, so offering the control there would be a lie.
+_HRS = {"human readable sbom"}
+SBOM_OPTION_RECIPES = _HRS
 AI_RECIPES = {
     "cve impact",
     "triage prioritization",
@@ -1089,6 +1097,7 @@ def compute_prerun_fields(
         "show_open_only": bool(selected & OPEN_ONLY_RECIPES),
         "show_detected_after": bool(selected & DETECTED_AFTER_RECIPES),
         "show_min_severity": bool(selected & MIN_SEVERITY_RECIPES),
+        "show_sbom_options": bool(selected & SBOM_OPTION_RECIPES),
         "show_standalone": bool(selected & STANDALONE_RECIPES),
         # Scan ingest filters — Scan Analysis / Scan Quality only.
         "show_scan_filters": bool(selected & SCAN_FILTER_RECIPES),
@@ -1645,6 +1654,13 @@ def _build_engine_config(
         "project_filter": project_filter,
         "folder_filter": folder_filter,
         "version_filter": version_filter,
+        # Web runs default to 4h of cross-run caching (the CLI defaults to 0).
+        # Safe only because the cache file is scoped by ACCOUNT, not just host
+        # (fs_report/tenant_scope.py). Before that, this default silently
+        # served one tenant's cached records to another for up to 4 hours
+        # whenever two environments shared a domain — which every tenant on
+        # platform.finitestate.io does. Do not widen this without re-checking that
+        # the cache identity still includes the token.
         "cache_ttl": _parse_cache_ttl(effective.get("cache_ttl", "4")),
         "cache_dir": effective.get("cache_dir") or None,
         "current_version_only": bool(effective.get("current_version_only", True)),
@@ -1679,6 +1695,11 @@ def _build_engine_config(
         "scan_types": effective.get("scan_types") or None,
         "scan_statuses": effective.get("scan_statuses") or None,
         "open_only": bool(effective.get("open_only", False)),
+        "include_file_components": bool(
+            effective.get("include_file_components", False)
+        ),
+        "policy_status": bool(effective.get("policy_status", True)),
+        "finding_counts": bool(effective.get("finding_counts", True)),
         "detailed": bool(effective.get("detailed", False)),
         "standalone": bool(effective.get("standalone", False)),
         "vex_override": bool(effective.get("vex_override", False)),
@@ -2263,6 +2284,13 @@ _WORKFLOW_BOOL_KEYS: frozenset[str] = frozenset(
         # a hand-authored / inline ``"autotriage": "false"`` is False, not truthy
         # — else a string false would trigger an unintended VEX write.
         "autotriage",
+        # SBOM toggles. Two default TRUE, so an uncoerced ``"false"`` would pass
+        # straight through bool() as truthy and silently invert the run — the
+        # workflow says --no-policy-status, the run emits the columns anyway.
+        # workflow_export coerces the same three for the export path.
+        "include_file_components",
+        "policy_status",
+        "finding_counts",
     }
 )
 _WORKFLOW_INT_KEYS: frozenset[str] = frozenset({"top", "triage"})

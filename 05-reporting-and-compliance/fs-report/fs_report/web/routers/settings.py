@@ -160,10 +160,17 @@ def _get_cache_info(state: WebAppState) -> dict[str, Any]:
 
     try:
         # --- API cache (domain-specific *.db files contain cache_meta) ---
+        # Shared enumeration, same as the clear endpoint below. The old
+        # "*.finitestate.io.db" glob missed self-hosted/preview domains and
+        # matches nothing at all now that the account digest is in the
+        # filename — so this panel reported an empty cache while disk usage
+        # grew, and an operator reading it would skip clearing entirely.
+        from fs_report.sqlite_cache import api_cache_files
+
         api_entries = 0
         api_size = 0.0
         domain_dbs: list[str] = []
-        for db_file in sorted(cache_dir.glob("*.finitestate.io.db")):
+        for db_file in api_cache_files(cache_dir):
             n = _count_rows(db_file, "cache_meta")
             if n >= 0:
                 api_entries += n
@@ -304,20 +311,53 @@ async def cache_stats(state: WebAppState = Depends(get_state)) -> JSONResponse:
 
 @router.delete("/api/settings/cache/api")
 async def clear_api_cache(state: WebAppState = Depends(get_state)) -> JSONResponse:
-    """Clear all domain-specific API cache databases."""
+    """Clear EVERY API cache database in the cache directory.
+
+    Machine-wide: all domains, all accounts. That is broader than the CLI's
+    ``cache clear --api``, which is scoped to one resolved domain — a difference
+    worth knowing before wiring the two together. Each matches what its own
+    surface displays: this panel totals every cache file it can see, so a
+    domain-scoped clear here would leave entries visibly behind and recreate the
+    "cleared but still showing data" confusion.
+
+    The response names the files removed so the caller can show the real blast
+    radius rather than a bare count.
+    """
     cache_dir = Path(
         str(state.get("cache_dir") or "").strip() or str(Path.home() / ".fs-report")
     )
-    cleared = 0
-    for db_file in cache_dir.glob("*.finitestate.io.db"):
-        db_file.unlink(missing_ok=True)
-        # Also remove WAL/SHM sidecar files
-        for suffix in ("-wal", "-shm"):
-            sidecar = db_file.parent / (db_file.name + suffix)
-            sidecar.unlink(missing_ok=True)
-        cleared += 1
-    if cleared:
-        return JSONResponse({"status": "cleared", "type": "api", "count": cleared})
+    # Shared enumeration — NOT a hand-rolled glob. The previous
+    # "*.finitestate.io.db" missed self-hosted/preview domains, and would have
+    # matched nothing at all once the account digest joined the filename,
+    # silently turning this button into a no-op.
+    from fs_report.sqlite_cache import api_cache_files, remove_cache_db
+
+    try:
+        targets = api_cache_files(cache_dir)
+    except OSError as exc:
+        # api_cache_files raises on an unreadable directory by design. Report
+        # that as a structured failure, not a 500 — the caller needs to know
+        # the clear did not happen, and a stack trace tells it nothing useful.
+        return JSONResponse(
+            {"status": "error", "type": "api", "error": str(exc)}, status_code=200
+        )
+
+    cleared: list[str] = []
+    failed: list[str] = []
+    for db_file in targets:
+        # Report only what actually went away — a count that includes files
+        # still on disk is the same false "cleared" this PR exists to remove.
+        (cleared if remove_cache_db(db_file) else failed).append(db_file.name)
+    if cleared or failed:
+        return JSONResponse(
+            {
+                "status": "cleared" if not failed else "partial",
+                "type": "api",
+                "count": len(cleared),
+                "files": cleared,
+                "failed": failed,
+            }
+        )
     return JSONResponse({"status": "not_found", "type": "api"})
 
 

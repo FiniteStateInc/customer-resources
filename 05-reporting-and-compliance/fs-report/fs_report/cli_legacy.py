@@ -37,7 +37,7 @@ from fs_report.models import Config
 from fs_report.period_parser import PeriodParser
 from fs_report.recipe_loader import RecipeLoader
 from fs_report.report_engine import ReportEngine
-from fs_report.sqlite_cache import SQLiteCache, parse_ttl
+from fs_report.sqlite_cache import parse_ttl
 
 console = Console()
 app = typer.Typer(
@@ -1500,17 +1500,45 @@ def main(
     # Handle --clear-cache and/or --clear-ai-cache
     if clear_cache or clear_ai_cache:
         if clear_cache:
-            cache_domain = domain or os.getenv("FINITE_STATE_DOMAIN")
-            cache = SQLiteCache(domain=cache_domain)
-            cache.clear()
+            # Resolve domain AND account the same way `fs-report cache clear`
+            # does — the cache file is scoped by account, not just host.
+            # Same shared helper as `fs-report cache clear --api`, so the
+            # deprecated entry point cannot drift into clearing only the
+            # resolved file and leaving this domain's other account caches —
+            # and their WAL/SHM sidecars — serving stale cross-tenant data.
+            from fs_report.cli.cache import (
+                _resolve_cache_dir,
+                _resolve_identity,
+                _warn_unresolved,
+                clear_api_cache,
+            )
+            from fs_report.sqlite_cache import SQLiteCache as _SQLiteCache
+
+            # Forward --token as well as --domain. Resolving the domain alone
+            # would address the legacy un-scoped file while the run this is
+            # paired with wrote to an account-scoped one — the stale-cache trap
+            # on the deprecated entry point.
+            cache_domain, cache_token = _resolve_identity(domain, token)
+            # Same resolver as the modern command, so the two entry points
+            # cannot end up addressing different directories.
+            cache = _SQLiteCache(
+                cache_dir=str(_resolve_cache_dir()),
+                domain=cache_domain,
+                auth_token=cache_token,
+            )
+            removed = clear_api_cache(cache, cache_domain)
             console.print("[green]API data cache cleared successfully.[/green]")
             console.print(f"[dim]Cache location: {cache.db_path}[/dim]")
             if cache_domain:
                 console.print(f"[dim]Domain: {cache_domain}[/dim]")
+            _warn_unresolved(cache_domain, cache_token)
+            for sibling in removed:
+                console.print(f"[green]Removed cache file: {sibling.name}[/green]")
 
         if clear_ai_cache:
-            ai_cache_dir = Path.home() / ".fs-report"
-            ai_cache_db = ai_cache_dir / "cache.db"
+            from fs_report.cli.cache import _resolve_cache_dir as _ai_dir
+
+            ai_cache_db = _ai_dir() / "cache.db"
             if ai_cache_db.exists():
                 ai_cache_db.unlink()
                 console.print(

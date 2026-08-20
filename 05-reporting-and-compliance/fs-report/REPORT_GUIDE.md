@@ -19,6 +19,7 @@ This guide explains each report available in the Finite State Reporting Kit, wha
    - [License Report](#license-report) *(Assessment, on-demand: license risk by category)*
    - [Triage Prioritization](#triage-prioritization) *(Assessment)*
    - [Reachability VEX Coverage](#reachability-vex-coverage) *(Assessment, on-demand: how many findings could be auto-resolved)*
+   - [Platform Usage](#platform-usage) *(Assessment, on-demand: org-wide inventory, freshness, and hygiene)*
    - [Configuration Analysis Triage](#configuration-analysis-triage) *(Assessment, on-demand: config/secrets/crypto triage)*
    - [False Positive Analysis](#false-positive-analysis) *(Assessment, on-demand: FP candidate identification)*
    - [Scan Quality](#scan-quality) *(Assessment, on-demand: per-asset coverage and quality signals)*
@@ -93,6 +94,7 @@ Assessment reports show the current security state of the target — the latest 
 | **License Report** | License risk distribution by category (on-demand) |
 | **Triage Prioritization** | Current triage priorities based on today's data |
 | **Reachability VEX Coverage** | How many findings could be auto-resolved right now — unreachable findings still missing NOT_AFFECTED, rolled up per project version with severity breakdown (on-demand) |
+| **Platform Usage** | Org-wide platform footprint — folders, projects and versions, days since each project's last completed scan, trailing-12-month activity trends, and a hygiene list of unowned / orphaned / empty / never-scanned / duplicate-named objects (on-demand) |
 | **Configuration Analysis Triage** | Config/secrets/crypto triage with tiered gates (on-demand) |
 | **False Positive Analysis** | FP candidates identified by mechanical signals and AI (on-demand) |
 | **Scan Quality** | Per-asset scan type coverage and unpack quality scores (on-demand) |
@@ -353,6 +355,42 @@ fs-report run --recipe "Scan Analysis" --period 14d
 ```
 
 ---
+
+### Human Readable SBOM
+
+**Category:** Assessment — the current component inventory for one project version.
+
+**Purpose:** A component inventory you can hand to someone and have them read it. Mirrors the platform's Components table.
+
+**Who should use it:** Compliance teams, auditors, customers asking "what is in this build?", engineers triaging a specific version.
+
+**What it shows:**
+- One row per component in the selected project version
+- Version, type, supplier, effective license, upstream release date, source, review status
+- Finding counts broken out by severity (Critical / High / Medium / Low), colour-coded in the HTML output with weight reinforcing the colour; zeros stay recessive
+- Policy violation and warning counts (the platform's red/amber dots) — on by default
+- The platform component id, last, for cross-referencing against the UI or an API call
+
+**Scope:** One project version. `--project` is required; `--version` pins a version, otherwise the current version is used. `--all-versions` is **ignored with a warning** and downgraded to the project's current version, rather than producing a mixed-version inventory labelled as one version. The downgrade is scoped to this recipe — other recipes in the same run keep their `--all-versions` scope. Pass `--version` to inventory a specific version.
+
+**Version strings:** shown percent-decoded. Versions come from purl coordinates, where `+` must be escaped, so Debian and ipk components are stored as e.g. `2.9.1%2Bdfsg1-5%2Bdeb8u6` and this report shows `2.9.1+dfsg1-5+deb8u6`. The notes say how many rows were decoded, and the platform's stored value is unchanged — look a row up by its component id to see it.
+
+**Ignored flags:** `--detected-after` — an SBOM is a point-in-time inventory with no date dimension, so a created-date filter would silently drop components. The engine logs a warning.
+
+**Outputs:** HTML, CSV, XLSX, JSON, MD. No PDF and no charts — the table is the deliverable, and output is never truncated.
+
+**Options:**
+- `--include-file-components` — include `type=file` rows (off by default; they are SAST placeholders with no license or supplier data and can outnumber real components 10:1 on firmware). The exclusion is always stated in the report's notes; a count is given only when the filtering happened client-side, since the server-side filter means the excluded rows are never fetched and cannot be counted.
+- `--no-policy-status` — drop the violation/warning columns.
+- `--no-finding-counts` — drop the finding-count columns (total + C/H/M/L), as one group. The table then sorts alphabetically rather than worst-first, since ordering by a hidden column reads as arbitrary. Combine with `--no-policy-status` for a pure inventory sheet.
+
+**Note on the counts:** the four severity columns cover CRITICAL/HIGH/MEDIUM/LOW only. NONE and INFO findings are included in the Findings total but have no column, so the columns do not always sum to it — the report says so when it happens.
+
+**How it differs from Component List:** Component List is portfolio-wide, has charts, reports findings as a single number, and its "Policy Status" column is *license* policy. This report is single-version, chartless, has per-severity counts, and its policy columns are violation/warning counts.
+
+```bash
+fs-report run --recipe "Human Readable SBOM" --project RBR850 --output ./reports
+```
 
 ### Component List
 
@@ -1002,6 +1040,82 @@ the rare event a tenant has more than 25 folders, pointing at the table instead.
 
 ---
 
+### Platform Usage
+
+**Category:** Assessment (on-demand) — describes the platform footprint as of the report run time, regardless of `--period`.
+
+**Purpose:** Gives a superuser one page answering "how is this organization actually using the platform?" — what exists, how fresh it is, and what is misfiled. It deliberately contains **no per-user or seat-based metric**; that is [User Activity](#user-activity)'s job. Use this when you need to know whether the platform is being used, not who is using it.
+
+**Who should use it:** Platform administrators, internal ops, CSMs preparing an adoption or renewal review.
+
+```bash
+# Whole organization
+fs-report run --recipe "Platform Usage"
+
+# One business unit
+fs-report run --recipe "Platform Usage" --folder "EU-Routers"
+
+# Large tenant: make an interrupted run resume instead of restart
+fs-report run --recipe "Platform Usage" --cache-ttl 24h
+```
+
+**Scope.** Portfolio by default. `--folder` narrows to a folder tree and `--project` to one project; both are stated in the report's own disclosure block, because they change what every tile counts. `--period` is **ignored** — freshness is measured against the run time.
+
+**Three layers.**
+
+*Inventory.* Every folder, project and version, with folder labels rendered as full breadcrumbs (`Root > Team A`) so same-named folders in different trees stay distinguishable. Active and archived projects are both counted; the `/projects` endpoint returns one or the other, so the report sweeps it twice.
+
+*Activity and freshness.* Days since each project's most recent **completed** scan, bucketed:
+
+| Bucket | Meaning |
+|---|---|
+| **Current** | ≤ `current_days` (default 30) since the last completed scan |
+| **Aging** | ≤ `aging_days` (default 90) |
+| **Stale** | ≤ `stale_days` (default 180) |
+| **Dormant** | Beyond that |
+| **Never scanned** | No completed scan, ever — *not* the far end of the age scale |
+
+"Never scanned" is a separate bucket on purpose. A project nobody ever scanned has no date to age from, so folding it into Dormant would report a measurement that was never taken. The `days_since_last_scan` column is blank there rather than `0`, which would read as "scanned today".
+
+Only **completed** scans count toward freshness. An in-flight or failed scan is still an attempt — it appears in the lifetime and windowed scan counts — but it does not make a project fresh.
+
+**Project dependencies count.** A project holding versions but never scanned itself is usually an **assembly** — the scanning happens in the projects it is built from. Read dependency-blind, every one of those came out "Never scanned / Stale / Dormant", which is the opposite of true. So for exactly those projects the dependency tree is walked transitively, and the last-scan date, days-since and freshness bucket come from the newest completed scan anywhere in it. The **Source** column says which side supplied them — `own`, `dependencies`, or blank when neither has a completed scan — so a fresh date is never mistaken for a scan of the project itself. **Dep. scans** shows the volume underneath; it is deliberately *not* added to the project's own scan counts, the folder chart or any org total, because each dependency has its own row in the report and folding it up would count those scans twice. A project with its own completed scan is not walked at all: the platform exposes dependencies per version only, so confirming what is already known would cost a request per version across the tenant. The walk stops after `dependency_lookup_versions` (default 250) and says so in the notes rather than leaving the remainder silently "Never scanned"; on a `--folder` or `--project` run, dependencies filed outside the scope have their scan history fetched by project id so the narrowing does not reintroduce the very mislabelling this fixes.
+
+*Hygiene.* The short "needs attention" list, which exists to explain anomalies in the counts rather than to be one:
+
+| Flag | What it means |
+|---|---|
+| **No creator recorded** | No `createdBy` on the project |
+| **Orphaned (no folder)** | Filed under no folder, so it inherits no folder-level access grant |
+| **Empty project** | Zero versions — nothing has been uploaded |
+| **Never scanned** | Has versions, no completed scan — on the project *or* on anything it depends on |
+| **Version never scanned** | An individual version with no scan record of any status, and no scanned dependency behind it |
+| **Empty folder** | A folder with no projects in scope |
+| **No new version in 180d** | Still marked active, but nobody has shipped a version (configurable) |
+| **Near-duplicate project names** | Names differing only by case, separators or punctuation — sprawl from teams creating projects instead of reusing them |
+
+**Three columns mean less than their names suggest,** and the report says so in its own output rather than leaving you to assume:
+
+1. **The platform has no owner field.** "Created by" is `createdBy`, the recording user. "No creator recorded" is a metadata gap, not an unowned asset.
+2. **Projects carry no tags or labels.** The API exposes `type` (`application` / `firmware` / `container` / …), which is what the report shows in their place.
+3. **A version stores neither artifact type nor ingestion method.** Both are derived from that version's scans — `scan.type` and `scan.mechanism`. A version showing neither is precisely the "Version never scanned" flag.
+
+**Labels in the HTML.** Artifact type and ingestion render as coloured chips, like the freshness bucket, with the platform's raw enums substituted for readable labels: `SAST` → **Binary SAST**, `VULNERABILITY_ANALYSIS` → **Reachability**, `SBOM_IMPORT` → **SBOM**, `SOURCE_SCA` → **Source SCA**, `FS` → **NGP** (red), `UI_UPLOAD` → **GUI**, `API_UPLOAD` → **API**. `CONFIG` and `SCA` keep their names. Any other value — a scan type or upload mechanism the platform adds later, e.g. `CLT_UPLOAD`, `SPDX`, `SARIF` — renders as a neutral chip showing the raw value, so nothing is dropped or mislabelled. The substitution is presentation-only: **CSV, XLSX, JSON and Markdown keep the raw enums**, so a consumer joining against the API or another report still matches. The ingestion-mix chart carries the same **API** / **GUI** names its bars share with the tables beside it — the labels ride a derived `label` column, so the raw `mechanism` stays on every exported row.
+
+**Overlapping tiles, stated rather than hidden.** The KPI tile is labelled **Inactive**, not Stale — that name is reserved for the freshness bucket above, which uses a different threshold (`stale_days`, default 180d) over a different population (every project, including archived and empty ones) than the tile's `stale_project_days` (default 90d, active projects with at least one version). A never-scanned project also has zero scans in the last 90 days, so it satisfies the Inactive definition too. Empty projects are excluded from both — they have nothing to scan — but they *do* land in the freshness chart's "Never scanned" slice, so that slice exceeds the "Never scanned" tile by the number of empty projects. All of this is in the report's disclosure block.
+
+**Failed-scan rate is charted next to the volume trend,** not tucked away: a broken CI integration makes every usage number above it untrustworthy, and a volume dip caused by a pipeline failure should not read as reduced adoption. A month with no finished scans leaves a **gap** in the rate line rather than plotting 0%, which would claim a clean month that was simply idle.
+
+**Configurable thresholds.** Every window is a recipe parameter in `fs_report/recipes/platform_usage.yaml` — `current_days`, `aging_days`, `stale_days`, `activity_window_days`, `scan_window_days`, `stale_project_days`, `no_new_version_days`, `trend_months`, `dependency_lookup_versions`. A fleet that is re-scanned quarterly should raise `stale_project_days` rather than read an over-flagged report. A non-numeric, non-positive, or non-increasing freshness triple is refused with a warning and the default used, so a bad override cannot create a bucket nothing lands in.
+
+**Filtering.** The HTML's freshness and archived chips filter the rendered projects table client-side. The Folders, Versions and Hygiene tables are deliberately unfiltered — they have different grains, so a projects-level bucket filter has no meaning on them, and filtering them independently would let three tables disagree about the same scope. Hard scoping belongs on the CLI (`--folder`, `--project`), because it changes what was fetched and therefore what every tile means.
+
+**Cost.** Four org-wide inventory sweeps (folders, active projects, archived projects, versions) on top of the full scan history, plus one dependency request per version — but only for projects with no completed scan of their own, capped at `dependency_lookup_versions`. Pass `--cache-ttl 24h` on a large tenant.
+
+**Outputs:** HTML (all four tables plus six charts), CSV (`Platform Usage.csv` = projects, plus `_Folders.csv`, `_Versions.csv` and `_Hygiene.csv` — a table with no rows is omitted rather than written as a header-only file, so a missing `_Hygiene.csv` means nothing was flagged), XLSX (one sheet per non-empty table plus a Schema sheet), JSON (every table, the trend series, the thresholds, and the disclosure notes), MD (the same four tables, the summary and the disclosure notes). HTML and MD both cap the version table at 500 rows with the total stated; the exports carry every row.
+
+---
+
 ### Configuration Analysis Triage
 
 **Category:** Assessment (on-demand) — triages current config/secrets/crypto findings regardless of time period.
@@ -1214,7 +1328,7 @@ The four queue sections (🔥/🆕/🔁/⏰) are mutually exclusive per row — 
 |--------|-------------|
 | **CVE / Component / Severity / CVSS** | Standard identification |
 | **Project** | Which project the finding belongs to (all five sections; relevant for multi-project runs) |
-| **Maturity** | Raw platform exploit-maturity (`poc` / `weaponized`, or empty). The derived CRA tiers (kev, ransomware, threat_actor, botnet, commercial, reported) drive section routing / threshold retention but are **not** shown in this column — see `Crossed To` and the `--exploit-maturity` flag. |
+| **Maturity** | Raw platform exploit-maturity (`poc` / `weaponized`, or empty). The derived CRA tiers (kev, cisa-kev, vc-kev, ransomware, threat_actor, botnet, commercial, reported) drive section routing / threshold retention but are **not** shown in this column — see `Crossed To` and the `--exploit-maturity` flag. |
 | **KEV Source** | `CISA` (in public CISA KEV catalog), `VcKEV` (in VulnCheck's KEV catalog, broader than CISA's), or `CISA+VcKEV` (both). Only on 🔥. |
 | **Breach Status** | `OVERDUE` / `DUE_SOON` / `UPCOMING` / `UNKNOWN` |
 | **Hours Until Due / Notification Deadline** | CRA Article 14 24-hour clock |
@@ -1231,12 +1345,12 @@ The four queue sections (🔥/🆕/🔁/⏰) are mutually exclusive per row — 
 **Key CLI flags** (CRA-specific; full list in [fs-report CLI skill doc](.claude/skills/fs-report-cli/SKILL.md#cra-compliance)):
 
 - `--since` — delta window for 🆕/🔁 sections (`24h` default; also `7d`, ISO 8601 datetime, or `last-run`)
-- `--exploit-maturity` — override active tiers (default: `kev,ransomware,threat_actor,weaponized,botnet`; `poc`, `commercial`, and `reported` are recognized but opt-in).
+- `--exploit-maturity` — override active tiers (default: `kev,ransomware,threat_actor,weaponized,botnet`; `poc`, `commercial`, and `reported` are recognized but opt-in). `kev` covers CISA KEV **or** VulnCheck KEV; `cisa-kev` and `vc-kev` narrow to a single catalog (they replace `kev` rather than adding to it — `cisa-kev,vc-kev` is equivalent to `kev`).
 - `--include-status` / `--exclude-status` — VEX status filters
 - `--reachable-only` — restrict to reachable findings
 - `--with-triage-age` — opt-in per-finding `/activity` fan-out for `triage_age_days`
 - `--kev-due-date-source` — `cisa` (default), `none` (disables 🔥 SLA-Breach section), or `api` (reserved)
-- `--unfilterable-tier-strategy` — `wide-fetch` (default), `drop-tier`, or `require-rsql`
+- `--unfilterable-tier-strategy` — `wide-fetch` (default), `drop-tier`, or `require-rsql`. Only `cisa-kev` is pushed into the /findings query (as `inKev==true`); every other tier — `vc-kev`, the `kev` union, `weaponized`, `poc`, and the exploitInfo-token tiers — is narrowed client-side, because the endpoint exposes no filter field for them (`inVcKev`, `exploitMaturity` and `exploitInfo` were each rejected with 400 "not a supported filter field" on the deployment this was verified against; field availability may vary by deployment, so fs-report emits only the fields it has verified). Same rows either way, just a wider fetch. `drop-tier` requires a pushable `cisa-kev` tier in the threshold and errors otherwise — including for the default threshold, which has none — since dropping every tier would retain nothing and render an empty queue that reads as "nothing to report".
 - `--snapshot-diff` — `on` (default), `read-only`, or `off`
 
 **Example commands:**
@@ -1833,6 +1947,7 @@ fs-report run --period 30d --finding-types all
 7. **Track Security Progress** → Measure posture improvement and catch external CVE changes
 8. **Track with Component List** → Maintain software inventory for compliance
 9. **Review User Activity** → Ensure platform adoption and engagement
+10. **Review Platform Usage** → Check the footprint itself: what is stale, never scanned, empty, or misfiled — the object-level counterpart to User Activity's person-level view
 
 ### Incident Response Workflow (zero-day / breaking component)
 
@@ -1858,7 +1973,7 @@ fs-report run --period 30d --finding-types all
 | **Incident Response** | Component Impact, Component Remediation Package, CRA Compliance |
 | **DevSecOps / Operations** | Scan Analysis, Scan Quality |
 | **Compliance / Legal** | Component List, License Report, CRA Compliance |
-| **Platform Administrators** | User Activity, Scan Analysis, Scan Quality |
+| **Platform Administrators** | Platform Usage, User Activity, Scan Analysis, Scan Quality |
 
 ---
 
@@ -1885,6 +2000,7 @@ fs-report run --period 30d --finding-types all
 | **License Report** | Quarterly (legal reviews), On-demand | License risk summary for legal and compliance |
 | **CRA Compliance** | **Daily** (automated morning queue), On-demand (incident) | EU CRA Article 14 morning-queue: KEV/exploit-maturity-signalled findings flagged for CRA triage (not a verdict of active exploitation) with 24-hour notification clocks |
 | **Scan Quality** | Quarterly (platform health), On-demand | Identify coverage gaps and unpack quality issues |
+| **Platform Usage** | Monthly (adoption reviews), Quarterly (renewal prep), On-demand | Org-wide inventory, scan freshness, and metadata hygiene — with no per-user metric |
 | **Component Impact** | On-demand (zero-day / supply-chain incident) | Blast radius for a specific component |
 | **Component Remediation Package** | On-demand (zero-day / supply-chain incident) | Rapid remediation guidance for a compromised component |
 | **Version Comparison** | On-demand (after remediation or releases) | Validate specific version improvements |

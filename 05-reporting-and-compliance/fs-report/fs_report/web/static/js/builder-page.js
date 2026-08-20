@@ -1764,26 +1764,36 @@
          turn it off.  Instead: absent ⇒ on (inherit True); turning OFF persists
          an explicit `false`; turning back ON removes the explicit false to
          inherit the default again (keeps the override count honest). */
-      cvoOn: function (step) {
+      /* Default-TRUE override keys need their own read/toggle pair:
+         toggleStepBool stores `true` and deletes to clear, which can only
+         express a default-FALSE knob.  Here absent ⇒ ON (inherit the default)
+         and the only stored value is an explicit `false`. */
+      defaultTrueOn: function (step, key) {
         if (!step || !step.overrides) return true;
         /* Coerce the stored value the same way the server/export path does
            (coerceBool ⇄ run.py _coerce_workflow_value): a hand-edited/imported
            override of the string "false" must read OFF, not the truthy
            bool("false").  Keep the absent ⇒ on (inherit default-True) branch. */
-        return step.overrides.current_version_only === undefined
+        return step.overrides[key] === undefined
           ? true
-          : coerceBool(step.overrides.current_version_only);
+          : coerceBool(step.overrides[key]);
       },
-      toggleCvo: function () {
+      toggleDefaultTrue: function (key) {
         var step = this.inspStep();
         if (!step) return;
         if (!step.overrides) step.overrides = {};
-        if (this.cvoOn(step)) {
-          step.overrides.current_version_only = false; /* explicit off */
+        if (this.defaultTrueOn(step, key)) {
+          step.overrides[key] = false; /* explicit off */
         } else {
-          delete step.overrides.current_version_only; /* inherit default true */
+          delete step.overrides[key]; /* inherit default true */
         }
         this.afterInspectorChange();
+      },
+      cvoOn: function (step) {
+        return this.defaultTrueOn(step, "current_version_only");
+      },
+      toggleCvo: function () {
+        this.toggleDefaultTrue("current_version_only");
       },
 
       afterInspectorChange: function () {

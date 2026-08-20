@@ -62,8 +62,21 @@ _AUTOTRIAGE_RECIPE_DIRS = (
 _RECS_FILENAME = "vex_recommendations.json"
 
 
-def invalidate_findings_cache_for_versions(domain: str, results: list[dict]) -> None:
-    """Invalidate cached findings for versions affected by a VEX apply."""
+def invalidate_findings_cache_for_versions(
+    domain: str, results: list[dict], auth_token: str | None
+) -> None:
+    """Invalidate cached findings for versions affected by a VEX apply.
+
+    ``auth_token`` identifies which tenant's cache file to invalidate. The cache
+    is scoped by account, not just host (see ``fs_report/tenant_scope.py``), so
+    omitting it here would clear a DIFFERENT file and leave the real cache
+    holding pre-apply statuses — a report run straight after an apply would then
+    show the statuses the apply just changed.
+
+    Required rather than defaulted to ``None``: a default would let a new call
+    site silently reinstate exactly that bug, and passing an explicit ``None``
+    (offline runs, which have no account) is the caller stating it has none.
+    """
     version_ids = {
         str(r["project_version_id"])
         for r in results
@@ -74,7 +87,7 @@ def invalidate_findings_cache_for_versions(domain: str, results: list[dict]) -> 
     try:
         from fs_report.sqlite_cache import SQLiteCache
 
-        cache = SQLiteCache(domain=domain)
+        cache = SQLiteCache(domain=domain, auth_token=auth_token)
         cache.invalidate_versions(version_ids)
     except Exception:
         logger.warning(
@@ -177,7 +190,7 @@ def apply_recs_file(
     )
     result = applier.apply_file(recs_path)
     if not dry_run:
-        invalidate_findings_cache_for_versions(domain, result.results)
+        invalidate_findings_cache_for_versions(domain, result.results, auth_token)
     return result
 
 

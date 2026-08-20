@@ -93,6 +93,10 @@ class APIClient:
                 cache_dir=getattr(config, "cache_dir", None),
                 default_ttl=cache_ttl,
                 domain=config.domain,  # Domain-specific cache file
+                # Account identity. Without this the cache file is shared by
+                # every tenant on this host, and a cached fetch from one account
+                # is served to another (see fs_report/tenant_scope.py).
+                auth_token=getattr(config, "auth_token", None),
             )
         else:
             # No SQLite cache by default (for backwards compatibility)

@@ -308,6 +308,8 @@ class EngineWrapper:
         if not cache_dir.exists():
             return result
 
+        from fs_report.sqlite_cache import NON_API_CACHE_FILES
+
         # API caches: domain-specific .db files
         for f in cache_dir.glob("*.db"):
             name = f.name
@@ -350,8 +352,13 @@ class EngineWrapper:
                     result["ai"]["entries"] = count
                 except Exception:
                     pass
-            elif name != "report-server.db":
-                # Domain-specific API cache
+            elif name not in NON_API_CACHE_FILES:
+                # Domain-specific API cache. Gated on the SHARED non-API list,
+                # not a local "everything except report-server.db": that
+                # hand-rolled test counted history.db and osv_cache.db as API
+                # cache and ran SELECT COUNT(*) FROM cache_meta against them,
+                # so the reported entry count was wrong and disagreed with what
+                # the clear path actually deletes.
                 result["api"]["size_bytes"] += size
                 result["api"]["files"].append(name)
                 try:
@@ -378,35 +385,38 @@ class EngineWrapper:
         if not cache_dir.exists():
             return {"cleared": cleared}
 
-        def remove_db(path: Path) -> None:
-            for p in [path, path.with_suffix(".db-wal"), path.with_suffix(".db-shm")]:
-                if p.exists():
-                    p.unlink()
+        from fs_report.sqlite_cache import api_cache_files, remove_cache_db
 
         if cache_type in ("api", "all"):
-            for f in cache_dir.glob("*.db"):
-                if f.name not in ("nvd_cache.db", "cache.db", "report-server.db"):
-                    remove_db(f)
-                    cleared.append(f.name)
+            # Shared enumeration. The previous local allow-list omitted
+            # history.db, so "clear the api cache" deleted the user's report
+            # history — and with_suffix(".db-wal") mangled dotted domain names
+            # ("platform.finitestate.io.db" -> "app.finitestate.db-wal"), leaving the
+            # real WAL/SHM sidecars behind.
+            for f in api_cache_files(cache_dir):
+                remove_cache_db(f)
+                cleared.append(f.name)
 
         if cache_type in ("nvd", "all"):
             nvd = cache_dir / "nvd_cache.db"
             if nvd.exists():
-                remove_db(nvd)
+                remove_cache_db(nvd)
                 cleared.append("nvd_cache.db")
 
         if cache_type == "ai":
             # Targeted AI clear: delete only the LLM narrative tables in-place.
-            # cache.db is shared with the API-data cache (when no domain is set)
-            # and the project-blind fact tables (cve_detail/exploit_detail), so
-            # unlinking the file would destroy unrelated data.
+            # cache.db also holds the project-blind fact tables
+            # (cve_detail/exploit_detail), so unlinking the file would destroy
+            # unrelated data. (It no longer doubles as the domain-less API
+            # cache — that moved to api-cache.db precisely because one file
+            # serving two subsystems meant clearing either destroyed the other.)
             ai = cache_dir / "cache.db"
             if ai.exists() and _clear_ai_narrative_tables(ai):
                 cleared.append("cache.db (AI narrative)")
         elif cache_type == "all":
             ai = cache_dir / "cache.db"
             if ai.exists():
-                remove_db(ai)
+                remove_cache_db(ai)
                 cleared.append("cache.db")
 
         return {"cleared": cleared}

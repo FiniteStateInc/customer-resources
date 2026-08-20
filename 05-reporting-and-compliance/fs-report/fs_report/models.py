@@ -1162,6 +1162,25 @@ class Config(BaseModel):
         "severity=in=(...) over the ranked tiers only, so NONE/INFO findings are "
         "excluded by any floor. None (the default) applies no severity filter.",
     )
+    include_file_components: bool = Field(
+        False,
+        description="Human Readable SBOM: include type=file components. Off by "
+        "default — they are SAST placeholders with no license, supplier or "
+        "release data, and on firmware projects they outnumber real components "
+        "by an order of magnitude.",
+    )
+    finding_counts: bool = Field(
+        True,
+        description="Human Readable SBOM: include the finding-count columns "
+        "(total plus the Critical/High/Medium/Low breakdown). On by default; "
+        "--no-finding-counts gives a pure inventory sheet with no finding data.",
+    )
+    policy_status: bool = Field(
+        True,
+        description="Human Readable SBOM: include the policy violation and "
+        "warning count columns. On by default, matching the platform's "
+        "Components table; --no-policy-status drops them for a narrower sheet.",
+    )
     # AI remediation guidance options
     ai: bool = Field(
         False,
@@ -1410,7 +1429,7 @@ class Config(BaseModel):
     )
     exploit_maturity_threshold: list[str] | None = Field(
         None,
-        description="CRA tier set above threshold. Values: kev, weaponized, poc, ransomware, threat_actor, botnet, commercial, reported. None defers to the recipe YAML default (kev, ransomware, threat_actor, weaponized, botnet); poc/commercial/reported are recognized but opt-in.",
+        description="CRA tier set above threshold. Values: kev, cisa-kev, vc-kev, weaponized, poc, ransomware, threat_actor, botnet, commercial, reported. kev covers CISA KEV OR VulnCheck KEV; cisa-kev / vc-kev narrow to one catalog. Only cisa-kev is pushed into the /findings query (as inKev==true); every other tier narrows client-side under --unfilterable-tier-strategy, returning the same rows via one wider fetch. None defers to the recipe YAML default (kev, ransomware, threat_actor, weaponized, botnet); poc/commercial/reported are recognized but opt-in.",
     )
     include_status: list[str] | None = Field(
         None,
@@ -1434,7 +1453,7 @@ class Config(BaseModel):
     )
     unfilterable_tier_strategy: str = Field(
         "wide-fetch",
-        description="CRA Compliance: how to handle tiers (ransomware, threat_actor, botnet, commercial, reported) that the /findings API cannot filter directly. 'wide-fetch' (default): drop the threshold filter from Fetch A and narrow client-side. 'drop-tier': warn and omit the unfilterable tiers from the effective threshold. 'require-rsql': abort with a clear error.",
+        description="CRA Compliance: how to handle tiers the /findings API cannot filter directly — everything except cisa-kev, i.e. vc-kev, the kev union, weaponized, poc, and the exploitInfo-token tiers (ransomware, threat_actor, botnet, commercial, reported). 'wide-fetch' (default): drop the threshold filter from Fetch A and narrow client-side, returning identical rows via one wider fetch. 'drop-tier': warn and omit the unfilterable tiers from the effective threshold — errors if that would drop every tier (which it does for the default threshold, since it contains no cisa-kev), because retaining nothing would render an empty queue that reads as 'nothing to report'. 'require-rsql': abort with a clear error.",
     )
     snapshot_diff: str = Field(
         "on",
