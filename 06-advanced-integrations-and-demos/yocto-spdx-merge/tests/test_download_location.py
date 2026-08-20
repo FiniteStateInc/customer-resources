@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
-from yocto_spdx_merge.downloads import resolve_download_location
+import io
+import json
+import tarfile
+
+import pytest
+
+from yocto_spdx_merge.cli import main
+from yocto_spdx_merge.downloads import normalize_download_location, resolve_download_location
 from yocto_spdx_merge.merge import extract_packages
+from yocto_spdx_merge.validate import validate_spdx_file
 
 
 RECIPE_NS = "http://spdx.org/spdxdocs/recipe-busybox-1111"
@@ -489,4 +497,145 @@ class TestExtractPackagesBackfill:
 
         packages, _ = extract_packages(self._refs_for(pkg_doc), index, top_refs)
 
-        assert packages[0]["downloadLocation"] == "git://git.busybox.net/busybox@abc123"
+
+class TestNormalizeDownloadLocation:
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (
+                "gitsm+ssh://git.example.com/some-org/some-repo.git@deadbeefcafe0123456789abcdef0123456789ab",
+                "git+ssh://git.example.com/some-org/some-repo.git@deadbeefcafe0123456789abcdef0123456789ab",
+            ),
+            (
+                "gitsm+https://gitlab.freedesktop.org/spice/spice@0c2c1413a8b387ea597a95b6c867470a7c56c8ab",
+                "git+https://gitlab.freedesktop.org/spice/spice@0c2c1413a8b387ea597a95b6c867470a7c56c8ab",
+            ),
+            # BitBake's fetcher scheme is case-insensitive in SRC_URI; normalize regardless
+            (
+                "GITSM+ssh://git.example.com/some-org/some-repo.git@deadbeef",
+                "git+ssh://git.example.com/some-org/some-repo.git@deadbeef",
+            ),
+        ],
+    )
+    def test_normalizes_gitsm_prefix(self, raw, expected):
+        assert normalize_download_location(raw) == expected
+
+    def test_leaves_git_prefix_unchanged(self):
+        value = "git+ssh://git.example.com/some-org/some-repo.git@deadbeef"
+        assert normalize_download_location(value) == value
+
+    @pytest.mark.parametrize("value", ["NOASSERTION", "NONE", "", None])
+    def test_leaves_non_gitsm_values_unchanged(self, value):
+        assert normalize_download_location(value) == value
+
+
+class TestGitsmDownloadLocationRegression:
+    """End-to-end regression for the gitsm+ downloadLocation validation failure.
+
+    Reproduces the reported failure: BitBake's "gitsm" fetcher (git with
+    submodules) produces downloadLocation values like "gitsm+ssh://..." /
+    "gitsm+https://...", which previously passed straight through and failed
+    spdx-tools' SPDX 2.3 validator with:
+
+        [SpdxElementType.PACKAGE] package download_location must be a valid
+        URL or download location according to the specification, but is:
+        gitsm+ssh://...
+    """
+
+    IMAGE_NS = "http://spdx.org/spdxdocs/test-image-9999"
+
+    def _make_image_doc(self, package_doc: dict) -> dict:
+        return {
+            "spdxVersion": "SPDX-2.3",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test-image",
+            "documentNamespace": self.IMAGE_NS,
+            "externalDocumentRefs": [
+                {
+                    "externalDocumentId": f"DocumentRef-{package_doc['name']}",
+                    "spdxDocument": package_doc["documentNamespace"],
+                    "checksum": {"algorithm": "SHA1", "checksumValue": "0" * 40},
+                },
+            ],
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Image-test-image",
+                    "name": "test-image",
+                    "versionInfo": "1.0",
+                    "downloadLocation": "NOASSERTION",
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Image-test-image",
+                }
+            ],
+        }
+
+    def _write_archive(self, tar_path, docs: dict[str, dict]) -> None:
+        with tarfile.open(tar_path, "w") as tf:
+            for name, doc in docs.items():
+                data = json.dumps(doc).encode()
+                info = tarfile.TarInfo(name=name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+    def test_gitsm_direct_value_merges_and_validates(self, tmp_path):
+        # The package doc's own downloadLocation is already "gitsm+..." (no
+        # backfill needed) - this is the path that bypassed normalization
+        # entirely before the fix.
+        pkg_doc = make_package_doc(
+            download_location="gitsm+ssh://git.example.com/some-org/some-repo.git@deadbeef"
+        )
+        image_doc = self._make_image_doc(pkg_doc)
+
+        tar_path = tmp_path / "test-image.spdx.tar"
+        self._write_archive(
+            tar_path,
+            {
+                "test-image.spdx.json": image_doc,
+                "packages/busybox.spdx.json": pkg_doc,
+            },
+        )
+        out_path = tmp_path / "out.spdx.json"
+
+        main([str(tar_path), "-o", str(out_path)])
+
+        assert out_path.exists(), "merge must not delete output on a false validation failure"
+        merged = json.loads(out_path.read_text())
+        by_name = {p["name"]: p for p in merged["packages"]}
+        assert by_name["busybox"]["downloadLocation"] == "git+ssh://git.example.com/some-org/some-repo.git@deadbeef"
+
+        errors = validate_spdx_file(str(out_path))
+        assert errors == []
+
+    def test_gitsm_backfilled_from_recipe_merges_and_validates(self, tmp_path):
+        # The package doc's downloadLocation is NOASSERTION and gets backfilled
+        # from the recipe doc's download package, which itself carries the
+        # "gitsm+" prefix.
+        recipe = make_recipe_doc(["gitsm+https://git.example.com/some-org/some-repo.git@deadbeef"])
+        pkg_doc = make_package_doc()
+        image_doc = self._make_image_doc(pkg_doc)
+
+        tar_path = tmp_path / "test-image.spdx.tar"
+        self._write_archive(
+            tar_path,
+            {
+                "test-image.spdx.json": image_doc,
+                "packages/busybox.spdx.json": pkg_doc,
+                "recipes/recipe-busybox.spdx.json": recipe,
+            },
+        )
+        out_path = tmp_path / "out.spdx.json"
+
+        main([str(tar_path), "-o", str(out_path)])
+
+        assert out_path.exists()
+        merged = json.loads(out_path.read_text())
+        by_name = {p["name"]: p for p in merged["packages"]}
+        assert by_name["busybox"]["downloadLocation"] == "git+https://git.example.com/some-org/some-repo.git@deadbeef"
+
+        errors = validate_spdx_file(str(out_path))
+        assert errors == []

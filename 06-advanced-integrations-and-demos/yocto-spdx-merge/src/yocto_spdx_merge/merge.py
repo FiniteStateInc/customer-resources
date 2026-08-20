@@ -7,7 +7,11 @@ import uuid
 from datetime import datetime, timezone
 
 from yocto_spdx_merge import __version__
-from yocto_spdx_merge.downloads import is_real_location, resolve_download_location
+from yocto_spdx_merge.downloads import (
+    is_real_location,
+    normalize_download_location,
+    resolve_download_location,
+)
 from yocto_spdx_merge.enrich import load_cpe_map, enrich_package
 from yocto_spdx_merge.licenses import resolve_license_expression
 
@@ -91,7 +95,7 @@ def extract_packages(
             # deliberate SPDX assertion and is preserved. Unresolvable values
             # normalize to NOASSERTION (spdx-tools rejects file:// here, so
             # keeping a local path would fail output validation).
-            download_location = pkg.get("downloadLocation", "NOASSERTION")
+            download_location = normalize_download_location(pkg.get("downloadLocation", "NOASSERTION"))
             if not is_real_location(download_location) and download_location != "NONE":
                 resolved = resolve_download_location(
                     pkg["SPDXID"], doc, namespace_index, all_external_doc_refs

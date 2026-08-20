@@ -19,6 +19,19 @@ _DOWNLOAD_SPDXID_PREFIX = "SPDXRef-Download-"
 # missing-colon typos, and other schemeless strings fail spdx-tools validation
 _URI_SCHEME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 
+# BitBake's "gitsm" fetcher (git with submodules) isn't one of the VCS tools
+# spdx-tools' downloadLocation pattern recognizes (git|hg|svn|bzr), so
+# "gitsm+ssh://..." / "gitsm+https://..." fail validation even though they're
+# real git remotes. Normalize to "git+" since git is the actual protocol.
+_GITSM_PREFIX_PATTERN = re.compile(r"^gitsm\+", re.IGNORECASE)
+
+
+def normalize_download_location(value):
+    """Rewrite Yocto/BitBake fetcher prefixes to SPDX-recognized VCS tool prefixes."""
+    if isinstance(value, str):
+        return _GITSM_PREFIX_PATTERN.sub("git+", value, count=1)
+    return value
+
 
 def _download_sort_key(spdx_id: str) -> int:
     """Sort download packages by their trailing SRC_URI index (Download-<pn>-N)."""
@@ -91,7 +104,7 @@ def resolve_download_location(
             continue
         location = _location_from_recipe_doc(recipe_doc, recipe_spdxid)
         if location is not None:
-            return location
+            return normalize_download_location(location)
     return None
 
 
