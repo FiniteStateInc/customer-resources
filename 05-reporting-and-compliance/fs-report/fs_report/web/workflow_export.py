@@ -136,6 +136,7 @@ _CONFIG_KEY_TO_FLAG: dict[str, str] = {
     "finding_counts": "--finding-counts",
     "detailed": "--detailed",
     "standalone": "--standalone",
+    "product_only": "--product-only",
     "vex_override": "--vex-override",
 }
 
@@ -147,6 +148,7 @@ _BOOL_FLAGS: frozenset[str] = frozenset(
         "include_file_components",
         "detailed",
         "standalone",
+        "product_only",
         "vex_override",
     }
 )
@@ -172,6 +174,7 @@ _GHA_UNSUPPORTED_NEW_KEYS: frozenset[str] = frozenset(
         "finding_counts",
         "detailed",
         "standalone",
+        "product_only",
         "vex_override",
         # SP3: uploaded scoring/context file paths are server-local — never
         # emitted to any export; the GHA note tells the user to re-supply them.
@@ -210,6 +213,7 @@ _BOOL_OVERRIDE_KEYS: frozenset[str] = frozenset(
         "open_only",
         "detailed",
         "standalone",
+        "product_only",
         "vex_override",
         # B7 (#10B): coerce the destructive FP autotriage opt-in so a string
         # ``"autotriage": "false"`` doesn't emit --autotriage in the CLI export.
@@ -581,6 +585,8 @@ def serialize_cli(model: dict[str, Any]) -> str:
             parts.append("--detailed")
         if eff.get("standalone"):
             parts.append("--standalone")
+        if eff.get("product_only"):
+            parts.append("--product-only")
         if eff.get("vex_override"):
             parts.append("--vex-override")
 

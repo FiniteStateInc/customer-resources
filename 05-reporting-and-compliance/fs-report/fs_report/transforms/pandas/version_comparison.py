@@ -10,11 +10,12 @@ Shows version-over-version progression for each project:
 """
 
 import logging
+from collections import Counter
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
+from fs_report.purl_utils import _version_tuple
 from fs_report.transforms.pandas._cve_updates import (
     _process_cve_updates,
     _to_iso8601z,
@@ -25,6 +26,7 @@ from fs_report.transforms.pandas.comparison._shared import (
 from fs_report.transforms.pandas.comparison._shared import (
     add_finding_match_key as _add_finding_match_key,
 )
+from fs_report.transforms.pandas.comparison._shared import version_sort_key
 
 logger = logging.getLogger(__name__)
 
@@ -416,7 +418,7 @@ def _process_single_project(
 
         total = len(f_df)
         sev_counts = _severity_counts(f_df)
-        comp_count = len(c_df["name"].unique()) if not c_df.empty else 0
+        comp_count = _distinct_component_count(c_df)
 
         step = {
             "version": vname,
@@ -468,13 +470,7 @@ def _process_single_project(
             prev_c_df = version_dfs[i - 1][2]
             fixed_df, new_df, unchanged_df = _classify_findings(prev_f_df, f_df)
             churn_df = _classify_components(prev_c_df, c_df)
-            churn_df = _attach_findings_impact(
-                churn_df,
-                fixed_df,
-                new_df,
-                prev_f_df,
-                f_df,
-            )
+            churn_df = _attach_findings_impact(churn_df, fixed_df, new_df)
 
             # Fetch external CVE changes for this version pair
             prev_created = prev_v_meta_i.get("created", "")
@@ -557,11 +553,7 @@ def _process_single_project(
         )
         component_churn = _classify_components(kpi_prev_c_df, kpi_last_c_df)
         component_churn = _attach_findings_impact(
-            component_churn,
-            fixed_latest,
-            new_latest,
-            kpi_prev_f_df,
-            kpi_last_f_df,
+            component_churn, fixed_latest, new_latest
         )
 
         # Annotate new_latest and compute externally_changed for the latest pair.
@@ -920,48 +912,305 @@ def _classify_findings(
     return fixed_df, new_df, unchanged_df
 
 
-def _classify_components(baseline: pd.DataFrame, current: pd.DataFrame) -> pd.DataFrame:
-    """Return a DataFrame of component changes (added, removed, updated)."""
-    if baseline.empty and current.empty:
-        return pd.DataFrame(
-            columns=[
-                "change_type",
-                "name",
-                "version_baseline",
-                "version_current",
-            ]
-        )
+def _component_identity(name: Any, version: Any) -> tuple[str, tuple[int, ...] | str]:
+    """What two component rows must share to be the same component.
 
-    merged = pd.merge(
-        baseline[["name", "version"]].drop_duplicates(["name", "version"]),
-        current[["name", "version"]].drop_duplicates(["name", "version"]),
-        on="name",
-        how="outer",
-        suffixes=("_baseline", "_current"),
+    The single identity rule for this module.  Every surface that answers "is
+    this the same component?" goes through it — churn classification, the
+    Findings Impact lookup and the component count — so they can never disagree
+    about whether ``OpenSSL 1.0`` and ``openssl 1.0.0`` are one component or two.
+
+    Name is lowercased to match ``add_finding_match_key``; version reduces to
+    :func:`_version_identity`.
+    """
+    return (_clean_cell(name).lower(), _version_identity(_clean_cell(version)))
+
+
+def _distinct_component_count(df: pd.DataFrame | None) -> int:
+    """Count distinct components, by the same identity churn classification uses.
+
+    Counting distinct NAMES undercounts an inventory that ships one name at
+    several versions.  Counting raw ``(name, version)`` strings overcounts it in
+    the other direction: it would call ``OpenSSL 1.0`` and ``openssl 1.0.0`` two
+    components while churn treats them as one unchanged component, and it would
+    count nameless rows that churn drops.  Counting identities agrees with churn
+    on every one of those.
+    """
+    if df is None or df.empty or "name" not in df.columns:
+        return 0
+    versions = df["version"].tolist() if "version" in df.columns else [""] * len(df)
+    return len(
+        {
+            _component_identity(name, version)
+            for name, version in zip(df["name"].tolist(), versions, strict=True)
+            if _clean_cell(name)
+        }
     )
 
-    conditions = [
-        merged["version_baseline"].isna(),
-        merged["version_current"].isna(),
-        merged["version_baseline"] != merged["version_current"],
-    ]
-    choices = ["added", "removed", "updated"]
-    merged["change_type"] = np.select(conditions, choices, default="unchanged")
-    churn = merged[merged["change_type"] != "unchanged"].copy()
 
+# Above this many candidate pairs for ONE component name, _pair_surplus stops
+# pairing and reports the surplus as plain removals and additions.  100x100
+# unmatched versions of a single name is already far past anything a real
+# inventory produces.
+_MAX_PAIRING_CANDIDATES = 10_000
+
+
+def _version_identity(version: str) -> tuple[int, ...] | str:
+    """Collapse versions that name the same release to one identity.
+
+    ``1.0`` and ``1.0.0`` are the same release written two ways, so they must
+    count as held-on-both-sides rather than as a removal plus an addition.
+    Only fully numeric dotted versions reduce to their numeric tuple (with
+    trailing zeros stripped): ``_version_tuple`` reads the digits and stops at
+    the first non-digit, so trusting it for suffixed versions would collapse
+    ``2.9.1+dfsg1-5`` and ``2.9.1+dfsg1-6`` — a real revision bump — into one
+    release, and call ``1.0.0-alpha``/``1.0.0-beta`` unchanged.  Anything with
+    a suffix keeps its lowercased raw string as its identity.
+    """
+    text = version.strip()
+    if text and all(seg.isdigit() for seg in text.split(".")):
+        parsed = _version_tuple(text)
+        if parsed is not None:
+            trimmed = list(parsed)
+            while trimmed and trimmed[-1] == 0:
+                trimmed.pop()
+            return tuple(trimmed)
+    return text.lower()
+
+
+def _version_distance(before: str, after: str) -> tuple[int, tuple[int, ...]]:
+    """How far apart two versions are, for pairing surplus variants.
+
+    Returns a sort key, smallest = closest.  Pairs where either side is
+    unparseable sort last (first element 1), since no meaningful distance
+    exists for them.  For parseable pairs the key is the per-position absolute
+    difference of the zero-padded numeric tuples, so a difference in the major
+    version outweighs any difference further right: ``2.3`` is nearer to
+    ``2.4`` than to ``3.0``.
+    """
+    left = _version_tuple(before)
+    right = _version_tuple(after)
+    if left is None or right is None:
+        return (1, ())
+    width = max(len(left), len(right))
+    left += (0,) * (width - len(left))
+    right += (0,) * (width - len(right))
+    return (0, tuple(abs(a - b) for a, b in zip(left, right, strict=True)))
+
+
+def _pair_surplus(
+    leftover_base: list[str], leftover_curr: list[str], name: str = ""
+) -> tuple[list[tuple[str, str]], list[str], list[str]]:
+    """Pair surplus versions of one name by closeness, nearest pair first.
+
+    Returns ``(pairs, unpaired_base, unpaired_curr)``.  Each pair is one real
+    version move; whatever is left over on either side is a variant that only
+    exists on that side.
+
+    Greedy nearest-first, not a global optimum: the candidate pairs are sorted
+    by distance and taken in order, skipping any whose either end is already
+    claimed.  Equal distances prefer the upgrade: ``2.3`` leaving while ``2.2``
+    and ``2.4`` arrive pairs ``2.3 → 2.4``, not the equally-near downgrade —
+    a downgrade shown as an update misleads more than an upgrade does.
+    Remaining ties break on input position, so the result is deterministic.
+
+    Pairs with no meaningful distance (either side unparseable) are taken only
+    when exactly one version remains unclaimed on each side — the name's one
+    leftover variant changed, whatever the strings look like.  With more than
+    one remaining, any junk-to-junk assignment would be arbitrary, so those
+    versions are reported plainly as removed and added instead.
+
+    Cost is O(b*c) over the UNMATCHED versions of a SINGLE name, not over the
+    inventory — the whole-frame pass stays linear.  Past
+    ``_MAX_PAIRING_CANDIDATES`` candidate pairs the pairing is skipped (with a
+    warning) and every surplus version is reported plainly as removed or
+    added.  That bounds the work, and it is the more honest output at that
+    size: with hundreds of unmatched versions on one name, any pairing this
+    could invent is noise.
+    """
+    if len(leftover_base) * len(leftover_curr) > _MAX_PAIRING_CANDIDATES:
+        logger.warning(
+            "Version Comparison: component %r has %d x %d unmatched versions, "
+            "past the pairing bound — reporting them as plain removals and "
+            "additions instead of pairing.",
+            name or "<unknown>",
+            len(leftover_base),
+            len(leftover_curr),
+        )
+        return [], list(leftover_base), list(leftover_curr)
+
+    def _is_downgrade(before: str, after: str) -> int:
+        left = _version_tuple(before)
+        right = _version_tuple(after)
+        if left is None or right is None:
+            return 0
+        width = max(len(left), len(right))
+        return (
+            1
+            if right + (0,) * (width - len(right)) < left + (0,) * (width - len(left))
+            else 0
+        )
+
+    candidates = sorted(
+        (_version_distance(before, after), _is_downgrade(before, after), bi, ci)
+        for bi, before in enumerate(leftover_base)
+        for ci, after in enumerate(leftover_curr)
+    )
+    claimed_base: set[int] = set()
+    claimed_curr: set[int] = set()
+    pairs: list[tuple[str, str]] = []
+    for distance, _downgrade, bi, ci in candidates:
+        if bi in claimed_base or ci in claimed_curr:
+            continue
+        if distance[0] == 1 and not (
+            len(leftover_base) - len(claimed_base) == 1
+            and len(leftover_curr) - len(claimed_curr) == 1
+        ):
+            # No meaningful distance and more than one candidate remains on a
+            # side: pairing would be arbitrary.  Candidates are sorted, so
+            # every parseable pair was already taken — remaining counts are
+            # final and this skip applies to all further candidates too.
+            continue
+        claimed_base.add(bi)
+        claimed_curr.add(ci)
+        pairs.append((leftover_base[bi], leftover_curr[ci]))
+    return (
+        pairs,
+        [v for i, v in enumerate(leftover_base) if i not in claimed_base],
+        [v for i, v in enumerate(leftover_curr) if i not in claimed_curr],
+    )
+
+
+def _clean_cell(value: Any) -> str:
+    """Trim a frame cell to a plain string, treating NaN/"nan" as empty."""
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() == "nan" else text
+
+
+def _versions_by_name(df: pd.DataFrame) -> dict[str, tuple[str, list[str]]]:
+    """Group a component frame into ``lowercased name -> (display name, versions)``.
+
+    Names are keyed case-insensitively to match ``add_finding_match_key``, which
+    lowercases ``component_name`` for its key — otherwise a casing-only rename
+    reads as a removal plus an addition here while the findings tables treat it
+    as the same component.  The display name is the first spelling encountered
+    in row order, so the report still shows the name as the SBOM wrote it.
+
+    Rows with a blank name are dropped: they carry no identity, so grouping them
+    all under ``""`` would pair unrelated nameless components with each other.
+    """
+    if df.empty or "name" not in df.columns:
+        return {}
+    versions_col = df["version"].tolist() if "version" in df.columns else [""] * len(df)
+    display: dict[str, str] = {}
+    seen: dict[str, dict[tuple[int, ...] | str, str]] = {}
+    for raw_name, raw_version in zip(df["name"].tolist(), versions_col, strict=True):
+        name = _clean_cell(raw_name)
+        if not name:
+            continue
+        key = name.lower()
+        version = _clean_cell(raw_version)
+        display.setdefault(key, name)
+        # Keyed by identity, so one release written two ways (1.0 and 1.0.0)
+        # collapses to a single entry WITHIN a side too, not just across sides.
+        # Otherwise the second spelling has nothing to pair with and surfaces as
+        # a phantom removal.  The first spelling in row order is the one shown.
+        seen.setdefault(key, {}).setdefault(_version_identity(version), version)
+    return {
+        key: (
+            display[key],
+            sorted(versions.values(), key=version_sort_key, reverse=True),
+        )
+        for key, versions in seen.items()
+    }
+
+
+def _classify_components(baseline: pd.DataFrame, current: pd.DataFrame) -> pd.DataFrame:
+    """Return a DataFrame of component changes (added, removed, updated).
+
+    Components are matched on (name, version), not on name alone.  A name that
+    carries the same version on both sides is unchanged even when that name also
+    appears at other versions.  Matching on name alone cross-joined every
+    variant of a repeated name against every other variant, so a component
+    present at two versions on both sides produced two phantom "updated" rows
+    pointing in opposite directions (e.g. tcp_cubic 5.10.61 -> 2.3 AND
+    2.3 -> 5.10.61).
+
+    Versions left unmatched on both sides are paired by closeness
+    (:func:`_pair_surplus`), so ``2.3`` disappearing while ``2.4`` and ``3.0``
+    appear reports ``2.3 -> 2.4`` updated plus ``3.0`` added, not an arbitrary
+    ``2.3 -> 3.0``.  A pairing is reported as ``updated`` in either direction;
+    the row carries both versions, so a downgrade is visible as such.
+    """
+    columns = ["change_type", "name", "version_baseline", "version_current"]
+    if baseline.empty and current.empty:
+        return pd.DataFrame(columns=columns)
+
+    base_by_name = _versions_by_name(baseline)
+    curr_by_name = _versions_by_name(current)
+
+    rows: list[dict[str, str]] = []
+    for key in sorted(set(base_by_name) | set(curr_by_name)):
+        display_name, base_versions = base_by_name.get(key, ("", []))
+        curr_display, curr_versions = curr_by_name.get(key, ("", []))
+        display_name = display_name or curr_display
+
+        # A version carried on both sides is unchanged and drops out entirely.
+        held = {_version_identity(v) for v in base_versions} & {
+            _version_identity(v) for v in curr_versions
+        }
+        leftover_base = [v for v in base_versions if _version_identity(v) not in held]
+        leftover_curr = [v for v in curr_versions if _version_identity(v) not in held]
+
+        pairs, unpaired_base, unpaired_curr = _pair_surplus(
+            leftover_base, leftover_curr, display_name
+        )
+        for before, after in pairs:
+            rows.append(
+                {
+                    "change_type": "updated",
+                    "name": display_name,
+                    "version_baseline": before,
+                    "version_current": after,
+                }
+            )
+        for before in unpaired_base:
+            rows.append(
+                {
+                    "change_type": "removed",
+                    "name": display_name,
+                    "version_baseline": before,
+                    "version_current": "",
+                }
+            )
+        for after in unpaired_curr:
+            rows.append(
+                {
+                    "change_type": "added",
+                    "name": display_name,
+                    "version_baseline": "",
+                    "version_current": after,
+                }
+            )
+
+    churn = pd.DataFrame(rows, columns=columns)
+    if churn.empty:
+        return churn
+
+    # Explicit, fully-specified order so CSV/XLSX output is reproducible run to
+    # run: removed, then updated, then added; within each, by name and version.
     type_order = {"removed": 0, "updated": 1, "added": 2}
-    churn["_sort"] = churn["change_type"].map(type_order)
-    churn = churn.sort_values("_sort").drop(columns="_sort")
-
-    # Avoid NaN in version columns (shows as "nan" in HTML); use empty string for missing
-    def _version_str(x: Any) -> str:
-        if pd.isna(x):
-            return ""
-        s = str(x).strip()
-        return "" if s.lower() == "nan" else s
-
-    for col in ("version_baseline", "version_current"):
-        churn[col] = churn[col].apply(_version_str)
+    churn["_type_sort"] = churn["change_type"].map(type_order)
+    churn["_name_sort"] = churn["name"].str.lower()
+    churn["_version_sort"] = churn.apply(
+        lambda r: version_sort_key(r["version_baseline"] or r["version_current"]),
+        axis=1,
+    )
+    churn = churn.sort_values(
+        ["_type_sort", "_name_sort", "_version_sort"], kind="stable"
+    ).drop(columns=["_type_sort", "_name_sort", "_version_sort"])
 
     return churn
 
@@ -970,34 +1219,48 @@ def _attach_findings_impact(
     churn: pd.DataFrame,
     fixed_df: pd.DataFrame,
     new_df: pd.DataFrame,
-    baseline: pd.DataFrame,
-    current: pd.DataFrame,
 ) -> pd.DataFrame:
     """Add 'findings_impact' column to component churn."""
     if churn.empty:
         churn["findings_impact"] = pd.Series(dtype=int)
         return churn
 
-    # Pre-compute per-component counts to avoid per-row filtering
-    fixed_counts = (
-        fixed_df["component_name"].value_counts()
-        if not fixed_df.empty
-        else pd.Series(dtype=int)
-    )
-    new_counts = (
-        new_df["component_name"].value_counts()
-        if not new_df.empty
-        else pd.Series(dtype=int)
-    )
+    # Pre-compute counts per (lowercased name, version) so a name that churns at
+    # several versions attributes each finding to the variant that carries it,
+    # instead of every row claiming the whole name-level total.  Names are
+    # lowercased to match _versions_by_name's case-insensitive keying.
+    def _variant_counts(df: pd.DataFrame) -> Counter:
+        if df.empty or "component_name" not in df.columns:
+            return Counter()
+        versions = (
+            df["component_version"].tolist()
+            if "component_version" in df.columns
+            else [""] * len(df)
+        )
+        return Counter(
+            _component_identity(name, version)
+            for name, version in zip(
+                df["component_name"].tolist(), versions, strict=True
+            )
+        )
+
+    fixed_counts = _variant_counts(fixed_df)
+    new_counts = _variant_counts(new_df)
 
     def _impact(row: pd.Series) -> int:
-        name = row["name"]
-        ct = row["change_type"]
-        if ct == "removed":
-            return int(fixed_counts.get(name, 0))
-        elif ct == "added":
-            return int(new_counts.get(name, 0))
-        return int(new_counts.get(name, 0)) + int(fixed_counts.get(name, 0))
+        change_type = row["change_type"]
+        # Keyed by _component_identity, the same rule that decided which rows
+        # are churn at all — matching on the raw version string would miss a
+        # finding recorded at 1.0.0 against a churn row that reads 1.0.
+        before = _component_identity(row["name"], row["version_baseline"])
+        after = _component_identity(row["name"], row["version_current"])
+        if change_type == "removed":
+            return int(fixed_counts.get(before, 0))
+        if change_type == "added":
+            return int(new_counts.get(after, 0))
+        # An update clears the baseline variant's findings and introduces the
+        # current variant's, so both sides count.
+        return int(new_counts.get(after, 0)) + int(fixed_counts.get(before, 0))
 
     churn["findings_impact"] = churn.apply(_impact, axis=1)
     return churn
@@ -1034,8 +1297,8 @@ def _compute_kpi(
     high_curr = int((current["severity"] == "HIGH").sum()) if not current.empty else 0
     high = _delta(high_base, high_curr)
 
-    comp_base = len(baseline_comp["name"].unique()) if not baseline_comp.empty else 0
-    comp_curr = len(current_comp["name"].unique()) if not current_comp.empty else 0
+    comp_base = _distinct_component_count(baseline_comp)
+    comp_curr = _distinct_component_count(current_comp)
     components = _delta(comp_base, comp_curr)
 
     return {

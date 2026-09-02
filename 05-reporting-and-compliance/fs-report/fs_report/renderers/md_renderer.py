@@ -172,6 +172,10 @@ class MarkdownRenderer:
         if folder:
             rows.append(("Folder", folder))
 
+        maturity = meta.get("exploit_maturity_filter", "")
+        if maturity:
+            rows.append(("Exploit Maturity", maturity))
+
         start = meta.get("start_date", "")
         end = meta.get("end_date", "")
         if start and end:

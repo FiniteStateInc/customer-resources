@@ -86,6 +86,7 @@ _BOOL_KEYS: tuple[str, ...] = (
     "finding_counts",
     "detailed",
     "standalone",
+    "product_only",
     "vex_override",
     # SP2: auto-apply VEX toggle (has a DEFAULTS entry = False, so it routes
     # through the diff-vs-default branch like vex_override).

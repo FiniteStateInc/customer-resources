@@ -293,6 +293,12 @@ fs-report run --recipe "Component Vulnerability Analysis" --period 30d
 | **Needs Attention** | Multiple high CVSS findings, some exploit activity |
 | **Critical** | CVSS >8.0, active exploits, large volumes |
 
+**Exploit-maturity filter:** `--exploit-maturity` narrows the inventory to findings carrying at least one of the named exploit tiers (KEV catalogs, maturity tiers, and in-the-wild signals — run `fs-report run --help` for the current values, which are the same ones CRA Compliance uses). Omit the flag for the full inventory. The tiers a run used are stated in the HTML "Applied filter" panel, the Markdown metadata table and the JSON metadata, so a narrowed report can't be mistaken for a complete one.
+
+**Tiers do not imply one another.** The platform stores one exploit-maturity value per finding: its *highest* tier. So `--exploit-maturity poc` returns findings whose highest tier is `poc` and excludes `weaponized` ones — even though a weaponized exploit means a PoC also exists. The platform UI's PoC filter treats the tiers as ordered and *does* show weaponized findings, so **use `--exploit-maturity poc,weaponized` if you are reconciling the report against a PoC-filtered view in the UI.** Enumerate every tier you want; the filter never widens on its own.
+
+**The KEV column means CISA KEV.** That column has always reflected CISA KEV membership only, so a row the filter kept via `vc-kev` (or via `kev` through VulnCheck alone) can show a blank KEV cell. That is the column's meaning, not a filter miss — the row is present because the filter matched, and the tiers it matched on are the ones in the report's filter disclosure.
+
 **Example commands:**
 ```bash
 # All projects
@@ -300,6 +306,9 @@ fs-report run --recipe "Findings by Project" --period 30d
 
 # Specific project
 fs-report run --recipe "Findings by Project" --project "MyProject"
+
+# Only findings with real-world exploitation signals
+fs-report run --recipe "Findings by Project" --folder "Products" --exploit-maturity kev,ransomware,threat_actor
 ```
 
 ---
@@ -1522,7 +1531,7 @@ fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --ai \
 
 **What it shows:**
 - Project summary table (multi-project mode): per-project deltas at a glance
-- KPI delta cards: total findings, critical, high, and component counts (before → after)
+- KPI delta cards: total findings, critical, high, and component counts (before → after). Component counts are distinct components — lowercased name + normalized version, the same identity churn matching uses — so an inventory shipping one name at several versions counts each version, not each name once
 - Severity comparison: grouped bar chart showing each severity level side by side
 - **Changes (latest pair):** Fixed findings table (resolved issues) and New findings table (regressions), side by side with severity summaries
 - **Component Changes (latest pair):** Added, removed, and updated components with finding impact

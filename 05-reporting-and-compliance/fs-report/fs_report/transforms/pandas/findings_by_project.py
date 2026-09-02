@@ -2,12 +2,21 @@
 Pandas transform functions for Findings by Project report.
 """
 
+import logging
+import re
+from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 import pandas as pd
 
+# derive_tiers is imported from the CRA module on purpose: a tier name must mean
+# the same thing in `--exploit-maturity` regardless of which recipe reads it.
+from fs_report.cra.tiers import derive_tiers, normalize_tiers, validate_tier_names
 from fs_report.models import Config
 from fs_report.purl_utils import parse_purl
+
+logger = logging.getLogger(__name__)
 
 _CSV_COLUMNS = [
     "CVE ID",
@@ -51,6 +60,30 @@ def findings_by_project_pandas_transform(
         Processed DataFrame with findings organized by project
     """
 
+    # Exploit-maturity tiers to keep, using the same tier vocabulary and the
+    # same `--exploit-maturity` flag as CRA Compliance. Empty/None = no filter.
+    #
+    # Matching is EXACT SET MEMBERSHIP, deliberately: tiers do not imply one
+    # another. `/findings.exploitMaturity` is a single scalar carrying the
+    # finding's HIGHEST tier, so a `poc` threshold does not return a weaponized
+    # finding even though a weaponized exploit implies a PoC exists — the
+    # platform GUI's PoC filter treats the tiers as ordered and does include
+    # them, so GUI parity needs `poc,weaponized`. Exact match is what makes this
+    # flag mean the same thing here as in CRA; the ordering caveat and its
+    # measured effect belong in the operator docs (CLI help, the recipes skill,
+    # REPORT_GUIDE), not inferred here.
+    maturity_tiers = normalize_tiers(
+        getattr(config, "exploit_maturity_threshold", None)
+    )
+    # Fail loud on an unrecognized tier, exactly as cra_compliance_transform
+    # does. The CLI already validates at parse time, but a programmatic caller
+    # building a Config directly bypasses that — and an unknown tier never
+    # matches a finding, so without this the report would silently narrow to
+    # empty while disclosing the typo as if it were a real filter. Validated
+    # BEFORE the empty-payload early returns below: a misconfiguration is a
+    # misconfiguration regardless of what the fetch happened to return.
+    validate_tier_names(maturity_tiers)
+
     if isinstance(data, pd.DataFrame):
         if data.empty:
             return pd.DataFrame()
@@ -61,8 +94,26 @@ def findings_by_project_pandas_transform(
         # Convert to DataFrame
         df = pd.DataFrame(data)
 
-    # Flatten nested data structures first
-    df = flatten_findings_data(df)
+    # Flatten nested data structures first. The tier column is derived here,
+    # while inKev / inVcKev / exploitInfo are still on the frame — the engine's
+    # per-batch prune drops them before this transform runs, so on that path
+    # `exploit_tiers` is already present and the derivation is skipped.
+    df = flatten_findings_data(df, derive_exploit_tiers=bool(maturity_tiers))
+
+    if maturity_tiers:
+        # Vectorized set membership: pad both sides with the separator so a
+        # substring can't cross a tier boundary — a bare "kev" search would
+        # otherwise also match "cisa-kev".
+        wanted = "|".join(re.escape(f",{tier},") for tier in maturity_tiers)
+        padded = "," + df["exploit_tiers"].fillna("").astype(str) + ","
+        df = df[padded.str.contains(wanted, regex=True, na=False)]
+        if df.empty:
+            # Keep the output schema on a filtered-to-zero result so CSV/XLSX
+            # carry a header row: a filter that matched nothing is a report
+            # ("zero rows passed"), and a zero-byte file reads as a failed run.
+            # The no-data-at-all early returns above stay bare deliberately —
+            # that is the "nothing fetched" case, not a narrowing.
+            return pd.DataFrame(columns=_CSV_COLUMNS)
 
     # Apply component filter if specified
     component_filter = getattr(config, "component_filter", None)
@@ -80,7 +131,9 @@ def findings_by_project_pandas_transform(
             version_col="component.version",
         )
         if df.empty:
-            return pd.DataFrame()
+            # Same rule as the maturity filter above: filtered-to-zero keeps
+            # the output schema so tabular formats get a header row.
+            return pd.DataFrame(columns=_CSV_COLUMNS)
 
     # Select and rename required columns
     required_columns = {
@@ -130,8 +183,18 @@ def findings_by_project_pandas_transform(
             # Handle missing columns gracefully
             output_df[output_col] = None
 
-    # Carry over internal IDs for link construction (not displayed in table)
-    for internal_col in ("finding_numeric_id", "project.id", "projectVersion.id"):
+    # Carry over internal IDs for link construction (not displayed in table).
+    # source_project_id is set by the engine's --product-only roll-up: it holds
+    # the project the finding ACTUALLY lives in after project.id was repointed
+    # at the owning product, and the FS Link below must use it — the platform
+    # URL needs the real project + version pair, and a product id paired with a
+    # dependency's version id is a dead link.
+    for internal_col in (
+        "finding_numeric_id",
+        "project.id",
+        "projectVersion.id",
+        "source_project_id",
+    ):
         if internal_col in df.columns:
             output_df[internal_col] = df[internal_col].values
 
@@ -189,26 +252,36 @@ def findings_by_project_pandas_transform(
         and "projectVersion.id" in output_df.columns
         and "finding_numeric_id" in output_df.columns
     ):
-        output_df["FS Link"] = output_df.apply(
-            lambda row: (
-                (
-                    f"https://{domain}/projects/{row.get('project.id', '')}"
+
+        def _fs_link(row: Any) -> str:
+            # Prefer the pre-roll-up project id: under --product-only the
+            # project.id column points at the owning PRODUCT, but the finding
+            # lives in the dependency project's version on the platform.
+            link_pid = row.get("source_project_id") or row.get("project.id")
+            if (
+                link_pid
+                and row.get("projectVersion.id")
+                and row.get("finding_numeric_id")
+            ):
+                return (
+                    f"https://{domain}/projects/{link_pid}"
                     f"/versions/{row.get('projectVersion.id', '')}"
                     f"/findings?findingId={row.get('finding_numeric_id', '')}"
                 )
-                if row.get("project.id")
-                and row.get("projectVersion.id")
-                and row.get("finding_numeric_id")
-                else ""
-            ),
-            axis=1,
-        )
+            return ""
+
+        output_df["FS Link"] = output_df.apply(_fs_link, axis=1)
     else:
         output_df["FS Link"] = ""
 
     # Drop internal ID columns (not needed in output)
     output_df = output_df.drop(
-        columns=["finding_numeric_id", "project.id", "projectVersion.id"],
+        columns=[
+            "finding_numeric_id",
+            "project.id",
+            "projectVersion.id",
+            "source_project_id",
+        ],
         errors="ignore",
     )
 
@@ -263,26 +336,153 @@ def findings_by_project_pandas_transform(
     return output_df
 
 
-def flatten_findings_data(df: pd.DataFrame) -> pd.DataFrame:
+def _exploit_tier_series(df: pd.DataFrame) -> pd.Series:
+    """Derive the comma-joined CRA exploit-tier set for each row.
+
+    Reuses ``fs_report.cra.tiers.derive_tiers`` so the tier names behind
+    ``--exploit-maturity`` can never drift between this report and CRA
+    Compliance. The signal columns are normalized first because ``derive_tiers``
+    reads a raw API record: a NaN ``inKev`` is truthy in Python and would
+    otherwise promote every row to ``cisa-kev``.
+
+    ``exploitInfo`` is a list of plain token strings (verified against a live
+    deployment 2026-08-24: 113 of 113 sampled exploit-carrying findings had
+    string elements, e.g. ``["commercial", "weaponized", "poc"]``), which is what
+    ``derive_tiers`` tests membership against. A non-list value is treated as no
+    tokens rather than coerced — the sibling ``exploitInfo`` counters in this
+    file accept dict elements, but they only count, whereas guessing a token out
+    of an unexpected shape here would silently change which rows a filter keeps.
+    Because those counters DO accept dict elements, a payload that ever shipped
+    them would show in-the-wild signal counts on rows the tier filter drops — so
+    non-string elements are warned about loudly below instead of ignored.
+    """
+
+    def _flag(col: str) -> pd.Series:
+        if col not in df.columns:
+            return pd.Series(False, index=df.index)
+        return df[col].fillna(False).astype(bool)
+
+    if "exploitMaturity" in df.columns:
+        maturity = df["exploitMaturity"].fillna("").astype(str).str.strip().str.lower()
+    else:
+        maturity = pd.Series("", index=df.index)
+    info = (
+        df["exploitInfo"]
+        if "exploitInfo" in df.columns
+        else pd.Series([[]] * len(df), index=df.index)
+    )
+
+    kev_flags = _flag("inKev")
+    vc_flags = _flag("inVcKev")
+    # isinstance FIRST: bool() on a numpy array raises "truth value of an
+    # array is ambiguous", and some ingestion paths can hand back array cells.
+    has_tokens = info.map(lambda tokens: isinstance(tokens, list) and bool(tokens))
+
+    # Non-string elements derive no tiers (see docstring) but DO feed the
+    # exploit-signal counters — surface that divergence instead of hiding it.
+    nonstring_rows = int(
+        info.map(
+            lambda tokens: isinstance(tokens, list)
+            and any(not isinstance(t, str) for t in tokens)
+        ).sum()
+    )
+    if nonstring_rows:
+        logger.warning(
+            "%d finding(s) carry non-string exploitInfo elements; they count "
+            "toward the exploit-signal columns but derive no exploit-maturity "
+            "tiers, so --exploit-maturity cannot match them. Live payloads "
+            "carry string tokens — this shape is unexpected.",
+            nonstring_rows,
+        )
+
+    # A row with no exploit signal at all can only derive the empty tier set, so
+    # call derive_tiers on the rows that carry one. On real data that is a small
+    # minority (113 of 1,000 sampled findings), which is what keeps this pass
+    # affordable on a portfolio-scale frame — while every row that could produce
+    # a tier still goes through the shared CRA classifier rather than a
+    # reimplementation of it here.
+    signalled = kev_flags | vc_flags | maturity.ne("") | has_tokens
+    out = pd.Series("", index=df.index, dtype=object)
+    if not signalled.any():
+        return out
+
+    derived = [
+        ",".join(
+            sorted(
+                derive_tiers(
+                    {
+                        "inKev": kev,
+                        "inVcKev": vc_kev,
+                        "exploitMaturity": mat,
+                        "exploitInfo": tokens if isinstance(tokens, list) else [],
+                    }
+                )
+            )
+        )
+        for kev, vc_kev, mat, tokens in zip(
+            kev_flags[signalled],
+            vc_flags[signalled],
+            maturity[signalled],
+            info[signalled],
+            strict=True,
+        )
+    ]
+    out.update(pd.Series(derived, index=df.index[signalled], dtype=object))
+    return out
+
+
+def flatten_for_config(config: Any) -> Callable[[pd.DataFrame], pd.DataFrame]:
+    """Return the per-batch flatten callable the engine should use for this run.
+
+    ``--exploit-maturity`` needs the tier column derived while inKev / inVcKev /
+    exploitInfo are still on the frame — the engine's per-batch prune drops them
+    right after flattening. Binding that here keeps the engine's seven call sites
+    plain one-argument calls, and an unfiltered run pays nothing for the per-row
+    derivation pass.
+    """
+    if normalize_tiers(getattr(config, "exploit_maturity_threshold", None)):
+        return partial(flatten_findings_data, derive_exploit_tiers=True)
+    return flatten_findings_data
+
+
+def flatten_findings_data(
+    df: pd.DataFrame, derive_exploit_tiers: bool = False
+) -> pd.DataFrame:
     """
     Flatten nested data structures in findings DataFrame and extract all required fields.
 
     Args:
         df: Raw findings DataFrame
+        derive_exploit_tiers: add the ``exploit_tiers`` column used by the
+            ``--exploit-maturity`` filter. Off by default because it costs a
+            per-row pass; the engine binds it on only when the flag is set.
 
     Returns:
         Flattened DataFrame with all required fields extracted
     """
     import ast
-    import re
 
     # Normalize snake_case cache-layer field names back to the camelCase API
     # names this transform expects. fs_report.sqlite_cache._row_to_record
     # usually does this reverse mapping when reading cached rows, but some
     # pre-flattened ingestion paths leak the snake_case form. Map only the
     # fields this transform consumes directly.
-    if "exploit_maturity" in df.columns and "exploitMaturity" not in df.columns:
-        df["exploitMaturity"] = df["exploit_maturity"]
+    #
+    # All four exploit-signal fields are mapped, not just exploitMaturity: the
+    # tier derivation below reads inKev / inVcKev / exploitInfo too, and a
+    # snake_case leak there would silently derive NO kev/token tiers — dropping
+    # rows from a `--exploit-maturity kev` run rather than failing loudly.
+    for _snake, _camel in (
+        ("exploit_maturity", "exploitMaturity"),
+        ("exploit_info", "exploitInfo"),
+        ("in_kev", "inKev"),
+        ("in_vc_kev", "inVcKev"),
+    ):
+        if _snake in df.columns and _camel not in df.columns:
+            df[_camel] = df[_snake]
+
+    if derive_exploit_tiers and "exploit_tiers" not in df.columns:
+        df["exploit_tiers"] = _exploit_tier_series(df)
 
     # Handle component data
     if "component" in df.columns:

@@ -60,6 +60,10 @@ DEFAULTS: dict[str, Any] = {
     "finding_counts": True,
     "detailed": False,
     "standalone": False,
+    # --product-only: portfolio reports list only product-marked projects, with
+    # each product's dependencies rolled into it. Baseline False so a card
+    # override stores only on a real change.
+    "product_only": False,
     "vex_override": False,
     # SP2: auto-apply VEX toggle. Baseline False (off) so a card override stores
     # only when toggled on, mirroring vex_override. Not a Settings-page field;

@@ -34,10 +34,20 @@
 {% set failed_projects = failed_projects | default([]) %}
 {% if failed_projects is mapping or failed_projects is string or failed_projects is not iterable %}{% set failed_projects = [] %}{% endif %}
 {% set partial_report = partial_report | default(False) %}
+{% set shared_dependencies = shared_dependencies | default([]) %}
+{% if shared_dependencies is mapping or shared_dependencies is string or shared_dependencies is not iterable %}{% set shared_dependencies = [] %}{% endif %}
 {% set degraded_components_projects = degraded_components_projects | default([]) %}
 {% if degraded_components_projects is mapping or degraded_components_projects is string or degraded_components_projects is not iterable %}{% set degraded_components_projects = [] %}{% endif %}
 
 {% import "_console_macros.html" as fs with context %}
+
+{# --product-only folds each product's dependency projects into it, so every
+   row below IS a product. Relabel the project-level headings/columns
+   accordingly — calling them projects would understate what each number
+   covers. One pair of nouns drives all of them. #}
+{% set scope_noun = "Product" if product_only else "Project" %}
+{% set scope_noun_plural = "Products" if product_only else "Projects" %}
+{% set scope_noun_lower_plural = "products" if product_only else "projects" %}
 
 {# Mode default fallback (Option A — template-level). The summary transform
    sets "mode": "summary" explicitly; the detailed transform does NOT
@@ -256,6 +266,57 @@
     </div>
     {% endif %}
 
+    {# Shared dependencies (--product-only). Each product's own row states that
+       product's TRUE posture, so a dependency two products both use is reported
+       in both rows. The portfolio totals count it once, under one product — so
+       the rows sum to more than the headline. Say so, rather than leaving a
+       reader to find the discrepancy and distrust both numbers. #}
+    {# Detailed mode reads per-finding rows, and a finding row can carry only
+       one product, so a shared dependency lands under a single product there.
+       Summary mode reports each product's full contents. Same recipe, different
+       arithmetic — say so rather than letting a mode switch move numbers
+       silently. #}
+    {% if product_only and mode != "summary" %}
+    <div class="ed-banner-warning">
+        <strong>&#9432; Products only (detailed mode):</strong>
+        a dependency used by more than one product is counted under one of them
+        here, because a finding belongs to a single row. Run without
+        <code>--detailed</code> for rows that report each product's full
+        contents alongside once-only portfolio totals.
+    </div>
+    {% endif %}
+
+    {% if shared_dependencies and shared_dependencies | length > 0 %}
+    <div class="ed-banner-warning">
+        <strong>&#9432; Shared between products:</strong>
+        {{ shared_dependencies | length }}
+        {{ "item is" if shared_dependencies | length == 1 else "items are" }}
+        used by more than one product below.
+        <ul style="margin:6px 0 0; padding-left:20px;">
+            {% for s in shared_dependencies %}
+            <li>
+                <strong>{{ s.name }}</strong> (version {{ s.version_id }}){% if s.is_product %} (itself a product){% endif %} —
+                used by {{ s.used_by | join(", ") }};
+                counted under <strong>{{ s.counted_under }}</strong> in the portfolio totals.
+            </li>
+            {% endfor %}
+        </ul>
+        {% if mode == "summary" %}
+        Each {{ scope_noun | lower }} row below reports its own full contents, so
+        these appear in every {{ scope_noun | lower }} that uses them. The
+        Portfolio Summary and the portfolio-wide charts count each one
+        <em>once</em>. The {{ scope_noun_plural }} rows therefore sum to more
+        than the portfolio total — by design, so that both numbers are true.
+        {% else %}
+        Detailed mode counts each of these under the one
+        {{ scope_noun | lower }} named above, because a finding belongs to a
+        single row — so the rows here reconcile with the portfolio total, but a
+        {{ scope_noun | lower }} sharing an item reports less than its full
+        contents.
+        {% endif %}
+    </div>
+    {% endif %}
+
     {# Portfolio Summary — 3 KPI cells via fs.kpi_cell.
        Delta passes through as plain text (no `delta_class` — see plan
        § Design tokens: the macro's up=green/down=red semantics are
@@ -264,7 +325,7 @@
     {% if sca_summary and sca_summary | length > 0 %}
     <h2 class="ed-chart-title" style="margin-top: 18px;">Portfolio Summary</h2>
     <div class="kpi-bar" style="margin-bottom: 20px;">
-        {{ fs.kpi_cell("Projects", sca_summary.get('projects', 0)) }}
+        {{ fs.kpi_cell(scope_noun_plural, sca_summary.get('projects', 0)) }}
         {{ fs.kpi_cell("Components", sca_summary.get('components', 0)) }}
         {% set _findings_delta = sca_summary.get('findings_delta') %}
         {{ fs.kpi_cell(
@@ -326,8 +387,8 @@
     {# Findings by Project (stacked bar, tall). #}
     {% if findings_by_project and findings_by_project.labels | default([]) | length > 0 %}
     <div class="ed-section">
-        <h2 class="ed-chart-title">Findings by Project</h2>
-        <p class="ed-chart-description">Distribution of security findings across projects by severity.</p>
+        <h2 class="ed-chart-title">Findings by {{ scope_noun }}</h2>
+        <p class="ed-chart-description">Distribution of security findings across {{ scope_noun_lower_plural }} by severity.</p>
         {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
             <div class="chart-server-svg"><div class="chart-unavailable">Chart unavailable in fragment view</div></div>
         {% else %}
@@ -356,14 +417,17 @@
             {% endif %}
         </div>
         <div class="ed-section">
-            <h2 class="ed-chart-title">Highest-Risk Products</h2>
+            {# "Products" was hardcoded, so a portfolio-wide run — where the
+               rows are ordinary projects — claimed a product ranking it wasn't.
+               Only the noun moves; the hyphenated style stays. #}
+            <h2 class="ed-chart-title">Highest-Risk {{ scope_noun_plural }}</h2>
             <p class="ed-chart-description">
                 {% if mode == "summary" %}
-                Projects bucketed by their highest-severity finding.
+                {{ scope_noun_plural }} bucketed by their highest-severity finding.
                 {% else %}
-                Projects bucketed by risk score (critical*10 + high*5 + medium*2 + low*0.5).
+                {{ scope_noun_plural }} bucketed by risk score (critical*10 + high*5 + medium*2 + low*0.5).
                 {% endif %}
-                {% if risk_donut and risk_donut.get('total_artifacts') %} {{ risk_donut.total_artifacts }} total projects.{% endif %}
+                {% if risk_donut and risk_donut.get('total_artifacts') %} {{ risk_donut.total_artifacts }} total {{ scope_noun_lower_plural }}.{% endif %}
             </p>
             {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
                 <div class="chart-server-svg"><div class="chart-unavailable">Chart unavailable in fragment view</div></div>
@@ -374,7 +438,7 @@
             <table class="ed-table" style="margin-top: 10px;">
                 <thead>
                     <tr>
-                        <th>#</th><th>Product</th><th>Risk Score</th><th>KEV</th>
+                        <th>#</th><th>{{ scope_noun }}</th><th>Risk Score</th><th>KEV</th>
                         <th>Critical</th><th>High</th><th>Medium</th><th>Low</th>
                     </tr>
                 </thead>
@@ -517,11 +581,11 @@
        names — exec dashboard has no entity-link contract. #}
     {% if project_table and project_table | length > 0 %}
     <div class="ed-table-container">
-        <h2 class="ed-chart-title">Project Findings Summary</h2>
+        <h2 class="ed-chart-title">{{ scope_noun }} Findings Summary</h2>
         <table class="ed-table">
             <thead>
                 <tr>
-                    <th>Project</th>
+                    <th>{{ scope_noun }}</th>
                     <th>KEV</th>
                     <th>Critical</th>
                     <th>High</th>
@@ -553,7 +617,7 @@
 {{ fs.status_bar(items=[
     "Recipe: Executive Dashboard",
     "Mode: " ~ (mode | string | capitalize),
-    "Projects: " ~ ((sca_summary.get('projects', 0)) | string),
+    scope_noun_plural ~ ": " ~ ((sca_summary.get('projects', 0)) | string),
     generated_at or "—",
 ], version='fs-report ' ~ (fs_report_version | default('dev'))) }}
 
@@ -679,7 +743,7 @@
             xAxis: {
                 type: 'category', data: data.labels,
                 axisLabel: { color: t.inkBody, rotate: 45, fontSize: 10 },
-                name: 'Project', nameLocation: 'middle', nameGap: 50,
+                name: '{{ scope_noun }}', nameLocation: 'middle', nameGap: 50,
                 nameTextStyle: { color: t.inkMute },
             },
             yAxis: {

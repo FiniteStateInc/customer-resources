@@ -807,6 +807,31 @@ class ReportRenderer:
             return [ReportRenderer._scrub_non_finite(v) for v in obj]
         return obj
 
+    def _json_filters(self, report_data: ReportData) -> dict[str, str | list[str]]:
+        """Row filters applied to this report, for ``metadata.filters`` in JSON.
+
+        The exploit-maturity entry is read from the engine's metadata rather than
+        the config, and outside any ``self.config`` gate: only the engine knows
+        whether THIS recipe honors ``--exploit-maturity``, a recipe that ignores
+        it must not publish a filter it never applied, and the disclosure must
+        not depend on how this renderer was constructed. It carries the same
+        tiers the HTML panel and the Markdown metadata row display, so the three
+        surfaces cannot disagree — published as a LIST here because exploit
+        maturity is multi-valued and JSON is the machine surface; splitting the
+        display string is lossless since tier names are a validated vocabulary
+        that contains no commas.
+        """
+        filters: dict[str, str | list[str]] = {}
+        if self.config:
+            if getattr(self.config, "component_filter", None):
+                filters["component"] = self.config.component_filter
+            if getattr(self.config, "cve_filter", None):
+                filters["cve"] = self.config.cve_filter
+        maturity = report_data.metadata.get("exploit_maturity_filter", "")
+        if maturity:
+            filters["exploit_maturity"] = [t.strip() for t in maturity.split(",")]
+        return filters
+
     def _render_json(
         self,
         recipe: Recipe,
@@ -840,9 +865,16 @@ class ReportRenderer:
                 )
                 self.logger.debug(f"Generated JSON: {json_path}")
                 generated_files.append(str(json_path))
-            elif (
-                isinstance(report_data.data, pd.DataFrame)
-                and not report_data.data.empty
+            elif isinstance(report_data.data, pd.DataFrame) and (
+                not report_data.data.empty
+                # A filter that matched nothing still has something to report:
+                # without this, a narrowed-to-zero run produces NO json at all,
+                # so automation cannot tell "filtered down to nothing" from
+                # "the report never ran". The wrapper carries the filters that
+                # emptied it, with `data: []`. Keyed on ANY applied filter, not
+                # just exploit maturity — a component filter that matches zero
+                # rows is the same situation, and one rule beats a special case.
+                or self._json_filters(report_data)
             ):
                 # Case 2: generic DataFrame → JSON with metadata wrapper
                 from datetime import datetime
@@ -856,13 +888,9 @@ class ReportRenderer:
                         metadata["project"] = self.config.project_filter
                     if getattr(self.config, "folder_filter", None):
                         metadata["folder"] = self.config.folder_filter
-                    filters: dict[str, str] = {}
-                    if getattr(self.config, "component_filter", None):
-                        filters["component"] = self.config.component_filter
-                    if getattr(self.config, "cve_filter", None):
-                        filters["cve"] = self.config.cve_filter
-                    if filters:
-                        metadata["filters"] = filters
+                filters = self._json_filters(report_data)
+                if filters:
+                    metadata["filters"] = filters
 
                 # Scrub RECURSIVELY. The previous loop only checked top-level
                 # scalars, so a non-finite float nested inside a list or dict cell

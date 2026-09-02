@@ -1,5 +1,113 @@
 # Release Notes
 
+## Version 2.0.5 (September 2026)
+
+2.0.5 adds product-scoped executive reporting (`--product-only`), an
+exploit-maturity filter for Findings by Project, a readable
+`fs-report changelog`, and version-aware component churn in Version
+Comparison. See `fs_report/changelog.yaml` for the full per-recipe diff.
+
+### Executive reports — `--product-only`
+
+Leadership dashboards scoped to what you ship, not everything you scan.
+
+```bash
+fs-report run --recipe "Executive Dashboard" --product-only
+fs-report run --recipe "Executive Summary" --product-only --folder "EU-Routers"
+```
+
+- Only projects marked **Product** on the platform appear. Each product's
+  dependency projects are rolled up into its row, attributed by the specific
+  version the product links — two products linking the same dependency at
+  different versions each count their own version's findings.
+- `--standalone` turns the roll-up off: products only, own findings only.
+- **Honored by Executive Dashboard and Executive Summary only.** Any other
+  recipe in the same run ignores the flag and keeps the run's original scope,
+  with a per-recipe notice in the log.
+- A dependency version linked by more than one product appears in **each**
+  product's row (each row states that product's true posture) but is counted
+  **once** in the portfolio totals; the report banners the shared items so the
+  two views reconcile.
+- Where the data carries project ids, relabeled rows preserve the original in
+  a `source_project_id` column, so a finding can still be traced to the
+  dependency it came from.
+- Products with no scanned version are named in a warning and absent from the
+  report; a run whose products are all versionless fails fast rather than
+  rendering an empty dashboard.
+- When `--project` resolves to a single target, the flag is ignored (the run
+  says so in the log). A `--project` glob that matches several projects is
+  treated like a folder: the match is still narrowed to its product-marked
+  projects.
+
+### Findings by Project — `--exploit-maturity`
+
+```bash
+fs-report run --recipe "Findings by Project" --exploit-maturity kev,weaponized
+```
+
+- Keeps only findings carrying the named exploit-maturity tiers, using the
+  same tier vocabulary as CRA Compliance (including the `cisa-kev` / `vc-kev`
+  single-catalog tiers added in 2.0.4).
+- Applied tiers are disclosed in the HTML and Markdown output and in JSON as
+  `metadata.filters.exploit_maturity` (a list).
+- Unknown tier names fail the run up front instead of silently matching
+  nothing.
+- Tiers match the finding's exploit intelligence, not only the displayed
+  Exploit Maturity column: `kev` keeps rows by KEV-catalog membership (CISA or
+  VulnCheck), so a kept row's Exploit Maturity cell may read `poc` or be
+  empty.
+
+### `fs-report changelog` is readable
+
+- One line per entry, with inline Markdown stripped; `--full` / `-f` prints
+  complete descriptions with a hanging indent.
+- The 2.0.0–2.0.4 history was trimmed from 116 entries to 53 — new and changed
+  features, reports, and fixes that change what you must do or know. Release
+  notes and git history keep the rest.
+
+### Version Comparison — component churn is version-aware
+
+The report could list components as updated when nothing about them had
+changed: churn matched on name alone, so a component carried at more than one
+version cross-joined against itself — `tcp_cubic` at `5.10.61` and `2.3` on
+both sides reported the phantom pair `5.10.61 → 2.3` *and* `2.3 → 5.10.61` in
+the same run, and n versions of one name produced n² − n phantom rows. Common
+on embedded images, where kernel modules and vendored libraries routinely ship
+at several versions. Fixed:
+
+- **Churn matches on name + version.** A version carried on both sides is
+  unchanged; only surplus versions are reported, paired by closeness (`2.3`
+  leaving while `2.4` and `3.0` arrive reports `2.3 → 2.4` updated plus `3.0`
+  added). Equal-distance ties prefer the upgrade over the downgrade.
+- **Names compare case-insensitively** (matching how findings match keys treat
+  them, so a casing-only rename is no longer a removal plus an addition), and
+  equivalent spellings such as `1.0` and `1.0.0` count as the same release.
+  Suffixed versions stay distinct: a revision bump like
+  `2.9.1+dfsg1-5 → 2.9.1+dfsg1-6` is still reported as an update. Rows with a
+  blank component name are dropped from churn instead of being pooled under
+  one empty name.
+- **Findings Impact counts the variant that moved**, not every finding on the
+  name.
+- **Changed: the Components count** (KPI card and per-version progression)
+  counts distinct components rather than distinct names, so an inventory
+  shipping one name at several versions is no longer undercounted — expect
+  this number to rise for firmware carrying duplicate component names.
+- Churn, Findings Impact and the Components count share one identity rule
+  (lowercased name + normalized version), so they can no longer disagree about
+  whether two rows describe the same component.
+
+### Changed
+
+- **A filtered run that matches zero rows now writes a JSON metadata wrapper**
+  (`data: []` plus the applied filters) instead of writing no JSON file, so
+  automation can tell "filtered to nothing" apart from "report did not run".
+  Applies to reports whose output formats include JSON.
+
+### Fixed
+
+- **Executive Dashboard's Highest-Risk panel was hardcoded to "Products".** It
+  now says Projects by default and Products under `--product-only`.
+
 ## Version 2.0.4 (August 2026)
 
 2.0.4 ships two new reports — **Human Readable SBOM**, a component inventory for
@@ -150,6 +258,13 @@ trend series, resolved thresholds, disclosure notes), and Markdown. (#207)
   `| Project | 773e6419-4b61-5c46-aaaf-a6b62958f5f8 |` where the reader expects
   `| Project | dd-wrt |`. It now prefers the resolved name and falls back to the
   filter. Affects all fifteen Markdown renderers.
+
+- **Clearing the API cache could delete your report history.** `fs-report
+  cache clear` (and the web UI's "Clear API cache") matched every `.db` file in
+  the cache directory except a three-name allow-list that omitted `history.db`,
+  so clearing the cache also removed the run history. The web UI's clear was
+  additionally a silent no-op on self-hosted and preview domains. Both were
+  fixed in 2.0.4. *(This note was added retroactively.)*
 
 ## Version 2.0.3 (July 2026)
 

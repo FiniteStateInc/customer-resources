@@ -1122,6 +1122,19 @@ class Config(BaseModel):
         description="Skip project dependency resolution. When True, only "
         "include direct findings for the target project (no dependency traversal).",
     )
+    product_only: bool = Field(
+        False,
+        description="Restrict the run to projects the platform marks as a "
+        "Product. Each product's dependency projects stay in scope but roll "
+        "up into the product's row instead of appearing beside it. Applies "
+        "engine-wide: it narrows the project set for any recipe, and any "
+        "report grouping by project name also gets the roll-up relabel (the "
+        "web UI surfaces the toggle only on Executive Dashboard / Executive "
+        "Summary, whose top level IS a project list). Inert when an explicit "
+        "single-project scope is given; a multi-match project glob and a "
+        "folder scope both intersect. Dependency roll-up is skipped under "
+        "--standalone.",
+    )
     current_version_only: bool = Field(
         True,
         description="Only include latest version per project (default for performance). Use --all-versions for full history.",
@@ -1429,7 +1442,7 @@ class Config(BaseModel):
     )
     exploit_maturity_threshold: list[str] | None = Field(
         None,
-        description="CRA tier set above threshold. Values: kev, cisa-kev, vc-kev, weaponized, poc, ransomware, threat_actor, botnet, commercial, reported. kev covers CISA KEV OR VulnCheck KEV; cisa-kev / vc-kev narrow to one catalog. Only cisa-kev is pushed into the /findings query (as inKev==true); every other tier narrows client-side under --unfilterable-tier-strategy, returning the same rows via one wider fetch. None defers to the recipe YAML default (kev, ransomware, threat_actor, weaponized, botnet); poc/commercial/reported are recognized but opt-in.",
+        description="Exploit-maturity tier set, honored by CRA Compliance (above-threshold tiers; None defers to the recipe YAML default kev, ransomware, threat_actor, weaponized, botnet) and by Findings by Project (optional row filter, always client-side, no default, None = no filter). Ignored by other recipes, whose reports therefore disclose no filter. Values: kev, cisa-kev, vc-kev, weaponized, poc, ransomware, threat_actor, botnet, commercial, reported — kev covers CISA KEV OR VulnCheck KEV, cisa-kev / vc-kev narrow to one catalog, poc/commercial/reported are opt-in. Matching is exact set membership: tiers do NOT imply one another, so 'poc' alone excludes weaponized findings (see REPORT_GUIDE for the platform-UI reconciliation). CRA-only: cisa-kev is the sole server-pushable tier; the rest narrow client-side under --unfilterable-tier-strategy.",
     )
     include_status: list[str] | None = Field(
         None,

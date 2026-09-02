@@ -637,6 +637,25 @@ def _sorted_unique_blank_filtered(names: Any) -> list[str]:
     return sorted(out)
 
 
+def version_sort_key(version: str) -> tuple[int, tuple[int, ...], str]:
+    """Ascending sort key for version strings — the newest version sorts last.
+
+    Ordering rule: a parseable version always outranks an unparseable one (first
+    element 1 vs 0); then the numeric tuple from
+    :func:`purl_utils._version_tuple`; then the raw string as a deterministic
+    lexicographic fallback and final tie-break.
+
+    This is the single source of truth for "which version of a name is newest",
+    shared by :func:`leader_component_version` and by
+    ``version_comparison._classify_components``, so the two comparison surfaces
+    can never disagree on version ordering.
+    """
+    parsed = _version_tuple(version)
+    if parsed is None:
+        return (0, (), version)
+    return (1, parsed, version)
+
+
 def leader_component_version(
     components_df: pd.DataFrame | None, name: str
 ) -> str | None:
@@ -709,16 +728,7 @@ def leader_component_version(
     if not versions:
         return None
 
-    def _version_sort_key(v: str) -> tuple[int, tuple[int, ...], str]:
-        # Sort key for MAX selection: parseable beats unparseable (first
-        # element 1 vs 0); then numeric tuple; finally the raw string as a
-        # deterministic lexicographic fallback / final tie-break.
-        parsed = _version_tuple(v)
-        if parsed is None:
-            return (0, (), v)
-        return (1, parsed, v)
-
-    return max(versions, key=_version_sort_key)
+    return max(versions, key=version_sort_key)
 
 
 def project_names_for(df: pd.DataFrame, match_key: str) -> list[str]:

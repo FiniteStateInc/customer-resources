@@ -35,6 +35,11 @@
 {% set exploit_signals_spec = (charts | selectattr('name', 'equalto', 'exploit_signals') | first) if charts else None %}
 {% set exploits_over_time_spec = (charts | selectattr('name', 'equalto', 'exploits_over_time') | first) if charts else None %}
 
+{# --product-only folds each product's dependency projects into it, so every
+   row of the breakdown IS a product; the recipe's project-worded titles and
+   column headers would understate what each row covers. #}
+{% set scope_noun = "Product" if product_only else "Project" %}
+
 {% block title %}{{ slide_title | default("Executive Summary") }} - Finite State Report{% endblock %}
 
 {% block head_extra %}
@@ -104,9 +109,38 @@
 {% endblock %}
 
 {% block distribution %}
+{% if product_only %}
+{# Executive Summary aggregates per-finding rows, and a finding belongs to one
+   row, so a dependency used by two products is counted under one of them. The
+   Executive Dashboard's summary mode is the surface that reports each product's
+   full contents. #}
+<div class="callout" style="margin-bottom:16px;">
+    <strong>Products only:</strong> each row is a product, with the dependency
+    projects it uses rolled into it. A dependency used by more than one product
+    is counted under one of them, so every finding appears exactly once.
+    {% set shared_dependencies = shared_dependencies | default([]) %}
+    {% if shared_dependencies is mapping or shared_dependencies is string or shared_dependencies is not iterable %}{% set shared_dependencies = [] %}{% endif %}
+    {% if shared_dependencies and shared_dependencies | length > 0 %}
+    {# Same disclosure the Executive Dashboard renders, so an operator moving
+       between the two portfolio reports gets the same arithmetic explained. #}
+    <ul style="margin:6px 0 0; padding-left:20px;">
+        {% for s in shared_dependencies %}
+        <li>
+            <strong>{{ s.name }}</strong> (version {{ s.version_id }}){% if s.is_product %} (itself a product){% endif %} —
+            used by {{ s.used_by | join(", ") }};
+            counted under <strong>{{ s.counted_under }}</strong>.
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+</div>
+{% endif %}
 <div class="distribution">
-    <h2>{{ project_breakdown_spec.title if project_breakdown_spec else "Security Findings by Project and Severity" }}</h2>
-    {% if project_breakdown_spec %}<p>{{ project_breakdown_spec.description }}</p>{% endif %}
+    <h2>{% if product_only %}Security Findings by Product and Severity{% else %}{{ project_breakdown_spec.title if project_breakdown_spec else "Security Findings by Project and Severity" }}{% endif %}</h2>
+    {# The recipe-authored description is project-worded; under --product-only it
+       would sit directly under a Product heading and contradict it. #}
+    {% if product_only %}<p>Distribution of security findings across products with severity breakdown. Each product carries the dependency projects it owns.</p>
+    {% elif project_breakdown_spec %}<p>{{ project_breakdown_spec.description }}</p>{% endif %}
     {% if render_mode == 'fragment' and not fragment_scripts_enabled %}
         <div class="chart-server-svg">{{ server_svgs.get('project_breakdown', '') | safe }}</div>
     {% else %}
@@ -357,11 +391,11 @@
        Renders in all modes; table HTML survives fragment extraction. #}
     {% if table_data and table_data.rows %}
     <div class="table-container" style="margin-top:24px;">
-        <h2>Findings by Project</h2>
+        <h2>Findings by {{ scope_noun }}</h2>
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Project</th>
+                    <th>{{ scope_noun }}</th>
                     <th class="num">Critical</th>
                     <th class="num">High</th>
                     <th class="num">Medium</th>
@@ -393,6 +427,6 @@
 
 {% block methodology %}
 <div class="methodology">
-    <p>This briefing summarizes the security findings across the portfolio for the reporting period. <strong>KPIs at the top</strong> reflect totals across <em>all</em> findings (open + resolved) aggregated from the main transform. <strong>The distribution chart</strong> breaks those totals down by project and severity. <strong>The open-issues pie</strong> counts <em>only unresolved</em> findings (status not in RESOLVED, RESOLVED_WITH_PEDIGREE, NOT_AFFECTED, FALSE_POSITIVE) — different population from the KPIs above. <strong>The scan-frequency line</strong> tracks the count of findings detected per period.</p>
+    <p>This briefing summarizes the security findings across the portfolio for the reporting period. <strong>KPIs at the top</strong> reflect totals across <em>all</em> findings (open + resolved) aggregated from the main transform. <strong>The distribution chart</strong> breaks those totals down by {{ scope_noun | lower }} and severity. <strong>The open-issues pie</strong> counts <em>only unresolved</em> findings (status not in RESOLVED, RESOLVED_WITH_PEDIGREE, NOT_AFFECTED, FALSE_POSITIVE) — different population from the KPIs above. <strong>The scan-frequency line</strong> tracks the count of findings detected per period.</p>
 </div>
 {% endblock %}

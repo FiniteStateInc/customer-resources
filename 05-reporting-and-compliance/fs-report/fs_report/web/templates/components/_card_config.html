@@ -33,6 +33,7 @@
    into the back on flip. Do NOT implement that here; just don't lose the note. #}
 {# Report tab is non-empty iff at least one of its gated fields shows. #}
 {% set show_report_tab = show_finding_types or show_period or show_current_version_only
+   or show_product_only or show_standalone
    or show_license or show_open_only or show_baseline_date or show_detailed
    or show_component or show_cve or show_version_fields %}
 <div class="wf-cfg" data-recipe="{{ recipe }}">
@@ -115,6 +116,36 @@
           <input type="checkbox" id="cardcfg-cvo" name="current_version_only"
                  {% if eff.get('current_version_only', True) %}checked{% endif %}
                  data-override="{{ '1' if is_ov('current_version_only') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      {% endif %}
+
+      {# Which projects the report is about. Products only comes FIRST: it picks
+         the population, and Standalone then decides whether each row carries its
+         dependencies. Reading them the other way round inverts the story. #}
+      {% if show_product_only %}
+      <div class="form-group form-row">
+        <label for="cardcfg-product-only">Products only (roll up dependencies)</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-product-only" name="product_only"
+                 {% if eff.get('product_only') %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('product_only') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      {# Scope is a run-level setting, so it narrows every report in a launch,
+         not only this one. Said here as well as in the prerun drawer. #}
+      <small class="form-hint">Narrows the whole run — every report launched with this one.</small>
+      {% endif %}
+
+      {% if show_standalone %}
+      <div class="form-group form-row">
+        <label for="cardcfg-standalone">Standalone (skip dependencies)</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-standalone" name="standalone"
+                 {% if eff.get('standalone') %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('standalone') else '0' }}">
           <span class="toggle-slider"></span>
         </label>
       </div>
@@ -517,17 +548,9 @@
       </div>
       {% endif %}
 
-      {% if show_standalone %}
-      <div class="form-group form-row">
-        <label for="cardcfg-standalone">Standalone (skip deps)</label>
-        <label class="toggle">
-          <input type="checkbox" id="cardcfg-standalone" name="standalone"
-                 {% if eff.get('standalone') %}checked{% endif %}
-                 data-override="{{ '1' if is_ov('standalone') else '0' }}">
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-      {% endif %}
+      {# Products only / Standalone live on the REPORT panel — they decide which
+         projects the report is ABOUT, which is a first-order question, not an
+         advanced tweak. #}
 
       {% if show_detected_after %}
       <div class="form-group">

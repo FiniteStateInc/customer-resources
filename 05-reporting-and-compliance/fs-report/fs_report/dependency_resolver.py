@@ -65,6 +65,13 @@ class DependencyNode:
         for child in self.children:
             child._collect_version_ids(seen, result)
 
+    def all_nodes(self) -> list[DependencyNode]:
+        """Return every node in the tree (root first, depth-first)."""
+        out: list[DependencyNode] = [self]
+        for child in self.children:
+            out.extend(child.all_nodes())
+        return out
+
     def version_id_to_path_map(self) -> dict:
         """Map version ID -> dependency path string. First path wins for diamonds."""
         result: dict = {}

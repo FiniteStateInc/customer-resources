@@ -65,6 +65,11 @@ COMPOUND_OVERRIDE_WHITELIST: frozenset[str] = frozenset(
         "project_id",
         "folder_filter",
         "version_filter",
+        # Narrows the project set to product-marked projects (+ the dependency
+        # trees they own). A scope key like the three above, not a report-shaping
+        # one like standalone/detailed — which is why it belongs in this
+        # restricted set and they don't.
+        "product_only",
         # Finding-type + version selection
         "finding_types",
         "current_version_only",
@@ -83,7 +88,7 @@ _DATE_KEYS: tuple[str, ...] = ("period", "start", "end")
 
 # Override keys that must be coerced str→bool (a hand-edited / inline YAML
 # ``"ai": "false"`` must become ``False``, never the truthy ``bool("false")``).
-_BOOL_KEYS: frozenset[str] = frozenset({"ai", "current_version_only"})
+_BOOL_KEYS: frozenset[str] = frozenset({"ai", "current_version_only", "product_only"})
 
 
 def _coerce_value(key: str, value: Any) -> Any:
@@ -143,6 +148,7 @@ def normalize_compound_global(raw: Any) -> dict[str, Any]:
         "project_id",
         "folder_filter",
         "version_filter",
+        "product_only",
         "finding_types",
         "current_version_only",
         "ai",

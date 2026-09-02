@@ -756,16 +756,17 @@ def cra_compliance_transform(
     # ------------------------------------------------------------------
     # Stage 0 — Resolve effective config (CLI overrides YAML defaults)
     # ------------------------------------------------------------------
-    # Lowercase at this shared choke point so every entry path — CLI (already
+    # Normalize at this shared choke point so every entry path — CLI (already
     # lowercased), a hand-edited recipe YAML, or a programmatic caller — treats
-    # tier names case-insensitively (tiers are canonically lowercase).
-    threshold: set[str] = {
-        t.lower()
-        for t in (
+    # tier names case-insensitively (tiers are canonically lowercase). Via the
+    # shared normalizer, so a whitespace-padded tier resolves to the same set
+    # here as in the Findings by Project filter: one spelling rule, one place.
+    threshold: set[str] = set(
+        tiers.normalize_tiers(
             config.exploit_maturity_threshold
             or recipe_params.get("exploit_maturity_threshold", [])
         )
-    }
+    )
     # Fail loud on an unrecognized tier from either the CLI or the recipe YAML:
     # an unknown tier never matches a finding, silently shrinking the queue.
     tiers.validate_tier_names(threshold)

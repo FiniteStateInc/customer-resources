@@ -287,6 +287,7 @@ def create_config(
     compare_project: Union[str, None] = None,
     compare_version: Union[str, None] = None,
     standalone: bool = False,
+    product_only: bool = False,
     detailed: bool = False,
     theme: Union[str, None] = None,
     since: str = "24h",
@@ -643,6 +644,7 @@ def create_config(
         compare_project=compare_project,
         compare_version=compare_version,
         standalone=standalone,
+        product_only=product_only,
         detailed_mode=detailed,
         theme=_theme,
         since=since,
@@ -733,6 +735,7 @@ def run_reports(
     compare_project: Union[str, None] = None,
     compare_version: Union[str, None] = None,
     standalone: bool = False,
+    product_only: bool = False,
     detailed: bool = False,
     theme: Union[str, None] = None,
     since: str = "24h",
@@ -829,6 +832,7 @@ def run_reports(
             compare_project=compare_project,
             compare_version=compare_version,
             standalone=standalone,
+            product_only=product_only,
             detailed=detailed,
             theme=theme,
             since=since,
@@ -874,6 +878,8 @@ def run_reports(
             logger.info(f"  Folder scope: {config.folder_filter}")
         if config.standalone:
             logger.info("  Standalone mode: Yes (no dependency traversal)")
+        if config.product_only:
+            logger.info("  Product only: Yes (dependencies roll up into products)")
         if config.compare_domain:
             logger.info("  Cross-server comparison:")
             logger.info(f"    Compare domain: {config.compare_domain}")
@@ -1380,16 +1386,23 @@ def run_command(
         None,
         "--exploit-maturity",
         help=(
-            "CRA threshold tiers, comma-separated. Values: "
+            "Exploit-maturity tiers, comma-separated. Values: "
             "kev,cisa-kev,vc-kev,weaponized,poc,ransomware,threat_actor,"
             "botnet,commercial,reported. "
-            "Default (from recipe YAML): "
-            "kev,ransomware,threat_actor,weaponized,botnet. "
+            "Honored by CRA Compliance (above-threshold tiers; default from "
+            "recipe YAML kev,ransomware,threat_actor,weaponized,botnet) and by "
+            "Findings by Project (optional row filter, no default, unset = no "
+            "filter, always narrowed client-side — --unfilterable-tier-strategy "
+            "is CRA-only). Ignored by every other recipe. "
+            "Tiers do NOT imply one another: exploitMaturity is a single "
+            "scalar holding the finding's HIGHEST tier, so `poc` alone does "
+            "not return weaponized findings — the platform GUI's PoC filter "
+            "does include them, so pass poc,weaponized to match a GUI "
+            "PoC-filtered view. "
             "kev = CISA KEV OR VulnCheck KEV; cisa-kev / vc-kev narrow to one "
             "catalog. poc/commercial/reported are recognized but opt-in. "
-            "Only cisa-kev is pushed into the /findings query; every other "
-            "tier narrows client-side (identical rows, one wider fetch) — "
-            "see --unfilterable-tier-strategy."
+            "In CRA only cisa-kev is pushed into the /findings query; every "
+            "other tier narrows client-side (identical rows, one wider fetch)."
         ),
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
@@ -1920,6 +1933,21 @@ def run_command(
         "for the target project, excluding findings from dependent projects.",
         rich_help_panel=_SCOPE,
     ),
+    product_only: bool = typer.Option(
+        False,
+        "--product-only",
+        help="Only report projects marked as a Product on the platform. "
+        "Each product's dependent projects still count — their findings roll "
+        "up into the product's row instead of appearing as rows of their own. "
+        "Honored by Executive Dashboard and Executive Summary ONLY — the two "
+        "reports whose top-level rows are a project list. Any other recipe "
+        "ignores it (warned) and keeps the run's original scope, so a mixed "
+        "run product-scopes those two and leaves the rest alone. Inert when "
+        "--project names a single target; a multi-match --project glob and "
+        "--folder both intersect (products within them). Combine with "
+        "--standalone to exclude dependency findings entirely.",
+        rich_help_panel=_SCOPE,
+    ),
     logo: Union[str, None] = typer.Option(
         None,
         "--logo",
@@ -2157,6 +2185,7 @@ def run_command(
         compare_project=compare_project,
         compare_version=compare_version,
         standalone=standalone,
+        product_only=product_only,
         detailed=detailed,
         theme=theme,
         since=since,

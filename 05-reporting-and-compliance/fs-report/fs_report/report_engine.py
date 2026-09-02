@@ -38,8 +38,9 @@ try:
     import resource  # Unix only; not available on Windows
 except ImportError:
     resource = None  # type: ignore[assignment]
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
+from types import MappingProxyType
 from typing import Any, cast
 
 import httpx
@@ -134,6 +135,36 @@ _TRIAGE_DROP_AFTER_SCORE: frozenset[str] = frozenset(
 )
 
 
+# Recipes whose reports disclose ``--exploit-maturity`` through this metadata
+# key. Every other recipe must NOT claim a filter: a Scan Analysis co-run
+# stating "Exploit Maturity: kev" would be a false disclosure, the mirror image
+# of hiding a filter that was applied.
+#
+# CRA Compliance honors the flag but is deliberately NOT listed. It discloses its
+# own ``effective_threshold`` (see cra_compliance.py, read as ``threshold_label``
+# by the HTML/MD renderers), which is strictly better than this key can be: it
+# reflects the recipe-YAML default when the flag is unset, and the
+# unfilterable-tier-strategy resolution when it is. Listing CRA here would add a
+# second, weaker source that reads empty on CRA's most common invocation.
+_EXPLOIT_MATURITY_RECIPES: frozenset[str] = frozenset({"Findings by Project"})
+
+
+def _exploit_maturity_label(recipe_name: str, config: Any) -> str:
+    """Display string for the exploit-maturity tiers a recipe was filtered to.
+
+    Empty when the recipe ignores the flag or no tiers were requested. Tiers are
+    normalized through the shared CRA normalizer so the disclosure reads back
+    exactly what the filters matched on.
+    """
+    if recipe_name not in _EXPLOIT_MATURITY_RECIPES:
+        return ""
+    from fs_report.cra.tiers import normalize_tiers
+
+    return ", ".join(
+        normalize_tiers(getattr(config, "exploit_maturity_threshold", None))
+    )
+
+
 # Recipes that rewrite the *shape* of the findings frame in-flight — per-batch
 # scoring, flattening, or column pruning — before it is stored in the in-memory
 # ``_findings_cache``.
@@ -182,16 +213,29 @@ def _findings_cache_key(
     finding_type: str,
     project_ids: Iterable[Any],
     recipe_name: str,
+    exploit_maturity: str = "",
 ) -> str:
     """Key for the in-memory ``_findings_cache`` on the batched-by-project path.
 
     Covers the query signature AND the payload shape — see
     ``_FINDINGS_PAYLOAD_SHAPES`` for why the shape half is load-bearing.
+    ``exploit_maturity`` is part of the shape in the same sense: a Findings by
+    Project frame cached with the flag set carries ``exploit_tiers`` (and was
+    derived while the signal columns still existed), one cached without it does
+    not. One engine instance holds one immutable config today, so the flag
+    cannot actually differ between reads of the same cache — keying on it costs
+    one string and removes the assumption. Canonicalized here (sorted, no
+    spaces) so equivalent tier sets share a key regardless of caller order or
+    display formatting.
     """
+    maturity_canonical = ",".join(
+        sorted(t.strip() for t in exploit_maturity.split(",") if t.strip())
+    )
     parts = (
         f"{endpoint}|{combined_filter or ''}|{finding_type}"
         f"|pids:{','.join(str(p) for p in sorted(project_ids))}"
         f"|shape:{_findings_payload_shape(recipe_name)}"
+        f"|maturity:{maturity_canonical}"
     )
     return hashlib.sha256(parts.encode()).hexdigest()[:16]
 
@@ -270,6 +314,25 @@ def _prune_exec_summary(
         df = df.copy()
 
     keep = _EXEC_SUMMARY_KEEP | extra_keep if extra_keep else _EXEC_SUMMARY_KEEP
+    # project.id / projectVersion.id only when a caller asked for them
+    # (--product-only needs them to relabel a dependency's findings onto its
+    # product, version-first); findings carry both nested, never flat.
+    if (
+        "project.id" in keep
+        and "project.id" not in df.columns
+        and "project" in df.columns
+    ):
+        df["project.id"] = df["project"].apply(
+            lambda p: p.get("id", "") if isinstance(p, dict) else ""
+        )
+    if (
+        "projectVersion.id" in keep
+        and "projectVersion.id" not in df.columns
+        and "projectVersion" in df.columns
+    ):
+        df["projectVersion.id"] = df["projectVersion"].apply(
+            lambda v: v.get("id", "") if isinstance(v, dict) else ""
+        )
     # Derive exploit-signal scalars (inKev/inVcKev/is_real_exploit) BEFORE the
     # column drop, while the heavy exploitInfo/exploitMaturity columns are
     # still present — they are dropped just below, so the memory win is
@@ -351,6 +414,16 @@ def _prune_exec_dashboard(
         )
 
     keep = _EXEC_DASHBOARD_KEEP | extra_keep if extra_keep else _EXEC_DASHBOARD_KEEP
+    # --product-only relabels version-first (two products can link the same
+    # dependency project at different versions), so it asks for this column.
+    if (
+        "projectVersion.id" in keep
+        and "projectVersion.id" not in df.columns
+        and "projectVersion" in df.columns
+    ):
+        df["projectVersion.id"] = df["projectVersion"].apply(
+            lambda v: v.get("id", "") if isinstance(v, dict) else ""
+        )
     drop = [c for c in df.columns if c not in keep]
     if drop:
         df = df.drop(columns=drop)
@@ -523,6 +596,27 @@ SEVERITY_FLOORS: dict[str, tuple[str, ...]] = {
 # than a global filter: every other findings recipe's denominator semantics
 # would need review before a severity clause could be applied to it safely.
 MIN_SEVERITY_RECIPES = frozenset({"Reachability VEX Coverage"})
+
+# Recipes that honor --product-only. A narrow allow-list for the same reason as
+# MIN_SEVERITY_RECIPES, but the stakes are higher: the flag does TWO things —
+# narrows the fetch to product trees, and relabels a dependency's rows onto its
+# product. Only these two recipes have a project list as their top-level rows,
+# so only they have a row for a product to BE. Applied engine-wide, every other
+# recipe would silently inherit a narrowed project set plus a relabel whose
+# interaction with that recipe's own grouping has never been reviewed.
+#
+# Enforced in two places, both required:
+#   * ``run()`` skips product-scope resolution outright when NO recipe in the
+#     run is eligible (the resolution walks every product's dependency tree —
+#     expensive to do for nothing).
+#   * ``_process_recipe`` suspends the resolved scope around any ineligible
+#     recipe, so a mixed run (a bare ``fs-report run --product-only``, or a
+#     compound bundling an exec report with others) product-scopes the two
+#     eligible recipes and leaves the rest on the run's original scope.
+#
+# Mirrored by web/routers/run.py's PRODUCT_ONLY_RECIPES (lower-cased, drives
+# toggle VISIBILITY only). Keep the two in step.
+PRODUCT_ONLY_RECIPES = frozenset({"Executive Dashboard", "Executive Summary"})
 
 # Recipes that MUST fetch CVE findings via the category==CVE RSQL filter,
 # regardless of --finding-types, because they read reachabilityScore — a field
@@ -874,6 +968,43 @@ class ReportCancelled(Exception):
 class ReportEngine:
     """Main engine for generating reports from recipes."""
 
+    # --product-only state, declared at class level so the many tests that
+    # build an engine via ``__new__`` (bypassing __init__) still read the
+    # inert default rather than raising AttributeError. Populated per-run by
+    # ``_resolve_product_scope``, which REASSIGNS both.
+    #
+    # The member-map default is a read-only proxy, not a bare ``{}``: a shared
+    # mutable class default would leak one run's product attribution into every
+    # other engine in the process (the web server runs many). Mutating it in
+    # place now raises instead.
+    _product_scope: dict[str, dict[str, Any]] | None = None
+    _product_member_map: Mapping[str, tuple[str, str]] = MappingProxyType({})
+    # Empty TUPLE, not a list: a mutable class default would leak one run's
+    # disclosure into every other engine in the process.
+    _product_shared_versions: Sequence[dict[str, Any]] = ()
+    # projectVersion id -> (product name, product id). The findings path keys on
+    # this in preference to the project map: two products can link the same
+    # dependency PROJECT at different VERSIONS, and a project-keyed relabel
+    # folds both versions onto whichever product claimed the project first.
+    _product_version_map: Mapping[str, tuple[str, str]] = MappingProxyType({})
+    # Projects linked at different versions by different products — the
+    # project-keyed relabel fallback warns when a version-less frame carries
+    # one of these. frozenset for the same leak-safety reason as above.
+    _product_split_projects: frozenset[str] = frozenset()
+    # ``_folder_project_ids`` as it stood BEFORE _resolve_product_scope
+    # overwrote it with the product member set. Restored by
+    # ``_product_scope_suspended`` so an ineligible recipe in a mixed run sees
+    # the run's original scope (a --folder set, a glob expansion, or None)
+    # rather than a project list narrowed for a report it isn't running.
+    _pre_product_folder_ids: set[str] | None = None
+    # Whether any recipe in this run honors --product-only. Set once per run()
+    # from the resolved recipe list, compound sections expanded, and read by
+    # _resolve_run_scope to skip the product tree walk when nothing reads it.
+    # Class-level True so an engine that never reaches run() (tests building
+    # one via __new__, the compound section path re-entering _resolve_run_scope)
+    # behaves exactly as it did before this gate existed.
+    _product_only_recipe_in_run: bool = True
+
     def __init__(
         self,
         config: Config,
@@ -1096,6 +1227,23 @@ class ReportEngine:
         # Current dependency tree for the active recipe run
         self._current_dependency_tree: DependencyNode | None = None
 
+        # --product-only scope (populated by _resolve_product_scope).
+        # product project id -> {"name", "project": <raw /projects record>,
+        #   "pv_id", "project_ids", "pv_ids"} where the id lists carry the
+        # product itself first, then its whole dependency tree.
+        self._product_scope: dict[str, dict[str, Any]] | None = None
+        # member project id -> (product name, product project id). Drives the
+        # roll-up relabeling so a dependency's findings land on its product's
+        # row instead of a row of their own.
+        self._product_member_map: Mapping[str, tuple[str, str]] = {}
+        # Dependency versions linked by more than one product — disclosed in the
+        # report, since they are why the product rows sum above the portfolio
+        # total.
+        self._product_shared_versions: Sequence[dict[str, Any]] = ()
+        self._product_version_map: Mapping[str, tuple[str, str]] = {}
+        self._product_split_projects: frozenset[str] = frozenset()
+        self._pre_product_folder_ids: set[str] | None = None
+
     def _resolve_dependency_tree(
         self,
         project_id: int | str,
@@ -1136,6 +1284,457 @@ class ReportEngine:
 
         self._dependency_tree_cache[version_id] = tree
         return tree
+
+    def _resolve_product_scope(self) -> bool:
+        """Narrow the run to the projects the platform marks as a Product.
+
+        Products become the only top-level rows; each product's dependency
+        projects stay in scope but are relabeled onto the product so their
+        findings roll up into it rather than sitting beside it. Intersects
+        with an already-resolved folder scope, and skips dependency
+        traversal under ``--standalone``.
+
+        Sets ``_product_scope`` / ``_product_member_map`` and narrows
+        ``_folder_project_ids`` to the member set (the same mechanism a
+        multi-project glob already uses). Returns False when the tenant has
+        no product-marked project in scope.
+        """
+        from fs_report.models import QueryConfig, QueryParams
+
+        # Deliberately UNFILTERED, matching the params every other /projects
+        # caller uses (resolve_project, the dashboard's own fetch). A server-side
+        # `filter=isProduct==true` would only shrink the payload, but it makes a
+        # distinct cache key and so costs a whole extra round trip on every run;
+        # sharing the key means the next caller in the same run is a cache hit.
+        # `limit` is the PAGE size here — _fetch_all_with_sqlite clamps it to
+        # max_page_size and walks `offset` — so this paginates rather than
+        # capping at 10k.
+        products = self.api_client.fetch_all_with_resume(
+            QueryConfig(
+                endpoint="/public/v0/projects",
+                params=QueryParams(limit=10000, archived=False, excluded=False),
+            )
+        )
+        products = [p for p in products if p.get("isProduct")]
+
+        if self._folder_project_ids:
+            products = [
+                p for p in products if str(p.get("id")) in self._folder_project_ids
+            ]
+
+        if not products:
+            scope_note = (
+                f" in folder '{self._folder_name}'" if self._folder_name else ""
+            )
+            self.logger.error(
+                "--product-only found no projects marked as a Product%s. "
+                "Mark the top-level projects as Products in the platform, "
+                "or drop --product-only.",
+                scope_note,
+            )
+            return False
+
+        # Deterministic order. Ownership of a shared dependency goes to the
+        # first product that claims it, so an unstable order would move
+        # findings between product rows week over week with nothing having
+        # changed on the platform.
+        products = sorted(
+            products,
+            key=lambda p: (str(p.get("name") or "").lower(), str(p.get("id"))),
+        )
+
+        # Resolve every product's tree once, up front — pass 1 assigns
+        # ownership across ALL products before pass 2 builds any product's
+        # member lists, so the lists and the relabel map can never disagree.
+        identity: dict[str, dict[str, Any]] = {}
+        trees: dict[str, DependencyNode | None] = {}
+        for product in products:
+            pid = str(product.get("id"))
+            name = product.get("name") or pid
+            branch = product.get("defaultBranch") or {}
+            latest = (
+                (branch.get("latestVersion") or {}) if isinstance(branch, dict) else {}
+            )
+            pv_id = latest.get("id")
+            identity[pid] = {
+                "name": name,
+                "project": product,
+                "pv_id": str(pv_id) if pv_id else "",
+            }
+            trees[pid] = (
+                self._resolve_dependency_tree(pid, name, pv_id)
+                if pv_id and not self.config.standalone
+                else None
+            )
+
+        # Fail fast when NO product has a scanned version: every product would
+        # be absent from the report (no version = nothing to count), so the run
+        # would render an empty dashboard that reads as a clean portfolio.
+        # A MIX of versioned and unversioned products proceeds with the
+        # warning below — the report still has real rows.
+        if not any(entry["pv_id"] for entry in identity.values()):
+            self.logger.error(
+                "--product-only: none of the %d product(s) in scope has a "
+                "scanned version, so the report would be empty. Scan the "
+                "products (or their default branch has no version yet), or "
+                "drop --product-only: %s",
+                len(identity),
+                ", ".join(sorted(e["name"] for e in identity.values())),
+            )
+            return False
+
+        # Pass 1 — ownership. Every product owns ITSELF first: a project that
+        # is both a Product and another product's dependency keeps its own
+        # top-level row, and must not also be folded into its parent (that
+        # would count it twice). Only then do dependency claims apply, first
+        # product wins.
+        members: dict[str, tuple[str, str]] = {
+            pid: (entry["name"], pid) for pid, entry in identity.items()
+        }
+        # Ownership is tracked per VERSION as well as per project. Two products
+        # can link the same dependency PROJECT at different VERSIONS — those are
+        # different findings, and a project-level claim would have dropped the
+        # non-owning product's version from every total, counting it nowhere.
+        # Only a genuinely shared version resolves to a single owner.
+        version_owner: dict[str, str] = {
+            entry["pv_id"]: pid for pid, entry in identity.items() if entry["pv_id"]
+        }
+        # version id -> the products that LINK it (as opposed to own it), so a
+        # version more than one product depends on can be named in the report
+        # instead of quietly resolving to one owner.
+        version_linkers: dict[str, set[str]] = {}
+        version_label: dict[str, str] = {}
+        for pid, tree in trees.items():
+            if tree is None:
+                continue
+            for node in tree.all_nodes():
+                node_pv = str(node.version_id)
+                # First product wins OWNERSHIP of a shared version: the
+                # portfolio totals count it once. Every product that links it
+                # still reports it in its own row (see all_pv_ids below), so a
+                # product row is never short — the two views differ on purpose.
+                members.setdefault(str(node.project_id), (identity[pid]["name"], pid))
+                version_owner.setdefault(node_pv, pid)
+                if node_pv != identity[pid]["pv_id"]:
+                    version_linkers.setdefault(node_pv, set()).add(pid)
+                    version_label.setdefault(node_pv, node.project_name or node_pv)
+
+        # Pass 2 — two member lists per product, because the two questions a
+        # dashboard answers want different arithmetic:
+        #
+        #   all_*     the product's WHOLE tree. This is the product's true
+        #             posture and drives its own row, so a product that shares a
+        #             dependency with another is never reported short.
+        #   *_ids     only what this product OWNS. Portfolio-level totals sum
+        #             these, so a shared version is counted exactly once and the
+        #             headline reconciles against the per-version numbers.
+        scope: dict[str, dict[str, Any]] = {}
+        for pid, entry in identity.items():
+            pv_id = entry["pv_id"]
+            project_ids = [pid]
+            pv_ids = [pv_id] if pv_id else []
+            all_project_ids = [pid]
+            all_pv_ids = [pv_id] if pv_id else []
+            tree = trees[pid]
+            if tree is not None:
+                for node in tree.all_nodes():
+                    node_pid = str(node.project_id)
+                    node_pv = str(node.version_id)
+                    if node_pv == pv_id:
+                        continue
+                    if node_pid not in all_project_ids:
+                        all_project_ids.append(node_pid)
+                    if node_pv not in all_pv_ids:
+                        all_pv_ids.append(node_pv)
+                    if version_owner.get(node_pv) != pid:
+                        continue  # another product counts this one
+                    if node_pid not in project_ids:
+                        project_ids.append(node_pid)
+                    if node_pv not in pv_ids:
+                        pv_ids.append(node_pv)
+            scope[pid] = {
+                "name": entry["name"],
+                "project": entry["project"],
+                "pv_id": pv_id,
+                "project_ids": project_ids,
+                "pv_ids": pv_ids,
+                "all_project_ids": all_project_ids,
+                "all_pv_ids": all_pv_ids,
+                # The resolved tree rides along so the findings fetch can build
+                # its dependency-path annotation root without re-resolving what
+                # this method already walked (see _product_scope_version_ids).
+                "tree": tree,
+            }
+
+        # Disclosure: every version that appears in more than one product's own
+        # row, so a reader can see WHY the rows sum above the portfolio total.
+        # Two ways that happens, and both must be listed:
+        #
+        #   * two or more products LINK the same dependency version;
+        #   * a version is one product's OWN version and another product's
+        #     dependency — i.e. a project marked as a Product that is also used
+        #     inside another product. Only one product "links" it, so counting
+        #     linkers alone missed this case entirely.
+        own_version_of = {
+            entry["pv_id"]: pid for pid, entry in identity.items() if entry["pv_id"]
+        }
+        shared: list[dict[str, Any]] = []
+        for pv, linkers in sorted(version_linkers.items()):
+            users = set(linkers)
+            product_of_its_own = own_version_of.get(pv)
+            if product_of_its_own:
+                users.add(product_of_its_own)
+            if len(users) < 2:
+                continue
+            owner = version_owner.get(pv)
+            shared.append(
+                {
+                    "name": (
+                        identity[product_of_its_own]["name"]
+                        if product_of_its_own
+                        else version_label.get(pv, pv)
+                    ),
+                    "version_id": pv,
+                    "is_product": bool(product_of_its_own),
+                    "counted_under": identity.get(owner or "", {}).get("name", ""),
+                    # Always includes the product it is counted under, so the
+                    # banner can't name an owner that is absent from the users.
+                    "used_by": sorted(
+                        identity[p]["name"] for p in users if p in identity
+                    ),
+                }
+            )
+        self._product_shared_versions = shared
+        if shared:
+            self.logger.info(
+                "--product-only: %d dependency version(s) are linked by more "
+                "than one product; each product's own row reports them, and "
+                "the portfolio totals count each once: %s",
+                len(shared),
+                "; ".join(
+                    f"{s['name']} (counted under {s['counted_under']}, "
+                    f"used by {', '.join(s['used_by'])})"
+                    for s in shared
+                ),
+            )
+
+        # Projects whose versions are owned by two or more different products.
+        # For these, a frame that carries no version column cannot be
+        # attributed correctly — the project-keyed relabel fallback folds every
+        # row onto the first claimant — so _apply_product_rollup warns when it
+        # has to take that path.
+        _proj_owners: dict[str, set[str]] = {}
+        for _tree in trees.values():
+            if _tree is None:
+                continue
+            for _node in _tree.all_nodes():
+                _owner = version_owner.get(str(_node.version_id))
+                if _owner:
+                    _proj_owners.setdefault(str(_node.project_id), set()).add(_owner)
+        self._product_split_projects = frozenset(
+            p for p, owners in _proj_owners.items() if len(owners) > 1
+        )
+
+        self._product_scope = scope
+        self._product_member_map = members
+        self._product_version_map = {
+            pv: (identity[owner]["name"], owner)
+            for pv, owner in version_owner.items()
+            if owner in identity
+        }
+        # Kept so _product_scope_suspended can put an ineligible recipe back on
+        # the run's original scope instead of the product member set.
+        self._pre_product_folder_ids = self._folder_project_ids
+        self._folder_project_ids = set(members)
+        _no_version = [
+            entry["name"] for entry in identity.values() if not entry["pv_id"]
+        ]
+        if _no_version:
+            # These products contribute no row at all downstream (no version =
+            # nothing to count). Name them, or the dashboard just looks short.
+            self.logger.warning(
+                "--product-only: %d product(s) have no scanned version and are "
+                "absent from the report: %s",
+                len(_no_version),
+                ", ".join(sorted(_no_version)),
+            )
+        self.logger.info(
+            "--product-only: %d product(s), %d project(s) in scope "
+            "(dependencies roll up into their product)",
+            len(scope),
+            len(members),
+        )
+        return True
+
+    def _apply_product_rollup(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Relabel dependency findings onto their product (--product-only).
+
+        Rewrites whichever project-name column the frame carries
+        (``project.name`` / ``project_name``) so a group-by on it folds each
+        dependency's findings into its product's row. Recipes that resolve
+        names from the engine's id->name map instead (Executive Dashboard
+        detailed mode) are handled by remapping that map, not the frame.
+
+        The project ID column is rewritten to the owning product's id in the
+        same pass. Relabeling only the name leaves an ID-keyed group-by or link
+        pointing back at the dependency, so the row would say one thing and any
+        id-driven consumer would say another. The pre-roll-up value is preserved
+        in ``source_project_id`` so a consumer that needs to navigate to the
+        dependency the finding actually came from still can.
+        """
+        if not self._product_member_map or df.empty:
+            return df
+
+        name_cols = [c for c in ("project.name", "project_name") if c in df.columns]
+        id_col = next(
+            (c for c in ("projectId", "project.id", "project_id") if c in df.columns),
+            None,
+        )
+        if not name_cols and id_col is None:
+            return df
+
+        # VERSION first. Two products can link the same dependency PROJECT at
+        # different VERSIONS; those are different findings owned by different
+        # products, and a project-keyed relabel folds both onto whichever
+        # product claimed the project first. The project map is the fallback for
+        # frames that carry no version column.
+        ver_col = next(
+            (
+                c
+                for c in ("projectVersion.id", "project_version_id", "projectVersionId")
+                if c in df.columns
+            ),
+            None,
+        )
+        if ver_col is not None:
+            keys = df[ver_col].astype(str)
+        elif "projectVersion" in df.columns:
+            keys = df["projectVersion"].apply(
+                lambda v: str(v.get("id", "")) if isinstance(v, dict) else ""
+            )
+        else:
+            keys = None
+
+        lookup: Mapping[str, tuple[str, str]] = self._product_version_map
+        if keys is None or not lookup:
+            lookup = self._product_member_map
+            if id_col is not None:
+                keys = df[id_col].astype(str)
+            elif "project" in df.columns:
+                keys = df["project"].apply(
+                    lambda p: str(p.get("id", "")) if isinstance(p, dict) else ""
+                )
+            else:
+                return df
+            # The project-keyed fallback cannot tell two versions of the same
+            # dependency apart. When different products link the same project
+            # at DIFFERENT versions, every row lands on the first claimant —
+            # say so instead of misattributing silently.
+            _split = getattr(self, "_product_split_projects", None) or set()
+            _affected = _split & set(keys.unique())
+            if _affected:
+                self.logger.warning(
+                    "--product-only: this frame carries no version column, and "
+                    "%d project(s) in it are linked at different versions by "
+                    "different products; all their rows are attributed to the "
+                    "first product that claims the project.",
+                    len(_affected),
+                )
+
+        name_by_key = {k: name for k, (name, _pid) in lookup.items()}
+        id_by_key = {k: pid for k, (_name, pid) in lookup.items()}
+        df = df.copy()
+        mapped_names = keys.map(name_by_key)
+        for col in name_cols:
+            df[col] = mapped_names.fillna(df[col])
+        if id_col is not None:
+            df["source_project_id"] = df[id_col].astype(str)
+            df[id_col] = keys.map(id_by_key).fillna(df[id_col])
+        _matched = int(mapped_names.notna().sum())
+        self.logger.info(
+            "--product-only: roll-up matched %d of %d rows onto product rows",
+            _matched,
+            len(df),
+        )
+        return df
+
+    @contextmanager
+    def _product_scope_suspended(self) -> "Generator[None, None, None]":
+        """Make a resolved --product-only scope inert for the duration.
+
+        Every downstream product behavior keys off one of these attributes, so
+        clearing them turns the whole flag off for the block without unwinding
+        the (expensive) resolution — the next eligible recipe in the same run
+        gets it back. ``_folder_project_ids`` reverts to its pre-product value
+        rather than to ``None``: an ineligible recipe in a ``--folder`` run
+        must still honor the folder.
+
+        Used by ``_process_recipe`` to gate the flag to PRODUCT_ONLY_RECIPES.
+        """
+        saved = (
+            self._product_scope,
+            self._product_member_map,
+            self._product_shared_versions,
+            self._product_version_map,
+            self._product_split_projects,
+            self._folder_project_ids,
+        )
+        self._product_scope = None
+        self._product_member_map = {}
+        self._product_shared_versions = ()
+        self._product_version_map = {}
+        self._product_split_projects = frozenset()
+        self._folder_project_ids = self._pre_product_folder_ids
+        try:
+            yield
+        finally:
+            (
+                self._product_scope,
+                self._product_member_map,
+                self._product_shared_versions,
+                self._product_version_map,
+                self._product_split_projects,
+                self._folder_project_ids,
+            ) = saved
+
+    def _product_scope_version_ids(self) -> tuple[list, DependencyNode | None]:
+        """The findings-fetch version set for a --product-only run.
+
+        EXACTLY the versions the product trees link — the products' own
+        versions plus every dependency version resolved at scope time. The
+        generic folder path's latest-of-every-member resolution is wrong here
+        twice over: a dependency project's own latest version need not be a
+        version any product links, so its rows would relabel to nothing and
+        surface as residual dependency rows beside the product rows; and
+        re-expanding every member's latest re-fetches trees
+        ``_resolve_product_scope`` already walked.
+
+        Returns (sorted version ids, synthetic annotation root or None) —
+        the same contract as ``_expand_folder_version_ids_with_dependencies``.
+        """
+        version_ids: list = []
+        seen: set = set()
+        product_trees: list[DependencyNode] = []
+        for entry in (self._product_scope or {}).values():
+            for pv in entry.get("all_pv_ids") or []:
+                if pv not in seen:
+                    seen.add(pv)
+                    version_ids.append(pv)
+            tree = entry.get("tree")
+            if tree is not None:
+                product_trees.append(tree)
+        version_ids = sorted(version_ids)
+        if not any(t.has_dependencies for t in product_trees):
+            return version_ids, None
+        # Same synthetic-root shape as the folder expansion, so the
+        # dependency-path annotation downstream treats both identically.
+        return version_ids, DependencyNode(
+            project_id=0,
+            project_name="__folder__",
+            version_id=0,
+            path=[],
+            children=product_trees,
+        )
 
     def _expand_version_ids_with_dependencies(
         self,
@@ -2816,7 +3415,60 @@ class ReportEngine:
                     "Use 'fs-report list-versions <project>' to see available versions."
                 )
                 return False
+
+        # --product-only narrows whatever scope the steps above produced —
+        # portfolio, folder, or a multi-match project glob — to product-marked
+        # projects plus the dependency trees they own.
+        #
+        # Runs LAST on purpose. A glob is resolved above into
+        # ``_folder_project_ids`` with ``project_filter`` cleared, so only a
+        # SINGLE resolved target still carries a project_filter here. Gating
+        # earlier read the raw flag and treated `--project 'Cam*'` as a single
+        # target, silently skipping product scoping for every glob. Running
+        # after the version-filter checks also keeps the set this installs from
+        # tripping their "not supported with project glob patterns" guard.
+        if self.config.product_only and not self.data_override:
+            if self.config.project_filter:
+                self.logger.info(
+                    "--product-only ignored: --project already scopes the run "
+                    "to a single target."
+                )
+            elif not self._product_only_recipe_in_run:
+                # No recipe in this run honors the flag, so resolving would
+                # walk every product's dependency tree to build a map nothing
+                # reads. _process_recipe warns per ineligible recipe; this only
+                # skips the work. Default True keeps every engine built by
+                # __new__ (and any caller that skips run()) on the old path.
+                self.logger.info(
+                    "--product-only: no recipe in this run honors it "
+                    "(only %s) — skipping product scope resolution.",
+                    ", ".join(sorted(PRODUCT_ONLY_RECIPES)),
+                )
+            elif not self._resolve_product_scope():
+                return False
         return True
+
+    @staticmethod
+    def _has_product_only_recipe(recipes: "list[Recipe]") -> bool:
+        """True when any recipe in the run — or any compound child — is eligible.
+
+        A compound is checked by its ``sections``: the bundle itself is never
+        named in PRODUCT_ONLY_RECIPES, but a bundle carrying an Executive
+        Dashboard section must still resolve the scope that section needs.
+        """
+        for recipe in recipes:
+            if recipe.name in PRODUCT_ONLY_RECIPES:
+                return True
+            # isinstance, not truthiness: a plain Recipe has no ``sections`` at
+            # all, and a Mock recipe answers every getattr with a truthy
+            # non-iterable.
+            sections = getattr(recipe, "sections", None)
+            if not isinstance(sections, list):
+                continue
+            for section in sections:
+                if getattr(section, "recipe", None) in PRODUCT_ONLY_RECIPES:
+                    return True
+        return False
 
     def run(self) -> "RunResult":
         """Run the complete report generation process. Returns RunResult with success status."""
@@ -2910,6 +3562,13 @@ class ReportEngine:
         recipes = sorted(recipes, key=lambda r: r.execution_order)
 
         self.logger.info(f"Loaded {len(recipes)} recipes")
+
+        # Whether --product-only has anything to act on, decided from the final
+        # recipe list so _resolve_run_scope can skip the tree walk when it does
+        # not. Must be set BEFORE the call below. Only computed when the flag is
+        # actually set — nothing reads it otherwise.
+        if self.config.product_only:
+            self._product_only_recipe_in_run = self._has_product_only_recipe(recipes)
 
         # Resolve folder / project / version scope on self.config in place
         # (folder→IDs, project name/glob→ID, version name→ID). Extracted to
@@ -3850,6 +4509,13 @@ class ReportEngine:
         ):
             if k in child_eff:
                 update[k] = child_eff[k]
+        # Coerced, not passed through: model_copy does NOT validate, so a
+        # hand-authored ``product_only: "false"`` would land on the Config as a
+        # truthy string and silently product-scope a section that asked not to be.
+        if "product_only" in child_eff:
+            from fs_report.workflow_store import coerce_bool as _coerce_bool
+
+            update["product_only"] = _coerce_bool(child_eff["product_only"])
         # Date mode → start_date/end_date. A section ``period`` is resolved to a
         # window via PeriodParser (same as create_config); a section start/end
         # pair is used verbatim. period↔range exclusion was already applied by
@@ -3876,7 +4542,14 @@ class ReportEngine:
         # A scope override means we must re-resolve names→IDs for this child.
         scope_overridden = any(
             key in overrides
-            for key in ("project_filter", "folder_filter", "version_filter")
+            # product_only is a SCOPE key: a section that only flips it still
+            # needs scope re-resolution, or the override is inert.
+            for key in (
+                "project_filter",
+                "folder_filter",
+                "version_filter",
+                "product_only",
+            )
         )
 
         saved_config = self.config
@@ -3889,6 +4562,15 @@ class ReportEngine:
         # later section of the same compound run.
         saved_folder_scope_ids = self._folder_scope_folder_ids
         saved_folder_path = self.resolved_folder_path
+        # Same reason again: a section that retargets its folder re-runs
+        # _resolve_run_scope, which under --product-only rebuilds the product
+        # scope against the NEW folder. Left unrestored, the next section would
+        # roll its findings up onto the previous section's products.
+        saved_product_scope = self._product_scope
+        saved_product_members = self._product_member_map
+        saved_product_shared = self._product_shared_versions
+        saved_product_versions = self._product_version_map
+        saved_product_splits = self._product_split_projects
         child_config = self.config.model_copy(update=update)
         self.config = child_config
         self.api_client.config = child_config
@@ -3899,6 +4581,13 @@ class ReportEngine:
             self._folder_scope_folder_ids = None
             self.resolved_project_name = None
             self.resolved_folder_path = []
+            # Cleared for the same reason: a section that turns product_only OFF
+            # must not inherit the parent's roll-up map and keep relabeling.
+            self._product_scope = None
+            self._product_member_map = {}
+            self._product_shared_versions = ()
+            self._product_version_map = {}
+            self._product_split_projects = frozenset()
         try:
             ok = self._resolve_run_scope() if scope_overridden else True
             yield ok
@@ -3909,6 +4598,11 @@ class ReportEngine:
             self._folder_project_ids = saved_folder_ids
             self._folder_scope_folder_ids = saved_folder_scope_ids
             self.resolved_folder_path = saved_folder_path
+            self._product_scope = saved_product_scope
+            self._product_member_map = saved_product_members
+            self._product_shared_versions = saved_product_shared
+            self._product_version_map = saved_product_versions
+            self._product_split_projects = saved_product_splits
 
     # ------------------------------------------------------------------
     # Compound-recipe dispatch
@@ -6251,6 +6945,30 @@ class ReportEngine:
                 )
 
     def _process_recipe(self, recipe: Recipe) -> ReportData | None:
+        """Process a single recipe, gating --product-only to its allow-list.
+
+        Thin wrapper over :meth:`_process_recipe_scoped`. A run resolves the
+        product scope once, but only PRODUCT_ONLY_RECIPES may see it: anything
+        else runs with the scope suspended, on the run's original project set.
+        Sits here rather than in ``run()`` so the compound child dispatch and
+        the sub-engine path get the same gate for free.
+        """
+        if self._product_member_map and recipe.name not in PRODUCT_ONLY_RECIPES:
+            # Silently dropping a scope flag lets an operator believe a report
+            # was product-scoped when it listed every project — the same class
+            # of false confidence --min-severity warns about, worded the same.
+            self.logger.warning(
+                "Ignoring --product-only for %s: only %s roll dependencies up "
+                "into their product. This report lists every project in scope "
+                "as its own row.",
+                recipe.name,
+                ", ".join(sorted(PRODUCT_ONLY_RECIPES)),
+            )
+            with self._product_scope_suspended():
+                return self._process_recipe_scoped(recipe)
+        return self._process_recipe_scoped(recipe)
+
+    def _process_recipe_scoped(self, recipe: Recipe) -> ReportData | None:
         """Process a single recipe and return report data."""
         try:
             # Warn about recipe-scoped flags this recipe will ignore. Deliberately
@@ -6976,8 +7694,13 @@ class ReportEngine:
                         _flatten_findings_data: Callable | None = None
                         if _is_findings_by_project:
                             from fs_report.transforms.pandas.findings_by_project import (
-                                flatten_findings_data as _flatten_findings_data,
+                                flatten_for_config,
                             )
+
+                            # Binds the `--exploit-maturity` tier derivation when
+                            # the flag is set, so the call sites below stay plain
+                            # one-argument calls. See flatten_for_config.
+                            _flatten_findings_data = flatten_for_config(self.config)
 
                         # Nested dict columns consumed by flatten_findings_data, plus
                         # API fields not used by the Findings by Project transform.
@@ -6992,6 +7715,11 @@ class ReportEngine:
                             "epssScore",
                             "hasKnownExploit",
                             "inKev",
+                            # Dropped alongside inKev: the tier derivation above
+                            # has already consumed both, and carrying the column
+                            # through the rest of the pipeline is per-row memory
+                            # for a signal nothing downstream reads.
+                            "inVcKev",
                             "affectedFunctions",
                             "risk",  # already extracted to cvss_score
                         }
@@ -7005,15 +7733,32 @@ class ReportEngine:
                         # all 7 _prune_exec_summary call sites — none builds its
                         # own keep-set. exploitInfo/exploitMaturity are still
                         # dropped after the scalars are computed.
+                        # --product-only additionally needs projectId to
+                        # survive the prune: the roll-up relabel maps a
+                        # dependency's project id onto its product's name, and
+                        # the default keep-set carries only project.name.
                         _exec_extra_keep: frozenset[str] | None = (
-                            frozenset({"inKev", "inVcKev", "is_real_exploit"})
+                            frozenset(
+                                {"inKev", "inVcKev", "is_real_exploit"}
+                                | (
+                                    {"project.id", "projectVersion.id"}
+                                    if self.config.product_only
+                                    else set()
+                                )
+                            )
                             if _is_exec_summary
                             else None
                         )
 
                         # --- Per-batch column pruning for Executive Dashboard ---
                         _is_exec_dashboard = recipe.name == "Executive Dashboard"
-                        _ed_extra_keep: frozenset[str] | None = None
+                        # --product-only relabels version-first, so detailed
+                        # mode must retain the version id through the prune.
+                        _ed_extra_keep: frozenset[str] | None = (
+                            frozenset({"projectVersion.id"})
+                            if _is_exec_dashboard and self.config.product_only
+                            else None
+                        )
 
                         # --- Per-batch flatten + pruning for CVA ---
                         _is_cva = recipe.name == "Component Vulnerability Analysis"
@@ -7412,21 +8157,30 @@ class ReportEngine:
                                 self.config.current_version_only
                                 or self._single_version_recipe
                             ):
-                                # Entity-level caching: fetch per-version (shared across reports)
-                                version_ids = sorted(
-                                    self._get_latest_version_ids_for_projects(
-                                        folder_pids
+                                if self._product_scope:
+                                    # --product-only: fetch exactly the linked
+                                    # tree versions resolved at scope time —
+                                    # see _product_scope_version_ids for why
+                                    # latest-of-every-member is wrong here.
+                                    version_ids, self._current_dependency_tree = (
+                                        self._product_scope_version_ids()
                                     )
-                                )
-                                # Expand with dependency versions per project
-                                version_ids, self._current_dependency_tree = (
-                                    self._expand_folder_version_ids_with_dependencies(
-                                        version_ids
+                                else:
+                                    # Entity-level caching: fetch per-version (shared across reports)
+                                    version_ids = sorted(
+                                        self._get_latest_version_ids_for_projects(
+                                            folder_pids
+                                        )
                                     )
-                                )
+                                    # Expand with dependency versions per project
+                                    version_ids, self._current_dependency_tree = (
+                                        self._expand_folder_version_ids_with_dependencies(
+                                            version_ids
+                                        )
+                                    )
                                 self.logger.info(
                                     f"Fetching findings for {recipe.name} with --current-version-only "
-                                    f"({len(version_ids)} latest versions)"
+                                    f"({len(version_ids)} versions)"
                                 )
                                 _vf = self._get_findings_for_versions(
                                     version_ids,
@@ -7479,6 +8233,22 @@ class ReportEngine:
                                     raw_data = _config_extract(raw_data)
                                 needs_date_postfilter = True
                             else:
+                                if self._product_scope:
+                                    # --all-versions fetches every version of
+                                    # every member project, but the roll-up
+                                    # relabel is version-keyed to the LINKED
+                                    # tree versions only — anything else keeps
+                                    # its own project's name. Honor the
+                                    # explicit --all-versions request, but say
+                                    # what it does to the product promise.
+                                    self.logger.warning(
+                                        "--product-only with --all-versions: "
+                                        "fetching every version of every "
+                                        "member project; rows from versions "
+                                        "no product links keep their own "
+                                        "project's name and appear beside "
+                                        "the product rows."
+                                    )
                                 # Batch by project IDs — all versions.
                                 # Keyed on the query signature AND the payload
                                 # shape: the frame cached below is the one that
@@ -7491,6 +8261,9 @@ class ReportEngine:
                                     finding_type,
                                     folder_pids,
                                     recipe.name,
+                                    exploit_maturity=_exploit_maturity_label(
+                                        recipe.name, self.config
+                                    ),
                                 )
 
                                 if _cache_key in self._findings_cache:
@@ -8203,6 +8976,10 @@ class ReportEngine:
             # Prune CVA columns for non-batch paths (after post-accumulation flatten)
             if _is_cva and not _cva_pre_flattened and not raw_data.empty:
                 raw_data = _prune_cva(raw_data, _cva_extra_keep)
+            # --- Roll dependency findings onto their product (--product-only) ---
+            if self._product_member_map and not raw_data.empty:
+                raw_data = self._apply_product_rollup(raw_data)
+
             # --- Inject project_name if needed ---
             # Only do this if the recipe uses project-level grouping
             # (via transform group_by or transform_function that needs it)
@@ -8232,6 +9009,15 @@ class ReportEngine:
                         # Convert project_id to string to ensure it's hashable
                         project_map[str(pid_val)] = project_name
 
+                # --product-only: point every dependency project at its
+                # product's name so the injected project_name (and any
+                # group-by on it) rolls the dependency's findings up.
+                for _member_id, (
+                    _product_name,
+                    _product_id,
+                ) in self._product_member_map.items():
+                    project_map[_member_id] = _product_name
+
                 # Inject project_name using vectorized DataFrame helper
                 if not raw_data.empty:
                     # Copy to avoid mutating cached DataFrame
@@ -8248,6 +9034,18 @@ class ReportEngine:
                 pf_map = self._build_project_folder_map_from_projects()
             else:
                 pf_map = {}
+
+            # --product-only: a dependency's findings are reported under its
+            # product, so they belong to the PRODUCT's folder, not the
+            # dependency project's own.
+            if self._product_member_map and pf_map:
+                pf_map = dict(pf_map)
+                for _member_id, (
+                    _product_name,
+                    _product_id,
+                ) in self._product_member_map.items():
+                    if _product_id in pf_map:
+                        pf_map[_member_id] = pf_map[_product_id]
 
             if pf_map and not raw_data.empty and "folder_name" not in raw_data.columns:
                 # Copy to avoid mutating cached DataFrame (if not already copied above)
@@ -8355,6 +9153,30 @@ class ReportEngine:
             additional_data: dict[str, Any] = {}
             # Add config for pandas transform functions
             additional_data["config"] = self.config
+            # --product-only: templates relabel their project-level headings and
+            # columns to "Product", because under this flag every row IS a
+            # product (its dependencies are folded into it) and calling it a
+            # project would understate what the number covers. Flat flag, not
+            # read off ``config``: the ``config`` object above is stripped
+            # before the template context is built.
+            #
+            # Gated on the recipe allow-list, NOT on the raw config flag: an
+            # ineligible recipe in a mixed run reports every project as its own
+            # row (see _process_recipe), so relabeling its headings "Product"
+            # would caption a project list as a product list. Checked against
+            # the allow-list rather than against `_product_member_map` so a
+            # `data_override` re-render — which never resolves a scope — still
+            # captions a rolled-up payload correctly.
+            additional_data["product_only"] = bool(
+                self.config.product_only and recipe.name in PRODUCT_ONLY_RECIPES
+            )
+            # Named shared items, for every mode. The summary bundle carries its
+            # own copy; detailed mode has no bundle, and without this its banner
+            # could only give the caveat without naming what it applies to.
+            if self._product_shared_versions:
+                additional_data["shared_dependencies"] = list(
+                    self._product_shared_versions
+                )
             # Human-readable project name. config.project_filter holds the
             # resolved numeric ID by transform time, so transforms that
             # build display strings (scope labels, subtitles) must prefer
@@ -9063,6 +9885,15 @@ class ReportEngine:
                     "folder_name": self._folder_name,
                     "folder_path": self._folder_path,
                     "folder_filter": self.config.folder_filter,
+                    # Exploit-maturity tiers the run was filtered to, as a
+                    # display string, and the SINGLE source every renderer reads
+                    # (HTML panel, Markdown metadata row, JSON metadata.filters)
+                    # so the three surfaces cannot disagree. Empty for a recipe
+                    # that ignores the flag: claiming a filter that never touched
+                    # the data is the same failure as hiding one that did.
+                    "exploit_maturity_filter": _exploit_maturity_label(
+                        recipe.name, self.config
+                    ),
                     "domain": self.config.domain,
                     "logo_path": self._resolve_logo_path(),
                 },
@@ -10758,6 +11589,8 @@ class ReportEngine:
           2. Optional period filter — projects whose current version was
              scanned outside [start_date, end_date] are dropped when the
              user explicitly requested a period (--period, --start, --end).
+             Under --product-only only products reach this step; their
+             dependency versions ride along with the product.
           3. Batched fetch of /components (RSQL projectVersion=in=(...))
           4. Batched fetch of /versions (RSQL project=in=(...))
           5. per_project_parallel — 4 calls per project (summary counts only);
@@ -10765,7 +11598,10 @@ class ReportEngine:
         Returns a dict consumable by executive_dashboard_summary_transform.
         """
         from fs_report.api.per_project_parallel import per_project_parallel
-        from fs_report.api.summary_counts import fetch_all_summary_counts
+        from fs_report.api.summary_counts import (
+            fetch_all_summary_counts,
+            sum_summary_counts,
+        )
 
         # 1. Paginated /projects fetch
         projects_query = QueryConfig(
@@ -10777,7 +11613,18 @@ class ReportEngine:
         )
 
         # Apply folder/project filters (existing engine state)
-        if self._folder_project_ids:
+        if self._product_scope:
+            # --product-only: only products are top-level rows. Their
+            # dependency projects are folded into them below, so they must NOT
+            # enter in_scope (that would double-count them and give each a row
+            # of its own). Prefer the live /projects record so a warm cache's
+            # reduced field projection can't drop `folder`.
+            _by_id = {str(p.get("id")): p for p in all_projects}
+            in_scope = [
+                _by_id.get(pid) or entry["project"]
+                for pid, entry in self._product_scope.items()
+            ]
+        elif self._folder_project_ids:
             in_scope = [
                 p for p in all_projects if str(p.get("id")) in self._folder_project_ids
             ]
@@ -10826,6 +11673,19 @@ class ReportEngine:
                 pv_ids.append(str(pv_id))
                 project_ids.append(str(pid))
                 pv_to_project_name[str(pv_id)] = proj.get("name") or str(pid)
+                # --product-only: pre-fetch the dependency tree's versions and
+                # projects too — work() sums them into the product's row.
+                entry = (self._product_scope or {}).get(str(pid))
+                if entry:
+                    for member_pv in entry.get("all_pv_ids") or entry["pv_ids"]:
+                        if member_pv not in pv_ids:
+                            pv_ids.append(member_pv)
+                            pv_to_project_name[member_pv] = proj.get("name") or str(pid)
+                    for member_pid in (
+                        entry.get("all_project_ids") or entry["project_ids"]
+                    ):
+                        if member_pid not in project_ids:
+                            project_ids.append(member_pid)
 
         # 2. Batched /components fetch
         degraded_pv_ids: list[str] = []
@@ -10836,8 +11696,42 @@ class ReportEngine:
         # 3. Batched /versions fetch
         versions_by_project = self._batched_fetch_versions_histories(project_ids)
 
-        # 4. Per-project summary-counts fan-out (path-parameterized endpoints
-        # can't be RSQL-batched, so this remains per-version).
+        # 4. Summary-counts fan-out, one task per projectVersion (the
+        # path-parameterized count endpoints can't be RSQL-batched).
+        #
+        # Flat over versions, not nested inside the per-project worker: under
+        # --product-only a product carries its whole dependency tree, so a
+        # nested loop ran that tree's 4-calls-per-version SERIALLY inside one
+        # worker while the other workers sat idle — the deepest product set the
+        # wall clock. Fanning out over the flat list spends the SAME worker
+        # budget (no extra concurrency, so no extra rate-limit pressure) with
+        # no per-product serialization.
+        counts_by_pv: dict[str, dict[str, Any]] = {}
+        failed_count_pvs: set[str] = set()
+        _count_targets = [{"pv": pv} for pv in pv_ids]
+        for target, outcome in per_project_parallel(
+            _count_targets,
+            lambda t: {
+                "pv": t["pv"],
+                "counts": fetch_all_summary_counts(self.api_client, t["pv"]),
+            },
+            max_workers=max_workers,
+        ):
+            if isinstance(outcome, Exception):
+                # Recorded, not swallowed: work() re-raises for any project
+                # whose members include a failed version, so the project still
+                # lands in failed_projects and partial_report still flips. A
+                # missing count silently summing as zero would under-report the
+                # roll-up and claim the report was complete.
+                failed_count_pvs.add(str(target["pv"]))
+                self.logger.warning(
+                    "Summary counts failed for projectVersion %s: %s",
+                    target["pv"],
+                    str(outcome)[:200],
+                )
+                continue
+            counts_by_pv[str(outcome["pv"])] = outcome["counts"]
+
         def work(proj: dict) -> dict:
             pid = proj.get("id")
             db = proj.get("defaultBranch") or {}
@@ -10846,17 +11740,102 @@ class ReportEngine:
             if not pv_id:
                 return {"id": pid, "name": proj.get("name"), "skipped": True}
 
-            counts = fetch_all_summary_counts(self.api_client, pv_id)
+            # --product-only builds TWO views of the same product, because the
+            # product's own row and the portfolio headline want different
+            # arithmetic:
+            #
+            #   all_pv_ids  the whole tree — the product's TRUE posture.
+            #   pv_ids      only the versions this product owns — summed for
+            #               portfolio totals, so a version two products share is
+            #               counted once and the headline reconciles.
+            #
+            # Without the flag the two are the same single version and the
+            # second view costs nothing.
+            entry = (self._product_scope or {}).get(str(pid))
+            owned_pvs = entry["pv_ids"] if entry else [str(pv_id)]
+            # .get: a scope entry without the dual lists degrades to the owned
+            # set (the two are identical whenever nothing is shared).
+            true_pvs = (entry.get("all_pv_ids") or owned_pvs) if entry else owned_pvs
 
-            return {
+            _failed = [v for v in true_pvs if v in failed_count_pvs]
+            if _failed:
+                raise ValueError(
+                    f"summary counts unavailable for version(s) "
+                    f"{', '.join(_failed)}"
+                )
+
+            def _components_for(pvs: list[str]) -> list[dict]:
+                """Components across *pvs*, one entry per distinct component.
+
+                Keyed on the platform's GLOBAL component id (``gcId``) — the
+                component's identity across versions. A bare (name, version)
+                pair both conflates same-named components from different
+                ecosystems and misses the same component recorded with
+                different casing; ``id`` is per-version, so it can't serve
+                here. A single-version product can't see a duplicate, so it
+                short-circuits.
+                """
+                if len(pvs) == 1:
+                    return list(components_by_pv.get(pvs[0], []))
+                out: list[dict] = []
+                seen: set[tuple[str, ...]] = set()
+                for v in pvs:
+                    for comp in components_by_pv.get(v, []):
+                        c = comp or {}
+                        gc_id = str(c.get("gcId") or "")
+                        key = (
+                            ("gc", gc_id)
+                            if gc_id
+                            else (
+                                "nv",
+                                str(c.get("name") or "").casefold(),
+                                str(c.get("version") or "").casefold(),
+                                str(c.get("type") or ""),
+                                str(c.get("supplier") or ""),
+                            )
+                        )
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        out.append(comp)
+                return out
+
+            def _dep_histories(project_ids_key: str) -> list[list[dict]]:
+                if not entry:
+                    return []
+                ids = entry.get(project_ids_key) or entry["project_ids"]
+                return [
+                    versions_by_project.get(m, [])
+                    for m in ids[1:]
+                    if versions_by_project.get(m)
+                ]
+
+            row = {
                 "id": str(pid),
                 "name": proj.get("name"),
                 "folder": proj.get("folder") or {"id": "", "name": ""},
                 "latestVersion": lv,
-                "components": components_by_pv.get(str(pv_id), []),
+                "components": _components_for(true_pvs),
                 "versions_history": versions_by_project.get(str(pid), []),
-                "summary_counts": counts,
+                "dep_versions_histories": _dep_histories("all_project_ids"),
+                "summary_counts": sum_summary_counts(
+                    [counts_by_pv.get(v, {}) for v in true_pvs]
+                ),
             }
+            if owned_pvs == true_pvs:
+                row["portfolio_view"] = None
+            else:
+                # Only differs when this product links a version another product
+                # owns. Same shape as the row so the transform can swap it in.
+                row["portfolio_view"] = {
+                    **row,
+                    "components": _components_for(owned_pvs),
+                    "dep_versions_histories": _dep_histories("project_ids"),
+                    "summary_counts": sum_summary_counts(
+                        [counts_by_pv.get(v, {}) for v in owned_pvs]
+                    ),
+                }
+            return row
 
         parallel_results = per_project_parallel(in_scope, work, max_workers=max_workers)
 
@@ -10896,8 +11875,17 @@ class ReportEngine:
                 ", ".join(degraded_names),
             )
 
+        # Portfolio-level view: the same rows with each shared version counted
+        # under one product only. Builders that sum ACROSS products read this;
+        # per-product builders read `projects` and report true totals.
+        portfolio_projects = [p.get("portfolio_view") or p for p in successes]
+        for _row in successes:
+            _row.pop("portfolio_view", None)
+
         return {
             "projects": successes,
+            "portfolio_projects": portfolio_projects,
+            "shared_dependencies": list(self._product_shared_versions),
             "mode": "summary",
             # Umbrella machine-readable flag: True when ANY project's data
             # is incomplete — fully-failed fetches OR component-degraded

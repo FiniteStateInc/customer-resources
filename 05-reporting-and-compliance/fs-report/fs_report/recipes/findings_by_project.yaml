@@ -3,7 +3,7 @@ category: assessment  # Current state: shows today's findings inventory regardle
 nav_category: Investigation
 chart_libraries: []
 template: "findings_by_project.html"
-description: "Comprehensive inventory of findings across projects with optional filtering"
+description: "Comprehensive inventory of findings across projects with optional filtering (project, folder, component, exploit maturity)"
 execution_order: 20  # Reuses cached scans from Scan Analysis
 auto_run: false  # Run explicitly with --recipe when needed
 

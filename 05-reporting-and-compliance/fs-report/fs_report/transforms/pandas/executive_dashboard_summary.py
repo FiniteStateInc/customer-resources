@@ -476,8 +476,16 @@ def _build_severity_trends_total(
     for year, month in months:
         total = 0
         for proj in projects:
-            hist = proj.get("versions_history") or []
-            total += _month_end_findingcount(hist, year, month)
+            # Each history is scanned independently: _month_end_findingcount
+            # picks the single latest version before the cutoff, so merging
+            # a product's history with its dependencies' would drop all but
+            # one of them. Under --product-only the dependency histories
+            # arrive in dep_versions_histories and are added alongside.
+            for hist in [
+                proj.get("versions_history") or [],
+                *(proj.get("dep_versions_histories") or []),
+            ]:
+                total += _month_end_findingcount(hist, year, month)
         monthly_totals.append(total)
 
     labels = [f"{y}-{m:02d}" for y, m in months]
@@ -585,25 +593,43 @@ def executive_dashboard_summary_transform(
 
     ad = additional_data or {}
     projects = ad.get("projects") or []
+    # Under --product-only a dependency version two products both link is
+    # reported in BOTH product rows (each row states that product's true
+    # posture) but counted under ONE of them for portfolio totals, so the
+    # headline reconciles against the per-version numbers. `portfolio_projects`
+    # carries that once-only view; it falls back to `projects` for every other
+    # run, where the two are identical.
+    portfolio_projects = ad.get("portfolio_projects") or projects
     start_date = kwargs.get("start_date")
     end_date = kwargs.get("end_date")
 
-    # Components across all projects — for reused builders
-    all_components = _gather_all_components(projects)
+    # Components across all projects — for reused builders. Portfolio-level, so
+    # once-only.
+    all_components = _gather_all_components(portfolio_projects)
     # Policy Health's existing signature expects project_ids filter; pass empty
     # set so it counts every component passed in.
     policy_health = _build_policy_health(all_components, set())
     license_bar = _build_license_bar(all_components, set())
     license_kpis = _build_license_kpis(all_components, set())
 
-    # Summary-specific builders
+    # Portfolio-level builders — they sum ACROSS products, so they read the
+    # once-only view.
     sca_summary = _build_sca_summary_from_rollups(
-        projects,
+        portfolio_projects,
         start_date,
         end_date,
         degraded_names=set(ad.get("degraded_components_projects") or []),
     )
-    findings_by_folder = _build_findings_by_folder_from_summaries(projects)
+    findings_by_folder = _build_findings_by_folder_from_summaries(portfolio_projects)
+    exploit_intel = _build_exploit_intel_expanded(portfolio_projects)
+    findings_by_type = _build_findings_by_type_from_summaries(portfolio_projects)
+    open_issues_pie = _build_findings_by_triage_status(portfolio_projects)
+    severity_trends = _build_severity_trends_total(
+        portfolio_projects, start_date, end_date
+    )
+    finding_age = _build_finding_age_by_version_age(portfolio_projects)
+
+    # Per-product builders — one row per product, so they report TRUE totals.
     # Recipe parameter: limit number of projects in the findings-by-project chart
     recipe_params = ad.get("recipe_parameters") or {}
     max_projects = int(recipe_params.get("max_projects", 0) or 0)
@@ -612,17 +638,13 @@ def executive_dashboard_summary_transform(
         projects, max_projects=max_projects
     )
     project_table = _build_project_table_from_summaries(projects)
-    exploit_intel = _build_exploit_intel_expanded(projects)
-    findings_by_type = _build_findings_by_type_from_summaries(projects)
-    open_issues_pie = _build_findings_by_triage_status(projects)
     risk_donut, top_risk_products = _build_risk_donut_and_top_products_from_summaries(
         projects
     )
-    severity_trends = _build_severity_trends_total(projects, start_date, end_date)
-    finding_age = _build_finding_age_by_version_age(projects)
 
     return {
         "mode": "summary",
+        "shared_dependencies": list(ad.get("shared_dependencies") or []),
         "partial_report": bool(ad.get("partial_report")),
         "failed_projects": list(ad.get("failed_projects") or []),
         "degraded_components_projects": list(

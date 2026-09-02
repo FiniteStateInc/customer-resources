@@ -268,6 +268,7 @@ _VALID_OVERRIDE_BOOL_KEYS = frozenset(
         "finding_counts",
         "detailed",
         "standalone",
+        "product_only",
         "vex_override",
         # B7 (#10B): the FP-Analysis autotriage opt-in. Persistable per-step so a
         # saved/exported FP workflow carries the deliberate opt-in; gated

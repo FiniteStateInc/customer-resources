@@ -1226,7 +1226,7 @@
               {# ── Filters group — each knob gated to the recipes that consume
                  it; the whole group hides when none apply (report-config-card-
                  gating §5c). #}
-              <div x-show="stepApplies(inspStep(), 'show_component') || stepApplies(inspStep(), 'show_component_match') || stepApplies(inspStep(), 'show_component_version') || stepApplies(inspStep(), 'show_standalone') || stepApplies(inspStep(), 'show_detected_after') || stepApplies(inspStep(), 'show_min_severity') || stepApplies(inspStep(), 'show_scan_filters')" x-cloak>
+              <div x-show="stepApplies(inspStep(), 'show_component') || stepApplies(inspStep(), 'show_component_match') || stepApplies(inspStep(), 'show_component_version') || stepApplies(inspStep(), 'show_standalone') || stepApplies(inspStep(), 'show_product_only') || stepApplies(inspStep(), 'show_detected_after') || stepApplies(inspStep(), 'show_min_severity') || stepApplies(inspStep(), 'show_scan_filters')" x-cloak>
                 <div class="wfb-sec-label" style="margin-top:10px"><i data-lucide="sliders-horizontal"></i> Filters</div>
                 {# B4 #25: component NAME — required for a requires_component step
                    (Component Impact / Component Remediation Package), which
@@ -1265,6 +1265,17 @@
                        @keydown.enter.prevent="toggleStepBool('standalone')"
                        @keydown.space.prevent="toggleStepBool('standalone')"></div>
                 </div>
+                <div class="wfb-toggle" x-show="stepApplies(inspStep(), 'show_product_only')" x-cloak>
+                  <span class="tl">Products only</span>
+                  <div class="wfb-sw" :class="{ on: !!inspStep().overrides.product_only }"
+                       role="switch" :aria-checked="!!inspStep().overrides.product_only" tabindex="0"
+                       @click="toggleStepBool('product_only')"
+                       @keydown.enter.prevent="toggleStepBool('product_only')"
+                       @keydown.space.prevent="toggleStepBool('product_only')"></div>
+                </div>
+                {# Scope key: it narrows the project set this step runs against,
+                   so say that here as the other two surfaces do. #}
+                <small class="wfb-foot-note" x-show="stepApplies(inspStep(), 'show_product_only')" x-cloak>Narrows this step's project scope to product-marked projects.</small>
                 <div class="wfb-field" x-show="stepApplies(inspStep(), 'show_detected_after')" x-cloak>
                   <label for="insp-detected-after">Detected after</label>
                   <input class="wfb-inp" type="date" id="insp-detected-after"

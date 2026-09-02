@@ -57,6 +57,31 @@
                 </label>
             </div>
             {% endif %}
+            {# Products only FIRST: it picks the population, and Standalone then
+               decides whether each row carries its dependencies. #}
+            {% if show_product_only %}
+            <div class="form-group form-row">
+                <label for="pre-product-only">Products only (roll up dependencies)</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-product-only" name="product_only"
+                           {% if state.get('product_only') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            {# One engine config serves every recipe in the launch, so say that
+               here — a batch containing a non-portfolio recipe is narrowed too. #}
+            <small class="form-hint">Narrows the whole run{% if recipe_names | length > 1 %}, including the other {{ recipe_names | length - 1 }} report(s) in this launch{% endif %}.</small>
+            {% endif %}
+            {% if show_standalone %}
+            <div class="form-group form-row">
+                <label for="pre-standalone">Standalone (skip dependencies)</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-standalone" name="standalone"
+                           {% if state.get('standalone') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            {% endif %}
             {% endif %}
             {# Period + Custom date range — only operational recipes whose pipeline
                trims by date (show_period). This also hides them for meta-compare
@@ -441,7 +466,7 @@
 
         {# Filters — hide the whole section when no child filter is consumed by
            the selected recipe(s) (Round-1 M1-11). #}
-        {% if show_component_match or show_component_version or show_standalone or show_detected_after or show_min_severity or show_scan_filters %}
+        {% if show_component_match or show_component_version or show_detected_after or show_min_severity or show_scan_filters %}
         <details class="form-section">
             <summary class="form-section-title">Filters</summary>
             {% if show_component_match %}
@@ -463,16 +488,8 @@
                 <small class="form-hint">Exact version or a range — <code>1.2.11</code>, <code>&lt;2.0</code>, <code>&gt;=1.0,&lt;2.0</code>.</small>
             </div>
             {% endif %}
-            {% if show_standalone %}
-            <div class="form-group form-row">
-                <label for="pre-standalone">Standalone (skip deps)</label>
-                <label class="toggle">
-                    <input type="checkbox" id="pre-standalone" name="standalone"
-                           {% if state.get('standalone') %}checked{% endif %}>
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-            {% endif %}
+            {# Products only / Standalone moved up into Scope — they choose which
+               projects the report covers, so they belong with the pickers. #}
             {% if show_detected_after %}
             <div class="form-group">
                 <label for="pre-detected-after">Detected after</label>

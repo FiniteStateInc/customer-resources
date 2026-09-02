@@ -150,6 +150,10 @@ PROJECT_FIELDS = {
     # on it from cached data. Without this, warm-cache runs lose the field
     # on rebuild and every project falls outside the window.
     "defaultBranch.latestVersion.created": "default_branch_latest_version_created",
+    # Preserve the platform's "this project is a Product" flag so --product-only
+    # can re-assert it client-side on a cache hit. Without it, a warm cache
+    # projects the flag away and every project reads as a non-product.
+    "isProduct": "is_product",
 }
 
 CVE_FIELDS = {
@@ -315,6 +319,7 @@ CREATE TABLE IF NOT EXISTS projects (
     created_by TEXT,
     default_branch_latest_version_id TEXT,
     default_branch_latest_version_created TEXT,
+    is_product INTEGER,
     PRIMARY KEY (query_hash, id)
 );
 
@@ -861,6 +866,7 @@ class SQLiteCache:
             ("findings", "exploit_maturity", "TEXT"),
             ("projects", "default_branch_latest_version_id", "TEXT"),
             ("projects", "default_branch_latest_version_created", "TEXT"),
+            ("projects", "is_product", "INTEGER"),
             ("components", "license_details", "TEXT"),
             ("components", "declared_license_details", "TEXT"),
             ("components", "concluded_license_details", "TEXT"),
@@ -1127,7 +1133,13 @@ class SQLiteCache:
                         pass
 
                 # Convert booleans
-                if db_col in ("in_kev", "in_vc_kev", "edited", "has_known_exploit"):
+                if db_col in (
+                    "in_kev",
+                    "in_vc_kev",
+                    "edited",
+                    "has_known_exploit",
+                    "is_product",
+                ):
                     value = bool(value) if value is not None else None
 
                 record[api_field] = value

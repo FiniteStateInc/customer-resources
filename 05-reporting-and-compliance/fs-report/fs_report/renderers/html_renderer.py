@@ -862,6 +862,11 @@ class HTMLRenderer:
             "folder_name": slim_metadata["folder_name"],
             "folder_path": slim_metadata["folder_path"],
             "folder_filter": slim_metadata["folder_filter"],
+            # Exploit-maturity tiers the run was filtered to ("" when unset),
+            # so a filtered report says so instead of reading as a full inventory.
+            "exploit_maturity_filter": report_data.metadata.get(
+                "exploit_maturity_filter", ""
+            ),
             "domain": slim_metadata["domain"],
             "logo_path": slim_metadata["logo_path"],
             # Add period label for scan frequency chart

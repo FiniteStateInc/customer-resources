@@ -253,6 +253,7 @@ _RUN_BOOL_KEYS: tuple[str, ...] = (
     "finding_counts",
     "detailed",
     "standalone",
+    "product_only",
     "vex_override",
     # SP2: auto-apply VEX toggle (maps ON -> autotriage="high" in
     # _build_engine_config). dry_run is intentionally NOT here — it is a
@@ -743,6 +744,13 @@ PERIOD_RECIPES = {
 }
 SCAN_FILTER_RECIPES = {"scan analysis", "scan quality"}
 STANDALONE_RECIPES = GENERIC_FINDINGS_RECIPES | _ED | _RVC
+# --product-only reshapes the TOP-LEVEL rows of a portfolio report, so it is
+# offered only on the two recipes whose top level is a project list. Visibility
+# only — the engine enforces the same allow-list (report_engine's
+# PRODUCT_ONLY_RECIPES, same two names cased for a recipe), so a persisted step
+# override that sets product_only on another recipe is ignored there rather
+# than silently narrowing that recipe's scope. Keep the two in step.
+PRODUCT_ONLY_RECIPES = _ED | {"executive summary"}
 # --min-severity is honored only where report_engine's MIN_SEVERITY_RECIPES
 # allow-list applies it. Keep the two in step.
 MIN_SEVERITY_RECIPES = _RVC
@@ -979,7 +987,8 @@ def compute_prerun_fields(
     ``show_component_match``, ``show_component_version``,
     ``show_component_recommended``, ``show_license``, ``show_threat_context``,
     ``show_period``, ``show_current_version_only``, ``show_open_only``,
-    ``show_detected_after``, ``show_standalone``, ``show_scan_filters``,
+    ``show_detected_after``, ``show_standalone``, ``show_product_only``,
+    ``show_scan_filters``,
     ``show_baseline_date``, ``show_detailed``, ``show_left_right_override``.
 
     Field-visibility gating (report-config-card-gating)
@@ -1099,6 +1108,7 @@ def compute_prerun_fields(
         "show_min_severity": bool(selected & MIN_SEVERITY_RECIPES),
         "show_sbom_options": bool(selected & SBOM_OPTION_RECIPES),
         "show_standalone": bool(selected & STANDALONE_RECIPES),
+        "show_product_only": bool(selected & PRODUCT_ONLY_RECIPES),
         # Scan ingest filters — Scan Analysis / Scan Quality only.
         "show_scan_filters": bool(selected & SCAN_FILTER_RECIPES),
         "show_baseline_date": bool(selected & SECURITY_PROGRESS_RECIPES),
@@ -1581,7 +1591,8 @@ def _build_engine_config(
     ``component_filter``, ``component_match``, ``component_version``,
     ``license_filter``, ``threat_context``, ``tp_gate``, ``baseline_date``,
     ``detected_after``, ``scan_types``, ``scan_statuses``, ``open_only``,
-    ``detailed``, ``standalone``, ``vex_override``, ``top``, ``triage``,
+    ``detailed``, ``standalone``, ``product_only``, ``vex_override``, ``top``,
+    ``triage``,
     ``verbose``, ``logo``.
 
     Pass-through-present-keys for ``baseline_version`` / ``current_version``:
@@ -1702,6 +1713,7 @@ def _build_engine_config(
         "finding_counts": bool(effective.get("finding_counts", True)),
         "detailed": bool(effective.get("detailed", False)),
         "standalone": bool(effective.get("standalone", False)),
+        "product_only": bool(effective.get("product_only", False)),
         "vex_override": bool(effective.get("vex_override", False)),
         # SP2 (destructive VEX-write apply). autotriage toggle ON -> "high"
         # (parity with the CLI's bare --autotriage default). autotriage_status is
@@ -2279,6 +2291,7 @@ _WORKFLOW_BOOL_KEYS: frozenset[str] = frozenset(
         "open_only",
         "detailed",
         "standalone",
+        "product_only",
         "vex_override",
         # B7 (#10B): the destructive FP autotriage opt-in MUST coerce str→bool so
         # a hand-authored / inline ``"autotriage": "false"`` is False, not truthy

@@ -1,6 +1,8 @@
 # Column Reference Guide
 
-This document lists all CSV/XLSX column names produced by each report, in the order they appear. Use these names for template access.
+This document lists the CSV/XLSX column names produced by each report covered below, in the order they appear. Use these names for template access.
+
+Not every recipe is documented here. For a report not listed, the authoritative column set is the header row of its CSV/XLSX output (reports without tabular output have no column set); [REPORT_GUIDE.md](../REPORT_GUIDE.md) describes the reports and their options.
 
 ## Findings by Project
 
@@ -367,7 +369,7 @@ The Version Comparison report produces four DataFrames for CSV/XLSX export.
 | 8 | `Low` | int | Low severity count |
 | 9 | `Fixed (vs prev)` | int | Findings fixed since previous version |
 | 10 | `New (vs prev)` | int | New findings since previous version |
-| 11 | `Components` | int | Unique component count |
+| 11 | `Components` | int | Distinct component count (lowercased name + normalized version — the same identity churn matching uses) |
 
 ### Findings Detail (one row per finding per version)
 

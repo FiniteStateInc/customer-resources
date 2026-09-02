@@ -113,6 +113,24 @@ FILTERABLE_TIERS: frozenset[str] = frozenset(
 )
 
 
+def normalize_tiers(names: Iterable[str] | None) -> list[str]:
+    """Return the tier names trimmed, lowercased and deduped, order preserved.
+
+    The single normalizer for ``exploit_maturity_threshold``. Filters match on
+    normalized names, so anything that *displays* the threshold (report metadata,
+    the HTML/Markdown/JSON disclosure) has to normalize identically or a
+    programmatic caller passing ``[" WEAPONIZED "]`` would filter correctly and
+    disclose something that looks like a different tier. Order is the caller's,
+    because the disclosure reads back what the operator asked for.
+    """
+    out: list[str] = []
+    for raw in names or []:
+        tier = str(raw).strip().lower()
+        if tier and tier not in out:
+            out.append(tier)
+    return out
+
+
 def validate_tier_names(names: Iterable[str]) -> None:
     """Raise ValueError if any name is not a recognized CRA tier.
 
