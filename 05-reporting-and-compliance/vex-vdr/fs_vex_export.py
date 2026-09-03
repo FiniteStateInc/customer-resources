@@ -256,13 +256,17 @@ def match_by_name(rows, wanted, *fields):
 def resolve_by_name(base, token, project, version):
     """project name + version name -> version id, matched case-insensitively client-side.
 
-    `archived=false` is explicit here (it's also the API's documented default for
-    /projects) so a deleted project of the same name can't produce a false
-    "2 projects match" ambiguity. There's no analogous `excluded` param for
-    /projects in the OpenAPI spec — that flag belongs to the per-version
-    components-list endpoint, not this one — so it's not sent here.
+    `archived=false` and `excluded=false` are sent explicitly on the /projects
+    fetch, mirroring fs-report/api_client.py:resolve_project against this same
+    endpoint, so a deleted or excluded project of the same name can't produce a
+    false "2 projects match" ambiguity or get silently selected.
+
+    /projects/{id}/versions has no documented params at all beyond the path's
+    projectId (OpenAPI spec) — no archived/excluded equivalent to carry over —
+    so only pagination params go to that call.
     """
-    projects = get_all_pages(base, f"{API}/projects", token, extra_params={"archived": "false"})
+    projects = get_all_pages(base, f"{API}/projects", token,
+                              extra_params={"archived": "false", "excluded": "false"})
     project_id = pick_one(match_by_name(projects, project, "name"), "project", project, ("name",))
 
     versions = get_all_pages(base, f"{API}/projects/{project_id}/versions", token)
