@@ -50,19 +50,23 @@ Writes a file named for the project, version, and UTC timestamp:
 ACME_Router_v2.0_rc1_4c76b60b_20260903T142200.vex.cdx.json
 ```
 
-### From a version UUID
+### From a version ID
+
+IDs can be a UUID or a plain (possibly negative) integer, depending on tenant:
 
 ```bash
-export FS_BASE=https://app.finitestate.io
+export FINITE_STATE_DOMAIN=app.finitestate.io   # or FS_BASE=https://app.finitestate.io
 python3 fs_vex_export.py 4c76b60b-1646-4fa5-b279-3902763b891a
 ```
 
 ### From project and version names
 
-Costs two extra lookup calls. Fails if the name matches zero or more than one record, rather than guessing:
+Costs one `/projects` lookup call plus every page of `/projects/{id}/versions`
+(that endpoint has no server-side name filter, so matching happens client-side).
+Fails if the name matches zero or more than one record, rather than guessing:
 
 ```bash
-export FS_BASE=https://app.finitestate.io
+export FINITE_STATE_DOMAIN=app.finitestate.io
 python3 fs_vex_export.py --project "ACME Router" --version "1.2.3"
 ```
 
@@ -74,7 +78,8 @@ python3 fs_vex_export.py "<url>" --triaged-only
 
 ### Choosing where output goes
 
-Override the generated name with `-o`, or send the document to stdout with `--stdout` to pipe it:
+Override the generated name with `-o`, or send the document to stdout with `--stdout` to pipe it.
+The two are mutually exclusive — passing both is a usage error, not a silent choice:
 
 ```bash
 python3 fs_vex_export.py "<url>" -o vex.json
@@ -91,7 +96,7 @@ Progress and warnings always go to stderr, so `--stdout` stays pipe-safe.
 | `--project NAME` | Project name; requires `--version` |
 | `--version NAME` | Version name; requires `--project` |
 | `--triaged-only` | Keep only vulnerabilities carrying a VEX analysis block |
-| `--base URL` | API base URL, overriding both a URL's host and `FS_BASE` |
+| `--base URL` | API base URL, overriding a URL's host, `FS_BASE`, and `FINITE_STATE_DOMAIN` |
 | `--token TOKEN` | API token, overriding the env vars (prefer the env var — see Setup) |
 | `-o`, `--output FILE` | Write to this path instead of the auto-generated filename |
 | `--stdout` | Write the document to stdout instead of a file |
@@ -157,11 +162,13 @@ no triaged vulnerabilities (417 untriaged) for version <id>
 
 **CycloneDX spec version.** Output follows the version the platform emits (currently 1.6). The legacy platform emitted 1.4. Confirm which version a downstream consumer validates against before sending.
 
-**Export contention.** The SBOM export endpoint has a global concurrency cap and can return `503` even though this script makes a single call. It retries up to three times, honoring `Retry-After` in either its seconds or HTTP-date form, clamped to 5 minutes. This is a shared cap, not a per-caller rate limit.
+**Export contention and transient errors.** The SBOM export endpoint has a global concurrency cap and can return `503` even though this script makes a single call; other transient gateway errors (`429`, `500`, `502`, `504`) are retried the same way. It retries up to three times, honoring `Retry-After` in either its seconds or HTTP-date form, clamped to 5 minutes. The `503` case is a shared cap, not a per-caller rate limit.
 
 **Requests time out after 5 minutes** rather than hanging indefinitely, so a stalled connection fails a pipeline instead of wedging it.
 
-**API host precedence.** An explicit `--base` wins, then the hostname in a platform URL, then `FS_BASE`. A URL's own host deliberately outranks `FS_BASE`: hostnames are per-tenant, so an `FS_BASE` left over from another tenant must not silently redirect a pasted link. When it is overridden this way the script says so on stderr.
+**API host precedence.** An explicit `--base` wins, then the hostname in a platform URL, then `FS_BASE` / `FINITE_STATE_DOMAIN` (checked in that order). A URL's own host deliberately outranks the env vars: hostnames are per-tenant, so a value left over from another tenant must not silently redirect a pasted link. When it is overridden this way the script says so on stderr. `FINITE_STATE_DOMAIN` follows this repo's usual bare-FQDN convention (e.g. `acme.finitestate.io`); `FS_BASE` accepts a bare FQDN too, or a full URL if you need a non-default scheme or port.
+
+**Project/version IDs.** IDs may be a UUID or a plain (possibly negative) integer — this varies by tenant, and either form is accepted wherever an ID is expected.
 
 **One version per run.** No batch mode.
 

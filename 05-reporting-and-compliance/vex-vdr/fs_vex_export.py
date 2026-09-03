@@ -10,7 +10,7 @@ Target can be a platform URL, a bare version UUID, or --project/--version names:
 Auth: export FS_TOKEN=<api token>  (or FINITE_STATE_AUTH_TOKEN, legacy name),
 or pass --token. Prefer the env var: an argument is visible to other users via
 `ps` and lands in shell history. Sent as X-Authorization. Base URL comes from
-the URL when you pass one, else FS_BASE / --base.
+the URL when you pass one, else --base / FS_BASE / FINITE_STATE_DOMAIN.
 """
 
 import argparse
@@ -36,7 +36,15 @@ TIMEOUT = 300
 # the script for an hour.
 RETRY_WAIT_DEFAULT = 30
 RETRY_WAIT_MAX = 300
-UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+# HTTP statuses worth retrying (matches fs-report/api_client.py's
+# _RETRYABLE_STATUS_CODES): 503 is the export concurrency cap, the rest are
+# ordinary transient gateway/server errors seen on long-running calls.
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+# Some FS tenants issue UUID-like project/version IDs, others signed int64
+# (fs-report/api_client.py:resolve_project treats both as already-an-ID).
+ID_RE = re.compile(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|-?\d+)$", re.I)
 
 # Any VEX state means the finding was triaged (by a human or by auto-triage).
 # Untriaged findings carry no analysis block at all, so presence is the filter.
@@ -97,15 +105,16 @@ def default_filename(doc, version_id):
 
 
 def parse_target(target):
-    """Return (base, project_id, version_id) from a platform URL, or a bare UUID.
+    """Return (base, project_id, version_id) from a platform URL, or a bare ID.
 
     Hostname is irrelevant (app.finitestate.io, acme.finitestate.io, ...); only
-    the /projects/<id>/versions/<id> path segments matter.
+    the /projects/<id>/versions/<id> path segments matter. A bare ID can be a UUID
+    or a signed int64 — tenants issue either.
     """
-    if UUID_RE.match(target):
+    if ID_RE.match(target):
         return None, None, target
     if "/" not in target:
-        raise SystemExit(f"not a URL or UUID: {target!r}")
+        raise SystemExit(f"not a URL or ID: {target!r}")
 
     url = target if "://" in target else f"https://{target}"
     parts = urllib.parse.urlsplit(url)
@@ -119,6 +128,19 @@ def parse_target(target):
         raise SystemExit(f"no /versions/<id> segment in URL: {target}")
     base = f"{parts.scheme}://{parts.netloc}" if parts.netloc else None
     return base, after("projects"), version_id
+
+
+def normalize_base(value):
+    """Add a default https:// scheme to a bare hostname.
+
+    FINITE_STATE_DOMAIN is documented repo-wide as a bare FQDN (e.g.
+    `acme.finitestate.io`, shared/api-clients/README.md), not a URL. Without this,
+    urllib.request.urlopen() raises a raw ValueError on it in get() instead of the
+    script's own SystemExit error contract.
+    """
+    if not value:
+        return value
+    return value if "://" in value else f"https://{value}"
 
 
 def rsql_quote(value):
@@ -157,7 +179,7 @@ def retry_after_seconds(header):
 
 
 def get(base, path, token, params=None, retries=3):
-    """GET JSON. Retries on 503 (the export endpoint's concurrency cap) per Retry-After."""
+    """GET JSON. Retries transient errors (429/500/502/503/504) per Retry-After."""
     url = f"{base}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -167,10 +189,11 @@ def get(base, path, token, params=None, retries=3):
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
-            # 503 = SBOM export concurrency cap, not a rate limit. Honor Retry-After.
-            if e.code == 503 and attempt < retries:
+            # 503 is the SBOM export's concurrency cap; the rest are ordinary
+            # transient gateway/server errors. Any is worth one more try.
+            if e.code in RETRYABLE_STATUS and attempt < retries:
                 wait = retry_after_seconds(e.headers.get("Retry-After"))
-                print(f"  export busy (503), retrying in {wait}s", file=sys.stderr)
+                print(f"  HTTP {e.code} on {path}, retrying in {wait}s", file=sys.stderr)
                 time.sleep(wait)
                 continue
             body = e.read().decode("utf-8", "replace")[:400]
@@ -195,14 +218,41 @@ def pick_one(rows, kind, wanted, name_keys):
     return row["id"]
 
 
+def get_all_pages(base, path, token, page_size=1000):
+    """GET every page of a list endpoint via limit/offset.
+
+    /projects/{id}/versions has no documented `filter` param (unlike /projects,
+    which does), so name matching against it has to happen client-side over the
+    full list — same approach as fs-report/report_engine.py:_get_project_versions.
+    """
+    rows, offset = [], 0
+    while True:
+        page = get(base, path, token, {"limit": page_size, "offset": offset})
+        if not page:
+            break
+        rows.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return rows
+
+
 def resolve_by_name(base, token, project, version):
-    """project name + version name -> version id. Two calls, RSQL-filtered server-side."""
+    """project name + version name -> version id.
+
+    Project lookup is RSQL-filtered server-side (/projects documents `filter`).
+    Version lookup fetches every version and matches client-side, case-insensitively
+    on the `version` field (its actual name, per VersionRef) or the legacy `name`
+    field, since /versions does not support server-side filtering.
+    """
     projects = get(base, f"{API}/projects", token,
                    {"filter": f'name=="{rsql_quote(project)}"', "limit": 50})
     project_id = pick_one(projects, "project", project, ("name",))
-    versions = get(base, f"{API}/projects/{project_id}/versions", token,
-                   {"filter": f'name=="{rsql_quote(version)}"', "limit": 50})
-    return pick_one(versions, "version", version, ("version", "name"))
+
+    versions = get_all_pages(base, f"{API}/projects/{project_id}/versions", token)
+    wanted = version.lower()
+    matches = [v for v in versions if str(v.get("version") or v.get("name") or "").lower() == wanted]
+    return pick_one(matches, "version", version, ("version", "name"))
 
 
 def build_vdr(base, token, version_id, triaged_only):
@@ -210,8 +260,11 @@ def build_vdr(base, token, version_id, triaged_only):
 
     Returns (doc, total_before_filter).
     """
-    doc = get(base, f"{API}/sboms/cyclonedx/{version_id}", token,
-              {"includeVex": "true", "includeVulnerabilities": "true"})
+    # includeVex is the documented-by-usage param fs-report relies on for
+    # vulnerability data (api_client.py:fetch_sbom); an additional
+    # includeVulnerabilities flag isn't used anywhere else in this repo and
+    # isn't in the OpenAPI spec, so it's dropped rather than sent unverified.
+    doc = get(base, f"{API}/sboms/cyclonedx/{version_id}", token, {"includeVex": "true"})
     doc.pop("components", None)
     doc.pop("dependencies", None)
     vulns = doc.get("vulnerabilities") or []
@@ -229,10 +282,13 @@ def main():
     ap.add_argument("--version", help="version name (with --project)")
     ap.add_argument("--triaged-only", action="store_true",
                     help="keep only triaged vulnerabilities (any VEX state, incl. auto-triage)")
-    ap.add_argument("--base", help="API base, e.g. https://app.finitestate.io (overrides a URL's host and FS_BASE)")
+    ap.add_argument("--base",
+                    help="API base, e.g. https://app.finitestate.io "
+                         "(overrides a URL's host, FS_BASE, and FINITE_STATE_DOMAIN)")
     ap.add_argument("--token", help="API token (prefer FS_TOKEN; an argument is visible in ps and shell history)")
-    ap.add_argument("-o", "--output", help="write to this path instead of the auto-generated filename")
-    ap.add_argument("--stdout", action="store_true", help="write the document to stdout instead of a file")
+    out = ap.add_mutually_exclusive_group()
+    out.add_argument("-o", "--output", help="write to this path instead of the auto-generated filename")
+    out.add_argument("--stdout", action="store_true", help="write the document to stdout instead of a file")
     ap.add_argument("--self-test", action="store_true", help="run built-in checks and exit")
     args = ap.parse_args()
 
@@ -245,22 +301,25 @@ def main():
         raise SystemExit("set FS_TOKEN (or FINITE_STATE_AUTH_TOKEN), or pass --token")
 
     # Base URL precedence: an explicitly typed --base wins, then the host embedded in
-    # a platform URL, then the FS_BASE env var. The URL's own host MUST outrank
-    # FS_BASE: these are multi-tenant hostnames (app./acme.finitestate.io), and an
-    # ambient FS_BASE left over from another tenant would otherwise silently redirect
-    # a pasted link at the wrong host.
-    env_base = os.environ.get("FS_BASE")
+    # a platform URL, then FS_BASE / FINITE_STATE_DOMAIN (the repo-wide bare-FQDN
+    # env var; shared/api-clients/README.md). The URL's own host MUST outrank the
+    # env vars: these are multi-tenant hostnames (app./acme.finitestate.io), and
+    # an ambient value left over from another tenant would otherwise silently
+    # redirect a pasted link at the wrong host.
+    env_base_raw = os.environ.get("FS_BASE") or os.environ.get("FINITE_STATE_DOMAIN")
+    env_base = normalize_base(env_base_raw)
     url_base, version_id = None, None
     if args.target:
         url_base, _project_id, version_id = parse_target(args.target)
     elif not (args.project and args.version):
         raise SystemExit("pass a URL/UUID, or --project NAME --version NAME")
 
-    base = args.base or url_base or env_base
+    base = normalize_base(args.base) or url_base or env_base
     if not base:
-        raise SystemExit("no API base: pass --base or FS_BASE, or use a full URL")
+        raise SystemExit("no API base: pass --base, set FS_BASE / FINITE_STATE_DOMAIN, or use a full URL")
     if url_base and env_base and not args.base and url_base != env_base:
-        print(f"  using {url_base} from the URL (ignoring FS_BASE={env_base})", file=sys.stderr)
+        print(f"  using {url_base} from the URL (ignoring FS_BASE/FINITE_STATE_DOMAIN={env_base_raw})",
+              file=sys.stderr)
     base = base.rstrip("/")
 
     if not version_id:
@@ -304,12 +363,29 @@ def self_test():
     assert parse_target("4c76b60b-1646-4fa5-b279-3902763b891a") == (None, None, "4c76b60b-1646-4fa5-b279-3902763b891a")
     assert parse_target("https://x.io/projects/a/versions/b")[2] == "b"
 
+    # Bare signed int64 IDs are also valid on this platform (some tenants issue
+    # these instead of UUIDs), not just UUID-shaped strings.
+    assert parse_target("3456789012345678913") == (None, None, "3456789012345678913")
+    assert parse_target("-42") == (None, None, "-42")
+
     # Missing /versions must fail, not guess.
     try:
         parse_target("https://app.finitestate.io/projects/abc/overview")
         raise AssertionError("expected SystemExit for missing /versions")
     except SystemExit:
         pass
+
+    # normalize_base: bare FQDN (FINITE_STATE_DOMAIN's documented form) gets a
+    # scheme; anything already a URL passes through unchanged.
+    assert normalize_base("acme.finitestate.io") == "https://acme.finitestate.io"
+    assert normalize_base("https://acme.finitestate.io") == "https://acme.finitestate.io"
+    assert normalize_base(None) is None
+
+    # Version-name matching (resolve_by_name's client-side filter over
+    # get_all_pages) is case-insensitive on `version`, falling back to `name`.
+    versions = [{"id": "v1", "version": "1.2.3"}, {"id": "v2", "name": "Legacy Build"}]
+    assert [v["id"] for v in versions if str(v.get("version") or v.get("name") or "").lower() == "1.2.3"] == ["v1"]
+    assert [v["id"] for v in versions if str(v.get("version") or v.get("name") or "").lower() == "legacy build"] == ["v2"]
 
     # Triaged filter keeps only findings carrying an analysis block.
     doc = {
