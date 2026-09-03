@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Standalone CycloneDX VEX/VDR export (legacy NGP CYCLONEDX_VDR_ONLY parity).
 
-Target can be a platform URL, a bare version UUID, or --project/--version names:
+Target can be a platform URL, a bare version ID (UUID or signed integer, tenant-
+dependent), or --project/--version names:
 
   fs_vex_export.py https://app.finitestate.io/projects/<pid>/versions/<vid>/overview
   fs_vex_export.py 4c76b60b-1646-4fa5-b279-3902763b891a
@@ -143,18 +144,6 @@ def normalize_base(value):
     return value if "://" in value else f"https://{value}"
 
 
-def rsql_quote(value):
-    """Escape a value for use inside an RSQL double-quoted string.
-
-    Project and version names are user data and can legitimately contain quotes.
-    Unescaped, a `"` terminates the literal early and the rest of the name is
-    parsed as filter syntax — at best a confusing "not found", at worst a filter
-    that matches something else. The API's RSQL parser is backslash-aware for
-    `\"` and `\\` inside a double-quoted value, so this is the escaping it expects.
-    """
-    return str(value).replace("\\", "\\\\").replace('"', '\\"')
-
-
 def retry_after_seconds(header):
     """Seconds to wait from a Retry-After header, clamped.
 
@@ -221,13 +210,21 @@ def pick_one(rows, kind, wanted, name_keys):
 def get_all_pages(base, path, token, page_size=1000):
     """GET every page of a list endpoint via limit/offset.
 
-    /projects/{id}/versions has no documented `filter` param (unlike /projects,
-    which does), so name matching against it has to happen client-side over the
-    full list — same approach as fs-report/report_engine.py:_get_project_versions.
+    Neither /projects nor /projects/{id}/versions can be trusted for server-side
+    name matching here: /versions has no documented `filter` param at all, and
+    relying on RSQL's `==` for /projects would silently miss a name that differs
+    only in case (fs-report's own resolve_project avoids the filter for the same
+    reason). So both are fetched in full and matched client-side.
+
+    A page is expected to be a JSON array (that's this API's documented list
+    shape); a differently-shaped response fails loud here instead of `extend()`
+    silently iterating something unexpected.
     """
     rows, offset = [], 0
     while True:
         page = get(base, path, token, {"limit": page_size, "offset": offset})
+        if not isinstance(page, list):
+            raise SystemExit(f"{path} returned {type(page).__name__}, expected a list")
         if not page:
             break
         rows.extend(page)
@@ -237,22 +234,19 @@ def get_all_pages(base, path, token, page_size=1000):
     return rows
 
 
-def resolve_by_name(base, token, project, version):
-    """project name + version name -> version id.
+def match_by_name(rows, wanted, *fields):
+    """Case-insensitive exact match on the first present field in `fields`."""
+    target = wanted.lower()
+    return [r for r in rows if str(next((r.get(f) for f in fields if r.get(f)), "")).lower() == target]
 
-    Project lookup is RSQL-filtered server-side (/projects documents `filter`).
-    Version lookup fetches every version and matches client-side, case-insensitively
-    on the `version` field (its actual name, per VersionRef) or the legacy `name`
-    field, since /versions does not support server-side filtering.
-    """
-    projects = get(base, f"{API}/projects", token,
-                   {"filter": f'name=="{rsql_quote(project)}"', "limit": 50})
-    project_id = pick_one(projects, "project", project, ("name",))
+
+def resolve_by_name(base, token, project, version):
+    """project name + version name -> version id, matched case-insensitively client-side."""
+    projects = get_all_pages(base, f"{API}/projects", token)
+    project_id = pick_one(match_by_name(projects, project, "name"), "project", project, ("name",))
 
     versions = get_all_pages(base, f"{API}/projects/{project_id}/versions", token)
-    wanted = version.lower()
-    matches = [v for v in versions if str(v.get("version") or v.get("name") or "").lower() == wanted]
-    return pick_one(matches, "version", version, ("version", "name"))
+    return pick_one(match_by_name(versions, version, "version", "name"), "version", version, ("version", "name"))
 
 
 def build_vdr(base, token, version_id, triaged_only):
@@ -277,7 +271,7 @@ def build_vdr(base, token, version_id, triaged_only):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("target", nargs="?", help="platform URL or version UUID")
+    ap.add_argument("target", nargs="?", help="platform URL or version ID (UUID or int)")
     ap.add_argument("--project", help="project name (with --version)")
     ap.add_argument("--version", help="version name (with --project)")
     ap.add_argument("--triaged-only", action="store_true",
@@ -312,7 +306,7 @@ def main():
     if args.target:
         url_base, _project_id, version_id = parse_target(args.target)
     elif not (args.project and args.version):
-        raise SystemExit("pass a URL/UUID, or --project NAME --version NAME")
+        raise SystemExit("pass a URL/ID, or --project NAME --version NAME")
 
     base = normalize_base(args.base) or url_base or env_base
     if not base:
@@ -381,11 +375,12 @@ def self_test():
     assert normalize_base("https://acme.finitestate.io") == "https://acme.finitestate.io"
     assert normalize_base(None) is None
 
-    # Version-name matching (resolve_by_name's client-side filter over
-    # get_all_pages) is case-insensitive on `version`, falling back to `name`.
+    # match_by_name (resolve_by_name's client-side filter): case-insensitive,
+    # falls back to the second field name when the first is absent.
     versions = [{"id": "v1", "version": "1.2.3"}, {"id": "v2", "name": "Legacy Build"}]
-    assert [v["id"] for v in versions if str(v.get("version") or v.get("name") or "").lower() == "1.2.3"] == ["v1"]
-    assert [v["id"] for v in versions if str(v.get("version") or v.get("name") or "").lower() == "legacy build"] == ["v2"]
+    assert [v["id"] for v in match_by_name(versions, "1.2.3", "version", "name")] == ["v1"]
+    assert [v["id"] for v in match_by_name(versions, "legacy build", "version", "name")] == ["v2"]
+    assert match_by_name(versions, "no such version", "version", "name") == []
 
     # Triaged filter keeps only findings carrying an analysis block.
     doc = {
@@ -431,13 +426,6 @@ def self_test():
                          "bbbbbbbb-2")
     assert a != b, (a, b)
 
-    # RSQL escaping: a quote in a name must not terminate the literal early.
-    assert rsql_quote('plain') == 'plain'
-    assert rsql_quote('say "hi"') == 'say \\"hi\\"'
-    assert rsql_quote('back\\slash') == 'back\\\\slash'
-    # The built filter keeps exactly one unescaped quote at each end.
-    built = f'name=="{rsql_quote(chr(34) + "x")}"'
-    assert built == 'name=="\\"x"', built
 
     # Retry-After: seconds, HTTP-date, junk, and absent all yield a sane bounded wait.
     assert retry_after_seconds("12") == 12
