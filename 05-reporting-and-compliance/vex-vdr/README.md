@@ -8,7 +8,7 @@ The platform's CycloneDX export always embeds `components[]`. This script reques
 
 - **Standalone VEX output** — `metadata` + `vulnerabilities[]`, no component inventory
 - **Full triage data** — each triaged finding carries its VEX `state`, `justification`, `response`, and `detail`
-- **Flexible input** — accepts a platform URL, a bare version UUID, or project + version names
+- **Flexible input** — accepts a platform URL, a bare version ID (UUID or int), or project + version names
 - **Triage-only filter** — optionally emit only vulnerabilities that have been triaged, cutting noise from routine vulnerability-database updates
 - **Self-naming output** — writes a descriptive filename, shortened to stay within filesystem limits
 - **No dependencies** — Python 3.8+ standard library only; nothing to install
@@ -47,7 +47,7 @@ python3 fs_vex_export.py \
 Writes a file named for the project, version, and UTC timestamp:
 
 ```
-ACME_Router_v2.0_rc1_4c76b60b_20260903T142200.vex.cdx.json
+ACME_Router_v2.0_rc1_4c76b60b_20260903T142200483921.vex.cdx.json
 ```
 
 ### From a version ID
@@ -61,9 +61,10 @@ python3 fs_vex_export.py 4c76b60b-1646-4fa5-b279-3902763b891a
 
 ### From project and version names
 
-Costs one `/projects` lookup call plus every page of `/projects/{id}/versions`
-(that endpoint has no server-side name filter, so matching happens client-side).
-Fails if the name matches zero or more than one record, rather than guessing:
+Costs every page of `/projects` plus every page of `/projects/{id}/versions` —
+neither endpoint's name filter can be relied on for an exact, case-correct match,
+so matching happens client-side over the full list. Fails if the name matches
+zero or more than one record, rather than guessing:
 
 ```bash
 export FINITE_STATE_DOMAIN=app.finitestate.io
@@ -92,7 +93,7 @@ Progress and warnings always go to stderr, so `--stdout` stays pipe-safe.
 
 | Option | Description |
 |---|---|
-| `target` | Platform URL or version UUID (positional) |
+| `target` | Platform URL or version ID, UUID or int (positional; mutually exclusive with `--project`/`--version`) |
 | `--project NAME` | Project name; requires `--version` |
 | `--version NAME` | Version name; requires `--project` |
 | `--triaged-only` | Keep only vulnerabilities carrying a VEX analysis block |
@@ -122,8 +123,10 @@ By default the script writes to the current directory as:
 Project and version names come from the document's own `metadata.component`, so this
 costs no extra API call. Characters that are awkward in filenames are collapsed to
 underscores, and the timestamp is UTC in the legacy platform's export format
-(`YYYYMMDDTHHmmss`). The `.vex.cdx.json` extension keeps the CycloneDX JSON
-convention while making clear the file is a VEX document rather than a full SBOM.
+(`YYYYMMDDTHHmmss`) plus microseconds, so two runs of the same version within the
+same second don't overwrite each other's output. The `.vex.cdx.json` extension keeps
+the CycloneDX JSON convention while making clear the file is a VEX document rather
+than a full SBOM.
 
 **Long names are shortened from the middle.** Firmware build strings are routinely
 100+ characters, and left alone they push filenames past the 255-byte limit on
@@ -131,7 +134,7 @@ ext4/APFS/NTFS and past Windows' 260-character path limit once nested. Each name
 capped at 40 characters by removing the middle, marked with `~`:
 
 ```
-BP_ACME1234_R03_BA04~5_ACME9012_ACME1234_R02_BA02_r010_branch_SC~_AP14.0.0.01.012_V01_4c76b60b_20260903T142200.vex.cdx.json
+BP_ACME1234_R03_BA04~5_ACME9012_ACME1234_R02_BA02_r010_branch_SC~_AP14.0.0.01.012_V01_4c76b60b_20260903T142200483921.vex.cdx.json
 ```
 
 The middle is dropped rather than the tail because sibling firmware versions share

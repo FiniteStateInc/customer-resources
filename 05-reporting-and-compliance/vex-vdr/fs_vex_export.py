@@ -82,7 +82,13 @@ def shorten(value, budget=NAME_MAX, tail=20):
     """
     if len(value) <= budget:
         return value
+    if budget <= 0:
+        return ""
     head = budget - len(ELIDE) - tail
+    if head < 0:
+        # tail alone (plus ELIDE) doesn't fit budget: keep only what fits, from the
+        # tail — that's still more identifying than a mid-string index out of range.
+        return value[-budget:] if budget <= len(ELIDE) else f"{ELIDE}{value[-(budget - len(ELIDE)):]}"
     return f"{value[:head]}{ELIDE}{value[-tail:]}"
 
 
@@ -95,13 +101,16 @@ def default_filename(doc, version_id):
     Because two different versions can shorten to the same text, the first 8 chars
     of the version id are always included: that makes every filename unique AND
     traceable back to the platform record it came from. Timestamp is UTC in the
-    legacy platform's export format (YYYYMMDDTHHmmss).
+    legacy platform's export format (YYYYMMDDTHHmmss) plus microseconds: the version
+    id is stable across reruns of the same version, so without sub-second precision
+    two runs within the same second would silently overwrite each other's output.
     """
     comp = (doc.get("metadata") or {}).get("component") or {}
     project = shorten(slug(comp.get("name"), fallback="project"))
     version = shorten(slug(comp.get("version"), fallback="version"))
     vid = slug(version_id, fallback="novid")[:8]
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    stamp = now.strftime("%Y%m%dT%H%M%S") + f"{now.microsecond:06d}"
     return f"{project}_{version}_{vid}_{stamp}{EXT}"
 
 
@@ -168,7 +177,11 @@ def retry_after_seconds(header):
 
 
 def get(base, path, token, params=None, retries=3):
-    """GET JSON. Retries transient errors (429/500/502/503/504) per Retry-After."""
+    """GET JSON. Retries transient errors (429/500/502/503/504) per Retry-After.
+
+    Every branch below either returns or raises, on the first attempt or the
+    last — there's no path where the loop just runs out.
+    """
     url = f"{base}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -191,7 +204,6 @@ def get(base, path, token, params=None, retries=3):
             raise SystemExit(f"cannot reach {base}: {e.reason}")
         except json.JSONDecodeError as e:
             raise SystemExit(f"{path} returned a non-JSON response ({e}); check the base URL")
-    raise SystemExit(f"gave up on {path} after {retries} retries")
 
 
 def pick_one(rows, kind, wanted, name_keys):
@@ -289,6 +301,9 @@ def main():
     if args.self_test:
         return self_test()
 
+    if args.target and (args.project or args.version):
+        raise SystemExit("pass a URL/ID, or --project/--version — not both")
+
     # Explicit --token wins; FINITE_STATE_AUTH_TOKEN is the legacy (NGP-era) env name.
     token = args.token or os.environ.get("FS_TOKEN") or os.environ.get("FINITE_STATE_AUTH_TOKEN")
     if not token:
@@ -337,8 +352,11 @@ def main():
         return
     # Default: a file. Explicit -o wins; otherwise derive the name from the document.
     path = args.output or default_filename(doc, version_id)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(out + "\n")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(out + "\n")
+    except OSError as e:
+        raise SystemExit(f"cannot write {path}: {e}")
     print(f"  wrote {path}", file=sys.stderr)
 
 
@@ -447,6 +465,73 @@ def self_test():
     # shorten() respects its budget exactly and is a no-op under it.
     assert shorten("short", 40) == "short"
     assert len(shorten("x" * 200, 40)) == 40
+    # A budget too tight for head+ELIDE+tail must not go negative-index-weird.
+    assert shorten("x" * 200, budget=5, tail=20) == "~xxxx"
+    assert shorten("x" * 200, budget=0) == ""
+
+    # get()/get_all_pages(): mock urlopen so the retry, error, and pagination
+    # paths are exercised without a real network call.
+    import io
+    from unittest import mock
+
+    def http_error(code, headers=None, body=b""):
+        return urllib.error.HTTPError("https://x.io/path", code, "err", headers or {}, io.BytesIO(body))
+
+    # A retryable status is retried and the eventual success is returned.
+    calls = {"n": 0}
+
+    def flaky_then_ok(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise http_error(503, {"Retry-After": "0"})
+        return io.BytesIO(b'{"ok": true}')
+
+    with mock.patch("urllib.request.urlopen", side_effect=flaky_then_ok), mock.patch("time.sleep"):
+        assert get("https://x.io", "/path", "tok") == {"ok": True}
+    assert calls["n"] == 2, calls
+
+    # A non-retryable status raises SystemExit instead of retrying.
+    def raise_404(req, timeout=None):
+        raise http_error(404, body=b"missing")
+
+    with mock.patch("urllib.request.urlopen", side_effect=raise_404):
+        try:
+            get("https://x.io", "/path", "tok")
+            raise AssertionError("expected SystemExit for a 404")
+        except SystemExit as e:
+            assert "404" in str(e), e
+
+    # Exhausting all retries on a persistent transient error still fails loud.
+    def raise_503(req, timeout=None):
+        raise http_error(503)
+
+    with mock.patch("urllib.request.urlopen", side_effect=raise_503), mock.patch("time.sleep"):
+        try:
+            get("https://x.io", "/path", "tok", retries=1)
+            raise AssertionError("expected SystemExit after exhausting retries")
+        except SystemExit:
+            pass
+
+    # get_all_pages(): walks limit/offset pages until a short page ends it.
+    pages = [[{"id": 1}, {"id": 2}], [{"id": 3}]]
+
+    def page_by_page(req, timeout=None):
+        return io.BytesIO(json.dumps(pages.pop(0)).encode())
+
+    with mock.patch("urllib.request.urlopen", side_effect=page_by_page):
+        rows = get_all_pages("https://x.io", "/path", "tok", page_size=2)
+    assert [r["id"] for r in rows] == [1, 2, 3], rows
+
+    # get_all_pages(): a non-list page shape fails loud rather than corrupting the result.
+    def wrapped_page(req, timeout=None):
+        return io.BytesIO(b'{"items": []}')
+
+    with mock.patch("urllib.request.urlopen", side_effect=wrapped_page):
+        try:
+            get_all_pages("https://x.io", "/path", "tok")
+            raise AssertionError("expected SystemExit for a non-list page")
+        except SystemExit:
+            pass
 
     print("self-test OK")
 
