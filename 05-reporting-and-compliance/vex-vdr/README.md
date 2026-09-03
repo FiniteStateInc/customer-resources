@@ -91,7 +91,7 @@ Progress and warnings always go to stderr, so `--stdout` stays pipe-safe.
 | `--project NAME` | Project name; requires `--version` |
 | `--version NAME` | Version name; requires `--project` |
 | `--triaged-only` | Keep only vulnerabilities carrying a VEX analysis block |
-| `--base URL` | API base URL; defaults to `FS_BASE`, or is derived from a URL target |
+| `--base URL` | API base URL, overriding both a URL's host and `FS_BASE` |
 | `--token TOKEN` | API token, overriding the env vars (prefer the env var — see Setup) |
 | `-o`, `--output FILE` | Write to this path instead of the auto-generated filename |
 | `--stdout` | Write the document to stdout instead of a file |
@@ -157,7 +157,11 @@ no triaged vulnerabilities (417 untriaged) for version <id>
 
 **CycloneDX spec version.** Output follows the version the platform emits (currently 1.6). The legacy platform emitted 1.4. Confirm which version a downstream consumer validates against before sending.
 
-**Export contention.** The SBOM export endpoint has a global concurrency cap and can return `503` even though this script makes a single call. It retries up to three times, honoring `Retry-After`. This is a shared cap, not a per-caller rate limit.
+**Export contention.** The SBOM export endpoint has a global concurrency cap and can return `503` even though this script makes a single call. It retries up to three times, honoring `Retry-After` in either its seconds or HTTP-date form, clamped to 5 minutes. This is a shared cap, not a per-caller rate limit.
+
+**Requests time out after 5 minutes** rather than hanging indefinitely, so a stalled connection fails a pipeline instead of wedging it.
+
+**API host precedence.** An explicit `--base` wins, then the hostname in a platform URL, then `FS_BASE`. A URL's own host deliberately outranks `FS_BASE`: hostnames are per-tenant, so an `FS_BASE` left over from another tenant must not silently redirect a pasted link. When it is overridden this way the script says so on stderr.
 
 **One version per run.** No batch mode.
 
