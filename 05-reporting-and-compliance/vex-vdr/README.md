@@ -134,7 +134,7 @@ ext4/APFS/NTFS and past Windows' 260-character path limit once nested. Each name
 capped at 40 characters by removing the middle, marked with `~`:
 
 ```
-BP_ACME1234_R03_BA04~5_ACME9012_ACME1234_R02_BA02_r010_branch_SC~_AP14.0.0.01.012_V01_4c76b60b_20260903T142200483921.vex.cdx.json
+BP_ACME1234_R03_BA0~CME9012_ACME1234_R02_BA02_r010_branch_AC~_AP14.0.0.01.012_V01_4c76b60b_20260903T142200483921.vex.cdx.json
 ```
 
 The middle is dropped rather than the tail because sibling firmware versions share
