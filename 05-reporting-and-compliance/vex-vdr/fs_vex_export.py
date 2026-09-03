@@ -219,7 +219,7 @@ def pick_one(rows, kind, wanted, name_keys):
     return row["id"]
 
 
-def get_all_pages(base, path, token, page_size=1000):
+def get_all_pages(base, path, token, page_size=1000, extra_params=None):
     """GET every page of a list endpoint via limit/offset.
 
     Neither /projects nor /projects/{id}/versions can be trusted for server-side
@@ -234,7 +234,8 @@ def get_all_pages(base, path, token, page_size=1000):
     """
     rows, offset = [], 0
     while True:
-        page = get(base, path, token, {"limit": page_size, "offset": offset})
+        params = {"limit": page_size, "offset": offset, **(extra_params or {})}
+        page = get(base, path, token, params)
         if not isinstance(page, list):
             raise SystemExit(f"{path} returned {type(page).__name__}, expected a list")
         if not page:
@@ -253,8 +254,15 @@ def match_by_name(rows, wanted, *fields):
 
 
 def resolve_by_name(base, token, project, version):
-    """project name + version name -> version id, matched case-insensitively client-side."""
-    projects = get_all_pages(base, f"{API}/projects", token)
+    """project name + version name -> version id, matched case-insensitively client-side.
+
+    `archived=false` is explicit here (it's also the API's documented default for
+    /projects) so a deleted project of the same name can't produce a false
+    "2 projects match" ambiguity. There's no analogous `excluded` param for
+    /projects in the OpenAPI spec — that flag belongs to the per-version
+    components-list endpoint, not this one — so it's not sent here.
+    """
+    projects = get_all_pages(base, f"{API}/projects", token, extra_params={"archived": "false"})
     project_id = pick_one(match_by_name(projects, project, "name"), "project", project, ("name",))
 
     versions = get_all_pages(base, f"{API}/projects/{project_id}/versions", token)
@@ -302,7 +310,7 @@ def main():
         return self_test()
 
     if args.target and (args.project or args.version):
-        raise SystemExit("pass a URL/ID, or --project/--version — not both")
+        raise SystemExit("--project/--version cannot be combined with a URL/ID target")
 
     # Explicit --token wins; FINITE_STATE_AUTH_TOKEN is the legacy (NGP-era) env name.
     token = args.token or os.environ.get("FS_TOKEN") or os.environ.get("FINITE_STATE_AUTH_TOKEN")
@@ -532,6 +540,59 @@ def self_test():
             raise AssertionError("expected SystemExit for a non-list page")
         except SystemExit:
             pass
+
+    # pick_one(): exactly one match succeeds; zero or multiple fail loud.
+    assert pick_one([{"id": "v1", "name": "A"}], "thing", "A", ("name",)) == "v1"
+    try:
+        pick_one([], "thing", "X", ("name",))
+        raise AssertionError("expected SystemExit for no match")
+    except SystemExit:
+        pass
+    try:
+        pick_one([{"id": "1"}, {"id": "2"}], "thing", "X", ("name",))
+        raise AssertionError("expected SystemExit for an ambiguous match")
+    except SystemExit:
+        pass
+
+    # resolve_by_name(): project lookup, then version lookup within it.
+    def fake_lookup(req, timeout=None):
+        if "/versions" in req.full_url:
+            return io.BytesIO(json.dumps([{"id": "v42", "version": "2.0"}]).encode())
+        return io.BytesIO(json.dumps([{"id": "p7", "name": "Acme"}]).encode())
+
+    with mock.patch("urllib.request.urlopen", side_effect=fake_lookup):
+        assert resolve_by_name("https://x.io", "tok", "acme", "2.0") == "v42"
+
+    # build_vdr(): strips components/dependencies, reports the pre-filter total,
+    # and --triaged-only keeps only findings carrying an analysis block.
+    def fake_sbom(req, timeout=None):
+        return io.BytesIO(json.dumps({
+            "metadata": {"component": {"name": "p", "version": "v"}},
+            "components": [{"name": "c"}],
+            "dependencies": [{"ref": "c"}],
+            "vulnerabilities": [{"id": "CVE-1", "analysis": {"state": "x"}}, {"id": "CVE-2"}],
+        }).encode())
+
+    with mock.patch("urllib.request.urlopen", side_effect=fake_sbom):
+        doc, total = build_vdr("https://x.io", "tok", "vid", triaged_only=False)
+    assert "components" not in doc and "dependencies" not in doc, doc
+    assert total == 2, total
+    assert [v["id"] for v in doc["vulnerabilities"]] == ["CVE-1", "CVE-2"], doc
+
+    with mock.patch("urllib.request.urlopen", side_effect=fake_sbom):
+        doc, total = build_vdr("https://x.io", "tok", "vid", triaged_only=True)
+    assert total == 2, total
+    assert [v["id"] for v in doc["vulnerabilities"]] == ["CVE-1"], doc
+
+    # main(): a positional target combined with --project/--version is rejected
+    # before any network call, regardless of which name flag(s) are present.
+    for extra in (["--project", "X"], ["--version", "Y"], ["--project", "X", "--version", "Y"]):
+        with mock.patch("sys.argv", ["fs_vex_export.py", "4c76b60b-1646-4fa5-b279-3902763b891a", *extra]):
+            try:
+                main()
+                raise AssertionError(f"expected SystemExit for target + {extra}")
+            except SystemExit as e:
+                assert "cannot be combined" in str(e), e
 
     print("self-test OK")
 
