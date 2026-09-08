@@ -695,6 +695,28 @@ def self_check():
     assert "/projects/P1/versions" in r.seen                              # per-project path
     assert _Resolver().resolve_project_version_id("ACME ROUTER", "2026-06-29.2") == "vX"
 
+    # --- tracker + multi-valued Source: pin current behavior ---
+    # These two renderings could not be checked against a platform export (no
+    # reference row had a linked ticket or multiple sources). The asserts below
+    # are a regression guard, NOT proof of platform parity -- if a tenant shows a
+    # difference, change the expectation here and the mapping together.
+    assert render_tracker(None) == ""
+    assert render_tracker({"enabled": True, "first_ticket": None,
+                           "all_tickets": None}) == ""
+    assert render_tracker({"first_ticket": {"url": "https://jira/AB-1"}}) \
+        == "https://jira/AB-1"
+    assert render_tracker({"first_ticket": {"key": "AB-2"}}) == "AB-2"
+    assert render_tracker({"all_tickets": [{"key": "AB-3"}, {"key": "AB-4"}]}) \
+        == "AB-3; AB-4"
+    assert render_tracker("AB-5") == "AB-5"
+    assert component_to_row({"source": ["binary_sca"]})["Source"] == "binary_sca"
+    assert component_to_row({"source": ["binary_sca", "cyclonedx"]})["Source"] \
+        == "binary_sca; cyclonedx"
+    # CDX Type is the raw API value on purpose: the reference platform export
+    # contains `operating-system`/`library`, not `Operating System`.
+    assert component_to_row({"type": "operating-system"})["CDX Type"] \
+        == "operating-system"
+
     # --- adaptive page size: a 400 before any row halves and retries ---
     class _Shrinker(FiniteStateClient):
         def __init__(self):

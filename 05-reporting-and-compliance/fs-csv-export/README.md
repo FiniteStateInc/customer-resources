@@ -57,7 +57,7 @@ python3 fs_csv_export_with_ids.py findings -i <id> -s all -o -
 
 | Option | Default | Notes |
 |---|---|---|
-| `-t`, `--token` | `$FINITE_STATE_AUTH_TOKEN` | Sent as the `X-Authorization` header |
+| `-t`, `--token` | `$FS_TOKEN`, else `$FINITE_STATE_AUTH_TOKEN` | Sent as the `X-Authorization` header |
 | `-d`, `--domain` | `$FINITE_STATE_DOMAIN` | e.g. `acme.finitestate.io` |
 | `-i`, `--project-version-id` | — | Mutually exclusive with `-p`/`-V` |
 | `-p`, `--project` | — | Project name, use with `-V` |
