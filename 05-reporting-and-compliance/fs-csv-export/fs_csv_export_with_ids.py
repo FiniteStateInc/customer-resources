@@ -240,7 +240,8 @@ class FiniteStateClient:
                 die(msg)
             raise RuntimeError(msg)
 
-        for attempt in range(self.max_retries + 1):
+        body = None
+        for attempt in range(max(0, self.max_retries) + 1):
             try:
                 with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
                     body = resp.read().decode("utf-8")
@@ -263,6 +264,9 @@ class FiniteStateClient:
             except urllib.error.URLError as e:
                 fail(f"request failed for {url}: {e.reason}")
                 return None
+        if body is None:
+            fail(f"no response body for {url}")
+            return None
         try:
             return json.loads(body)
         except json.JSONDecodeError:
@@ -278,13 +282,24 @@ class FiniteStateClient:
         so names are matched client-side.
         """
         wanted_project = project_name.strip().lower()
-        projects = list(self.iter_paged(
-            "/projects",
-            {"filter": f"name=={rsql_quote(project_name)}", "archived": "false"},
-            page_size,
-        ))
-        matches = [p for p in projects
-                   if (p.get("name") or "").strip().lower() == wanted_project]
+        # `archived=false` and `excluded=false` are sent explicitly, mirroring
+        # fs_vex_export.resolve_by_name / fs-report api_client.resolve_project, so a
+        # deleted or excluded project of the same name can't create a false ambiguity.
+        scope = {"archived": "false", "excluded": "false"}
+
+        def matching(rows):
+            return [r for r in rows
+                    if (r.get("name") or "").strip().lower() == wanted_project]
+
+        # Fast path: let the server narrow by exact name. If that yields nothing the
+        # backend's filter may be case-sensitive, so fall back to a full paged scan
+        # and match locally -- otherwise the case-insensitive promise is hollow.
+        params = dict(scope, filter=f"name=={rsql_quote(project_name)}")
+        projects = list(self.iter_paged("/projects", params, page_size))
+        matches = matching(projects)
+        if not matches:
+            projects = list(self.iter_paged("/projects", scope, page_size))
+            matches = matching(projects)
         if not matches:
             names = ", ".join(sorted({p.get("name", "?") for p in projects})) or "(none)"
             die(f"no project named {project_name!r}. Candidates returned: {names}")
@@ -312,13 +327,31 @@ class FiniteStateClient:
         return vmatches[0]["id"]
 
     def iter_paged(self, path, base_params, page_size, fatal=True):
-        """Yield items from a paginated list endpoint until exhausted."""
+        """Yield items from a paginated list endpoint until exhausted.
+
+        Effective page limits vary by tenant and endpoint (the same `limit` the
+        spec caps at 10000 was capped at 100 on older backends). If a page is
+        rejected with a 400 before any row has been yielded, halve the size and
+        retry rather than failing an otherwise valid export.
+        """
         offset = 0
+        yielded = 0
         while True:
             params = dict(base_params)
             params["offset"] = offset
             params["limit"] = page_size
-            batch = self.get(path, params, fatal=fatal)
+            try:
+                batch = self.get(path, params, fatal=False)
+            except RuntimeError as e:
+                retryable = "HTTP 400" in str(e) and page_size > 1 and yielded == 0
+                if not retryable:
+                    if fatal:
+                        die(str(e))
+                    raise
+                page_size = max(1, page_size // 2)
+                print(f"note: page size rejected, retrying with "
+                      f"--page-size {page_size}", file=sys.stderr)
+                continue
             if isinstance(batch, dict):
                 # Some endpoints wrap the page as {offset, limit, total, items}.
                 batch = batch.get("items") or batch.get("data") or []
@@ -328,6 +361,7 @@ class FiniteStateClient:
                 # Sparse nulls appear on archived/excluded edge cases; a blank
                 # row with no id defeats the whole point of this exporter.
                 if isinstance(item, dict) and item:
+                    yielded += 1
                     yield item
             if len(batch) < page_size:
                 break
@@ -426,7 +460,12 @@ def run_findings(client, pvid, args):
         try:
             client.get("/findings", probe, fatal=False)
             clauses.append(severity_clause)
-        except RuntimeError:
+        except RuntimeError as e:
+            # Only a 400 means "this backend won't take that operator". Anything
+            # else (auth, timeout, 5xx) is a real failure: don't mislabel it, and
+            # let the main request surface it.
+            if "HTTP 400" not in str(e):
+                raise
             print("note: server rejected the severity filter; filtering locally "
                   "instead (slower, same result)", file=sys.stderr)
 
@@ -656,6 +695,59 @@ def self_check():
     assert "/projects/P1/versions" in r.seen                              # per-project path
     assert _Resolver().resolve_project_version_id("ACME ROUTER", "2026-06-29.2") == "vX"
 
+    # --- adaptive page size: a 400 before any row halves and retries ---
+    class _Shrinker(FiniteStateClient):
+        def __init__(self):
+            super().__init__("d", "t")
+            self.limits = []
+
+        def get(self, path, params=None, fatal=True):
+            self.limits.append(params["limit"])
+            if params["limit"] > 100:
+                raise RuntimeError("HTTP 400 for /x\n{'error':'limit too large'}")
+            return [{"id": "ok"}] if params["offset"] == 0 else []
+
+    sh = _Shrinker()
+    assert [i["id"] for i in sh.iter_paged("/x", {}, 800)] == ["ok"]
+    # halves until accepted; the short page then ends paging
+    assert sh.limits == [800, 400, 200, 100], sh.limits
+
+    # A 400 *after* rows have been yielded must not silently halve+refetch.
+    class _LateFail(FiniteStateClient):
+        def __init__(self):
+            super().__init__("d", "t")
+
+        def get(self, path, params=None, fatal=True):
+            if params["offset"] == 0:
+                return [{"id": "a"}, {"id": "b"}]
+            raise RuntimeError("HTTP 400 for /x")
+
+    try:
+        list(_LateFail().iter_paged("/x", {}, 2, fatal=False))
+        raise AssertionError("expected the late 400 to propagate")
+    except RuntimeError:
+        pass
+
+    # --- case-insensitive project lookup falls back to a full scan ---
+    class _CaseSensitiveBackend(FiniteStateClient):
+        """Mimics a backend whose name== filter is case-sensitive."""
+
+        def __init__(self):
+            super().__init__("d", "t")
+            self.scans = 0
+
+        def iter_paged(self, path, params, page_size, fatal=True):
+            if path == "/projects":
+                if "filter" in params:
+                    return iter([])          # exact-case filter finds nothing
+                self.scans += 1
+                return iter([{"id": "P1", "name": "Acme Router"}])
+            return iter([{"id": "V1", "name": "1.0"}])
+
+    backend = _CaseSensitiveBackend()
+    assert backend.resolve_project_version_id("acme router", "1.0") == "V1"
+    assert backend.scans == 1, "should have fallen back to an unfiltered scan"
+
     print("self-check OK")
 
 
@@ -718,6 +810,8 @@ def main(argv=None):
         die("provide --project-version-id, OR both --project and --version")
     if not 1 <= args.page_size <= MAX_PAGE_SIZE:
         die(f"--page-size must be between 1 and {MAX_PAGE_SIZE}")
+    if args.max_retries < 0:
+        die("--max-retries must be >= 0 (0 disables retries)")
 
     def on_retry(status, wait, attempt):
         print(f"note: HTTP {status}, retrying in {wait:.0f}s "

@@ -8,11 +8,11 @@ For findings that ID is the **finding** ID, which is distinct from `findingId` (
 
 ## Features
 
-- **Matching columns** — reproduces the platform export layout exactly, with `id` prepended; verified against real platform exports
+- **Matching columns** — reproduces the platform export layout exactly, with `id` prepended; verified against real platform exports. Note the *row set* is filtered by `--severity` (default high + critical); pass `-s all` for full parity
 - **CVSS vector** — adds the `cvssVector` string, which the platform CSV omits
 - **Both backends** — handles new (UUID) and legacy (numeric) ID formats, `null` vs object `tracker`, absent `cvssScore`, and empty or differently-cased `severityCounts`
 - **Severity filtering** — defaults to high + critical, on either raw CVSS severity or the EPSS-weighted band
-- **Rate-limit tolerant** — absorbs HTTP 429/503 with exponential backoff honoring `Retry-After`
+- **Resilient** — retries HTTP 429/500/502/503/504 with exponential backoff, honoring `Retry-After` in both its seconds and HTTP-date forms; 300s socket timeout so a stalled connection fails instead of hanging CI; adapts the page size down if a tenant rejects it
 - **Excel-clean output** — files are UTF-8 with BOM and CRLF line endings, so they open identically to a platform-downloaded export (`-o -` omits the BOM, since it breaks most parsers when piping)
 - **No dependencies** — Python 3 standard library only; a single self-contained file
 
@@ -23,9 +23,11 @@ Python 3.8 or newer. No packages to install.
 ## Setup
 
 ```bash
-export FINITE_STATE_AUTH_TOKEN=<your api token>
+export FS_TOKEN=<your api token>
 export FINITE_STATE_DOMAIN=<tenant>.finitestate.io
 ```
+
+`FINITE_STATE_AUTH_TOKEN` is also accepted (legacy name). If both are set, `FS_TOKEN` wins.
 
 Both are also accepted as `--token` / `--domain`, which override the env vars — useful for CI systems that inject secrets as arguments. **Prefer the environment variable where you have the choice:** a command-line argument is visible to other users on the host via `ps` and is written to your shell history.
 
@@ -47,7 +49,9 @@ python3 fs_csv_export_with_ids.py findings --project "BG Poclain Test" --version
 python3 fs_csv_export_with_ids.py findings -i <id> -s all -o -
 ```
 
-`--project-version-id` and `--project`/`--version` are mutually exclusive. Every option has a short form.
+`--project-version-id` and `--project`/`--version` are mutually exclusive. Project and version names match case-insensitively. Every option has a short form.
+
+**Row-count parity:** the default `--severity high,critical` means the CSV contains *fewer rows* than an unfiltered platform download. Columns match; the row set is filtered by design. Pass `-s all` for every finding.
 
 ### Common options
 
@@ -58,7 +62,8 @@ python3 fs_csv_export_with_ids.py findings -i <id> -s all -o -
 | `-i`, `--project-version-id` | — | Mutually exclusive with `-p`/`-V` |
 | `-p`, `--project` | — | Project name, use with `-V` |
 | `-V`, `--version` | — | Version name, use with `-p` |
-| `-n`, `--page-size` | `5000` | Items per API page (API max 10000) |
+| `-n`, `--page-size` | `5000` | Items per API page (1–10000, the API maximum). Halves automatically if a tenant rejects the size |
+| `-r`, `--max-retries` | `6` | Retries per request on 429/500/502/503/504 (0 disables) |
 | `-o`, `--output` | `<kind>_<projectVersionId>.csv` | `-` writes to stdout |
 
 ### Findings options
