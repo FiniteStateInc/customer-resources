@@ -10,24 +10,26 @@ Reproduces the platform's per-version CSV exports, but adds the row's unique
 Works against both the new (UUID ids) and legacy (numeric ids) backends.
 
 Auth:
-  Reads the API token from FINITE_STATE_AUTH_TOKEN and the domain from
-  FINITE_STATE_DOMAIN, or takes --token / --domain on the command line (the
-  flags win over the env vars). The token is sent as the `X-Authorization`
-  request header.
+  Reads the API token from FS_TOKEN (or FINITE_STATE_AUTH_TOKEN, the legacy
+  name) and the domain from FINITE_STATE_DOMAIN, or takes --token / --domain on
+  the command line (the flags win over the env vars). The token is sent as the
+  `X-Authorization` request header.
 
 Selecting the version (either mode, mutually exclusive):
   --project-version-id <id>            bypass lookup, OR
   --project <name> --version <name>    resolve the projectVersionId
 
 Usage:
-  fs_export.py findings   [options]
-  fs_export.py components [options]
+  fs_csv_export_with_ids.py findings   [options]
+  fs_csv_export_with_ids.py components [options]
 
 Requires only the Python 3 standard library.
 """
 
 import argparse
 import csv
+import datetime
+import email.utils
 import json
 import os
 import sys
@@ -161,8 +163,52 @@ def render_tracker(tracker):
 # API client
 # --------------------------------------------------------------------------- #
 
-# Statuses worth retrying: rate limiting and the documented export queue-full.
-RETRY_STATUSES = (429, 503)
+# Statuses worth retrying. Matches fs-report/api_client.py and fs_vex_export.py:
+# 429 is rate limiting, 503 the export queue cap, the rest transient gateway errors.
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+# Socket timeout per request, so a stalled connection fails instead of wedging a
+# CI pipeline forever. Matches fs_vex_export.py.
+TIMEOUT = 300
+
+# Bounds on a server-supplied Retry-After, so a bogus value can't park the run.
+RETRY_WAIT_MAX = 300
+
+# Documented API maximum for `limit` on the list endpoints.
+MAX_PAGE_SIZE = 10000
+
+
+def rsql_quote(value):
+    """Quote an RSQL string literal, escaping embedded quotes/backslashes.
+
+    A project named `The "Good" Build` would otherwise close the literal early
+    and produce a malformed filter.
+    """
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def retry_after_seconds(header, fallback):
+    """Seconds to wait from a Retry-After header, clamped.
+
+    The header is legally either a delay in seconds OR an HTTP-date (RFC 9110);
+    a bare float() on the date form raises ValueError, which would crash on
+    exactly the recoverable response the retry exists to handle.
+    """
+    if not header:
+        return fallback
+    raw = str(header).strip()
+    try:
+        wait = float(raw)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return fallback
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=datetime.timezone.utc)
+        wait = (when - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    return max(1.0, min(wait, RETRY_WAIT_MAX))
 
 
 class FiniteStateClient:
@@ -176,13 +222,8 @@ class FiniteStateClient:
 
     def _backoff(self, err, attempt):
         """Seconds to wait: server's Retry-After if given, else exponential."""
-        retry_after = err.headers.get("Retry-After") if err.headers else None
-        if retry_after:
-            try:
-                return min(float(retry_after), 60.0)
-            except ValueError:
-                pass
-        return min(2.0 ** attempt, 30.0)
+        header = err.headers.get("Retry-After") if err.headers else None
+        return retry_after_seconds(header, min(2.0 ** attempt, 30.0))
 
     def get(self, path, params=None, fatal=True):
         """GET and decode JSON. fatal=False raises RuntimeError instead of exiting,
@@ -201,7 +242,7 @@ class FiniteStateClient:
 
         for attempt in range(self.max_retries + 1):
             try:
-                with urllib.request.urlopen(req) as resp:
+                with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
                     body = resp.read().decode("utf-8")
                 break
             except urllib.error.HTTPError as e:
@@ -227,32 +268,46 @@ class FiniteStateClient:
         except json.JSONDecodeError:
             fail(f"non-JSON response from {url}:\n{body[:500]}")
 
-    def resolve_project_version_id(self, project_name, version_name):
-        """Look up projectVersionId from a project name + version name."""
-        projects = self.get(
+    def resolve_project_version_id(self, project_name, version_name, page_size=100):
+        """Look up projectVersionId from a project name + version name.
+
+        Name matching is case-insensitive, matching fs_vex_export.py and
+        fs-report. Both lookups page rather than trusting a single page, and the
+        version list comes from /projects/{id}/versions -- the version-name
+        filter on the flat /versions endpoint is not dependable across backends,
+        so names are matched client-side.
+        """
+        wanted_project = project_name.strip().lower()
+        projects = list(self.iter_paged(
             "/projects",
-            {"filter": f'name=="{project_name}"', "archived": "false", "limit": 100},
-        )
-        matches = [p for p in projects if p.get("name") == project_name]
+            {"filter": f"name=={rsql_quote(project_name)}", "archived": "false"},
+            page_size,
+        ))
+        matches = [p for p in projects
+                   if (p.get("name") or "").strip().lower() == wanted_project]
         if not matches:
             names = ", ".join(sorted({p.get("name", "?") for p in projects})) or "(none)"
             die(f"no project named {project_name!r}. Candidates returned: {names}")
         if len(matches) > 1:
-            ids = ", ".join(p.get("id", "?") for p in matches)
+            ids = ", ".join(str(p.get("id", "?")) for p in matches)
             die(f"multiple projects named {project_name!r}: {ids}. Use --project-version-id.")
         project_id = matches[0]["id"]
 
-        versions = self.get(
-            "/versions",
-            {"filter": f'project=={project_id};name=="{version_name}"', "limit": 100},
-        )
-        vmatches = [v for v in versions if v.get("name") == version_name]
+        wanted_version = version_name.strip().lower()
+        seen = []
+        vmatches = []
+        for v in self.iter_paged(f"/projects/{project_id}/versions", {}, page_size):
+            # Backends spell this `name` or `version` depending on the endpoint.
+            label = v.get("name") or v.get("version") or ""
+            seen.append(label or "?")
+            if label.strip().lower() == wanted_version:
+                vmatches.append(v)
         if not vmatches:
-            names = ", ".join(sorted({v.get("name", "?") for v in versions})) or "(none)"
+            names = ", ".join(sorted(set(seen))) or "(none)"
             die(f"no version named {version_name!r} in project {project_name!r}. "
                 f"Candidates: {names}")
         if len(vmatches) > 1:
-            ids = ", ".join(v.get("id", "?") for v in vmatches)
+            ids = ", ".join(str(v.get("id", "?")) for v in vmatches)
             die(f"multiple versions named {version_name!r}: {ids}. Use --project-version-id.")
         return vmatches[0]["id"]
 
@@ -264,10 +319,16 @@ class FiniteStateClient:
             params["offset"] = offset
             params["limit"] = page_size
             batch = self.get(path, params, fatal=fatal)
+            if isinstance(batch, dict):
+                # Some endpoints wrap the page as {offset, limit, total, items}.
+                batch = batch.get("items") or batch.get("data") or []
             if not isinstance(batch, list):
                 die(f"expected a list from {path}, got: {type(batch).__name__}")
             for item in batch:
-                yield item
+                # Sparse nulls appear on archived/excluded edge cases; a blank
+                # row with no id defeats the whole point of this exporter.
+                if isinstance(item, dict) and item:
+                    yield item
             if len(batch) < page_size:
                 break
             offset += page_size
@@ -344,15 +405,40 @@ def finding_to_row(f):
 
 def run_findings(client, pvid, args):
     severities = parse_severities(args.severity)
+    clauses = [f"projectVersion=={pvid}"]
+
+    # CVE-only selection goes through the `category` filter, NOT `?type=cve`:
+    # that URL param makes the API silently omit reachabilityScore, a column
+    # this export reproduces. fs-report does the same for the same reason
+    # ("preserves reachabilityScore that ?type=cve drops").
+    if args.type == "cve":
+        clauses.append("category==CVE")
+
+    # Push the severity filter server-side so a high/critical export does not
+    # drag every finding across the network. Only for the raw severity field --
+    # the weighted band is a different attribute. Verified against the server
+    # below, because an unsupported operator would 400 the whole run.
+    severity_clause = None
+    if severities and args.severity_field == "severity":
+        severity_clause = "severity=in=(%s)" % ",".join(sorted(severities))
+        probe = {"filter": ";".join(clauses + [severity_clause]),
+                 "offset": 0, "limit": 1}
+        try:
+            client.get("/findings", probe, fatal=False)
+            clauses.append(severity_clause)
+        except RuntimeError:
+            print("note: server rejected the severity filter; filtering locally "
+                  "instead (slower, same result)", file=sys.stderr)
+
     base_params = {
-        "filter": f"projectVersion=={pvid}",
-        "archived": "false",
+        "filter": ";".join(clauses),
         "excluded": "false",
         "includeComments": "false" if args.no_comments else "true",
         "includeAdditionalDetails": "false",
-        "latestOnly": "false",
     }
-    if args.type:
+    # `archived` and `latestOnly` are no longer in the API spec for /findings;
+    # sending them risks a validation 400 for no functional gain.
+    if args.type and args.type != "cve":
         base_params["type"] = args.type
 
     def rows():
@@ -446,9 +532,13 @@ def run_components(client, pvid, args):
 # --------------------------------------------------------------------------- #
 
 def add_common_args(sub):
-    sub.add_argument("-t", "--token", default=os.environ.get("FINITE_STATE_AUTH_TOKEN"),
-                     help="API token (default: $FINITE_STATE_AUTH_TOKEN). "
-                          "Sent as the X-Authorization header.")
+    sub.add_argument("-t", "--token",
+                     default=(os.environ.get("FS_TOKEN")
+                              or os.environ.get("FINITE_STATE_AUTH_TOKEN")),
+                     help="API token (default: $FS_TOKEN, or the legacy "
+                          "$FINITE_STATE_AUTH_TOKEN). Sent as the "
+                          "X-Authorization header. Prefer the env var: an "
+                          "argument is visible in ps and shell history.")
     sub.add_argument("-d", "--domain", default=os.environ.get("FINITE_STATE_DOMAIN"),
                      help="Platform domain, e.g. jermaine.finitestate.io "
                           "(default: $FINITE_STATE_DOMAIN).")
@@ -457,6 +547,9 @@ def add_common_args(sub):
     sub.add_argument("-p", "--project", help="Project name (use together with --version).")
     sub.add_argument("-V", "--version", dest="version_name",
                      help="Version name (use together with --project).")
+    sub.add_argument("-r", "--max-retries", type=int, default=6,
+                     help="Retries per request on HTTP 429/500/502/503/504, with "
+                          "exponential backoff honoring Retry-After (default: 6).")
     sub.add_argument("-n", "--page-size", type=int, default=5000,
                      help="Items per API page (default: 5000, API max 10000).")
     sub.add_argument("-o", "--output",
@@ -505,6 +598,64 @@ def self_check():
     assert c["Licenses - types"] == "Copyleft-Strong; Permissive"
     assert c["Edited"] == "Yes"
     assert c["Issue Tracking"] == ""      # tracker object with no linked ticket
+
+    # --- RSQL quoting (embedded quotes must not close the literal early) ---
+    assert rsql_quote("Acme") == '"Acme"'
+    assert rsql_quote('The "Good" Build') == '"The \\"Good\\" Build"'
+    assert rsql_quote("back\\slash") == '"back\\\\slash"'
+
+    # --- Retry-After: seconds, HTTP-date, junk, absent ---
+    assert retry_after_seconds("12", 99) == 12
+    assert retry_after_seconds(None, 99) == 99
+    assert retry_after_seconds("not-a-date", 99) == 99
+    assert retry_after_seconds("99999", 1) == RETRY_WAIT_MAX          # clamped
+    future = email.utils.format_datetime(
+        datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=30))
+    assert 20 <= retry_after_seconds(future, 99) <= 40, retry_after_seconds(future, 99)
+    past = email.utils.format_datetime(
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1))
+    assert retry_after_seconds(past, 99) == 1.0                       # floor, never negative
+
+    # --- pagination: multi-page, short final page, null-row filtering ---
+    class _Pager(FiniteStateClient):
+        def __init__(self, pages):
+            super().__init__("d", "t")
+            self.pages = pages
+            self.calls = []
+
+        def get(self, path, params=None, fatal=True):
+            self.calls.append((path, params.get("offset"), params.get("limit")))
+            return self.pages.pop(0)
+
+    pager = _Pager([[{"id": 1}, {"id": 2}], [{"id": 3}]])
+    assert [i["id"] for i in pager.iter_paged("/x", {}, 2)] == [1, 2, 3]
+    assert pager.calls == [("/x", 0, 2), ("/x", 2, 2)], pager.calls
+    # nulls/blanks dropped; dict-wrapped page unwrapped
+    assert list(_Pager([[{"id": 1}, None, {}, "junk"]]).iter_paged("/x", {}, 5)) == [{"id": 1}]
+    assert list(_Pager([{"items": [{"id": 9}]}]).iter_paged("/x", {}, 5)) == [{"id": 9}]
+
+    # --- name resolution: case-insensitive, paged, name/version key variants ---
+    class _Resolver(FiniteStateClient):
+        def __init__(self):
+            super().__init__("d", "t")
+            self.seen = []
+
+        def iter_paged(self, path, params, page_size, fatal=True):
+            self.seen.append(path)
+            if path == "/projects":
+                yield {"id": "P1", "name": "Acme Router"}
+                yield {"id": "P2", "name": "Other"}
+            else:
+                # page 2 of a long history, and the `version` key spelling
+                for n in range(101):
+                    yield {"id": f"v{n}", "name": f"{n}.0"}
+                yield {"id": "vX", "version": "2026-06-29.2"}
+
+    r = _Resolver()
+    assert r.resolve_project_version_id("acme router", "100.0") == "v100"  # past page 1
+    assert "/projects/P1/versions" in r.seen                              # per-project path
+    assert _Resolver().resolve_project_version_id("ACME ROUTER", "2026-06-29.2") == "vX"
+
     print("self-check OK")
 
 
@@ -556,7 +707,7 @@ def main(argv=None):
         return self_check()
 
     if not args.token:
-        die("no token: set FINITE_STATE_AUTH_TOKEN or pass --token")
+        die("no token: set FS_TOKEN (or FINITE_STATE_AUTH_TOKEN) or pass --token")
     if not args.domain:
         die("no domain: set FINITE_STATE_DOMAIN or pass --domain")
 
@@ -565,15 +716,21 @@ def main(argv=None):
         die("--project-version-id is mutually exclusive with --project/--version")
     if not args.project_version_id and not (args.project and args.version_name):
         die("provide --project-version-id, OR both --project and --version")
-    if args.page_size < 1:
-        die("--page-size must be >= 1")
+    if not 1 <= args.page_size <= MAX_PAGE_SIZE:
+        die(f"--page-size must be between 1 and {MAX_PAGE_SIZE}")
 
-    client = FiniteStateClient(args.domain, args.token)
+    def on_retry(status, wait, attempt):
+        print(f"note: HTTP {status}, retrying in {wait:.0f}s "
+              f"(attempt {attempt + 1}/{args.max_retries})", file=sys.stderr)
+
+    client = FiniteStateClient(args.domain, args.token,
+                               max_retries=args.max_retries, on_retry=on_retry)
 
     if args.project_version_id:
         pvid = args.project_version_id
     else:
-        pvid = client.resolve_project_version_id(args.project, args.version_name)
+        pvid = client.resolve_project_version_id(
+            args.project, args.version_name, page_size=min(args.page_size, 1000))
         print(f"resolved project={args.project!r} version={args.version_name!r} "
               f"-> projectVersionId={pvid}", file=sys.stderr)
 

@@ -13,7 +13,7 @@ For findings that ID is the **finding** ID, which is distinct from `findingId` (
 - **Both backends** — handles new (UUID) and legacy (numeric) ID formats, `null` vs object `tracker`, absent `cvssScore`, and empty or differently-cased `severityCounts`
 - **Severity filtering** — defaults to high + critical, on either raw CVSS severity or the EPSS-weighted band
 - **Rate-limit tolerant** — absorbs HTTP 429/503 with exponential backoff honoring `Retry-After`
-- **Excel-clean output** — UTF-8 with BOM and CRLF line endings, so it opens identically to a platform-downloaded export
+- **Excel-clean output** — files are UTF-8 with BOM and CRLF line endings, so they open identically to a platform-downloaded export (`-o -` omits the BOM, since it breaks most parsers when piping)
 - **No dependencies** — Python 3 standard library only; a single self-contained file
 
 ## Requirements
@@ -107,6 +107,13 @@ Edited, Last Modified At, Last Modified By
 - **`CVSS Score`** uses the API's own `cvssScore` when present. Older backends omit it; there it falls back to `risk × 0.1`, which reproduces the platform's value exactly (`risk: 98` → `9.8`).
 - **`Licenses - types`** is derived from `declaredLicenseDetails[].copyleftFamily` (`COPYLEFT_STRONG` → `Copyleft-Strong`), multiple values joined with `; `.
 - **`Issue Tracking`** is blank unless a ticket is actually linked. Legacy backends send a `tracker` object with null ticket fields; that is still blank, matching the platform export.
+
+## Implementation notes
+
+- **CVE selection uses `filter=category==CVE`, not `?type=cve`.** The `type=cve` URL param makes the API silently omit `reachabilityScore` — a column this export reproduces. `fs-report` avoids it for the same reason.
+- **Severity filtering is pushed server-side when possible.** With `--severity-field severity` the script probes a `severity=in=(...)` filter and uses it, so a high/critical export doesn't pull the full dataset. If the backend rejects the operator it says so and filters locally, same result.
+- **Version names are resolved client-side** over `/projects/{id}/versions`, paged. The version-name filter on the flat `/versions` endpoint is not dependable across backends.
+- **Not verified against platform output:** the separator for a multi-valued `Source`, and the rendering for a component with a real linked ticket — neither case appeared in the reference exports available at the time. Both are single-line changes in `join_list` / `render_tracker` if your tenant shows a difference.
 
 ## Self-check
 
