@@ -1,4 +1,49 @@
 releases:
+  - version: "2.1.0"
+    date: "2026-09-19"
+    changes:
+      - report: "Human Readable SBOM"
+        type: added
+        description: "NTIA identifier columns `purl` and `cpe`, on by default, read from `softwareIdentifiers` and backfilled from the CycloneDX export on a `--version` run. Never synthesised: a component with no identifier is listed by name and version, and the notes quantify coverage."
+      - report: "Human Readable SBOM"
+        type: added
+        description: "Provenance (generator, timestamp, tenant, project, version) in every output format, computed once so all five agree. NTIA's dependency-relationship element is declared a known unknown in the notes."
+      - report: "Human Readable SBOM"
+        type: changed
+        description: "BREAKING: `source` and `component_id` leave the default columns. Restore them with `--source-column` and `--component-ids`."
+      - report: "Human Readable SBOM"
+        type: changed
+        description: "BREAKING: `--policy-status`, `--finding-counts` and `--component-status` now default OFF, so the default artifact is a shareable inventory with no internal security data. Each run logs which groups it omitted."
+      - report: "Component List, Remediation Package, Version Comparison"
+        type: fixed
+        description: "`bomRef` was missing from the cache projection, so BOM Reference, the derived Group and the SBOM ref went blank on any cached run. Adding it invalidates cached `/components` queries once; the CycloneDX group lookup also re-downloads once per project version."
+      - report: "Component List, Findings by Project"
+        type: changed
+        description: "Where an SBOM export carries two components sharing a name and version and one has no metadata, Group is now blank for both rather than copied from the identified one."
+      - report: "Reachability VEX Coverage"
+        type: changed
+        description: "XLSX gains a Notes sheet and the CSV schema sidecar a new top-level `notes` key, carrying the disclosures the other formats already showed."
+      - report: "Findings by Project"
+        type: "added"
+        description: "New `Attack Vector` column — Network, Adjacent, Local or Physical, read from the `AV:` metric of the row's CVSS vector."
+      - report: "Findings by Project"
+        type: "added"
+        description: "New `CVSS Version` column reporting which version scored the row's vector — `4.0`, `3.1`, `3.0` or `2`, and empty when the vector does not say."
+      - report: "Findings by Project"
+        type: "changed"
+        description: "`CVSS v3 Vector` is now `CVSS Vector` and carries the newest vector NVD published — v4, else v3, else v2 — so pre-2016 CVEs scored only under v2 no longer print a blank cell. Through the hosted NVD mirror you get whatever that service already parsed, so v4 appears once it emits the field."
+      - report: "Findings by Project"
+        type: "changed"
+        description: "The old `CVSS v3 Vector` header ships on in CSV, XLSX and JSON as a deprecated column carrying the v3 vector only, unchanged, removed in 3.0.0 — move to `CVSS Vector` for the newer versions. Three columns are inserted ahead of `NVD URL` this release, so anything reading these outputs by column position must re-map."
+      - report: "Command Center"
+        type: "changed"
+        description: "The report picker groups its options by category instead of listing every report in one flat run of names."
+      - report: "Exploitability Report, Exploitability Report (Shareable)"
+        type: "changed"
+        description: "Both are now forge-audience: hidden from `list recipes`, the web launcher and the report picker. They still run by explicit `--recipe`."
+      - report: "All reports"
+        type: "fixed"
+        description: "A retryable server error mid-run aborted the whole report; it is now retried with server-paced backoff, and a fetch that exhausts its retries fails rather than returning partial data."
   - version: "2.0.5"
     date: "2026-09-01"
     changes:

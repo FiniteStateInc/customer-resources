@@ -1171,11 +1171,11 @@
               </div>
 
               {# Human Readable SBOM only (show_sbom_options / SBOM_OPTION_RECIPES).
-                 Same three knobs the Command Center card back and the prerun
+                 Same five knobs the Command Center card back and the prerun
                  modal expose — a step configurable on those two surfaces but not
                  here would be settable everywhere except the one screen whose
-                 whole job is composing steps. Policy columns and Finding counts
-                 default ON, so they use the default-true toggle pair. #}
+                 whole job is composing steps. All five default OFF, so each is a
+                 plain opt-in step bool. #}
               <div x-show="stepApplies(inspStep(), 'show_sbom_options')" x-cloak>
                 <div class="wfb-toggle">
                   <span class="tl">Include file components</span>
@@ -1187,19 +1187,43 @@
                 </div>
                 <div class="wfb-toggle">
                   <span class="tl">Policy columns</span>
-                  <div class="wfb-sw" :class="{ on: defaultTrueOn(inspStep(), 'policy_status') }"
-                       role="switch" :aria-checked="defaultTrueOn(inspStep(), 'policy_status')" tabindex="0"
-                       @click="toggleDefaultTrue('policy_status')"
-                       @keydown.enter.prevent="toggleDefaultTrue('policy_status')"
-                       @keydown.space.prevent="toggleDefaultTrue('policy_status')"></div>
+                  <div class="wfb-sw" :class="{ on: !!inspStep().overrides.policy_status }"
+                       role="switch" :aria-checked="!!inspStep().overrides.policy_status" tabindex="0"
+                       @click="toggleStepBool('policy_status')"
+                       @keydown.enter.prevent="toggleStepBool('policy_status')"
+                       @keydown.space.prevent="toggleStepBool('policy_status')"></div>
                 </div>
                 <div class="wfb-toggle">
                   <span class="tl">Finding counts</span>
-                  <div class="wfb-sw" :class="{ on: defaultTrueOn(inspStep(), 'finding_counts') }"
-                       role="switch" :aria-checked="defaultTrueOn(inspStep(), 'finding_counts')" tabindex="0"
-                       @click="toggleDefaultTrue('finding_counts')"
-                       @keydown.enter.prevent="toggleDefaultTrue('finding_counts')"
-                       @keydown.space.prevent="toggleDefaultTrue('finding_counts')"></div>
+                  <div class="wfb-sw" :class="{ on: !!inspStep().overrides.finding_counts }"
+                       role="switch" :aria-checked="!!inspStep().overrides.finding_counts" tabindex="0"
+                       @click="toggleStepBool('finding_counts')"
+                       @keydown.enter.prevent="toggleStepBool('finding_counts')"
+                       @keydown.space.prevent="toggleStepBool('finding_counts')"></div>
+                </div>
+                <div class="wfb-toggle">
+                  <span class="tl">Component status</span>
+                  <div class="wfb-sw" :class="{ on: !!inspStep().overrides.component_status }"
+                       role="switch" :aria-checked="!!inspStep().overrides.component_status" tabindex="0"
+                       @click="toggleStepBool('component_status')"
+                       @keydown.enter.prevent="toggleStepBool('component_status')"
+                       @keydown.space.prevent="toggleStepBool('component_status')"></div>
+                </div>
+                <div class="wfb-toggle">
+                  <span class="tl">Component IDs</span>
+                  <div class="wfb-sw" :class="{ on: !!inspStep().overrides.component_ids }"
+                       role="switch" :aria-checked="!!inspStep().overrides.component_ids" tabindex="0"
+                       @click="toggleStepBool('component_ids')"
+                       @keydown.enter.prevent="toggleStepBool('component_ids')"
+                       @keydown.space.prevent="toggleStepBool('component_ids')"></div>
+                </div>
+                <div class="wfb-toggle">
+                  <span class="tl">Source</span>
+                  <div class="wfb-sw" :class="{ on: !!inspStep().overrides.source_column }"
+                       role="switch" :aria-checked="!!inspStep().overrides.source_column" tabindex="0"
+                       @click="toggleStepBool('source_column')"
+                       @keydown.enter.prevent="toggleStepBool('source_column')"
+                       @keydown.space.prevent="toggleStepBool('source_column')"></div>
                 </div>
               </div>
 

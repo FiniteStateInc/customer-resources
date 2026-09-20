@@ -35,9 +35,11 @@ The ``--no-bundled-recipes`` escape-hatch (``use_bundled=False``) disables
 bundled discovery entirely so only external recipes are used.
 """
 
+import copy
 import importlib.resources
 import logging
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import ValidationError
@@ -46,10 +48,104 @@ from fs_report.models import ComparisonRecipe, CompoundRecipe, Recipe
 from fs_report.paths import get_user_recipes_dir
 from fs_report.slug import slug
 
+# PyYAML's pure-Python SafeLoader is ~10x slower than the libyaml-backed
+# CSafeLoader. CSafeLoader is only present when PyYAML was built against
+# libyaml, so fall back when it is not.
+try:
+    _YamlLoader: type[yaml.SafeLoader] | type[yaml.CSafeLoader] = yaml.CSafeLoader
+except AttributeError:  # pragma: no cover - depends on the PyYAML wheel
+    _YamlLoader = yaml.SafeLoader
+
 # B13 #22: recipe names already warned about a missing nav_category. The loader
 # runs on every --serve render, so this de-dupes the warning to once per recipe
 # per process instead of flooding the console on every request.
 _WARNED_NO_NAV_CATEGORY: set[str] = set()
+
+# Parsed-YAML memo, keyed by the file's own text.
+#
+# `load_recipes()` re-read and re-parsed every recipe file on every call, and a
+# single --serve page render calls it ~20 times, so the same ~37 bundled YAMLs
+# were parsed hundreds of times per render. Parsing dominated both render time
+# and the test suite (81% of test CPU time was web tests, almost all of it
+# here).
+#
+# Keyed on content rather than (path, mtime) deliberately: bundled recipes
+# arrive as `importlib.resources` traversables that need not expose stat(), and
+# content-addressing is exactly correct — identical bytes always parse to an
+# identical document, and an edited file misses the memo on its next read.
+# Reading is ~50x cheaper than parsing, so the re-read costs little.
+#
+# The text itself is the key rather than a digest of it: str hashing is
+# measured ~40x cheaper than sha256 over the same bytes (siphash, and the
+# comparison is on freshly-read strings, so neither side benefits from
+# CPython's cached str hash). It costs memory — the bundled corpus is ~165 KB
+# of keys against ~2 KB of digests — which the entry cap below bounds.
+#
+# Hand back a deepcopy, never the memoized object. `Recipe.parameters` is a
+# free-form field, so pydantic stores those sub-documents BY REFERENCE (the
+# bundled corpus aliases 61 such containers) — a caller editing
+# `recipe.parameters[...]` in place would otherwise rewrite what every later
+# load sees. Copying is ~90x cheaper than re-parsing, so it is cheap insurance.
+_YAML_PARSE_CACHE: dict[str, Any] = {}
+
+# Content keys mean an edited recipe adds an entry rather than replacing one,
+# so a long-lived `--serve` process editing recipes would otherwise grow the
+# memo without bound. The working set is the bundled corpus (~37) plus whatever
+# the user has open, so this is far above steady state.
+#
+# Overflow evicts the single oldest entry (dicts iterate in insertion order)
+# rather than clearing wholesale: dropping all 512 turns one overflow into a
+# full cold reload of everything still in use. A corpus genuinely larger than
+# the cap, scanned end-to-end in a cycle, still misses every time — no
+# fixed-size policy survives that access pattern — and then pays a deepcopy and
+# a key hash on top of the parse it would have paid anyway. That overhead is
+# ~1% of a parse, so the pathological case is no meaningfully worse than having
+# no memo at all, while the ordinary case keeps its working set.
+_YAML_PARSE_CACHE_MAX = 512
+
+# Distinguishes "absent" from a document that legitimately parsed to None (an
+# empty recipe file), which callers then warn about and skip. Testing `is None`
+# instead would leave those files out of the memo and re-parse them forever.
+_CACHE_MISS = object()
+
+
+def invalidate_recipe_yaml_cache() -> None:
+    """Drop every memoized recipe document.
+
+    For long-lived processes and for tests, which need the memo empty to
+    observe parse counts — the memo is process-global, so without this a test
+    asserting "parsed once" depends on whatever ran before it in the same
+    worker.
+    """
+    _YAML_PARSE_CACHE.clear()
+
+
+def _parse_yaml_text(text: str) -> Any:
+    """Parse YAML with the fastest available loader.
+
+    The single seam tests patch to count parses; patching `yaml.load` itself
+    would count every unrelated caller in the process too.
+    """
+    return yaml.load(text, Loader=_YamlLoader)
+
+
+def _parse_recipe_yaml(text: str) -> Any:
+    """Parse recipe YAML, memoizing on the text so repeat loads are cheap."""
+    # Read ONCE into a local, and never index the dict again afterwards.
+    # `--serve` runs report generation on a thread per run, so two threads are
+    # genuinely in here at once: a `key in cache` test followed by a separate
+    # `cache[key]` read can have another thread's eviction land between the two
+    # and raise KeyError mid-render. Binding the document up front makes that
+    # impossible. Dict get/set are atomic under the GIL, so the worst a race
+    # can now cost is one duplicated parse.
+    doc = _YAML_PARSE_CACHE.get(text, _CACHE_MISS)
+    if doc is _CACHE_MISS:
+        doc = _parse_yaml_text(text)
+        if len(_YAML_PARSE_CACHE) >= _YAML_PARSE_CACHE_MAX:
+            # popitem(last=False) equivalent: oldest insertion first.
+            _YAML_PARSE_CACHE.pop(next(iter(_YAML_PARSE_CACHE)), None)
+        _YAML_PARSE_CACHE[text] = doc
+    return copy.deepcopy(doc)
 
 
 class RecipeSlugCollision(ValueError):
@@ -312,7 +408,7 @@ class RecipeLoader:
                         continue
                     try:
                         text = subitem.read_text(encoding="utf-8")
-                        yaml_data = yaml.safe_load(text)
+                        yaml_data = _parse_recipe_yaml(text)
                         if not yaml_data:
                             self.logger.warning(
                                 f"Empty bundled recipe file: {audience}/{subname}"
@@ -333,7 +429,7 @@ class RecipeLoader:
             elif name.endswith((".yaml", ".yml")) and not name.startswith("_"):
                 try:
                     text = item.read_text(encoding="utf-8")
-                    yaml_data = yaml.safe_load(text)
+                    yaml_data = _parse_recipe_yaml(text)
                     if not yaml_data:
                         self.logger.warning(f"Empty bundled recipe file: {name}")
                         continue
@@ -402,8 +498,7 @@ class RecipeLoader:
         self.logger.debug(f"Loading recipe from: {file_path}")
 
         try:
-            with open(file_path, encoding="utf-8") as f:
-                yaml_data = yaml.safe_load(f)
+            yaml_data = _parse_recipe_yaml(file_path.read_text(encoding="utf-8"))
 
             if not yaml_data:
                 self.logger.warning(f"Empty recipe file: {file_path}")

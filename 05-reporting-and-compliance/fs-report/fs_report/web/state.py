@@ -53,11 +53,15 @@ DEFAULTS: dict[str, Any] = {
     "pinned_folder": "",
     "open_only": False,
     # Human Readable SBOM. Baselines match Config's defaults so a card override
-    # stores only on a real change: file components off (SAST placeholders),
-    # policy columns on (they are in the platform's own Components table).
+    # stores only on a real change. ALL of them are off: the default report is a
+    # shareable NTIA-aligned inventory, and every one of these adds either SAST
+    # placeholder rows or internal data a recipient has no context for.
     "include_file_components": False,
-    "policy_status": True,
-    "finding_counts": True,
+    "policy_status": False,
+    "finding_counts": False,
+    "component_status": False,
+    "component_ids": False,
+    "source_column": False,
     "detailed": False,
     "standalone": False,
     # --product-only: portfolio reports list only product-marked projects, with

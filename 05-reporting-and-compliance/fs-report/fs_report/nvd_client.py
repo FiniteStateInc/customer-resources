@@ -62,6 +62,8 @@ from typing import Any
 
 import requests
 
+from fs_report.cvss import looks_like_vector
+
 logger = logging.getLogger(__name__)
 
 NVD_CVE_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
@@ -103,6 +105,20 @@ class AffectedRange:
         return ""
 
 
+def _vector_str(value: Any) -> str:
+    """A CVSS vector field as a trimmed string, or "" for anything else.
+
+    Applied wherever a vector arrives from outside the direct NVD API parse —
+    the hosted mirror and the SQLite cache both hand back rows whose fields
+    are whatever the writer stored. The mirror sends already-parsed records,
+    so _vector_from_metric never runs on that path and cannot trim or rank
+    them; this is the one normalization that still applies there. A padded
+    value is trimmed, and a whitespace-only or non-string one becomes "" so
+    it cannot shadow a usable older vector downstream.
+    """
+    return value.strip() if isinstance(value, str) else ""
+
+
 @dataclass
 class NVDCveRecord:
     """Structured data extracted from a single NVD CVE record."""
@@ -116,6 +132,7 @@ class NVDCveRecord:
     workaround_urls: list[str] = field(default_factory=list)
     cvss_v2_vector: str = ""
     cvss_v3_vector: str = ""
+    cvss_v4_vector: str = ""
     vuln_status: str = (
         ""  # NVD vulnStatus: Analyzed, Modified, Rejected, Disputed, etc.
     )
@@ -227,6 +244,7 @@ class NVDCveRecord:
             "workaround_urls": self.workaround_urls,
             "cvss_v2_vector": self.cvss_v2_vector,
             "cvss_v3_vector": self.cvss_v3_vector,
+            "cvss_v4_vector": self.cvss_v4_vector,
             "vuln_status": self.vuln_status,
         }
 
@@ -242,10 +260,69 @@ class NVDCveRecord:
             patch_urls=data.get("patch_urls", []),
             advisory_urls=data.get("advisory_urls", []),
             workaround_urls=data.get("workaround_urls", []),
-            cvss_v2_vector=data.get("cvss_v2_vector", ""),
-            cvss_v3_vector=data.get("cvss_v3_vector", ""),
+            cvss_v2_vector=_vector_str(data.get("cvss_v2_vector")),
+            cvss_v3_vector=_vector_str(data.get("cvss_v3_vector")),
+            cvss_v4_vector=_vector_str(data.get("cvss_v4_vector")),
             vuln_status=data.get("vuln_status", ""),
         )
+
+
+_NVD_METRIC_SOURCE = "nvd@nist.gov"
+
+
+def _vector_from_metric(*entry_lists: Any) -> str:
+    """Vector string out of one or more NVD ``metrics.cvssMetricVxx`` lists.
+
+    A CVE can carry several scorings of the same version — NVD's own plus one
+    or more from the CNA or another source — and each entry declares a
+    ``type`` of ``"Primary"`` or ``"Secondary"`` and a ``source``. Entries are
+    ranked so the vector matches what NVD's own CVE detail page shows:
+
+    1. ``source: nvd@nist.gov`` (NVD's own scoring, whatever its type). A CNA
+       can also publish a Primary entry, so ``type`` alone does not identify
+       authorship.
+    2. Any other ``type: "Primary"`` entry.
+    3. Anything else, in list order.
+
+    Several lists can be passed when one version spans more than one metrics
+    key (v3 is ``cvssMetricV31`` plus ``cvssMetricV30``): all of them are
+    ranked together, so NVD's own v3.0 scoring beats a CNA-supplied v3.1 one,
+    and the earlier list only wins a tie. Returns "" when no list holds a
+    usable vector.
+
+    A padded vector is returned trimmed, and a whitespace-only one counts as
+    no vector at all: a blank ``vectorString`` on the top-ranked entry must
+    not suppress a real vector sitting on a lower-ranked one.
+    """
+    entries = [
+        entry
+        for entry_list in entry_lists
+        if isinstance(entry_list, list)
+        for entry in entry_list
+        if isinstance(entry, dict)
+    ]
+
+    def rank(entry: dict[str, Any]) -> int:
+        if str(entry.get("source", "")).lower() == _NVD_METRIC_SOURCE:
+            return 0
+        return 1 if str(entry.get("type", "")).upper() == "PRIMARY" else 2
+
+    for entry in sorted(entries, key=rank):
+        data = entry.get("cvssData", {})
+        if not isinstance(data, dict):
+            continue
+        vector = data.get("vectorString", "")
+        if not isinstance(vector, str):
+            continue
+        text = vector.strip()
+        # Shape-check BEFORE accepting the entry, not after. Rank alone would
+        # hand back a top-ranked placeholder and discard the real vector below
+        # it in the same pool; the transform drops the placeholder later but
+        # can no longer recover what was thrown away here, so the row falls
+        # back to an older scoring or blanks with a usable vector in hand.
+        if text and looks_like_vector(text):
+            return text
+    return ""
 
 
 def _parse_cve_record(cve_data: dict[str, Any]) -> NVDCveRecord:
@@ -317,20 +394,18 @@ def _parse_cve_record(cve_data: dict[str, Any]) -> NVDCveRecord:
     # Extract CVSS vectors from metrics
     cvss_v2_vector = ""
     cvss_v3_vector = ""
+    cvss_v4_vector = ""
     metrics = cve_data.get("metrics", {})
     if isinstance(metrics, dict):
-        v2_list = metrics.get("cvssMetricV2", [])
-        if isinstance(v2_list, list) and v2_list:
-            v2_data = v2_list[0].get("cvssData", {})
-            if isinstance(v2_data, dict):
-                cvss_v2_vector = v2_data.get("vectorString", "")
-        v3_list = metrics.get("cvssMetricV31", [])
-        if not v3_list or not isinstance(v3_list, list):
-            v3_list = metrics.get("cvssMetricV30", [])
-        if isinstance(v3_list, list) and v3_list:
-            v3_data = v3_list[0].get("cvssData", {})
-            if isinstance(v3_data, dict):
-                cvss_v3_vector = v3_data.get("vectorString", "")
+        cvss_v2_vector = _vector_from_metric(metrics.get("cvssMetricV2"))
+        # v3.1 and v3.0 are ranked as one pool, v3.1 first: NVD scored
+        # 2016–2019 CVEs under v3.0 and CNAs later added v3.1 entries, so
+        # taking any v3.1 before looking at v3.0 would print the CNA vector
+        # instead of NVD's own.
+        cvss_v3_vector = _vector_from_metric(
+            metrics.get("cvssMetricV31"), metrics.get("cvssMetricV30")
+        )
+        cvss_v4_vector = _vector_from_metric(metrics.get("cvssMetricV40"))
 
     return NVDCveRecord(
         cve_id=cve_id,
@@ -342,6 +417,7 @@ def _parse_cve_record(cve_data: dict[str, Any]) -> NVDCveRecord:
         workaround_urls=workaround_urls,
         cvss_v2_vector=cvss_v2_vector,
         cvss_v3_vector=cvss_v3_vector,
+        cvss_v4_vector=cvss_v4_vector,
         vuln_status=vuln_status,
     )
 
@@ -427,6 +503,25 @@ class NVDClient:
 
         Returns dict of results, or None if the service is unavailable
         (caller should fall back to direct NVD API).
+
+        The mirror sends already-serialized NVDCveRecord rows, not raw NVD
+        JSON, so _parse_cve_record never runs on this path: each field arrives
+        only if the mirror emits it, and which of several same-version
+        scorings won is whatever the mirror's own parser decided, not what
+        _vector_from_metric would pick. A mirror still on the v2/v3 schema
+        therefore yields cvss_v4_vector="" for every CVE — the Findings by
+        Project CVSS Vector column falls back to v3 (or v2) until the mirror
+        ships the field. Nothing here can synthesize it; the field flows
+        through the moment the mirror sends it, which tests/test_nvd_client.py
+        pins. The parsing rules in _vector_from_metric apply to the direct NVD
+        API path, taken when the mirror is off, unreachable or errors. A
+        deployment that needs fs-report's own ranking today can set
+        FS_NVD_SERVICE_URL=off to take that path.
+
+        What does still apply here is _vector_str, which _deserialize runs on
+        every vector field: a padded string arrives trimmed and a
+        whitespace-only one arrives empty, so a blank mirror value cannot
+        shadow a usable older vector in the report.
         """
         if not self._service_url or not self._service_token:
             return None
@@ -509,6 +604,18 @@ class NVDClient:
                         fetched_at = fetched_at.replace(tzinfo=UTC)
                     age = (datetime.now(UTC) - fetched_at).total_seconds()
                     if age < self._cache_ttl:
+                        # Rows written before a field existed deserialize with
+                        # that field empty (_deserialize defaults every key),
+                        # and are served as-is rather than forced stale: this
+                        # cache is shared by every NVD-backed report, so
+                        # invalidating on schema age would cold-start all of
+                        # them at once and would drop a whole CVE's data if
+                        # the refetch then failed. A newly parsed field fills
+                        # in as entries expire normally. An operator who
+                        # needs it sooner runs `fs-report cache clear --nvd`
+                        # (or the web UI's Settings > Cache > Clear on the NVD
+                        # row), which drops the whole store deliberately
+                        # rather than silently expiring rows by schema age.
                         return self._deserialize(json.loads(row["data_json"]))
                     logger.debug(f"NVD cache expired for {cve_id} ({age:.0f}s old)")
             except Exception as e:

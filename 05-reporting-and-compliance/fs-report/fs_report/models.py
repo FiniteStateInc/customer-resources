@@ -1179,20 +1179,40 @@ class Config(BaseModel):
         False,
         description="Human Readable SBOM: include type=file components. Off by "
         "default — they are SAST placeholders with no license, supplier or "
-        "release data, and on firmware projects they outnumber real components "
-        "by an order of magnitude.",
+        "release data.",
     )
     finding_counts: bool = Field(
-        True,
+        False,
         description="Human Readable SBOM: include the finding-count columns "
-        "(total plus the Critical/High/Medium/Low breakdown). On by default; "
-        "--no-finding-counts gives a pure inventory sheet with no finding data.",
+        "(total plus the Critical/High/Medium/Low breakdown). Off by default — "
+        "the default artifact is a shareable inventory with no security data.",
     )
     policy_status: bool = Field(
-        True,
+        False,
         description="Human Readable SBOM: include the policy violation and "
-        "warning count columns. On by default, matching the platform's "
-        "Components table; --no-policy-status drops them for a narrower sheet.",
+        "warning count columns. Off by default — policy verdicts are an internal "
+        "judgement a shared SBOM's recipient has no context for.",
+    )
+    component_status: bool = Field(
+        False,
+        description="Human Readable SBOM: include the component review status "
+        "column (NEEDS_REVIEW, IN_REVIEW, CONFIRMED, FALSE_POSITIVE, UNKNOWN). "
+        "Off by default for the same reason as policy_status.",
+    )
+    component_ids: bool = Field(
+        False,
+        description="Human Readable SBOM: include the platform component id "
+        "column. Off by default — it is an internal UUID with no meaning "
+        "outside the tenant that issued it, so it is not the 'other unique "
+        "identifier' NTIA asks for; purl and cpe are, and they are always "
+        "included.",
+    )
+    source_column: bool = Field(
+        False,
+        description="Human Readable SBOM: include the source column (how the "
+        "component was introduced — Binary SCA, Upload). Off by default: scan "
+        "methodology rather than inventory, and a shared SBOM's recipient has "
+        "no use for it.",
     )
     # AI remediation guidance options
     ai: bool = Field(

@@ -32,7 +32,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Component Vulnerability Analysis | Riskiest components across the portfolio |
 | Findings by Project | Complete findings inventory per project with CVE details, severity, and platform links |
 | Component List | Software inventory (SBOM) for compliance |
-| Human Readable SBOM | Readable component inventory for one project version, with finding counts |
+| Human Readable SBOM | Shareable component inventory for one project version; findings, policy and review status are opt-in |
 | CVE Component Evidence | For a project version, lists CVE-bearing components with their associated CVE IDs and the firmware file paths where each was detected; intended for per-version triage *(on-demand, requires `--project`; `--version` optional — defaults to the current version)* |
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
 | Reachability VEX Coverage | How many findings could be auto-resolved right now: findings proven UNREACHABLE that still lack the `NOT_AFFECTED` VEX status, rolled up per project version with a severity breakdown and a headline total. Emits an appliable `vex_recommendations.json`. Reports "analysis never ran" separately from "nothing to do", so a coverage number is never claimed without a denominator *(on-demand; optional `--min-severity`)* |
@@ -48,8 +48,6 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | CRA Compliance | EU Cyber Resilience Act Article 14 — 5-section morning-queue (🔥 SLA-Breach, 🆕 Newly Above Threshold, 🔁 Re-emerged, ⏰ Still-in-Triage, 📋 Snapshot) with CISA KEV notification clock, action-driven KPIs (OVERDUE / DUE_SOON / Unknown Clock / Reachable / In Triage), VulnCheck threat-actor evidence on queue rows, and `--since` delta detection for daily automation runs *(on-demand)* |
 | False Positive Analysis | Surface likely false positives using mechanical checks and AI applicability analysis; auto-apply VEX with `--autotriage` *(on-demand)* |
 | Scan Quality | Per-asset scan coverage and quality signals — scan type gaps and reachability unknowns *(on-demand)* |
-| Exploitability Report | Standalone, evidence-backed CVE-exploitability dossier bucketed by verdict.kind (must-fix / proven-not-affected / tested-inconclusive / affected-by-version) with prose-first proof, code locus, and replay provenance; internal/console mode retains full verifier telemetry. Consumes a forge `exploitability-dataset/v2` export via `--data-file` *(on-demand; HTML/PDF)* |
-| Exploitability Report (Shareable) | External-facing variant of the Exploitability Report — the same bucketed-verdict dossier redacted for customers/regulators (internal telemetry stripped, proof preserved). Consumes a forge `exploitability-dataset/v2` export via `--data-file` *(on-demand; HTML/PDF)* |
 
 ## Quick Start
 

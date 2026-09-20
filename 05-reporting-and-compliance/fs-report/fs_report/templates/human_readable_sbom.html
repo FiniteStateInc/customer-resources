@@ -88,6 +88,27 @@
         white-space: nowrap;
     }
 
+    /* PURL and CPE. Monospaced like the id, but NOT de-emphasized: they are
+       the NTIA "other unique identifiers" element, i.e. the whole reason a
+       machine can match this row against a vulnerability feed. They break
+       anywhere rather than nowrap — a purl runs 60+ characters and two nowrap
+       columns push everything else off-screen. */
+    .sbom-ident {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.76em;
+        /* min-, not max-width: the table is already horizontally scrollable, and
+           a max-width lets the layout algorithm squeeze these columns to ~1ch,
+           which with break-all renders one character per line. */
+        min-width: 20ch;
+        overflow-wrap: anywhere;
+    }
+
+    .sbom-provenance {
+        margin-top: 6px;
+        font-size: 0.82em;
+        opacity: 0.75;
+    }
+
     .sbom-name { font-weight: 600; }
 
     /* Long SPDX expressions ("GPL-2.0-only OR LGPL-2.1-or-later") would
@@ -134,9 +155,13 @@
 {% set sbom = transform_result.get('sbom_summary', {}) %}
 {% set notes = transform_result.get('notes', []) %}
 {% set data = data | default([]) %}
-{% set show_policy = sbom.get('include_policy_status', True) %}
-{% set show_findings = sbom.get('include_finding_counts', True) %}
+{% set show_policy = sbom.get('include_policy_status', False) %}
+{% set show_findings = sbom.get('include_finding_counts', False) %}
+{% set show_status = sbom.get('include_component_status', False) %}
+{% set show_ids = sbom.get('include_component_ids', False) %}
+{% set show_source = sbom.get('include_source_column', False) %}
 {% set sev = sbom.get('severity_totals', {}) %}
+{% set prov = sbom.get('provenance', {}) %}
 
 {% if render_mode != 'fragment' %}
 
@@ -146,7 +171,7 @@
         {"label": "Domain", "value": domain or "—"},
         {"label": "Project", "value": sbom.get('project_name') or project_label or "—"},
         {"label": "Version", "value": sbom.get('version_name') or "—"},
-        {"label": "Generated", "value": generated_at or "—"},
+        {"label": "Generated", "value": prov.get('generated_at') or generated_at or "—"},
     ],
     controls=[],
 ) }}
@@ -157,9 +182,19 @@
     <div class="page-head">
         <h1 data-fs-section-title>Human Readable SBOM</h1>
         <p class="subtitle">
-            Every component in this project version, with its licensing and origin{% if show_findings %} and
+            Every component in this project version, with its licensing and identifiers{% if show_findings %} and
             finding counts{% endif %}. Nothing is truncated.
         </p>
+        {% if prov %}
+        {# NTIA "Author of SBOM Data" + "Timestamp". In the BODY, not just the
+           topbar: the topbar and status bar are display:none in print, and
+           Print-to-PDF is how a reader actually gets a PDF of this report. #}
+        <p class="sbom-provenance">
+            Generated {{ prov.get('generated_at') }}
+            by {{ prov.get('generated_by') }}
+            from {{ prov.get('source') }}{% if prov.get('tenant') %} ({{ prov.get('tenant') }}){% endif %}{% if prov.get('project') %} for {{ prov.get('project') }}{% if prov.get('version') %} {{ prov.get('version') }}{% endif %}{% endif %}.
+        </p>
+        {% endif %}
     </div>
 
     {% if sbom %}
@@ -248,9 +283,11 @@
                         <th>Supplier</th>
                         <th>Licenses</th>
                         <th>Release Date</th>
-                        <th>Source</th>
-                        <th>Status</th>
-                        <th>Component ID</th>
+                        {% if show_source %}<th>Source</th>{% endif %}
+                        <th>PURL</th>
+                        <th>CPE</th>
+                        {% if show_status %}<th>Status</th>{% endif %}
+                        {% if show_ids %}<th>Component ID</th>{% endif %}
                     </tr>
                 </thead>
                 <tbody>
@@ -282,9 +319,11 @@
                         <td>{{ row.get('supplier') or '—' }}</td>
                         <td class="sbom-license">{{ row.get('licenses') or '—' }}</td>
                         <td>{{ row.get('release_date') or '—' }}</td>
-                        <td>{{ row.get('source') or '—' }}</td>
-                        <td>{{ row.get('status') or '—' }}</td>
-                        <td class="sbom-id">{{ row.get('component_id') or '—' }}</td>
+                        {% if show_source %}<td>{{ row.get('source') or '—' }}</td>{% endif %}
+                        <td class="sbom-ident">{{ row.get('purl') or '—' }}</td>
+                        <td class="sbom-ident">{{ row.get('cpe') or '—' }}</td>
+                        {% if show_status %}<td>{{ row.get('status') or '—' }}</td>{% endif %}
+                        {% if show_ids %}<td class="sbom-id">{{ row.get('component_id') or '—' }}</td>{% endif %}
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -313,6 +352,7 @@
     "Components: " ~ "{:,}".format(sbom.get('total_components', 0)),
     "File components: " ~ ("included" if sbom.get('include_file_components', False) else "excluded"),
     "Domain: " ~ (domain or "—"),
+    "Generated by: " ~ (prov.get('generated_by') or "—"),
 ]) }}
 
 {% endif %}

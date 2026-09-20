@@ -1,5 +1,292 @@
 # Release Notes
 
+## Version 2.1.0 (September 2026)
+
+### Human Readable SBOM now carries the NTIA Minimum Elements
+
+The shareable default was missing two of NTIA's seven required data fields.
+Both are now in every run, which brings the report to six of seven — the
+seventh, Dependency Relationship, is explicitly declared a known unknown (see
+below) rather than silently omitted, which is what NTIA asks for when the data
+is unavailable.
+
+Note that NTIA requires an "other unique identifiers" *field*, not a specific
+format. PURL and CPE are two of the identifier types it names as satisfying
+that element; they are what SCA tooling and NVD key on, and what the platform
+populates.
+
+**Other unique identifiers** — two new default columns, `purl` and `cpe`, read
+from the API's `softwareIdentifiers`. These are what let a consumer match a row
+against a vulnerability feed; the platform component id never could. They sit at
+the end of the row rather than beside name/version — a purl runs 60+ characters
+and would otherwise push type, supplier and licenses past readable width.
+
+Identifiers are **never synthesised**. A component with no purl is listed by name
+and version only, and the notes say so:
+
+> PURL present for 412 of 795 components; CPE for 0. Components without an
+> identifier are listed by name and version only.
+
+A fabricated `pkg:generic/<name>@<version>` would be a false claim where a blank
+is an honest gap — and quantifying it means a low-coverage tenant is visible in
+the artifact instead of looking like a bug in the report.
+
+**Author of SBOM Data + Timestamp** — a provenance block in every format: an
+HTML body line, a Markdown `Generated:` line, a top-level `provenance` key in
+JSON, a **Provenance** sheet in XLSX, and a `provenance` object in the CSV's
+`<recipe>_schema.json` sidecar. (Not a row inside the CSV: a non-data row
+breaks `pd.read_csv` for every consumer.) It is computed once, so all five
+formats of one report carry the same timestamp.
+
+**Dependency relationships** remain unavailable — the component API exposes no
+component-to-component edges — and every run says so in its notes. NTIA permits
+declaring a required element a known unknown; it does not permit omitting one
+silently.
+
+On a `--version` run the engine uses `/versions/{id}/components`, which returns
+no identifiers at all, so both columns are backfilled from that version's
+CycloneDX export. The same report now carries the same columns either way. If
+the export fails (it has a documented 503, "SBOM export queue is full") the run
+warns and the report says the lookup failed — a blank column with no
+explanation would read as "this component has no PURL".
+
+### BREAKING: the `source` column is now opt-in
+
+It described how a component was introduced (Binary SCA, Upload) — scan
+methodology rather than inventory, and nothing a recipient of a shared SBOM can
+act on. Component List still carries it for internal use. If you script against
+the CSV, XLSX or JSON, restore it with:
+
+```bash
+fs-report run --recipe "Human Readable SBOM" --project MyProject --source-column
+```
+
+It returns to its old position, after `release_date` and ahead of the
+identifiers.
+
+### BREAKING: `component_id` is now opt-in
+
+It is a platform-internal UUID with no meaning outside the tenant that issued
+it, so it is not the NTIA identifier — `purl` and `cpe` are, and they take its
+place in the default row. If you script against the CSV, XLSX or JSON, the
+column is gone unless you ask for it:
+
+```bash
+fs-report run --recipe "Human Readable SBOM" --project MyProject --component-ids
+```
+
+It now appends last, after the identifiers and the review status.
+
+### One-time cache re-fetch after upgrading
+
+`bomRef` was missing from the SQLite component projection, so on any cached run
+(the web UI caches by default) Component List's **BOM Reference** column and its
+derived **Group** column both went blank — as did Remediation Package's SBOM ref
+and Version Comparison's group-based matching. Fixed, along with adding
+`softwareIdentifiers`.
+
+Because the cache query hash folds the field projection into its key, **the
+first run after upgrading re-fetches every cached `/components` query**: Human
+Readable SBOM, Component List, License Report, CVE Component Evidence and
+Remediation Package. On a large tenant this is a real one-off cost. It is paid
+once, and there is no window in which the new columns come back NULL.
+
+**The second invalidation is the more expensive one.** The per-version
+CycloneDX lookup that backs group enrichment gained PURL/CPE fields, so its
+cached payload moved from `v: 1` to `v: 3` and every existing entry is a miss.
+That means **one full CycloneDX export re-downloaded per project version**, for
+every recipe that uses it — Component List, License Report, Findings by Project,
+Remediation Package and Human Readable SBOM. This is the same per-version
+SBOM fan-out that dominated License Report and Component List runs (hours, on a
+large portfolio) before it was cached. Also paid once, but plan the first run
+after upgrading accordingly — ideally off-peak, or on a warm cache for the
+project versions you care about most.
+
+### BREAKING: Human Readable SBOM is shareable by default
+
+The default output no longer carries any internal security posture. Finding
+counts, policy verdicts and the component review status are all opt-in now,
+so the report can be handed to a customer or auditor exactly as generated:
+
+```bash
+fs-report run --recipe "Human Readable SBOM" --project MyProject
+# name, version, type, supplier, license, release date, purl, cpe
+```
+
+Add back what you need for an internal view:
+
+- `--policy-status` — violation and warning counts
+- `--finding-counts` — total plus Critical/High/Medium/Low
+- `--component-status` — review status (NEEDS_REVIEW, CONFIRMED,
+  FALSE_POSITIVE…). New flag; this column used to be always present.
+
+- `--component-ids` — the platform component UUID (see above)
+
+With all of them on — including `--source-column` — the report mirrors the
+platform's Components table as before. The web UI exposes the same set as
+off-by-default toggles.
+
+### Group coverage can drop where an export carries a metadata-less duplicate
+
+A CycloneDX export can carry two components sharing a name and version — a
+different architecture or origin. Where one of them has no group, PURL or CPE
+at all, neither can be matched to a particular API row, so the pair is reported
+with those fields blank rather than with the identified twin's values copied
+onto both. Previously the component with no metadata was skipped and its twin's
+values were used for both rows.
+
+This is what stops a fabricated PURL reaching an SBOM, and the same rule
+applies to `group`, so **Component List** and **Findings by Project** can show a
+blank Group where they previously showed a value. The blank is the honest answer
+— the previous value was a coin-flip between two components — but it is a
+visible change to two reports this one does not otherwise touch.
+
+License Report and Version Comparison are unaffected despite also reading the
+SBOM lookup: License Report surfaces no component Group column, and Version
+Comparison's match key recomputes the group from `bomRef` and ignores any
+pre-existing one.
+
+### Findings by Project: `CVSS Vector` replaces `CVSS v3 Vector`
+
+The column carrying a CVE's CVSS vector was v3-only, so any CVE NVD never
+scored under v3 printed an empty cell — which is every CVE from before ~2016,
+the point NVD stopped assigning v2 and started assigning v3. `CVSS Vector`
+carries the newest vector NVD published for the CVE instead: v4 if it was
+scored under v4, else v3 (v3.1 ranked above v3.0), else v2. NVD's own scoring
+wins over a CNA-supplied one of the same version.
+
+The version reads off the value, since the string is printed as published: v4
+and v3 carry a `CVSS:4.0/` or `CVSS:3.1/` prefix, while a v2 vector has no
+prefix and carries an `Au:` (Authentication) metric. CVE-2014-7186 now prints
+`AV:N/AC:L/Au:N/C:C/I:C/A:C` where the old column printed nothing, even though
+the platform UI showed a vector all along. NVD publishes base metrics only, so
+the temporal metrics (`E:`/`RL:`/`RC:`) the UI appends are not in this value.
+
+**The old header ships on as a deprecated column.** `CVSS v3 Vector` is still
+in CSV, XLSX and JSON, still carrying the v3 vector and only the v3 vector — so
+a consumer parsing it as `CVSS:3.x/…` is never handed a v2 or v4 string it
+cannot read. Keeping the header but changing what it carries would have turned
+a loud break into a quiet wrong answer. It is removed in 3.0.0; move to
+`CVSS Vector` before then.
+
+Two deployment notes:
+
+- Through the **hosted NVD mirror** (the default enrichment backend) you get
+  whatever that service has already parsed, so the v4 field appears once the
+  mirror emits it. The ranking described above is what fs-report applies on the
+  direct NVD API path.
+- Rows already in `~/.fs-report/nvd_cache.db` keep their cached contents until
+  they expire normally (a day at minimum, longer with a longer `cache_ttl`) —
+  they are not force-refreshed, because that cache is shared by every
+  NVD-backed report. To pull the new field sooner, run
+  `fs-report cache clear --nvd`, or use **Settings > Cache > Clear** on the NVD
+  row in the web UI.
+
+### Findings by Project: `CVSS Version` and `Attack Vector` columns
+
+`CVSS Version` reports which scoring version produced the vector in
+`CVSS Vector` — `4.0`, `3.1`, `3.0` or `2`. It is blank where the vector does
+not declare a version, rather than assuming one; blank means no readable
+scoring, never a guess. HTML renders it as a coloured pill.
+
+`Attack Vector` is Network, Adjacent, Local or Physical, read from the `AV:`
+metric of that same vector. A v2 vector gives a coarser answer — v2 has no
+Physical and scores physical access as Local. Where the winning vector carries
+no readable `AV:`, the label falls to the next candidate on the row's ranked
+list, which is the one case where this column and `CVSS Vector` can disagree.
+Note that CVE Impact has long had an `Attack Vector` column reading the API's
+own `attackVector` field: same meaning, different source.
+
+**Three columns are inserted ahead of `NVD URL` this release.** Anything
+reading these CSV, XLSX or JSON outputs *by column position* has to re-map.
+Reading by header name is unaffected.
+
+### Report notes now survive into XLSX and the CSV sidecar
+
+A transform's disclosure notes — the caveats that qualify what a table does and
+does not show — reached HTML, Markdown and JSON but were dropped by the two
+formats with nowhere obvious to put them. XLSX now carries a **Notes** sheet,
+and the CSV's `<recipe>_schema.json` sidecar a top-level `notes` key.
+
+Human Readable SBOM needs this for its NTIA known-unknown declaration, but
+**Reachability VEX Coverage** is the report that changes visibly: its coverage
+disclosures now reach the spreadsheet a reviewer actually opens, instead of
+only the formats they were least likely to read.
+
+### Command Center: the report picker is grouped by category
+
+The picker listed every report as one flat run of names. Options are now
+wrapped in their category — Investigation, Compliance, Remediation, Executive —
+so the list is scannable at the length it has grown to.
+
+### The Exploitability Evidence reports are forge-driven
+
+Both members of the Exploitability Evidence family — **Exploitability Report**
+and **Exploitability Report (Shareable)** — are now `audience: forge`. They were
+never reports you point at a project: each one is fed a forge
+`exploitability-dataset/v2` export through `--data-file`, and forge is what
+produces that export. Listing them beside reports that query the platform
+invited a run that could only fail for want of a dataset.
+
+They are therefore hidden from `fs-report list recipes`, the web launcher and
+the Command Center report picker, alongside the other forge-driven recipes
+(Customer Brief, Assessment Overview, the CRA Article 14 notifications). Nothing
+about running them changed:
+
+```bash
+fs-report run --recipe "Exploitability Report" --data-file exploitability-dataset.json
+fs-report list recipes --audience forge    # to see them
+```
+
+Reports forge has already produced still appear in Report History under their
+own Exploitability Evidence category, with the same crimson identity.
+### A slow server no longer kills a long run
+
+On a large portfolio a report can spend well over an hour fetching, and a
+single failed batch used to throw all of it away. That is what happened to a
+root-folder License Report run against a 3,130-project tenant: it completed 410
+of 626 batches over 88 minutes, then one batch met a **504 Gateway Timeout** and
+the whole report aborted.
+
+The retries meant to absorb exactly that never ran. `fetch_data` reports a
+failed request by raising an error whose message carries the status, and the
+paginator decided transient-vs-permanent by matching the front of that message —
+a test that cannot tell a permanent `400` from a retryable `504`. Every
+exhausted status read as permanent, so the run was abandoned after about five
+seconds of retrying rather than using the paginator's eight attempts. The same
+misreading left the retry counter at zero, which is what the engine consults
+before granting a struggling server a long recovery pause — so that never
+happened either. One comparison, three defences.
+
+The decision is now made on the status code itself. A retryable status gets the
+paginator's full retry budget, paced with the same 30s / 60s / 90s ladder the
+other fetch paths use (a gateway timeout takes ~30 seconds to come back, so
+asking again one second later just re-asks a server that is still busy), and it
+honours `Retry-After` when the server sends one. Permanent failures —
+authentication, permission, and client errors such as helix's `limit <= 1000` —
+still fail immediately, with no retries.
+
+When retries genuinely run out, the run still **fails loudly**. It does not hand
+back the rows it managed to collect: a License Report missing a third of its
+components, presented as complete, is worse than no report.
+
+**Patience has a cost worth knowing about.** The retry budget is per request, so
+against a server that is failing persistently rather than briefly, one fetch can
+now spend several minutes before the run fails, where it used to fail in
+seconds. There is no overall cap. For a long portfolio run that already takes an
+hour this is noise; for a scheduled job with a tight window, it is the difference
+between a fast failure and a slow one, so size the window accordingly.
+
+**This widens slightly beyond server errors.** A network failure that exhausts
+its retries — DNS, a dropped connection — previously ended the fetch quietly and
+returned whatever had arrived. It now fails the run too, for the same reason. If
+you have a job that depended on getting a partial report out of a flaky link, it
+will now report the failure instead.
+
+If you hit this, `--batch-size` (default 5) lowers the volume per request, and
+`--cache-ttl` enables the SQLite cache so a re-run resumes from what it already
+fetched rather than starting over.
+
 ## Version 2.0.5 (September 2026)
 
 2.0.5 adds product-scoped executive reporting (`--product-only`), an
@@ -139,19 +426,20 @@ anyone reads.
 
 - `--include-file-components` — include `type=file` rows. **Off by default**:
   they are SAST placeholders with no license, supplier or release data, and on a
-  firmware project they can outnumber real components ten to one. The exclusion
+  firmware project there can be a great many of them. The exclusion
   is applied server-side. The report's notes always state that file components
   were excluded, so a shorter table is never mistaken for a smaller inventory;
   a count appears only when the filtering happened client-side, since
   server-side-filtered rows are never fetched and cannot be counted.
-- `--no-policy-status` — drop the violation and warning columns for a narrower,
-  license-focused sheet. They are on by default.
-- `--no-finding-counts` — drop the finding-count columns (total plus the
-  Critical/High/Medium/Low breakdown). On by default, and toggled as one group:
-  the platform shows the total and the severity badges as a single Findings
-  column, and a total with no breakdown is a half-answer. With them hidden the
-  table sorts alphabetically rather than worst-first. Turn both this and
-  `--no-policy-status` off for a pure inventory sheet.
+- `--policy-status` — add the violation and warning columns. **Off by default**:
+  policy is a tenant-internal judgement, and the default report is a sheet you
+  can hand to someone outside the tenant.
+- `--finding-counts` — add the finding-count columns (total plus the
+  Critical/High/Medium/Low breakdown). **Off by default**, and toggled as one
+  group: the platform shows the total and the severity badges as a single
+  Findings column, and a total with no breakdown is a half-answer. With them on
+  the table sorts worst-first; off, alphabetically. Pass both for the internal
+  view this report used to produce by default.
 
 **On the counts:** the four severity columns cover CRITICAL/HIGH/MEDIUM/LOW.
 NONE and INFO findings are included in the Findings total but have no column, so

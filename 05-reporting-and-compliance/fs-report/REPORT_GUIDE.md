@@ -31,8 +31,6 @@ This guide explains each report available in the Finite State Reporting Kit, wha
    - [Executive Dashboard](#executive-dashboard) *(Assessment, on-demand: executive-level security overview)*
    - [Component Remediation Package](#component-remediation-package) *(Assessment, on-demand: zero-day component remediation)*
    - [Remediation Package](#remediation-package) *(Assessment, on-demand: actionable remediation plan)*
-   - [Exploitability Report](#exploitability-report) *(Assessment, on-demand: standalone evidence-backed CVE-exploitability dossier, internal)*
-   - [Exploitability Report (Shareable)](#exploitability-report-shareable) *(Assessment, on-demand: same dossier redacted for customers/regulators)*
 4. [Output Formats](#output-formats)
 5. [Filtering Options](#filtering-options)
 6. [Using Reports Together](#using-reports-together)
@@ -281,7 +279,11 @@ fs-report run --recipe "Component Vulnerability Analysis" --period 30d
 - **Component & Version** — Specific vulnerable software
 - **Project Name** — Which project contains the finding
 - **Exploit/Weaponization Count** — Known active threats
-- **CVSS v3 Vector** — Raw vector string for detailed vulnerability analysis (CVSS v2 was dropped — NVD stopped assigning it ~2016+)
+- **CVSS Version** — Which CVSS version the vector on that row was scored under: `4.0`, `3.1`, `3.0` or `2`. The `CVSS:` prefix arrived with v3, so an unprefixed vector is v2 when NVD published it as v2. Empty when the row has no vector, and when the printed vector carries no readable version — a prefix-less value in the v3/v4 field, a prefixed value NVD published as v2, a `CVSS:` that does not lead the string, or an unparseable prefix. Blank never means an assumed version. A CVSS major this column has never seen is reported as published, so a future `5.0` vector reads `5.0`. It describes the `CVSS Vector` cell; on a row where the `Attack Vector` label took its label from the next candidate on the row's ranked list, it does not describe that label. In HTML it is a pill beside the attack-vector badge — deep blue for 2, burnt orange for 3.x, lavender for 4, neutral for an unrecognized major
+- **Attack Vector** — Network / Adjacent / Local / Physical, read from the `AV:` metric of the vector in the `CVSS Vector` column beside it. A v2 vector gives a coarser label — v2 has no Physical value and scores physical access as Local. If the vector in that column carries no readable `AV:`, the next candidate on the row's ranked list supplies the label instead of the cell going blank — usually an older version's vector, but a demoted one when the winner is a lower-ranked field. That is the one case where the label and the vector shown beside it can differ. Sits immediately left of the vector column (in HTML, a badge on its own colour palette — blue / teal / purple / bronze — kept off the severity colours on purpose). CVE Impact uses the same header for the API's `attackVector` field — same meaning, different source
+- **CVSS Vector** — The newest vector string NVD published for the CVE: v4 if scored under v4, else v3, else v2, preferring NVD's own scoring over a CNA-supplied one of the same version. As published (only surrounding whitespace trimmed), so the version reads off the value — v4/v3 carry a `CVSS:4.0/` or `CVSS:3.1/` prefix, a v2 vector has no prefix and carries `Au:`. NVD publishes base metrics only, so the temporal metrics (`E:`/`RL:`/`RC:`) the platform UI appends are not here. The v2 fallback is what fills this column for older CVEs never rescored under v3 (CVE-2014-7186, for one). Blank for GHSA / PYSEC / `FS-…` finding IDs, which are never looked up in NVD, and for a value that carries no CVSS metric field at all (`n/a`, `unknown`, a bare `CVSS:3.1`) — such a placeholder is dropped before the version pick, so it cannot replace a good older vector. A vector with a readable version also outranks one without, so a v2-shaped string mis-filed into the v4 field loses to the correctly filed v3 vector NVD sent alongside it; a value with no readable version is demoted, never dropped, and still prints when it is the only one NVD sent. Among vectors that do declare a version, the newest declared version wins whatever field it arrived in, so a `CVSS:3.0/…` value mis-filed into the v4 field loses to a correctly filed `CVSS:3.1/…` one; field order only breaks a tie between equal versions. A vector is still taken at its word about its own version — that misfiled value reports `3.0`, not `4.0` — because the vector text is the more specific statement and the field assignment is the part this code cannot see. Replaces the earlier `CVSS v3 Vector` and `CVSS v2 Vector` columns — one column now carries whichever version exists. A deprecated `CVSS v3 Vector` column ships alongside this one in CSV, XLSX and JSON, carrying only a vector that declares itself `CVSS:3.x`, so a consumer parsing it as `CVSS:3.x/…` is never handed a v2 or v4 string — including one misfiled into the v3 field, which reads blank here rather than passing through. Removed in 3.0.0; move to this column for the newer versions.
+  (Present in the Markdown findings table too; earlier Markdown output omitted it.)
+- **CVSS** — The numeric score column is the platform's own `risk` score, not a score computed from `CVSS Vector`; on a v2- or v4-sourced row the two are from different scoring versions
 - **NVD URL** — Direct link to NVD detail page (CVE ID is also clickable in HTML)
 - **FS Link** — Direct link to the finding in the Finite State platform
 - **Folder** — Folder path (when folder filtering is active)
@@ -369,29 +371,36 @@ fs-report run --recipe "Scan Analysis" --period 14d
 
 **Category:** Assessment — the current component inventory for one project version.
 
-**Purpose:** A component inventory you can hand to someone and have them read it. Mirrors the platform's Components table.
+**Purpose:** A component inventory you can hand to someone and have them read it. Carries six of NTIA's seven Minimum Elements (July 2021) out of the box; the seventh is a declared known unknown.
 
 **Who should use it:** Compliance teams, auditors, customers asking "what is in this build?", engineers triaging a specific version.
 
 **What it shows:**
 - One row per component in the selected project version
-- Version, type, supplier, effective license, upstream release date, source, review status
-- Finding counts broken out by severity (Critical / High / Medium / Low), colour-coded in the HTML output with weight reinforcing the colour; zeros stay recessive
-- Policy violation and warning counts (the platform's red/amber dots) — on by default
-- The platform component id, last, for cross-referencing against the UI or an API call
+- Version, type, supplier, effective license, upstream release date
+- **PURL and CPE** — the NTIA "other unique identifiers", at the tail (a PURL runs 60+ characters, so putting it beside the name would push everything readable off-screen)
+- Provenance — who generated the document, when, from which tenant/project/version — in every format
+- Behind flags: policy violation/warning counts, finding counts broken out by severity (Critical / High / Medium / Low, colour-coded in HTML with weight reinforcing the colour; zeros stay recessive), review status, and the platform component id
 
 **Scope:** One project version. `--project` is required; `--version` pins a version, otherwise the current version is used. `--all-versions` is **ignored with a warning** and downgraded to the project's current version, rather than producing a mixed-version inventory labelled as one version. The downgrade is scoped to this recipe — other recipes in the same run keep their `--all-versions` scope. Pass `--version` to inventory a specific version.
 
-**Version strings:** shown percent-decoded. Versions come from purl coordinates, where `+` must be escaped, so Debian and ipk components are stored as e.g. `2.9.1%2Bdfsg1-5%2Bdeb8u6` and this report shows `2.9.1+dfsg1-5+deb8u6`. The notes say how many rows were decoded, and the platform's stored value is unchanged — look a row up by its component id to see it.
+**Version strings:** shown percent-decoded. Versions come from purl coordinates, where `+` must be escaped, so Debian and ipk components are stored as e.g. `2.9.1%2Bdfsg1-5%2Bdeb8u6` and this report shows `2.9.1+dfsg1-5+deb8u6`. The notes say how many rows were decoded, and the platform's stored value is unchanged — pass --component-ids and look the row up by that id to see it.
 
 **Ignored flags:** `--detected-after` — an SBOM is a point-in-time inventory with no date dimension, so a created-date filter would silently drop components. The engine logs a warning.
 
 **Outputs:** HTML, CSV, XLSX, JSON, MD. No PDF and no charts — the table is the deliverable, and output is never truncated.
 
+**Shareable by default.** The default output has no finding counts, policy verdicts, review status, platform ids or scan source — only name, version, type, supplier, license, release date, purl and cpe — so it can be handed outside the organisation as-is. The five groups below are opt-in; with all on, the report mirrors the platform's Components table.
+
+**NTIA coverage.** Six of the seven elements. Supplier, component name, version and other unique identifiers (purl/cpe — NTIA requires the field, not a named format, and lists both as satisfying it) are per-component columns; **Author of SBOM Data** and **Timestamp** are carried as provenance in every format — an HTML body line, a Markdown `Generated:` line, a top-level `provenance` key in JSON, a **Provenance** sheet in XLSX beside a **Notes** sheet carrying the declarations below, and `provenance` and `notes` objects in the CSV's `<recipe>_schema.json` sidecar (either as a row inside the CSV would break `pd.read_csv`). The timestamp is computed once, so all five formats agree. One caveat worth knowing before you hand an XLSX to an auditor: past ~65k rows the shared renderer skips the workbook entirely, and its Provenance and Notes sheets go with it — on an inventory that large the CSV plus its sidecar is the pair that carries the disclosures. **Dependency relationships** are declared a known unknown in the notes — the component API exposes no component-to-component edges — which NTIA explicitly permits. Identifiers are never invented: a component with no PURL is listed by name and version only, and the notes quantify coverage whenever it is below 100%.
+
 **Options:**
-- `--include-file-components` — include `type=file` rows (off by default; they are SAST placeholders with no license or supplier data and can outnumber real components 10:1 on firmware). The exclusion is always stated in the report's notes; a count is given only when the filtering happened client-side, since the server-side filter means the excluded rows are never fetched and cannot be counted.
-- `--no-policy-status` — drop the violation/warning columns.
-- `--no-finding-counts` — drop the finding-count columns (total + C/H/M/L), as one group. The table then sorts alphabetically rather than worst-first, since ordering by a hidden column reads as arbitrary. Combine with `--no-policy-status` for a pure inventory sheet.
+- `--include-file-components` — include `type=file` rows (off by default; they are SAST placeholders with no license or supplier data). The exclusion is always stated in the report's notes; a count is given only when the filtering happened client-side, since the server-side filter means the excluded rows are never fetched and cannot be counted.
+- `--policy-status` — add the violation/warning count columns (off by default).
+- `--finding-counts` — add the finding-count columns (total + C/H/M/L) as one group (off by default). With them on, the table sorts worst-first; off, alphabetically, since ordering by a hidden column reads as arbitrary.
+- `--component-status` — add the component review-status column: NEEDS_REVIEW, IN_REVIEW, CONFIRMED, FALSE_POSITIVE, UNKNOWN (off by default). This is the component's triage status, not a VEX status.
+- `--component-ids` — add the platform component id column, last (off by default). It is an internal UUID with no meaning outside the tenant, so it is not the NTIA identifier — purl and cpe are. Turn it on to cross-reference a row against the platform UI or an `affected==<id>` findings filter.
+- `--source-column` — restore the `source` column: how the component was introduced (Binary SCA, Upload), multiple sources comma-joined (off by default). Scan methodology rather than inventory, so a shared SBOM omits it; it returns after `release_date`, ahead of the identifiers.
 
 **Note on the counts:** the four severity columns cover CRITICAL/HIGH/MEDIUM/LOW only. NONE and INFO findings are included in the Findings total but have no column, so the columns do not always sum to it — the report says so when it happens.
 
@@ -1801,51 +1810,6 @@ fs-report run --recipe "Remediation Package" --project "MyProject" --ai \
 # Export as Markdown (agent-optimised)
 fs-report run --recipe "Remediation Package" --project "MyProject" --format md
 ```
-
----
-
-### Exploitability Report
-
-**Category:** Assessment (on-demand) — standalone evidence-backed CVE-exploitability dossier (internal). In the web UI it is grouped under its own **Exploitability Evidence** navigation category (the fifth `nav_category`, alongside Executive, Investigation, Remediation, and Compliance).
-
-**Purpose:** Package CVE Evidence Verifier / pen-test output for a chosen subject into a standalone deliverable. Findings are bucketed by `verdict.kind` — must-fix exploitable, proven-not-affected, tested-inconclusive, affected-by-version, and could-not-be-assessed — behind an identity header, a decision summary with prioritized actions, an affected-by-version table, prose-first evidence, code locus, and replay provenance. Supersession is preserved by `finding_id` (no bare-CVE collapse).
-
-**Who should use it:** Security researchers, triage engineers, product security officers.
-
-**Important:** This report does **not** auto-run and is query-less — it is fed a forge `exploitability-dataset/v2` export via `--data-file` rather than querying the platform.
-
-```bash
-fs-report run --recipe "Exploitability Report" --data-file exploitability-dataset.json
-```
-
-**What it shows:**
-- An identity header for the subject under assessment
-- A decision summary with prioritized actions
-- Findings bucketed by verdict (must-fix exploitable, proven-not-affected, tested-inconclusive, could-not-be-assessed)
-- An affected-by-version table
-- Prose-first (un-redacted) evidence, code locus, and replay provenance
-
-The internal variant maps to the recipe `mode` parameter (`internal`) and keeps full verifier telemetry.
-
-**Formats:** HTML, PDF.
-
----
-
-### Exploitability Report (Shareable)
-
-**Category:** Assessment (on-demand) — the same dossier redacted for customers and regulators (external). Shares the internal report's **Exploitability Evidence** navigation category in the web UI.
-
-**Purpose:** The customer- and regulator-facing counterpart of the Exploitability Report. It renders the same subject and verdict buckets (must-fix exploitable, proven-not-affected, tested-inconclusive, affected-by-version, could-not-be-assessed) but re-strips internal-only fields via the recipe `mode` parameter (external), while preserving the proof needed to share the result — `evidence_summary`, backport commit, crash signal, reachability fact, locus, and replay chain.
-
-**Who should use it:** Anyone sharing exploitability results externally — customers, auditors, regulators.
-
-**Important:** Like the internal Exploitability Report, this does **not** auto-run and is query-less; it is fed a forge `exploitability-dataset/v2` export via `--data-file`.
-
-```bash
-fs-report run --recipe "Exploitability Report (Shareable)" --data-file exploitability-dataset.json
-```
-
-**Formats:** HTML, PDF.
 
 ---
 

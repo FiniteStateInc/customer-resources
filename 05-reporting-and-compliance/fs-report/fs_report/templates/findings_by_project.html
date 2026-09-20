@@ -61,6 +61,103 @@
     .fbp-reach.INCONCLUSIVE { background: var(--surface-muted);   color: var(--ink-dim); }
     .fbp-reach.UNKNOWN      { background: var(--surface-muted);   color: var(--ink-dim); }
 
+    {# Attack Vector badge. This rationale is a Jinja comment, not a CSS
+       one: everything in this <style> block ships inside every generated
+       report, and repo paths, constant names and process notes have no place
+       in a customer-facing artifact.
+
+       On its own colour family rather than the --sev-* ramp: attack vector is
+       not a severity, and a red pill next to a Medium severity badge read as
+       one. Network is the internet blue, Adjacent a bounded-zone teal, Local
+       the privileged-shell purple, Physical a hardware bronze.
+
+       The four values are var() fallbacks rather than declarations on .fbp-av
+       itself: a custom property set on the element beats one inherited from
+       :root, so declaring them here would have blocked the theme-level
+       override this indirection exists for. As fallbacks, a host page or
+       [data-theme] rule that defines --fbp-av-network wins, and with nothing
+       defined the defaults below apply. They are not in tokens.css: that file
+       is mirrored into sibling repos behind a pinned hash, so a report-local
+       four-colour palette does not belong in it.
+
+       All four pills carry white text, from --fbp-av-ink rather than one of the
+       shared --ink tokens: those flip light in dark mode, and these fills stay
+       dark in both, so an inherited ink would have inverted underneath them.
+       Overriding the palette means overriding the ink to match — the contrast
+       floor is enforced on the defaults, and a host that changes either owns
+       the ratio. The teal is #008285 rather than #00A3A6 — same hue and
+       saturation, one step darker — because white on #00A3A6 is 3.1:1, under
+       the 4.5:1 bar for 11px text; darkened it is 4.6:1, in line with the
+       other three. tests/test_findings_by_project_render.py computes the WCAG
+       ratios off these fallbacks and fails under 4.5:1, so the numbers are
+       enforced rather than claimed.
+
+       Weight is 600 rather than .fbp-reach's 500: these fills are saturated,
+       and the extra weight is what carries 11px text on them.
+
+       The class suffixes are the labels lowercased, so they are coupled to
+       _ATTACK_VECTOR_LABELS in transforms/pandas/findings_by_project.py by
+       construction. A test pins the two together: rename a label and CI fails
+       rather than the styling silently disappearing. #}
+    /* Attack Vector — own palette, deliberately not the severity colours. */
+    .fbp-av {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: var(--r-sm);
+        font-size: 11px;
+        font-weight: 600;
+        white-space: nowrap;
+        color: var(--fbp-av-ink, #ffffff);
+    }
+    .fbp-av-network  { background: var(--fbp-av-network, #1A73E8); }
+    .fbp-av-adjacent { background: var(--fbp-av-adjacent, #008285); }
+    .fbp-av-local    { background: var(--fbp-av-local, #7B1FA2); }
+    .fbp-av-physical { background: var(--fbp-av-physical, #8D6E63); }
+
+    {# CVSS Version badge. Same geometry, size and weight as the attack-vector
+       pill next to it, so the pair reads as one family rather than two
+       unrelated chip styles, and overridable through the same var()-fallback
+       indirection for the same reason (a :root or [data-theme] value must be
+       able to beat the default).
+
+       One fill per major version: v2 a deep navy, v3.x a burnt orange, v4 a
+       light lavender. The navy is a step darker than the attack-vector
+       network blue beside it so two blue pills in adjacent cells do not read
+       as the same chip, and the orange is a saturated fill rather than the
+       tinted --sev-high chip, so it is not mistaken for a High severity
+       badge. Ink is per class rather than shared: white carries the two dark
+       fills, and the lavender is light by nature, so it takes a dark violet
+       ink instead. Every pair clears the 4.5:1 floor for 11px text and
+       tests/test_findings_by_project_render.py computes the ratios off these
+       fallbacks, so the numbers are enforced rather than claimed.
+
+       .fbp-cvssv itself carries the neutral surface tokens: a future CVSS 5
+       would land here with no matching class and still render as a readable
+       pill rather than as unstyled text. #}
+    /* CVSS Version — one fill per major version, blue / orange / lavender. */
+    .fbp-cvssv {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: var(--r-sm);
+        font-size: 11px;
+        font-weight: 600;
+        white-space: nowrap;
+        background: var(--surface-muted);
+        color: var(--ink-dim);
+    }
+    .fbp-cvssv-v2 {
+        background: var(--fbp-cvssv-v2, #174EA6);
+        color: var(--fbp-cvssv-v2-ink, #ffffff);
+    }
+    .fbp-cvssv-v3 {
+        background: var(--fbp-cvssv-v3, #C2410C);
+        color: var(--fbp-cvssv-v3-ink, #ffffff);
+    }
+    .fbp-cvssv-v4 {
+        background: var(--fbp-cvssv-v4, #E9DDFB);
+        color: var(--fbp-cvssv-v4-ink, #3C1A6B);
+    }
+
     .fbp-desc-cell {
         max-width: 300px;
         overflow: hidden;
@@ -146,7 +243,9 @@
                                 # In-the-wild
                             </th>
                             <th>CWE</th>
-                            <th>CVSS v3 Vector</th>
+                            <th title="CVSS version the vector shown in CVSS Vector was scored under. Read from that vector's CVSS: prefix. A prefix-less value reads 2 only when NVD published it in the v2 field; a vector with no readable version at all leaves this cell empty rather than naming a scoring the text does not carry. Empty also when there is no vector. It does not describe the Attack Vector badge in the case where that badge took its label from the next candidate on the row's ranked list.">CVSS Version</th>
+                            <th title="CVSS AV: metric — Network / Adjacent / Local / Physical. Read from the vector shown beside it, or from the next candidate on the row's ranked list when that one carries no AV: metric. In that one case this badge describes a different scoring than the CVSS Version and CVSS Vector cells on the same row.">Attack Vector</th>
+                            <th title="Newest CVSS vector NVD published for the CVE — v4 if scored, else v3, else v2 (a v2 vector has no CVSS: prefix and carries Au:). CVSS Version describes this cell; the Attack Vector badge normally does too, except when it took its label from the next candidate on the row's ranked list, because this one carries no readable AV:.">CVSS Vector</th>
                             <th>FS Link</th>
                         </tr>
                     </thead>
@@ -156,7 +255,7 @@
                             {% if row['Project Name'] != current_project.value %}
                                 {% set current_project.value = row['Project Name'] %}
                                 <tr class="project-group-row">
-                                    <td colspan="{% if folder_path %}18{% else %}17{% endif %}">{{ row['Project Name'] }}</td>
+                                    <td colspan="{% if folder_path %}20{% else %}19{% endif %}">{{ row['Project Name'] }}</td>
                                 </tr>
                             {% endif %}
                             {# CVSS coercion: row['CVSS'] may be a numpy scalar (from
@@ -213,7 +312,21 @@
                                 <td>{{ row['# exploit signal categories'] }}</td>
                                 <td>{{ row['# in-the-wild exploitation signals'] }}</td>
                                 <td>{{ row['CWE'] }}</td>
-                                <td class="mono">{{ row.get('CVSS v3 Vector', '') }}</td>
+                                <td>
+                                    {% set cvss_version = row.get('CVSS Version', '') %}
+                                    {# Class suffix is v + the major version, so 3.0 and 3.1
+                                       share one fill. An unrecognized major keeps the neutral
+                                       .fbp-cvssv surface instead of losing the pill. #}
+                                    {% if cvss_version %}<span class="fbp-cvssv fbp-cvssv-v{{ cvss_version.split('.')[0] }}">{{ cvss_version }}</span>{% endif %}
+                                </td>
+                                <td>
+                                    {% set av = row.get('Attack Vector', '') %}
+                                    {# The class suffix IS the label lowercased — the two are
+                                       coupled, and a test pins them so a label rename fails CI
+                                       instead of quietly dropping the pill's colour. #}
+                                    {% if av %}<span class="fbp-av fbp-av-{{ av | lower }}">{{ av }}</span>{% endif %}
+                                </td>
+                                <td class="mono">{{ row.get('CVSS Vector', '') }}</td>
                                 <td>
                                     {% if row.get('FS Link') %}
                                         <a href="{{ row['FS Link'] }}" target="_blank">View</a>

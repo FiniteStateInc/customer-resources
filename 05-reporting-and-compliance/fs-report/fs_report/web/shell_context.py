@@ -191,6 +191,24 @@ def load_comparison_recipes() -> list[dict[str, str]]:
     return out
 
 
+#: Label a recipe with no ``nav_category`` is rendered under. Shared by the card
+#: mapping and the chip derivation so the two cannot disagree about it.
+_UNCATEGORIZED = "Uncategorized"
+
+#: Launcher chip order (this constant serves the launcher only — Report History
+#: keeps its own hard-coded, slug-keyed chips in reports.html). Mirrors
+#: ``Recipe.nav_category``'s Literal plus ``_UNCATEGORIZED``; anything outside it
+#: still gets a chip, appended alphabetically, so a new value cannot silently
+#: lose its filter.
+_CANONICAL_NAV_ORDER = (
+    "Executive",
+    "Investigation",
+    "Remediation",
+    "Compliance",
+    "Exploitability Evidence",
+)
+
+
 def build_shell_context(
     state: WebAppState,
     nonce: str,
@@ -243,12 +261,14 @@ def build_shell_context(
       alphabetically by name for a deterministic diff order.  Falls back to
       ``[]`` on any load failure (never raises).
     * ``pinned_report`` is migrated at render time: if the effective pinned
-      report's name is an EXACT member of the comparison-recipe names (the pin is
-      stored as the recipe ``name``), it is returned as ``""`` (treated as
-      unpinned) so the run bar / palette ``r`` never point at a recipe absent
-      from ``recipes``.  Matching by exact name (not slug) avoids unpinning a
-      non-comparison recipe whose name merely slug-collides with a comparison
-      recipe.  This does not mutate persisted state.
+      report's name is an EXACT member of either the comparison-recipe names or
+      the audience-recipe names (the pin is stored as the recipe ``name``), it is
+      returned as ``""`` (treated as unpinned) so the run bar / palette ``r``
+      never point at a recipe absent from ``recipes``.  Both sets are filtered
+      out of ``recipes``, so both orphan a pin the same way — an audience pin
+      survives the upgrade that hid its recipe.  Matching by exact name (not
+      slug) avoids unpinning a recipe whose name merely slug-collides with one of
+      them.  This does not mutate persisted state.
     * ``pinned_folder`` is resolved + invalidated at render time
       (``_resolve_pinned_folder``): the persisted value stores the folder ID, so
       its display name is resolved from a best-effort cached ``/folders`` fetch
@@ -293,6 +313,30 @@ def build_shell_context(
         if getattr(r, "audience", None) is None
         and getattr(r, "category", None) != "comparison"
     ]
+
+    # ── Launcher filter chips, derived from the recipe cards they filter ──
+    # Hard-coded chips drift in BOTH directions. Removing a recipe leaves a chip
+    # that matches nothing (what the forge retarget did to Exploitability
+    # Evidence); adding one — a user-authored compound can still be saved under
+    # any nav_category, including Exploitability Evidence — leaves a card no chip
+    # can reach. Deriving closes both for RECIPE cards, and matches what the
+    # run-bar dropdown already does with groupby.
+    #
+    # It does not cover the template's synthetic cards (Comparison, Compound),
+    # which hard-code data-cat="Investigation" and contribute nothing here: add
+    # another one in a category no recipe uses and it is unreachable again.
+    # test_launcher_chips_all_match_a_launchable_recipe asserts both directions
+    # over the RENDERED page, synthetic cards included, so CI catches that — the
+    # code does not prevent it.
+    #
+    # Canonical order first (the launcher's long-standing order), then anything
+    # else present, alphabetically.
+    _present_categories = {
+        getattr(r, "nav_category", None) or _UNCATEGORIZED for r in launcher_recipes
+    }
+    launcher_categories = [
+        c for c in _CANONICAL_NAV_ORDER if c in _present_categories
+    ] + sorted(_present_categories - set(_CANONICAL_NAV_ORDER))
 
     # Inline import to avoid the shell_context ↔ run.py import cycle.
     # (run.py imports build_shell_context from shell_context's neighbours;
@@ -376,7 +420,7 @@ def build_shell_context(
             {
                 "name": r.name,
                 "label": r.name,
-                "nav_category": r.nav_category or "Uncategorized",
+                "nav_category": r.nav_category or _UNCATEGORIZED,
                 "description": r.description or "",
                 # B10 #23: short launcher-card summary (falls back to the full
                 # description client/template-side); "" when unset.
@@ -424,7 +468,17 @@ def build_shell_context(
     # untouched.
     pinned_report = state.get("pinned_report", "")
     comparison_names = {c["name"] for c in comparison_recipes}
-    if pinned_report and pinned_report in comparison_names:
+    # Audience recipes are filtered out of ``launcher_recipes`` for the same
+    # reason and orphan a pin the same way. A pin at one survives the upgrade
+    # that hid it, so the run-bar shows a pinned report the dropdown no longer
+    # offers: Run launches whatever IS selected while the R key still targets
+    # the hidden one, which the web cannot supply a --data-file for.
+    audience_names = {
+        r.name for r in recipe_list if getattr(r, "audience", None) is not None
+    }
+    if pinned_report and (
+        pinned_report in comparison_names or pinned_report in audience_names
+    ):
         pinned_report = ""
 
     # ── Pinned-folder resolution + render-time invalidation (spec §4) ──
@@ -453,6 +507,7 @@ def build_shell_context(
         "crumb": crumb,
         "active_view": active_view,
         "recipes": recipes,
+        "launcher_categories": launcher_categories,
         "comparison_recipes": comparison_recipes,
         # Client bootstrap for the off-card launch paths (wired into the shell
         # template's window.__CC): the set of recipes currently needing setup,

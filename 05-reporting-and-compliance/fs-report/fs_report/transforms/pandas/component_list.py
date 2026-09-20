@@ -581,9 +581,24 @@ def flatten_component_data(df: pd.DataFrame) -> pd.DataFrame:
 
         df["branch.name"] = df["branch"].apply(extract_branch_name)
 
-    # Extract group/namespace from bomRef
+    # Derive group/namespace from bomRef, but only WHERE THERE IS NONE.
+    #
+    # This used to overwrite the whole column. A platform bomRef is routinely
+    # an opaque UUID, hash or path, which yields "" — so the overwrite replaced
+    # a group the engine had backfilled from the version's CycloneDX export
+    # (from its own group field, or its purl) with a blank. That stayed
+    # invisible while `bomRef` was missing from the cache projection, because a
+    # cached frame then had no such column and this never ran. Adding bomRef to
+    # the projection — which is what repairs the BOM Reference column — also
+    # aimed this at the path the web UI takes by default, so Component List
+    # would have shown LESS Group coverage after the fix than before it.
     if "bomRef" in df.columns:
-        df["group"] = df["bomRef"].apply(_extract_group)
+        derived = df["bomRef"].apply(_extract_group)
+        if "group" in df.columns:
+            existing = df["group"].fillna("").astype(str)
+            df["group"] = existing.where(existing.str.strip() != "", derived)
+        else:
+            df["group"] = derived
 
     # Handle license details - extract to declaredLicenses if not present
     if "declaredLicenses" not in df.columns and "licenseDetails" in df.columns:

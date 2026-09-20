@@ -32,7 +32,7 @@ The sidecar JSON shape is:
 |---|--------|------|-------------|
 | 1 | `CVE ID` | string | CVE identifier. |
 | 2 | `Severity` | string | Finding severity (CRITICAL, HIGH, MEDIUM, LOW, INFO). |
-| 3 | `CVSS` | float | CVSS base score on the standard 0.0–10.0 scale. |
+| 3 | `CVSS` | float | CVSS base score on the standard 0.0–10.0 scale, from the platform `risk` field. Not derived from column 21 — on a v2 or v4 row the score and the vector are from different scoring versions. |
 | 4 | `KEV` | string | `"Yes"` if the CVE is on CISA's Known Exploited Vulnerabilities catalog, empty otherwise. |
 | 5 | `Project Name` | string | Project the finding belongs to. |
 | 6 | `Project Version` | string | Version of that project. |
@@ -48,11 +48,14 @@ The sidecar JSON shape is:
 | 16 | `# in-the-wild exploitation signals` | int | Count of in-the-wild exploitation signals (botnet / ransomware / threat-actor reports). Renamed from `# of known weaponization` 2026-05-26 — the old name implied this counted the weaponized maturity tier, which it does not. |
 | 17 | `CWE` | string | Primary CWE identifier. |
 | 18 | `Description` | string | CVE description from NVD (English). |
-| 19 | `CVSS v3 Vector` | string | CVSS v3.1 vector string (fallback v3.0) when available. |
-| 20 | `NVD URL` | string | Link to NVD detail page. |
-| 21 | `FS Link` | string | Direct link to finding in Finite State platform. |
-| 22 | `dependency_path` | string | *Conditional* — project dependency chain (e.g., `ProjectA -> ProjectB`). Only present when the target project has dependencies. |
-| 23 | `component_dependency_path` | string | *Conditional* — full path including component. Only present when the target project has dependencies. |
+| 19 | `CVSS Version` | string | CVSS scoring version of the vector in column 21: `4.0`, `3.1`, `3.0` or `2`. The `CVSS:` prefix arrived with v3, so a vector without one is v2 when it came from NVD's v2 metrics. Empty when there is no vector, and when the printed vector carries no readable version — a prefix-less value in the v3/v4 field, a prefixed value NVD published as v2, a `CVSS:` that does not lead the string, or an unparseable prefix. Blank means no readable scoring, never an assumed one. Describes column 21 only: where column 20 took its label from the next candidate on the ranked list, the three cells are not one scoring. A CVSS major this column has never seen is reported as published (`5.0` stays `5.0`). HTML renders it as a coloured pill (blue 2, orange 3.x, lavender 4, neutral for an unrecognized major). |
+| 20 | `Attack Vector` | string | Network / Adjacent / Local / Physical, parsed from the `AV:` metric of column 21. A v2 vector gives a coarser label (v2 has no Physical and scores physical access as Local). If the vector in column 21 carries no readable `AV:`, the next candidate on the row's ranked list supplies the label (usually an older version's vector, but a demoted one when the winner came from a lower-ranked field) — the one case where this column and column 21 can disagree. Empty when no vector for the CVE has a readable `AV:`. Note CVE Impact uses the same header for the API's `attackVector` field; same meaning, different source. |
+| 21 | `CVSS Vector` | string | Newest CVSS vector string NVD published for the CVE — v4 if scored under v4, else v3 (v3.1 preferred over v3.0), else v2; NVD's own scoring wins over a CNA-supplied one of the same version. As published, only surrounding whitespace trimmed: v4/v3 carry a `CVSS:4.0/` / `CVSS:3.1/` prefix, a v2 vector has no prefix and carries `Au:`. NVD publishes base metrics only, so temporal metrics (`E:`/`RL:`/`RC:`) the platform UI shows are absent here. Blank for non-CVE finding IDs (GHSA / PYSEC / `FS-…`), which are never looked up, and for a value carrying no CVSS metric field at all (`n/a`, a bare `CVSS:3.1`) — a placeholder is never printed as a vector. A vector with a readable version also outranks one without, so a v2-shaped string mis-filed into the v4 field loses to the correctly filed v3 vector NVD sent alongside it; a value with no readable version is demoted, never dropped, and still prints when it is the only one NVD sent. Among vectors that do declare a version, the newest declared version wins whatever field it arrived in, so a `CVSS:3.0/…` value mis-filed into the v4 field loses to a correctly filed `CVSS:3.1/…` one; field order only breaks a tie between equal versions. A vector is still taken at its word about its own version — that misfiled value reports `3.0`, not `4.0` — because the vector text is the more specific statement and the field assignment is the part this code cannot see. Replaces the earlier `CVSS v3 Vector` column. |
+| 22 | `CVSS v3 Vector` | string | *Deprecated, removed in 3.0.0* — only a vector that declares itself `CVSS:3.x`, so a consumer parsing it as `CVSS:3.x/…` is never handed a v2 or v4 string — including one misfiled into the v3 field, which reads blank rather than passing through. Blank when NVD published no v3 scoring, including the v2-only CVEs column 21 now fills. Still the v3 vector when a v4 scoring exists and wins column 21. Move to `CVSS Vector` for the newer versions. CSV, XLSX and JSON only. |
+| 23 | `NVD URL` | string | Link to NVD detail page. |
+| 24 | `FS Link` | string | Direct link to finding in Finite State platform. |
+| 25 | `dependency_path` | string | *Conditional* — project dependency chain (e.g., `ProjectA -> ProjectB`). Only present when the target project has dependencies. |
+| 26 | `component_dependency_path` | string | *Conditional* — full path including component. Only present when the target project has dependencies. |
 
 > **Removed 2026-06-14:** the `CVSS v2 Vector` column was dropped — NVD stopped assigning CVSS v2 (~2016+), so it was ~always empty for modern data.
 
@@ -290,6 +293,66 @@ Each `data[*]` row:
 | 20 | `Created` | string | Discovery timestamp |
 | 21 | `Branch` | string | Branch name |
 | 22 | `License URL` | string | Link to license text |
+
+---
+
+## Human Readable SBOM
+
+### Main DataFrame
+
+The default output is a **shareable inventory**: nothing in it is internal to
+the tenant that generated it. Five column groups are opt-in and off by default.
+Columns are listed here in render order; the authoritative list is
+`_columns_for()` in `fs_report/transforms/pandas/human_readable_sbom.py`, and
+the per-column narrative also ships with each report (HTML/Markdown `Column
+reference`, XLSX `Schema` sheet, `<recipe>_schema.json` sidecar) from the
+`output.columns:` block in `recipes/human_readable_sbom.yaml`.
+
+Unlike the other reports here, these headers are lowercase snake_case as shown.
+
+**Default columns** (`fs-report run --recipe "Human Readable SBOM" --project X`):
+
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `component_name` | string | Component name as the platform records it. |
+| 2 | `version` | string | Component version, percent-escapes decoded for display (`2.9.1%2Bdfsg1-5` renders as `2.9.1+dfsg1-5`); the report discloses how many rows it decoded. Blank when the scanner could not resolve a version. The platform's stored value is unchanged — pass `--component-ids` and look the row up by id to see it. |
+| 3 | `component_type` | string | Component category, title-cased for reading (`operating-system` → `Operating System`). Shown as CDX Type in the platform UI. Rows of type `file` appear only with `--include-file-components`. |
+| 4 | `supplier` | string | Supplier or originator. Often blank for binary-identified components. |
+| 5 | `licenses` | string | Effective license, preferring a user-set concluded license over the auto-detected declared one. |
+| 6 | `release_date` | string | Upstream release date of this component version, when known. Blank is common and is not a data error. |
+| 7 | `purl` | string | Package URL, from `softwareIdentifiers.purls[0]`; on a `--version` run, backfilled from the CycloneDX export. **Never synthesised** — a component with no PURL is listed by name and version and the notes quantify the coverage. One of the identifier types NTIA names as satisfying its "other unique identifiers" element. |
+| 8 | `cpe` | string | CPE identifier(s), the NVD-matchable form of the same NTIA element. Multiple values joined with a semicolon — not a comma, since CPE 2.3 strings contain commas. Never synthesised. |
+
+The identifiers sit at the tail rather than beside name/version on purpose: a
+PURL routinely runs 60+ characters and placing it third pushes type, supplier
+and licenses past readable width, which breaks this recipe's one contract — it
+is laid out to be read rather than parsed.
+
+**Opt-in columns**, with the flag that adds them and where they land:
+
+| Column | Type | Flag | Position | Description |
+|--------|------|------|----------|-------------|
+| `violations` | int | `--policy-status` | after `version` | Policy violations — the red count in the platform's Policy Status column. |
+| `warnings` | int | `--policy-status` | after `violations` | Policy warnings — the amber count. Toggled together with `violations`. |
+| `findings` | int | `--finding-counts` | before `component_type` | Total findings on the component. The severity columns cover CRITICAL/HIGH/MEDIUM/LOW only, so they do not always sum to this total — NONE and INFO are counted here but not broken out. |
+| `critical` | int | `--finding-counts` | after `findings` | Critical-severity findings. The API omits zero counts, so a missing entry renders as 0. |
+| `high` | int | `--finding-counts` | after `critical` | High-severity findings. |
+| `medium` | int | `--finding-counts` | after `high` | Medium-severity findings. |
+| `low` | int | `--finding-counts` | after `medium` | Low-severity findings. |
+| `source` | string | `--source-column` | after `release_date` | How the component was introduced (Binary SCA, Upload); multiple sources comma-joined. Scan methodology rather than inventory. |
+| `status` | string | `--component-status` | appended | Component *review* status: NEEDS_REVIEW, IN_REVIEW, CONFIRMED, FALSE_POSITIVE, UNKNOWN. Blank when nobody has triaged it. Not a VEX status — VEX statuses live on findings. |
+| `component_id` | string | `--component-ids` | appended, last | Platform component UUID. Meaningless outside the issuing tenant, so it is *not* the NTIA "other unique identifier"; use it to cross-reference back into the platform UI or an `affected==<id>` findings filter. |
+
+The finding group is toggled as one unit: the platform renders the total and the
+severity badges as a single column, and a total with no breakdown is a
+half-answer. With all five groups on, the report mirrors the platform's
+Components table.
+
+**Provenance** (generator, timestamp, tenant, project, version) is not a row in
+the table — a non-data row breaks `pd.read_csv` for every consumer. It is an
+HTML body line, a Markdown `Generated:` line, a top-level `provenance` key in
+JSON, a **Provenance** sheet in XLSX, and a `provenance` object in the CSV
+schema sidecar. All five are computed once, so they agree.
 
 ---
 

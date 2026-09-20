@@ -129,11 +129,11 @@ _CONFIG_KEY_TO_FLAG: dict[str, str] = {
     "scan_statuses": "--scan-status",
     "open_only": "--open-only",
     "include_file_components": "--include-file-components",
-    # Default-TRUE pair: the flag named here is the ON form, but ON is the
-    # default, so ``serialize_cli`` only ever emits their --no- counterparts
-    # (--no-policy-status / --no-finding-counts).
     "policy_status": "--policy-status",
     "finding_counts": "--finding-counts",
+    "component_status": "--component-status",
+    "component_ids": "--component-ids",
+    "source_column": "--source-column",
     "detailed": "--detailed",
     "standalone": "--standalone",
     "product_only": "--product-only",
@@ -172,6 +172,9 @@ _GHA_UNSUPPORTED_NEW_KEYS: frozenset[str] = frozenset(
         "include_file_components",
         "policy_status",
         "finding_counts",
+        "component_status",
+        "component_ids",
+        "source_column",
         "detailed",
         "standalone",
         "product_only",
@@ -218,14 +221,15 @@ _BOOL_OVERRIDE_KEYS: frozenset[str] = frozenset(
         # B7 (#10B): coerce the destructive FP autotriage opt-in so a string
         # ``"autotriage": "false"`` doesn't emit --autotriage in the CLI export.
         "autotriage",
-        # SBOM toggles. Two are DEFAULT-TRUE, so an uncoerced string "false"
-        # from a hand-edited workflow would read as truthy and invert the export:
-        # emitting --include-file-components when it was explicitly off, or
-        # failing to emit --no-policy-status / --no-finding-counts when they were
-        # explicitly turned off.
+        # SBOM toggles. All default FALSE, but an uncoerced string "false" from
+        # a hand-edited workflow still reads as truthy and would emit the flag —
+        # exporting --policy-status for a workflow that explicitly turned it off.
         "include_file_components",
         "policy_status",
         "finding_counts",
+        "component_status",
+        "component_ids",
+        "source_column",
     }
 )
 
@@ -392,10 +396,18 @@ def _effective_config(
 _SBOM_OPTION_RECIPES: frozenset[str] = frozenset({"human readable sbom"})
 
 #: The SBOM toggles, as engine config keys. Excluded from the blanket truthy
-#: scan in ``serialize_github_action`` — two of them default TRUE, so presence
-#: at a truthy value says nothing about whether the user changed anything.
+#: scan in ``serialize_github_action`` and emitted only when explicitly ON —
+#: all five are plain opt-in booleans that default FALSE, so the default run
+#: line carries none of them.
 _SBOM_TOGGLE_KEYS: frozenset[str] = frozenset(
-    {"include_file_components", "policy_status", "finding_counts"}
+    {
+        "include_file_components",
+        "policy_status",
+        "finding_counts",
+        "component_status",
+        "component_ids",
+        "source_column",
+    }
 )
 _MIN_SEVERITY_RECIPES = {"reachability vex coverage"}
 
@@ -574,13 +586,14 @@ def serialize_cli(model: dict[str, Any]) -> str:
         # SBOM-only flag on a Component List step would produce a command that
         # looks configured but that the engine warns about and ignores.
         if ref.strip().lower() in _SBOM_OPTION_RECIPES:
-            if eff.get("include_file_components"):
-                parts.append("--include-file-components")
-            # These default ON, so only the OFF state needs emitting.
-            if "policy_status" in eff and not eff.get("policy_status"):
-                parts.append("--no-policy-status")
-            if "finding_counts" in eff and not eff.get("finding_counts"):
-                parts.append("--no-finding-counts")
+            # Every SBOM toggle defaults OFF, so only the ON state is emitted.
+            # Derived from _SBOM_TOGGLE_KEYS rather than relisted: a seventh
+            # toggle added to that set but forgotten here would export a command
+            # silently missing the flag, which is the drift this file already
+            # had to be corrected for once.
+            for _key in sorted(_SBOM_TOGGLE_KEYS):
+                if eff.get(_key):
+                    parts.append(_CONFIG_KEY_TO_FLAG[_key])
         if eff.get("detailed"):
             parts.append("--detailed")
         if eff.get("standalone"):
@@ -912,10 +925,9 @@ def serialize_github_action(model: dict[str, Any]) -> str:
         # SP1 new keys are not finite-state-actions inputs — document in a single
         # comment line per step so the user knows where to configure them.
         #
-        # The SBOM toggles are handled separately below: two of the three default
-        # TRUE, so a truthy scan reports them on every step that merely carries
-        # the default — a note telling the user to go configure something they
-        # never changed.
+        # The SBOM toggles are handled separately below so they are gated to the
+        # one recipe that reads them: a Component List step must never be told
+        # to go configure knobs it ignores.
         unsupported_set_keys = [
             k
             for k in _GHA_UNSUPPORTED_NEW_KEYS
@@ -930,19 +942,16 @@ def serialize_github_action(model: dict[str, Any]) -> str:
         # latest-only default with no warning).
         if "current_version_only" in eff and eff["current_version_only"] is False:
             unsupported_set_keys.append("current_version_only")
-        # The three SBOM toggles, at NON-DEFAULT values only, and only on the
-        # recipe that reads them — the same gate serialize_cli applies. Noting a
-        # default is noise, and noting an SBOM flag on a Component List step
-        # points the user at a knob that recipe ignores. Their non-default states
-        # still must be surfaced: the exported action would otherwise run with
-        # the columns ON while the saved config says OFF, which is config drift
-        # that looks valid.
+        # The four SBOM toggles, at NON-DEFAULT (ON) values only, and only on the
+        # recipe that reads them — the same gate serialize_cli applies. All four
+        # default OFF, so "non-default" is simply truthy; coerced first so a
+        # hand-edited string "false" reads as the default it is, not as ON.
+        # Dropping these silently would export an action running with the
+        # columns OFF while the saved config turned them ON.
         if ref.strip().lower() in _SBOM_OPTION_RECIPES:
-            if eff.get("include_file_components"):
-                unsupported_set_keys.append("include_file_components")
-            for _default_true in ("policy_status", "finding_counts"):
-                if _default_true in eff and _coerce_bool(eff[_default_true]) is False:
-                    unsupported_set_keys.append(_default_true)
+            for _key in sorted(_SBOM_TOGGLE_KEYS):
+                if _key in eff and _coerce_bool(eff[_key]):
+                    unsupported_set_keys.append(_key)
         if unsupported_set_keys:
             step_lines.append(
                 f"          # note: {', '.join(sorted(unsupported_set_keys))} "

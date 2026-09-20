@@ -38,6 +38,7 @@ try:
     import resource  # Unix only; not available on Windows
 except ImportError:
     resource = None  # type: ignore[assignment]
+from collections import Counter
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from types import MappingProxyType
@@ -741,15 +742,64 @@ def apply_min_severity(
 # License Report / Component List / Findings-by-Project runs on large
 # portfolios (CST-795). A rescan that CHANGES THE COMPONENT INVENTORY is
 # caught immediately by the fingerprint stored with each entry (see
-# _sbom_lookup_fingerprint); a rescan that only adds/edits group metadata on
-# an unchanged inventory is NOT detectable without fetching the SBOM, so it
-# refreshes via this TTL (or immediately with --cache-refresh). That bounded
-# staleness on a cosmetic column is the deliberate trade for not
-# re-downloading every SBOM on every run.
+# _sbom_lookup_fingerprint); a rescan that only edits metadata on an unchanged
+# inventory is NOT detectable without fetching the SBOM, so it refreshes via
+# this TTL (or immediately with --cache-refresh). That bounded staleness on a
+# cosmetic column is the deliberate trade for not re-downloading every SBOM on
+# every run.
 SBOM_GROUP_LOOKUP_TTL = 7 * 24 * 3600
 
+# The SAME cache entry, read by a caller that wants purl/cpe rather than only
+# `group`. One payload serves both, so the budget belongs on the READER, not
+# on the entry: a week of staleness costs a `group` column nothing, but these
+# are the NTIA identifiers that ship inside an auditor-facing SBOM, and the
+# fingerprint cannot see an identifier corrected without a name or version
+# change — so for that reader this backstop is the only bound on how long a
+# known-wrong identifier is served as current.
+#
+# Scoping it this way matters: the group-only consumers (Component List,
+# License Report, Findings by Project, Remediation Package) share this key and
+# never read an identifier. Shortening the budget for all of them would have
+# multiplied by seven exactly the per-version SBOM fan-out that caching exists
+# to avoid — the hours-long License Report runs of CST-795.
+SBOM_IDENTIFIER_LOOKUP_TTL = 24 * 3600
 
-def _sbom_lookup_fingerprint(pairs: Iterable[tuple[str, str]]) -> str:
+
+def _sbom_match_key(value: Any, *, decode: bool = False) -> str:
+    """Normalise a component name/version for joining API rows to a CycloneDX export.
+
+    Both sides of that join describe the same component, but not necessarily in
+    the same text. Versions originate from purl coordinates, where ``+`` MUST be
+    percent-encoded, so the API stores ``2.9.1%2Bdfsg1-5%2Bdeb8u6``; whether the
+    export escapes it identically is not guaranteed. Joining raw strings would
+    silently miss exactly the Debian/ipk components most likely to carry an
+    escape — they would come back blank on the ``--version`` path while the
+    project-scoped path resolved them, which is the inconsistency the backfill
+    exists to remove.
+
+    ``decode`` is for VERSIONS only, and reuses
+    ``human_readable_sbom._decode_version`` rather than repeating its regex so
+    the join can never drift from the decoding the report displays: one pass,
+    never to a fixed point (a version whose real text contains ``%2B`` must not
+    become ``+``), and a lone ``%`` left untouched.
+
+    NAMES are cased only. Percent-escaping is a purl *version* convention, so
+    decoding a name could only invent a match between two genuinely different
+    components — the exact false-identifier outcome this join exists to avoid.
+
+    This is a MATCH key only and is never displayed.
+    """
+    text = str(value or "")
+    if decode:
+        from fs_report.transforms.pandas.human_readable_sbom import _decode_version
+
+        text = _decode_version(text)
+    return text.lower()
+
+
+def _sbom_lookup_fingerprint(
+    pairs: Iterable[tuple[str, str]] | Mapping[tuple[str, str], int],
+) -> str:
     """Fingerprint a version's current component inventory.
 
     Cached ``sbom_group_lookup`` entries are only valid for the component set
@@ -761,12 +811,27 @@ def _sbom_lookup_fingerprint(pairs: Iterable[tuple[str, str]]) -> str:
     re-fetch. A rescan that leaves the (name, version) inventory identical
     and only changes group metadata is invisible to this fingerprint and is
     covered by SBOM_GROUP_LOOKUP_TTL / ``--cache-refresh`` instead.
+
+    MULTIPLICITY IS PART OF THE INVENTORY. A set of pairs cannot tell one
+    ``acl 2.3.2`` from two, so a rescan that adds a second component sharing a
+    name and version — a different arch or origin, which is precisely the case
+    the ambiguity handling exists for — fingerprinted identically to the
+    single-component inventory. The cached lookup, computed while that pair was
+    unambiguous and therefore resolvable, was then honored and handed BOTH rows
+    the surviving component's identifier with no ambiguity warning. Counting
+    the pairs makes the arrival of the duplicate a mismatch.
+
+    Accepts either the pairs themselves or an already-counted mapping, so the
+    caller can accumulate counts without materialising one tuple per row.
     """
+    counts = pairs if isinstance(pairs, Mapping) else Counter(pairs)
     digest = hashlib.sha256()
-    for name, version in sorted(pairs):
+    for (name, version), occurrences in sorted(counts.items()):
         digest.update(name.encode("utf-8", "replace"))
         digest.update(b"\n")
         digest.update(version.encode("utf-8", "replace"))
+        digest.update(b"\x00")
+        digest.update(str(occurrences).encode("ascii"))
         digest.update(b"\x00")
     return digest.hexdigest()
 
@@ -978,6 +1043,14 @@ class ReportEngine:
     # other engine in the process (the web server runs many). Mutating it in
     # place now raises instead.
     _product_scope: dict[str, dict[str, Any]] | None = None
+    # SBOM enrichment run-state, declared here rather than left to spring into
+    # existence mid-run: every read is a `getattr(..., default)` otherwise, and
+    # an engine built by `__new__` or a non-scoped path would raise instead of
+    # seeing the inert default these three are supposed to have. Immutable
+    # defaults, for the same reason the maps above use read-only proxies.
+    _sbom_enrichment_failed: bool = False
+    _sbom_ambiguous_components: int = 0
+    _components_from_version_endpoint: bool = False
     _product_member_map: Mapping[str, tuple[str, str]] = MappingProxyType({})
     # Empty TUPLE, not a list: a mutable class default would leak one run's
     # disclosure into every other engine in the process.
@@ -6919,8 +6992,11 @@ class ReportEngine:
             return
         for flag, default in (
             ("include_file_components", False),
-            ("policy_status", True),
-            ("finding_counts", True),
+            ("policy_status", False),
+            ("finding_counts", False),
+            ("component_status", False),
+            ("component_ids", False),
+            ("source_column", False),
         ):
             if getattr(self.config, flag, default) != default:
                 # Once per flag per RUN. A compound run sets these for its SBOM
@@ -6929,11 +7005,10 @@ class ReportEngine:
                 if flag in self._warned_sbom_flags:
                     continue
                 self._warned_sbom_flags.add(flag)
-                # Name the flag the operator actually typed. The two default-TRUE
-                # toggles can only be non-default via their --no- form, so
-                # deriving the spelling from the config key alone would print
-                # "--policy-status" at someone who typed --no-policy-status and
-                # leave them looking for a flag they never passed.
+                # Name the flag the operator actually typed. Every SBOM toggle
+                # defaults OFF today, so this always resolves to the bare form;
+                # the default-TRUE branch stays so a future default-on toggle
+                # echoes its --no- spelling instead of a flag nobody passed.
                 spelling = ("--no-" if default is True else "--") + flag.replace(
                     "_", "-"
                 )
@@ -7304,8 +7379,7 @@ class ReportEngine:
                         # via --include-file-components; every other component
                         # recipe excludes them unconditionally, as before.
                         # Applied server-side so a firmware project's file rows
-                        # are never fetched rather than fetched and discarded —
-                        # they can outnumber real components 10:1.
+                        # are never fetched rather than fetched and discarded.
                         if recipe.name in FILE_COMPONENT_OPT_IN_RECIPES and getattr(
                             self.config, "include_file_components", False
                         ):
@@ -7339,6 +7413,13 @@ class ReportEngine:
                                     f"created>={self.config.detected_after}T00:00:00"
                                 )
 
+                        # Cleared before the fetch that may set it: this is a
+                        # per-recipe fact, and a stale True from an earlier
+                        # recipe in a compound run would fire the backfill for a
+                        # report whose components came from the project-scoped
+                        # endpoint and already carry identifiers.
+                        self._components_from_version_endpoint = False
+
                         # Short-circuit on empty folder: `_folder_project_ids`
                         # is an empty set when --folder resolves to a real
                         # folder that happens to contain zero projects. Without
@@ -7362,6 +7443,12 @@ class ReportEngine:
                             )
                             raw_data = pd.DataFrame()
                         elif self.config.version_filter:
+                            # The version-scoped endpoint returns no identifier
+                            # fields at all. Recorded explicitly because the
+                            # backfill gate below needs to know WHICH endpoint
+                            # answered, and the absence of the column is not a
+                            # reliable proxy for that — see the gate's comment.
+                            self._components_from_version_endpoint = True
                             # Version-scoped endpoint path: encode the version
                             # in the URL so we don't need a projectVersion==
                             # RSQL clause (which returns HTTP 400 against
@@ -9106,7 +9193,7 @@ class ReportEngine:
                     raw_data["projectVersion.id"] = raw_data["projectVersion"].apply(
                         lambda pv: pv.get("id", "") if isinstance(pv, dict) else ""
                     )
-                raw_data = self._enrich_group_from_sbom(
+                raw_data = self._enrich_from_sbom(
                     raw_data,
                     version_id_col="projectVersion.id",
                     name_col="name",
@@ -9141,7 +9228,7 @@ class ReportEngine:
                         lambda c: c.get("version", "") if isinstance(c, dict) else ""
                     )
                 if "projectVersion.id" in raw_data.columns:
-                    raw_data = self._enrich_group_from_sbom(
+                    raw_data = self._enrich_from_sbom(
                         raw_data,
                         version_id_col="projectVersion.id",
                         name_col="component.name",
@@ -9149,10 +9236,63 @@ class ReportEngine:
                         group_col="component.group",
                     )
 
+            # --- SBOM-based identifier backfill for Human Readable SBOM ---
+            # Gated on NEED, not on a flag: GET /versions/{id}/components
+            # (VersionComponentListEntry) carries no softwareIdentifiers, while
+            # GET /public/v0/components (ComponentV0) does. The engine takes the
+            # former whenever --version is passed, so without this the same
+            # report would have PURL/CPE or not depending on an unrelated flag.
+            # Gated on WHICH ENDPOINT answered, not on the column being absent.
+            # Column-absence was the original signal and it is wrong on the
+            # cached path: _row_to_record omits a column whose value is None, so
+            # a tenant whose components all carry softwareIdentifiers: null
+            # yields a cached frame with no such column — indistinguishable from
+            # the version-scoped shape. That fired a CycloneDX download for a
+            # tenant the API had genuinely answered for, on the path the web UI
+            # takes by default. A null answer is still an answer; it is a real
+            # gap, and the transform's coverage note is what discloses it.
+            # Cleared per RECIPE, not per _enrich_from_sbom call: the gate
+            # below may not fire at all (the API already answered), and a stale
+            # True from an earlier recipe in a compound run would make this
+            # report disclose a backfill failure that never happened to it.
+            self._sbom_enrichment_failed = False
+            self._sbom_ambiguous_components = 0
+            if (
+                recipe.name in SBOM_OPTION_RECIPES
+                and not raw_data.empty
+                and getattr(self, "_components_from_version_endpoint", False)
+            ):
+                raw_data = raw_data.copy()
+                if (
+                    "projectVersion.id" not in raw_data.columns
+                    and "projectVersion" in raw_data.columns
+                ):
+                    raw_data["projectVersion.id"] = raw_data["projectVersion"].apply(
+                        lambda pv: pv.get("id", "") if isinstance(pv, dict) else ""
+                    )
+                if "projectVersion.id" in raw_data.columns:
+                    # Written PREFIXED so the transform can never mistake a
+                    # backfilled value for one the API supplied directly.
+                    raw_data = self._enrich_from_sbom(
+                        raw_data,
+                        version_id_col="projectVersion.id",
+                        name_col="name",
+                        version_col="version",
+                        purl_col="sbom_purl",
+                        cpe_col="sbom_cpe",
+                    )
+
             # Handle additional data for multiple charts
             additional_data: dict[str, Any] = {}
             # Add config for pandas transform functions
             additional_data["config"] = self.config
+            # Disclosed in the report rather than logged only: a blank PURL
+            # column with no explanation reads as "no component has a PURL".
+            if getattr(self, "_sbom_enrichment_failed", False):
+                additional_data["identifier_backfill_failed"] = True
+            _ambiguous = getattr(self, "_sbom_ambiguous_components", 0)
+            if _ambiguous:
+                additional_data["identifier_ambiguous_components"] = _ambiguous
             # --product-only: templates relabel their project-level headings and
             # columns to "Product", because under this flag every row IS a
             # product (its dependencies are folded into it) and calling it a
@@ -10372,6 +10512,7 @@ class ReportEngine:
                                 "description": rec.description,
                                 "cvss_v2_vector": rec.cvss_v2_vector,
                                 "cvss_v3_vector": rec.cvss_v3_vector,
+                                "cvss_v4_vector": rec.cvss_v4_vector,
                             }
                             for cve_id, rec in nvd_results.items()
                         }
@@ -10410,7 +10551,8 @@ class ReportEngine:
         Uses NVDClient with SQLite caching, tqdm progress, and NVD API rate
         limiting instead of per-finding FS API calls.
 
-        Returns a mapping of CVE ID -> {"description": str, "cvss_v2_vector": str, "cvss_v3_vector": str}.
+        Returns a mapping of CVE ID -> {"description": str, "cvss_v2_vector": str,
+        "cvss_v3_vector": str, "cvss_v4_vector": str}.
         """
         from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
 
@@ -10455,6 +10597,7 @@ class ReportEngine:
                 "description": rec.description,
                 "cvss_v2_vector": rec.cvss_v2_vector,
                 "cvss_v3_vector": rec.cvss_v3_vector,
+                "cvss_v4_vector": rec.cvss_v4_vector,
             }
             for cve_id, rec in nvd_results.items()
         }
@@ -10874,32 +11017,57 @@ class ReportEngine:
     # SBOM-based group enrichment
     # ------------------------------------------------------------------
 
-    def _enrich_group_from_sbom(
+    def _enrich_from_sbom(
         self,
         raw_data: pd.DataFrame,
         *,
         version_id_col: str,
         name_col: str,
         version_col: str,
-        group_col: str,
+        group_col: str = "",
+        purl_col: str = "",
+        cpe_col: str = "",
     ) -> pd.DataFrame:
-        """Enrich a DataFrame with component group/namespace from SBOMs.
+        """Fill group / PURL / CPE columns from each version's CycloneDX SBOM.
 
         Downloads CycloneDX SBOMs for each unique version ID in *raw_data*,
-        parses them, and builds a ``(name, version) → group`` lookup.  The
-        *group_col* in *raw_data* is then filled where it was previously
-        empty.
+        parses them, and builds a ``(name, version) → {group, purl, cpe}``
+        lookup. Each requested column is then filled where it was previously
+        empty; a column named as ``""`` is skipped entirely.
+
+        ONE method rather than one per field on purpose: a compound run
+        containing both Component List and Human Readable SBOM would otherwise
+        download the same CycloneDX twice, and the TTL gating, fingerprint
+        invalidation and vectorised fill below are not worth duplicating.
 
         Args:
             raw_data: DataFrame to enrich (returned as-is if empty).
             version_id_col: Column containing numeric project-version IDs.
             name_col: Column containing component names.
             version_col: Column containing component versions.
-            group_col: Column to populate with group values.
+            group_col: Column to populate with group values, if any.
+            purl_col: Column to populate with PURLs, if any.
+            cpe_col: Column to populate with CPEs, if any.
 
         Returns:
             The enriched DataFrame (modified in-place when possible).
         """
+        targets = [
+            (col, field_name)
+            for col, field_name in (
+                (group_col, "group"),
+                (purl_col, "purl"),
+                (cpe_col, "cpe"),
+            )
+            if col
+        ]
+        if not targets:
+            return raw_data
+        # Only an IDENTIFIER backfill may raise the disclosure flag. The same
+        # method also serves group-only enrichment for Component List,
+        # Remediation Package and Findings by Project; a 503 during one of those
+        # must not make a later report claim its identifier backfill failed.
+        wants_identifiers = bool(purl_col or cpe_col)
         if raw_data.empty or version_id_col not in raw_data.columns:
             return raw_data
 
@@ -10939,7 +11107,10 @@ class ReportEngine:
         # this run already fetched). A cached lookup is only honored when its
         # stored fingerprint matches — so a rescan that changes the component
         # set invalidates the cache immediately, without waiting for the TTL.
-        pairs_by_vid: dict[str, set[tuple[str, str]]] = {}
+        # Counted, not a set: two components sharing a name and version are a
+        # different inventory from one, and that difference is exactly what the
+        # ambiguity handling downstream reacts to.
+        pairs_by_vid: dict[str, Counter[tuple[str, str]]] = {}
         if cache_on:
             names = raw_data[name_col].fillna("").astype(str).str.lower()
             versions = raw_data[version_col].fillna("").astype(str).str.lower()
@@ -10949,29 +11120,75 @@ class ReportEngine:
                 versions[vid_series.index],
                 strict=True,
             ):
-                pairs_by_vid.setdefault(str(vid), set()).add((n, v))
+                pairs_by_vid.setdefault(str(vid), Counter())[(n, v)] += 1
         fp_by_vid = {
             vid: _sbom_lookup_fingerprint(pairs) for vid, pairs in pairs_by_vid.items()
         }
 
-        # Build lookup: (lower_name, lower_version) → group. Cached payload:
-        # {"v": 1, "fp": <inventory fingerprint>, "groups": {"name\nver": group}}
-        group_lookup: dict[tuple[str, str], str] = {}
+        # Build lookup: (version_id, lower_name, lower_version) → fields.
+        #
+        # The VERSION ID is part of the key. Keying on (name, version) alone
+        # made every row in a multi-version fetch eligible to match any
+        # version's export, so a component present in two project versions with
+        # different data resolved to whichever export was parsed last. Each row
+        # belongs to exactly one project version and may only be enriched from
+        # that version's SBOM; anything else is one report's data leaking into
+        # another's. It also makes conflict detection naturally per-export,
+        # with no separate scoping step.
+        #
+        # Cached payload: {"v": 4, "fp": <inventory fingerprint>,
+        # "components": {"name\nver": {"group": …, "purl": …, "cpe": …,
+        # "ambiguous": bool}}}. Older entries are treated as a miss: v1 stored
+        # group strings, v2 had no ambiguity marker, and v3 was built while
+        # identifier-free components were skipped before conflict detection —
+        # so a v3 entry can hold an identifier this code would now blank, which
+        # is the one kind of staleness that must not survive an upgrade.
+        sbom_lookup: dict[tuple[str, str, str], dict[str, str]] = {}
+        # Keys blanked because two components in ONE export shared (name,
+        # version) and disagreed. Persisted in the cache payload so the
+        # report's "ambiguity, not absence" note survives a cache hit — the web
+        # UI caches by default, so the uncached path is the rare one.
+        ambiguous_keys: set[tuple[str, str, str]] = set()
         cached_versions = 0
         fetched_versions = 0
         for vid in version_ids:
             if cache is not None and read_cache:
-                raw = cache.get_raw(f"sbom_group_lookup:{vid}", SBOM_GROUP_LOOKUP_TTL)
+                raw = cache.get_raw(
+                    f"sbom_group_lookup:{vid}",
+                    (
+                        SBOM_IDENTIFIER_LOOKUP_TTL
+                        if wants_identifiers
+                        else SBOM_GROUP_LOOKUP_TTL
+                    ),
+                )
                 if (
                     isinstance(raw, dict)
-                    and raw.get("v") == 1
+                    and raw.get("v") == 4
                     and raw.get("fp") == fp_by_vid.get(vid)
-                    and isinstance(raw.get("groups"), dict)
+                    and isinstance(raw.get("components"), dict)
                 ):
-                    for flat_key, group in raw["groups"].items():
+                    for flat_key, fields in raw["components"].items():
                         name, _, ver = str(flat_key).partition("\n")
-                        if group:
-                            group_lookup[(name, ver)] = str(group)
+                        if not isinstance(fields, dict):
+                            continue
+                        if fields.get("ambiguous"):
+                            ambiguous_keys.add((str(vid), name, ver))
+                        values = {
+                            k: str(v or "")
+                            for k, v in fields.items()
+                            if k != "ambiguous"
+                        }
+                        # EVERY entry, exactly as the live path stores them.
+                        # Filtering the valueless ones out here used to be
+                        # harmless, because the parse loop could not produce one
+                        # unless a conflict had blanked it (and that is marked
+                        # ambiguous). Identifier-free components are retained
+                        # now, so the filter made a groupless export build a
+                        # non-empty lookup live and an empty one from cache —
+                        # and an empty lookup returns before the target columns
+                        # are created, so the same report had different COLUMNS
+                        # depending on whether the run was cached.
+                        sbom_lookup[(str(vid), name, ver)] = values
                     cached_versions += 1
                     continue
             try:
@@ -10979,23 +11196,84 @@ class ReportEngine:
                     vid, sbom_format="cyclonedx", include_vex=False
                 )
                 sbom = parse_cyclonedx(sbom_raw)
-                per_version: dict[str, str] = {}
+                per_version: dict[str, dict[str, str]] = {}
                 for comp in sbom.components.values():
                     # Use the explicit CycloneDX group field first; if absent,
                     # derive from bom-ref (often a PURL or Maven colon ref),
                     # then from purl (bom-ref may be an opaque ID).
-                    group = (
-                        comp.group
-                        or _extract_group(comp.bom_ref)
-                        or _extract_group(comp.purl)
+                    fields = {
+                        "group": (
+                            comp.group
+                            or _extract_group(comp.bom_ref)
+                            or _extract_group(comp.purl)
+                        ),
+                        # NOT bom_ref as a purl fallback: it routinely holds
+                        # hashes and filesystem paths, and a wrong identifier in
+                        # a compliance artifact is worse than a blank one.
+                        "purl": str(comp.purl or ""),
+                        "cpe": str(comp.cpe or ""),
+                    }
+                    # EVERY component participates, including one carrying no group,
+                    # purl or cpe. Skipping those was the bug: being identifier-free
+                    # is what makes a duplicate UNRESOLVABLE, so dropping it before
+                    # the comparison let an identified component sharing its (name,
+                    # version) be stored unopposed — and both API rows then inherited
+                    # that purl, putting a false identifier on the row that has none.
+                    # An all-empty entry also costs nothing downstream: the fill step
+                    # only ever writes where the target is empty.
+                    key = (
+                        str(vid),
+                        _sbom_match_key(comp.name),
+                        _sbom_match_key(comp.version, decode=True),
                     )
-                    if group:
-                        key = (
-                            str(comp.name or "").lower(),
-                            str(comp.version or "").lower(),
-                        )
-                        group_lookup[key] = group
-                        per_version[f"{key[0]}\n{key[1]}"] = group
+                    # (name, version) is not unique — a real export can carry
+                    # two components sharing both (different arch, different
+                    # origin). Last-write-wins would hand one of them the
+                    # other's PURL, which is a FALSE identifier in a
+                    # compliance artifact. Where two entries disagree on a
+                    # field, neither row can be resolved, so that field is
+                    # blanked for the pair: a blank is an honest gap, a wrong
+                    # identifier is a false claim. Identical values are not a
+                    # conflict and survive.
+                    #
+                    # Scoped to THIS version's export. Comparing across
+                    # versions would blank a group that two project versions
+                    # legitimately disagree about, regressing the
+                    # multi-version group enrichment Component List and
+                    # Findings by Project rely on — a different report's
+                    # data, broken by a fix aimed at this one.
+                    #
+                    # Compare VALUES only. "ambiguous" is bookkeeping this
+                    # loop adds, not data from the export — including it in
+                    # the comparison meant that once any pair conflicted,
+                    # `prior` carried the extra key and the next identical
+                    # entry compared unequal on that key alone. Three
+                    # identical components then reported as ambiguous, and a
+                    # field legitimately empty for all of them was disclosed
+                    # as "left blank rather than guessed" when no identifier
+                    # ever existed. A false disclosure is worse than none.
+                    flat_key = f"{key[1]}\n{key[2]}"
+                    prior = per_version.get(flat_key)
+                    was_ambiguous = bool(prior and prior.get("ambiguous"))
+                    if prior is not None:
+                        prior_values = {
+                            k: v for k, v in prior.items() if k != "ambiguous"
+                        }
+                        if prior_values != fields:
+                            fields = {
+                                k: (v if prior_values.get(k) == v else "")
+                                for k, v in fields.items()
+                            }
+                            was_ambiguous = True
+                            ambiguous_keys.add(key)
+                    if was_ambiguous:
+                        fields["ambiguous"] = True
+                    per_version[flat_key] = fields
+                for flat_key, resolved in per_version.items():
+                    name_part, _, ver_part = flat_key.partition("\n")
+                    sbom_lookup[(str(vid), name_part, ver_part)] = {
+                        k: v for k, v in resolved.items() if k != "ambiguous"
+                    }
                 fetched_versions += 1
                 if cache is not None:
                     # Cache empty lookups too — a groupless SBOM must not be
@@ -11004,12 +11282,24 @@ class ReportEngine:
                     # Failed fetches are NOT cached (except path skips this).
                     cache.put_raw(
                         f"sbom_group_lookup:{vid}",
-                        {"v": 1, "fp": fp_by_vid.get(vid, ""), "groups": per_version},
+                        {
+                            "v": 4,
+                            "fp": fp_by_vid.get(vid, ""),
+                            "components": per_version,
+                        },
                     )
-            except Exception:
-                self.logger.debug(
-                    f"SBOM fetch failed for version {vid}, skipping group enrichment"
+            except Exception as exc:
+                # WARNING, not debug: fetch_sbom has a documented 503 ("SBOM
+                # export queue is full"). A blank PURL column with no
+                # explanation reads as "this component has no PURL"; the
+                # failure flag below lets the report say "the lookup failed"
+                # instead. Different facts.
+                self.logger.warning(
+                    f"SBOM fetch failed for version {vid} "
+                    f"({type(exc).__name__}), identifiers may be incomplete"
                 )
+                if wants_identifiers:
+                    self._sbom_enrichment_failed = True
 
         if cached_versions or fetched_versions:
             self.logger.info(
@@ -11021,39 +11311,102 @@ class ReportEngine:
         # builder above feeds the CycloneDX group field AND bom_ref/purl into
         # the lookup, so a bom-ref-only SBOM yields a non-empty lookup and
         # proceeds to the vectorised fill; a truly empty lookup has nothing to fill.
-        if not group_lookup:
-            self.logger.debug("SBOM group lookup empty — no group info derivable")
+        if not sbom_lookup:
+            self.logger.debug("SBOM lookup empty — nothing derivable")
             return raw_data
 
-        self.logger.info(
-            f"SBOM group lookup built: {len(group_lookup)} components with group info"
-        )
+        self.logger.info(f"SBOM lookup built: {len(sbom_lookup)} component(s)")
 
-        # Ensure group column exists
-        if group_col not in raw_data.columns:
-            raw_data[group_col] = ""
-
-        # Vectorised fill: only overwrite where current group is empty
-        needs_fill = raw_data[group_col].fillna("").eq("")
-        if not needs_fill.any():
+        if name_col not in raw_data.columns or version_col not in raw_data.columns:
             return raw_data
 
-        # Build lookup keys for rows needing a fill
-        if name_col in raw_data.columns and version_col in raw_data.columns:
-            keys = list(
+        # Row LABELS, not a running count: purl and cpe are filled in separate
+        # passes, and taking max() across them undercounts when one row loses
+        # only its purl and another loses only its cpe. The union is the number
+        # of rows actually missing an identifier to ambiguity.
+        ambiguous_row_ids: set[Any] = set()
+        for col, field_name in targets:
+            if col not in raw_data.columns:
+                raw_data[col] = ""
+            # Vectorised fill: only where the column is currently empty, so a
+            # value the API already supplied always wins over the SBOM.
+            needs_fill = raw_data[col].fillna("").astype(str).eq("")
+            if not needs_fill.any():
+                continue
+            # Both sides go through _sbom_match_key: the API stores purl-derived
+            # versions percent-ENCODED ("2.9.1%2Bdfsg1-5%2Bdeb8u6") and there is
+            # no guarantee the CycloneDX export escapes them the same way. A
+            # raw-string join silently misses exactly the Debian/ipk components
+            # most likely to carry an escape, leaving them blank on the
+            # --version path while the project-scoped path resolves them.
+            # A row whose version id is blank belongs to no fetched version, so
+            # a version-keyed lookup can never match it and it silently loses
+            # enrichment it used to get — in Component List, Remediation Package
+            # and Version Comparison, the same consumers this work restores
+            # bomRef for. When the fetch covers exactly ONE version there is no
+            # ambiguity about which export such a row belongs to, so it is
+            # attributed to that version. With several versions in play there is
+            # no correct answer and it stays unenriched, which is the behaviour
+            # the version-keyed lookup exists to guarantee.
+            sole_version = version_ids[0] if len(version_ids) == 1 else None
+            lookup_keys = list(
                 zip(
-                    raw_data.loc[needs_fill, name_col].fillna("").str.lower(),
-                    raw_data.loc[needs_fill, version_col].fillna("").str.lower(),
+                    [
+                        (str(v) if str(v).strip() else (sole_version or ""))
+                        for v in raw_data.loc[needs_fill, version_id_col].fillna("")
+                    ],
+                    # Names need no decoding, so they stay vectorised — only
+                    # the version column pays the per-row cost.
+                    raw_data.loc[needs_fill, name_col]
+                    .fillna("")
+                    .astype(str)
+                    .str.lower(),
+                    [
+                        _sbom_match_key(v, decode=True)
+                        for v in raw_data.loc[needs_fill, version_col].fillna("")
+                    ],
                     strict=True,
                 )
             )
-            filled = [group_lookup.get(k, "") for k in keys]
-            raw_data.loc[needs_fill, group_col] = filled
+            filled_values = [
+                sbom_lookup.get(k, {}).get(field_name, "") for k in lookup_keys
+            ]
+            raw_data.loc[needs_fill, col] = filled_values
+            # Count ROWS, not keys: one ambiguous (name, version) pair leaves
+            # BOTH of its rows blank, so reporting the key count would tell an
+            # auditor "1 component" for two empty cells.
+            #
+            # And count only rows this field was actually WITHHELD from. A key
+            # is marked ambiguous when ANY of {group, purl, cpe} disagrees, so a
+            # group-only conflict lands in ambiguous_keys while purl and cpe
+            # agree and fill normally. Counting bare key membership would make
+            # the report say "their PURL/CPE are left blank" about rows that
+            # carry both — a disclosure that is itself false.
+            if ambiguous_keys and field_name in ("purl", "cpe"):
+                ambiguous_row_ids.update(
+                    row_id
+                    for row_id, k, value in zip(
+                        raw_data.index[needs_fill],
+                        lookup_keys,
+                        filled_values,
+                        strict=True,
+                    )
+                    if k in ambiguous_keys and not value
+                )
+            filled = (raw_data[col].fillna("").astype(str) != "").sum()
+            self.logger.info(f"SBOM enrichment: {filled} row(s) have {col}")
 
-        filled_count = (raw_data[group_col].fillna("") != "").sum()
-        self.logger.info(
-            f"Group enrichment complete: {filled_count} components have group info"
-        )
+        # Only an identifier caller may report identifier ambiguity — the same
+        # scoping _sbom_enrichment_failed needed. A group-only conflict is a real
+        # conflict, but it is not an identifier one.
+        if ambiguous_row_ids and (purl_col or cpe_col):
+            self.logger.warning(
+                "%d component row(s) share a name and version with another entry "
+                "in the same SBOM and disagree on their identifiers; those "
+                "fields are left blank rather than guessed.",
+                len(ambiguous_row_ids),
+            )
+            self._sbom_ambiguous_components = len(ambiguous_row_ids)
 
         return raw_data
 

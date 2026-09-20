@@ -1,6 +1,6 @@
 name: "Human Readable SBOM"
 category: assessment  # Current state: today's component inventory, no period semantics
-card_description: "Readable component inventory for one project version, with finding counts."
+card_description: "Shareable NTIA-aligned component inventory for one project version. Findings, policy, review status and platform ids are opt-in."
 nav_category: Compliance
 chart_libraries: []
 template: "human_readable_sbom.html"
@@ -9,22 +9,34 @@ auto_run: false
 requires_project: true
 description: >
   The project version's component inventory, laid out to be read rather than
-  parsed: one row per component with its version, type, supplier, licenses,
-  release date, source, review status, finding counts broken out by severity,
-  and the component id for cross-referencing against the platform or an API
-  call. Mirrors the platform's Components table.
+  parsed — and shareable by default: one row per component with its version,
+  type, supplier, licenses, release date, and its PURL and CPE.
+  Nothing internal is in the default output.
+
+  The default columns carry six of NTIA's seven Minimum Elements (July 2021):
+  supplier, component name, version and other unique identifiers (the PURL and
+  CPE columns) per component, plus author and timestamp provenance in every
+  output format. "Author" is recorded as the generating tool and tenant, not an
+  accountable person or organisation — enough to trace where an artifact came
+  from, but a party that must own the SBOM has to be named separately. NTIA requires an "other unique identifiers" field rather than a
+  named format; PURL and CPE are two of the identifier types it lists as
+  satisfying it. The seventh element, dependency relationships, is declared a
+  known unknown in the report's notes — the component API does not expose
+  component-to-component edges — which NTIA explicitly permits.
 
   File-type components are EXCLUDED by default — they are SAST placeholders
-  that carry no license, supplier or release data, and on a firmware project
-  they outnumber real components by an order of magnitude. Pass
+  that carry no license, supplier or release data. Pass
   --include-file-components to keep them.
 
-  Two column groups are optional and on by default. Policy columns (violation
-  and warning counts) drop with --no-policy-status; the finding-count columns
-  (total plus the Critical/High/Medium/Low breakdown) drop with
-  --no-finding-counts, which leaves a pure inventory sheet. With both off the
-  report is name, version, type, supplier, license, release date, source,
-  status and component id.
+  Five column groups are opt-in and OFF by default, because they mean nothing
+  to a recipient outside this tenant: --policy-status adds violation and
+  warning counts, --finding-counts adds the finding total plus the
+  Critical/High/Medium/Low breakdown, --component-status adds the review status
+  (NEEDS_REVIEW, CONFIRMED, FALSE_POSITIVE…), and --component-ids adds the
+  platform component UUID for cross-referencing back into the platform or an
+  API call, and --source-column restores the source column (how the component
+  was introduced). With all five on the report mirrors the platform's
+  Components table.
 
   This is an inventory, not a ranking: output is never truncated, because an
   SBOM that silently drops rows is not an SBOM. There are deliberately no
@@ -44,23 +56,25 @@ output:
   columns:
   # Documented in RENDER order, matching _columns_for() in the transform, so the
   # schema sidecar and column-reference tooling describe the layout the artifacts
-  # actually have. The two optional groups (policy, then findings) sit between
-  # version and type; when a group is toggled off its columns are absent from
-  # every output but stay documented here.
+  # actually have. The five optional groups are ALL OFF by default: policy then
+  # findings sit between version and type; source sits after release_date,
+  # ahead of the identifiers; status then component_id append at the very
+  # end, after them. When a group is off its columns are
+  # absent from every output but stay documented here.
     - name: component_name
       source: "API /components: name"
       description: "Component name as the platform records it."
     - name: version
       source: "API /components: version (percent-escapes decoded for display)"
-      description: "Component version string. Blank when the scanner could not resolve one. Versions originate from purl coordinates, where `+` must be percent-encoded, so Debian and ipk components are stored escaped (`2.9.1%2Bdfsg1-5%2Bdeb8u6`); this column shows the decoded form (`2.9.1+dfsg1-5+deb8u6`) and the report discloses when it did so. A lone `%` is not an escape and is left untouched. The platform's stored value is unchanged — look the row up by its component id to see it."
+      description: "Component version string. Blank when the scanner could not resolve one. Versions originate from purl coordinates, where `+` must be percent-encoded, so Debian and ipk components are stored escaped (`2.9.1%2Bdfsg1-5%2Bdeb8u6`); this column shows the decoded form (`2.9.1+dfsg1-5+deb8u6`) and the report discloses when it did so. A lone `%` is not an escape and is left untouched. The platform's stored value is unchanged — pass --component-ids and look the row up by that id to see it."
     - name: violations
       source: "API /components: violations"
-      description: "Policy violations triggered by this component — the red count in the platform's Policy Status column. Omitted entirely when --no-policy-status is passed."
+      description: "Policy violations triggered by this component — the red count in the platform's Policy Status column. Off by default: policy is a tenant-internal judgement rather than inventory, and a shared SBOM carries it only on request. Pass --policy-status to include it."
     - name: warnings
       source: "API /components: warnings"
-      description: "Policy warnings triggered by this component — the amber count in the platform's Policy Status column. Omitted entirely when --no-policy-status is passed."
+      description: "Policy warnings triggered by this component — the amber count in the platform's Policy Status column. Off by default alongside violations; pass --policy-status to include both."
     - name: findings
-      source: "API /components: findings (omitted entirely with --no-finding-counts)"
+      source: "API /components: findings (omitted entirely unless --finding-counts)"
       description: "Total findings associated with the component. The severity columns cover CRITICAL/HIGH/MEDIUM/LOW only, so they do not always sum to this total — NONE and INFO findings are counted here but not broken out."
     - name: critical
       source: "Derived: severityCounts.CRITICAL"
@@ -87,11 +101,17 @@ output:
       source: "API /components: releaseDate"
       description: "Upstream release date of this component version, when known. Blank is common and is not a data error."
     - name: source
-      source: "API /components: source"
-      description: "How the component was introduced (for example Binary SCA, Upload). Multiple sources are joined with a comma."
+      source: "API /components: source (omitted entirely unless --source-column)"
+      description: "How the component was introduced (for example Binary SCA, Upload). Multiple sources are joined with a comma. Off by default: scan methodology rather than inventory, and a recipient of a shared SBOM has no use for it. Pass --source-column to restore it."
+    - name: purl
+      source: "API /components: softwareIdentifiers.purls[0]; on a --version run, backfilled from the CycloneDX export"
+      description: "Package URL. NTIA requires an 'other unique identifiers' field, not this format specifically — PURL is one of the identifier types it names as satisfying that element (alongside CPE and SWID), and is the one most SCA tooling keys on. Singular because the API caps purls at one entry. Blank when the platform holds no purl for the component — never synthesised from name and version, because a fabricated identifier is a false claim where a blank is an honest gap. The report's notes quantify the coverage whenever it is below 100%."
+    - name: cpe
+      source: "API /components: softwareIdentifiers.cpes; on a --version run, backfilled from the CycloneDX export"
+      description: "Common Platform Enumeration identifier(s), the NVD-matchable form of the NTIA 'other unique identifier'. Multiple values are joined with a semicolon (not a comma — CPE 2.3 strings contain commas), deduplicated, order preserved, and never truncated."
     - name: status
-      source: "API /components: status"
-      description: "Review status: NEEDS_REVIEW, IN_REVIEW, CONFIRMED, FALSE_POSITIVE or UNKNOWN. Blank when nobody has triaged the component."
+      source: "API /components: status (omitted entirely unless --component-status)"
+      description: "Review status: NEEDS_REVIEW, IN_REVIEW, CONFIRMED, FALSE_POSITIVE or UNKNOWN. Blank when nobody has triaged the component. Off by default — an internal triage judgement a shared SBOM's recipient has no context for."
     - name: component_id
-      source: "API /components: id"
-      description: "Platform component identifier, kept last as a reference column. Use it to cross-reference a row against the platform UI or an API call (for example the affected==<id> findings filter)."
+      source: "API /components: id (omitted entirely unless --component-ids)"
+      description: "Platform component identifier. Omitted entirely unless --component-ids is passed: it is an internal UUID with no meaning outside the tenant that issued it, so it is not the NTIA 'other unique identifier' — purl and cpe are. Turn it on to cross-reference a row against the platform UI or an API call (for example the affected==<id> findings filter)."

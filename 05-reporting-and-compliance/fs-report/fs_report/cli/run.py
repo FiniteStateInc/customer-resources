@@ -253,8 +253,11 @@ def create_config(
     current_version: Union[str, None] = None,
     open_only: bool = False,
     include_file_components: bool = False,
-    policy_status: bool = True,
-    finding_counts: bool = True,
+    policy_status: bool = False,
+    finding_counts: bool = False,
+    component_status: bool = False,
+    component_ids: bool = False,
+    source_column: bool = False,
     request_delay: float = 0.5,
     batch_size: int = 5,
     cve_filter: Union[str, None] = None,
@@ -617,6 +620,9 @@ def create_config(
         include_file_components=include_file_components,
         policy_status=policy_status,
         finding_counts=finding_counts,
+        component_status=component_status,
+        component_ids=component_ids,
+        source_column=source_column,
         request_delay=request_delay,
         batch_size=batch_size,
         cve_filter=cve_filter,
@@ -701,8 +707,11 @@ def run_reports(
     current_version: Union[str, None] = None,
     open_only: bool = False,
     include_file_components: bool = False,
-    policy_status: bool = True,
-    finding_counts: bool = True,
+    policy_status: bool = False,
+    finding_counts: bool = False,
+    component_status: bool = False,
+    component_ids: bool = False,
+    source_column: bool = False,
     request_delay: float = 0.5,
     batch_size: int = 5,
     cve_filter: Union[str, None] = None,
@@ -805,6 +814,9 @@ def run_reports(
             include_file_components=include_file_components,
             policy_status=policy_status,
             finding_counts=finding_counts,
+            component_status=component_status,
+            component_ids=component_ids,
+            source_column=source_column,
             request_delay=request_delay,
             batch_size=batch_size,
             cve_filter=cve_filter,
@@ -1742,20 +1754,52 @@ def run_command(
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
     policy_status: bool = typer.Option(
-        True,
+        False,
         "--policy-status/--no-policy-status",
         help=(
             "Human Readable SBOM: include the policy violation and warning "
-            "columns. On by default."
+            "columns. Off by default — the default report is a shareable "
+            "inventory with no internal security data."
         ),
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
     finding_counts: bool = typer.Option(
-        True,
+        False,
         "--finding-counts/--no-finding-counts",
         help=(
             "Human Readable SBOM: include the finding-count columns (total plus "
-            "the Critical/High/Medium/Low breakdown). On by default."
+            "the Critical/High/Medium/Low breakdown). Off by default."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    component_status: bool = typer.Option(
+        False,
+        "--component-status/--no-component-status",
+        help=(
+            "Human Readable SBOM: include the component review status column "
+            "(NEEDS_REVIEW, IN_REVIEW, CONFIRMED, FALSE_POSITIVE, UNKNOWN). "
+            "Off by default."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    component_ids: bool = typer.Option(
+        False,
+        "--component-ids/--no-component-ids",
+        help=(
+            "Human Readable SBOM: include the platform component id column. "
+            "Off by default — it is an internal UUID with no meaning outside "
+            "this tenant; PURL and CPE are the shareable identifiers and are "
+            "always included."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    source_column: bool = typer.Option(
+        False,
+        "--source-column/--no-source-column",
+        help=(
+            "Human Readable SBOM: include the source column (how the component "
+            "was introduced — Binary SCA, Upload). Off by default: scan "
+            "methodology rather than inventory."
         ),
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
@@ -2153,6 +2197,9 @@ def run_command(
         include_file_components=include_file_components,
         policy_status=policy_status,
         finding_counts=finding_counts,
+        component_status=component_status,
+        component_ids=component_ids,
+        source_column=source_column,
         request_delay=request_delay,
         batch_size=batch_size,
         cve_filter=cve_filter,

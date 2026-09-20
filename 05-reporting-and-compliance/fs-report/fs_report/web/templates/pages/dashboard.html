@@ -32,9 +32,19 @@
   <div class="rb-row rb-row-actions">
     <div class="rb-group">
       <span class="rb-lbl">Report</span>
+      {# shell_context sorts recipes by (nav_category, name) so this list is
+         already category-grouped and alphabetical within each group — but a flat
+         <option> list hides the grouping, which makes a correctly sorted list
+         read as unsorted. <optgroup> shows the boundary the sort already
+         creates, using the same categories as the launcher's filter chips
+         below. Native element: no JS, and screen readers announce the group. #}
       <select class="rb-sel rb-wide" id="rb-report">
-        {% for r in recipes %}
-        <option value="{{ r.name }}"{% if pinned_report and r.name == pinned_report %} selected{% endif %}>{{ r.name }}</option>
+        {% for category, group in recipes | groupby('nav_category') %}
+        <optgroup label="{{ category }}">
+          {% for r in group %}
+          <option value="{{ r.name }}"{% if pinned_report and r.name == pinned_report %} selected{% endif %}>{{ r.name }}</option>
+          {% endfor %}
+        </optgroup>
         {% endfor %}
       </select>
     </div>
@@ -141,11 +151,9 @@
   <h2><i data-lucide="grid-2x2" style="width:17px;height:17px;color:var(--accent)"></i> Launch a Report</h2>
   <div class="filters">
     <span class="chip on" data-filter="all">All</span>
-    <span class="chip" data-filter="Executive"><span class="cdot" style="background:var(--nav-executive)"></span> Executive</span>
-    <span class="chip" data-filter="Investigation"><span class="cdot" style="background:var(--nav-investigation)"></span> Investigation</span>
-    <span class="chip" data-filter="Remediation"><span class="cdot" style="background:var(--nav-remediation)"></span> Remediation</span>
-    <span class="chip" data-filter="Compliance"><span class="cdot" style="background:var(--nav-compliance)"></span> Compliance</span>
-    <span class="chip" data-filter="Exploitability Evidence"><span class="cdot" style="background:var(--nav-exploitability-evidence)"></span> Exploitability Evidence</span>
+    {%- for category in launcher_categories %}
+    <span class="chip" data-filter="{{ category }}"><span class="cdot" style="background:var(--nav-{{ category | lower | replace(' ', '-') }}, var(--accent))"></span> {{ category }}</span>
+    {%- endfor %}
     <span class="rb-div" style="height:20px"></span>
     <span class="sort" id="wf-sort">
       <span class="sl">Sort</span>

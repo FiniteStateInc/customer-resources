@@ -251,6 +251,9 @@ _RUN_BOOL_KEYS: tuple[str, ...] = (
     "include_file_components",
     "policy_status",
     "finding_counts",
+    "component_status",
+    "component_ids",
+    "source_column",
     "detailed",
     "standalone",
     "product_only",
@@ -1709,8 +1712,11 @@ def _build_engine_config(
         "include_file_components": bool(
             effective.get("include_file_components", False)
         ),
-        "policy_status": bool(effective.get("policy_status", True)),
-        "finding_counts": bool(effective.get("finding_counts", True)),
+        "policy_status": bool(effective.get("policy_status", False)),
+        "finding_counts": bool(effective.get("finding_counts", False)),
+        "component_status": bool(effective.get("component_status", False)),
+        "component_ids": bool(effective.get("component_ids", False)),
+        "source_column": bool(effective.get("source_column", False)),
         "detailed": bool(effective.get("detailed", False)),
         "standalone": bool(effective.get("standalone", False)),
         "product_only": bool(effective.get("product_only", False)),
@@ -2297,13 +2303,16 @@ _WORKFLOW_BOOL_KEYS: frozenset[str] = frozenset(
         # a hand-authored / inline ``"autotriage": "false"`` is False, not truthy
         # — else a string false would trigger an unintended VEX write.
         "autotriage",
-        # SBOM toggles. Two default TRUE, so an uncoerced ``"false"`` would pass
-        # straight through bool() as truthy and silently invert the run — the
-        # workflow says --no-policy-status, the run emits the columns anyway.
-        # workflow_export coerces the same three for the export path.
+        # SBOM toggles. All default FALSE, but an uncoerced ``"false"`` from a
+        # hand-edited workflow still passes straight through bool() as truthy
+        # and silently turns a column group ON that the workflow asked to keep
+        # off. workflow_export coerces the same set for the export path.
         "include_file_components",
         "policy_status",
         "finding_counts",
+        "component_status",
+        "component_ids",
+        "source_column",
     }
 )
 _WORKFLOW_INT_KEYS: frozenset[str] = frozenset({"top", "triage"})

@@ -118,6 +118,15 @@ COMPONENT_FIELDS = {
     # jakarta.servlet-api's EPL-2.0. Omitting it dropped the license on any
     # cached run (the web UI defaults to caching), so the report showed blank.
     "licenses": "licenses",
+    # NTIA "Other Unique Identifiers". The whole nested dict is stored
+    # JSON-encoded (_trim_record already encodes any list|dict); do NOT use a
+    # dotted key here — _row_to_record routes dotted fields through the
+    # nested-reconstruction branch and would hand back a JSON *string*.
+    "softwareIdentifiers": "software_identifiers",
+    # Read by component_list (BOM Reference column + derived Group),
+    # remediation_package and comparison/_shared. Its absence here made all
+    # three go blank on any cached run.
+    "bomRef": "bom_ref",
     "releaseDate": "release_date",
     "findings": "findings",
     "warnings": "warnings",
@@ -290,6 +299,8 @@ CREATE TABLE IF NOT EXISTS components (
     declared_licenses TEXT,
     concluded_licenses TEXT,
     licenses TEXT,
+    software_identifiers TEXT,
+    bom_ref TEXT,
     release_date TEXT,
     findings INTEGER,
     warnings INTEGER,
@@ -871,6 +882,8 @@ class SQLiteCache:
             ("components", "declared_license_details", "TEXT"),
             ("components", "concluded_license_details", "TEXT"),
             ("components", "licenses", "TEXT"),
+            ("components", "software_identifiers", "TEXT"),
+            ("components", "bom_ref", "TEXT"),
             ("scans", "mechanism", "TEXT"),
         ]
         # ``_USER_VISIBLE_NEW_COLUMNS`` (module-level) enumerates the columns
@@ -1126,6 +1139,10 @@ class SQLiteCache:
                     "licenses",
                     "declared_licenses",
                     "concluded_licenses",
+                    # Nested dict of PURL/CPE/SWID arrays. NOT bom_ref: that is
+                    # a plain string, json.loads would raise and be swallowed by
+                    # the except below — works-by-accident is worse than broken.
+                    "software_identifiers",
                 ):
                     try:
                         value = json.loads(value) if value else None

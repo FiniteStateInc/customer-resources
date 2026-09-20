@@ -6,17 +6,338 @@ import logging
 import re
 from collections.abc import Callable
 from functools import partial
-from typing import Any
+from typing import Any, NamedTuple
 
 import pandas as pd
 
 # derive_tiers is imported from the CRA module on purpose: a tier name must mean
 # the same thing in `--exploit-maturity` regardless of which recipe reads it.
 from fs_report.cra.tiers import derive_tiers, normalize_tiers, validate_tier_names
+from fs_report.cvss import looks_like_vector
 from fs_report.models import Config
 from fs_report.purl_utils import parse_purl
 
 logger = logging.getLogger(__name__)
+
+# CVSS AV: metric letter -> display label. The letters mean the same thing in
+# v2, v3 and v4; v2 has no P (Physical) and folds physical access into L.
+_ATTACK_VECTOR_LABELS = {
+    "N": "Network",
+    "A": "Adjacent",
+    "L": "Local",
+    "P": "Physical",
+}
+
+
+def _attack_vector_label(vector: Any) -> str:
+    """Read the AV: metric out of a CVSS vector string of any version.
+
+    ``CVSS:3.1/AV:N/AC:L/...`` -> ``"Network"``. Returns "" when the vector is
+    missing or carries no recognizable AV metric.
+
+    Version-agnostic on purpose: ``AV:`` carries the same four letters in
+    CVSS v2, v3 and v4, so the same parse serves all three and the caller
+    decides which vector to feed it (see ``_cvss_columns``).
+
+    Whitespace is stripped and the match is case-insensitive: NVD writes the
+    metrics uppercase and slash-separated, but a lowercase, padded or
+    space-separated vector from another enrichment source should still resolve
+    rather than silently blank the cell. The metric must still start a field
+    (so ``AV:`` inside a longer token is not read) and its value must be the
+    whole field (so ``AV:None`` is not read as Network).
+    """
+    if not vector:
+        return ""
+    match = re.search(
+        r"(?:^|[/\s,;])AV:([NALP])(?![0-9A-Za-z])",
+        str(vector).strip(),
+        re.IGNORECASE,
+    )
+    return _ATTACK_VECTOR_LABELS[match.group(1).upper()] if match else ""
+
+
+# CVSS vector fields in the NVD enrichment, newest scoring version first.
+# This is the field order ``_cvss_vectors`` ranks within — it breaks ties, and
+# is not the whole rule; a readable version outranks the field order. NVD
+# never rescored most pre-2016 CVEs under v3 (CVE-2014-7186 carries a v2
+# vector only), so a v3-only read printed nothing and labelled nothing on
+# findings the platform shows an AV: for.
+_CVSS_VECTOR_SOURCES = (
+    "cvss_v4_vector",
+    "cvss_v3_vector",
+    "cvss_v2_vector",
+)
+
+# The v2 field, named once. `_cvss_version` treats it as the one field whose
+# text/field conflict is resolvable (v2 vectors carry no prefix by
+# definition), and repeating the literal there meant renaming the enrichment
+# key would silently blank every v2 row's version cell instead of failing.
+_CVSS_V2_SOURCE = _CVSS_VECTOR_SOURCES[-1]
+
+
+def _cvss_version(source_key: str, vector: Any) -> str:
+    """Scoring version of a CVSS vector, from its prefix and its source key.
+
+    ``CVSS:3.1/AV:N/...`` -> ``"3.1"``, ``CVSS:4.0/...`` -> ``"4.0"``: the
+    prefix is exact, so it wins whenever it parses. It has to *lead* the
+    string and be followed by the metrics it prefixes — a ``CVSS:`` appearing
+    mid-string is a note, not a version, and reading one out of it would
+    assert a scoring the value does not carry.
+
+    The separator after the version is the same set ``_attack_vector_label``
+    accepts (``/``, whitespace, comma, semicolon), so the two parsers agree
+    on what a vector looks like: a space-separated
+    ``CVSS:3.1 AV:N AC:L`` yields both a version and a label, rather than one
+    cell describing the row and its neighbour going blank.
+
+    The number is passed through as published rather than checked against a
+    known list, so a CVSS major this code has never seen (``CVSS:5.0/…`` ->
+    ``"5.0"``) reports itself instead of blanking. HTML gives an unrecognized
+    major the neutral pill; the tabular outputs carry the number as-is.
+
+    CVSS v2 vectors carry no prefix (the prefix was introduced with v3), so a
+    prefix-less value reads ``"2"`` only when it came from the v2 field **and**
+    still looks like a vector (``looks_like_vector``). The cross-check runs
+    both ways: a prefix-less value in the v3/v4 field, a *prefixed* value in
+    the v2 field, and junk like ``"n/a"`` anywhere all return "". Printing a
+    version there would assert a scoring the data contradicts.
+
+    Returns "" when there is no vector at all. A blank cell means NVD
+    published no vector for the CVE, which is not the same claim as "scored
+    under v2".
+    """
+    if not vector:
+        return ""
+    text = str(vector).strip()
+    if re.match(r"CVSS:", text, re.IGNORECASE):
+        match = re.match(r"CVSS:(\d+(?:\.\d+)?)(?=[/\s,;])", text, re.IGNORECASE)
+        if not match:
+            # Claims a prefix whose version will not parse
+            # (``CVSS:unknown/…``, or ``CVSS:3.1`` with no metrics after it).
+            # That is a v3-or-later shape with an unreadable version, not a
+            # v2 vector, so report nothing rather than guess.
+            return ""
+        if source_key == _CVSS_V2_SOURCE:
+            # A prefixed value in the v2 field contradicts its own source:
+            # the prefix says v3-or-later, the field says v2. Report neither.
+            return ""
+        return match.group(1)
+    if re.search(r"CVSS:", text, re.IGNORECASE):
+        # A ``CVSS:`` that does not lead the string is not a version prefix —
+        # it is a note or a concatenation ("see CVSS:3.1 advisory"). Reading
+        # a version out of the middle of the text would assert a scoring the
+        # value does not carry.
+        return ""
+    if source_key == _CVSS_V2_SOURCE and looks_like_vector(text):
+        return "2"
+    return ""
+
+
+class _CvssCandidate(NamedTuple):
+    """One vector a CVE could be reported under, with its scoring version.
+
+    Named fields rather than a bare pair: the two are both strings, so a
+    swapped unpack would type-check clean and print a version number in the
+    vector cell.
+    """
+
+    vector: str
+    version: str
+
+
+def _cvss_vectors(details: Any) -> list[_CvssCandidate]:
+    """Vector candidates for a CVE, best first.
+
+    Only strings that look like a CVSS vector survive: a non-string value, a
+    whitespace-only one, and a placeholder carrying no CVSS metric field
+    (``n/a``, ``unknown``, a bare ``CVSS:3.1``) are all dropped. Filtering
+    here rather than at the caller keeps the three columns in step —
+    ``_cvss_columns`` reads the vector, the version and the label off this one
+    list, so a dropped value is invisible to all three.
+
+    Candidates rank on whether a version can be read off them
+    (``_cvss_version``), then on that version newest-first, and only then on
+    the field they arrived in. A readable version therefore beats field
+    order: a v2-shaped string mis-filed into ``cvss_v4_vector`` loses to the
+    correctly filed v3 vector NVD sent in the same payload, rather than
+    printing with an empty version cell beside it. So does a versioned one
+    that is simply older — a ``CVSS:3.0/…`` in the v4 field loses to a
+    correctly filed ``CVSS:3.1/…``, because ranking on the slot would print
+    the older scoring, and derive the attack-vector label from it, while the
+    newer vector sat unused on the same row. Field order breaks ties between
+    equal versions only. A value with no readable version is demoted, never
+    dropped, because it is still the only thing to print when it is all NVD
+    sent and a vector beats a blank cell.
+
+    A *well-formed* vector is still taken at its word about its own version
+    whatever field it arrived in — ``CVSS:3.0/…`` in ``cvss_v4_vector``
+    reports ``3.0``, not ``4.0`` — because the vector text is the more
+    specific statement and the field assignment is the part this code cannot
+    see. That is what the value *says*; which candidate is *printed* is the
+    separate question the ranking above answers. The one field/text conflict
+    that is resolved lives in ``_cvss_version``: the v2 field, whose values
+    carry no prefix by definition.
+
+    Ranking on the text means an enrichment source that emitted a prefix-less
+    v4 vector would see it demoted below a well-formed v3 one. That is the
+    intended outcome, not a gap: the ``CVSS:4.0/`` prefix is required by the
+    CVSS v4 spec, so a prefix-less value in that field is malformed, and it
+    still prints when it is all that source sent. Ranking on the field alone
+    is the behaviour this ordering replaced.
+    """
+    if not isinstance(details, dict):
+        return []
+    versioned: list[_CvssCandidate] = []
+    unversioned: list[_CvssCandidate] = []
+    for key in _CVSS_VECTOR_SOURCES:
+        vector = details.get(key)
+        if not isinstance(vector, str):
+            continue
+        text = vector.strip()
+        if not text or not looks_like_vector(text):
+            continue
+        version = _cvss_version(key, text)
+        (versioned if version else unversioned).append(_CvssCandidate(text, version))
+    # Newest scoring first, by the version read off the vector itself rather
+    # than by the field it arrived in. The two agree until a vector is
+    # misfiled, and then field order picks the older one: a `CVSS:3.0/...`
+    # string in cvss_v4_vector would outrank the correctly filed
+    # `CVSS:3.1/...` and print 3.0 beside an Attack Vector parsed from it —
+    # an older scoring, and a different answer, while the newer vector sat
+    # unused on the same row. Misfiling is already assumed reachable here:
+    # the versioned/unversioned split exists to catch a v2-shaped string in
+    # the v4 field. Sorting is stable and `reverse` preserves ties, so field
+    # order still breaks a tie between equal versions.
+    versioned.sort(key=lambda c: _version_rank(c.version), reverse=True)
+    return versioned + unversioned
+
+
+def _version_rank(version: str) -> tuple[int, int]:
+    """Sortable (major, minor) for a version string from ``_cvss_version``.
+
+    ``"2"`` is ``(2, 0)`` so it compares against ``"3.0"`` without a bare
+    ``(2,)`` sorting below it on length. Unparseable input sorts last rather
+    than raising — ``_cvss_version`` only ever returns digits, so this is a
+    guard, not a path.
+    """
+    major, _, minor = version.partition(".")
+    try:
+        return (int(major), int(minor) if minor else 0)
+    except ValueError:  # pragma: no cover - _cvss_version cannot produce this
+        return (0, 0)
+
+
+class _CvssCells(NamedTuple):
+    """The three CVSS cells one CVE contributes to a row.
+
+    Named for the same reason as ``_CvssCandidate``: all three are strings,
+    and the columns are written to the output frame in this order, so a
+    reordering would type-check clean and put the label in the version
+    column. ``_CVSS_CELL_COLUMNS`` below pins the field names to the headers.
+    """
+
+    vector: str
+    version: str
+    label: str
+
+
+_CVSS_CELL_COLUMNS = {
+    "vector": "CVSS Vector",
+    "version": "CVSS Version",
+    "label": "Attack Vector",
+}
+
+# `CVSS v3 Vector` is the header the renamed column shipped as through
+# 2.0.x, kept alive for one
+# release and removed at 3.0.0. Renaming it outright would have broken every
+# consumer keyed on the old name with no error — just a column that stopped
+# existing.
+#
+# It carries the v3 vector, NOT the value of the renamed column. Mirroring
+# `CVSS Vector` here would hand a consumer that parses this cell as
+# `CVSS:3.x/…` a v2 or v4 string instead, which is a quiet wrong answer where
+# the missing column was at least a loud one — the worse of the two failures,
+# and not what a compatibility shim is for. Reading the v3 field directly also
+# keeps it faithful for a CVE scored under both v3 and v4: the old column
+# showed the v3 vector, and so does this, even though v4 now wins the real
+# column. The one old behaviour deliberately not reproduced is printing a
+# placeholder (`n/a`, a bare `CVSS:3.1`) as if it were a vector.
+#
+# Consumers that want the fix move to `CVSS Vector` plus `CVSS Version`; that
+# is what the deprecation window is for.
+#
+# CSV, XLSX and JSON only. HTML is read by people, where a duplicate column is
+# noise rather than compatibility, and the Markdown findings table never
+# carried a vector column in a shipped release, so it has no consumer to keep
+# working.
+_CVSS_V3_ALIAS_COLUMN = "CVSS v3 Vector"
+_CVSS_V3_SOURCE = "cvss_v3_vector"
+
+
+def _cvss_v3_only(details: Any) -> str:
+    """The v3 vector alone, for the deprecated `CVSS v3 Vector` column.
+
+    Gated on the value declaring a 3.x version, not merely on the field it
+    arrived in. The whole promise of this column is that a consumer parsing it
+    as ``CVSS:3.x/…`` is never handed something else, and this module treats
+    misfiling as reachable everywhere else — a ``CVSS:4.0/…`` sitting in the
+    v3 field would otherwise walk straight through the one column whose job is
+    to be predictable.
+
+    So a misfiled v4, a prefix-less string (a v2 vector, or a malformed v3 one
+    the spec requires a prefix on) and a placeholder all read blank here. That
+    is narrower than the raw field read this replaces; the values it drops are
+    ones a consumer parsing for v3 could not have used anyway, and every one
+    of them is still available in ``CVSS Vector``.
+    """
+    if not isinstance(details, dict):
+        return ""
+    vector = details.get(_CVSS_V3_SOURCE)
+    if not isinstance(vector, str):
+        return ""
+    text = vector.strip()
+    if not looks_like_vector(text):
+        return ""
+    return text if _cvss_version(_CVSS_V3_SOURCE, text).startswith("3") else ""
+
+
+def _cvss_columns(details: Any) -> _CvssCells:
+    """The ``(CVSS Vector, CVSS Version, Attack Vector)`` triple for one CVE.
+
+    The vector is the top candidate from ``_cvss_vectors`` — normally the
+    newest version NVD published, v4 else v3 else v2 — printed as published
+    apart from trimmed surrounding whitespace. The version is the one
+    ``_cvss_vectors`` already read off that same string, so the two cells
+    cannot disagree; it is empty only when no vector was printed or when the
+    printed one carries no readable version.
+
+    The label is that vector's ``AV:`` metric. When the newest vector carries
+    no readable AV metric, the next candidate on the ranked list supplies the
+    label rather than the cell going blank: losing a real attack vector to a
+    malformed string is the worse outcome, and the vector is printed next to
+    the label either way. Usually that candidate is an older version's
+    vector, but it can be a demoted one from a newer field, so this is not a
+    fall *back* in version order — it is the next usable ``AV:`` on the list.
+    Either way the label then comes from a different scoring than the version
+    and vector cells describe, which is why it only fires on a vector the
+    ``AV:`` parse could not read at all.
+
+    A v2 vector is coarser than a v3/v4 one: v2 has no Physical value and
+    scores physical access as Local, so a physical-only v2 CVE labels
+    "Local". That is the price of filling the cell at all for CVEs NVD never
+    rescored, and it beats showing nothing.
+
+    One function returns all three so a caller cannot populate one column
+    without the others.
+    """
+    vectors = _cvss_vectors(details)
+    label = next(
+        (label for vector, _ in vectors if (label := _attack_vector_label(vector))),
+        "",
+    )
+    vector, version = vectors[0] if vectors else ("", "")
+    return _CvssCells(vector=vector, version=version, label=label)
+
 
 _CSV_COLUMNS = [
     "CVE ID",
@@ -37,7 +358,10 @@ _CSV_COLUMNS = [
     "# in-the-wild exploitation signals",
     "CWE",
     "Description",
-    "CVSS v3 Vector",
+    "CVSS Version",
+    "Attack Vector",
+    "CVSS Vector",
+    _CVSS_V3_ALIAS_COLUMN,
     "NVD URL",
     "FS Link",
 ]
@@ -213,18 +537,43 @@ def findings_by_project_pandas_transform(
         cve_details = additional_data.get("cve_details", {})
         domain = additional_data.get("domain", "")
 
-    # Description, CVSS v3 Vector from cve_details lookup. CVSS v2 Vector was
-    # dropped (2026-06-14) — NVD stopped assigning CVSS v2 (~2016+), so it is
-    # ~always empty for modern data.
+    # Description and CVSS Vector from the cve_details lookup. The vector is
+    # the newest version NVD published for the CVE — v4, else v3, else v2 — as
+    # published. A single version-specific column (it was CVSS v3 Vector until
+    # this release) printed nothing for every pre-2016 CVE NVD never rescored,
+    # CVE-2014-7186 among them.
     output_df["Description"] = output_df["CVE ID"].map(
         lambda cve: (
             cve_details.get(cve, {}).get("description", "") if cve_details else ""
         )
     )
-    output_df["CVSS v3 Vector"] = output_df["CVE ID"].map(
-        lambda cve: (
-            cve_details.get(cve, {}).get("cvss_v3_vector", "") if cve_details else ""
+
+    # All three CVSS cells come off one ranked list per CVE: the vector cell
+    # is the best candidate (newest version NVD published, except that a
+    # string with no readable version is demoted below one that has it), CVSS
+    # Version is the version read off that same string, and the Attack Vector
+    # label is its AV: — or the next candidate's AV: when the winner carries
+    # no readable one, so a malformed string cannot blank a real attack
+    # vector.
+    # Derived here rather than from the API's attackVector field, and in one
+    # pass so the cells cannot drift apart. A v2 vector yields the coarser
+    # v2 label (no Physical; physical access scores as Local).
+    _cvss_cells = [
+        (
+            _cvss_columns(cve_details.get(cve, {}))
+            if cve_details
+            else _CvssCells("", "", "")
         )
+        for cve in output_df["CVE ID"]
+    ]
+    _cvss_cols = [_CVSS_CELL_COLUMNS[f] for f in _CvssCells._fields]
+    output_df[_cvss_cols] = pd.DataFrame(
+        _cvss_cells, columns=_cvss_cols, index=output_df.index
+    )
+    # Read from the v3 field, not copied from the column above — the two are
+    # deliberately different values. See _CVSS_V3_ALIAS_COLUMN.
+    output_df[_CVSS_V3_ALIAS_COLUMN] = output_df["CVE ID"].apply(
+        lambda cve: _cvss_v3_only(cve_details.get(cve, {})) if cve_details else ""
     )
 
     # NVD URL — constructed from CVE ID (GHSA IDs link to GitHub Advisories,
@@ -327,7 +676,10 @@ def findings_by_project_pandas_transform(
             "Reachability": "UNKNOWN",
             "KEV": "",
             "Description": "",
-            "CVSS v3 Vector": "",
+            "CVSS Version": "",
+            "Attack Vector": "",
+            "CVSS Vector": "",
+            _CVSS_V3_ALIAS_COLUMN: "",
             "NVD URL": "",
             "FS Link": "",
         }

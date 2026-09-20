@@ -566,20 +566,47 @@
                 <label for="pre-policy-status">Policy columns</label>
                 <label class="toggle">
                     <input type="checkbox" id="pre-policy-status" name="policy_status"
-                           {% if state.get('policy_status', True) %}checked{% endif %}>
+                           {% if state.get('policy_status') %}checked{% endif %}>
                     <span class="toggle-slider"></span>
                 </label>
             </div>
-            <small class="form-hint">Per-component violation and warning counts. On by default.</small>
+            <small class="form-hint">Per-component violation and warning counts. Off by default.</small>
             <div class="form-group form-row">
                 <label for="pre-finding-counts">Finding counts</label>
                 <label class="toggle">
                     <input type="checkbox" id="pre-finding-counts" name="finding_counts"
-                           {% if state.get('finding_counts', True) %}checked{% endif %}>
+                           {% if state.get('finding_counts') %}checked{% endif %}>
                     <span class="toggle-slider"></span>
                 </label>
             </div>
-            <small class="form-hint">Total findings plus the Critical/High/Medium/Low breakdown. On by default.</small>
+            <small class="form-hint">Total findings plus the Critical/High/Medium/Low breakdown. Off by default.</small>
+            <div class="form-group form-row">
+                <label for="pre-component-status">Component status</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-component-status" name="component_status"
+                           {% if state.get('component_status') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <small class="form-hint">Review status per component. Off by default.</small>
+            <div class="form-group form-row">
+                <label for="pre-component-ids">Component IDs</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-component-ids" name="component_ids"
+                           {% if state.get('component_ids') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <small class="form-hint">The platform component UUID. Off by default.</small>
+            <div class="form-group form-row">
+                <label for="pre-source-column">Source</label>
+                <label class="toggle">
+                    <input type="checkbox" id="pre-source-column" name="source_column"
+                           {% if state.get('source_column') %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <small class="form-hint">How the component was introduced. Off by default.</small>
         </details>
         {% endif %}
 

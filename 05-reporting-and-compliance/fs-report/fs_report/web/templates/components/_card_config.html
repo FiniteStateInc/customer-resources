@@ -589,27 +589,57 @@
           <span class="toggle-slider"></span>
         </label>
       </div>
-      <small class="form-hint">Off by default. File entries are SAST placeholders with no license, supplier or release data, and on firmware projects they can outnumber real components 10:1.</small>
+      <small class="form-hint">Off by default. File entries are SAST placeholders with no license, supplier or release data.</small>
       <div class="form-group form-row">
         <label for="cardcfg-policy-status">Policy columns</label>
         <label class="toggle">
           <input type="checkbox" id="cardcfg-policy-status" name="policy_status"
-                 {% if eff.get('policy_status', True) %}checked{% endif %}
+                 {% if eff.get('policy_status') %}checked{% endif %}
                  data-override="{{ '1' if is_ov('policy_status') else '0' }}">
           <span class="toggle-slider"></span>
         </label>
       </div>
-      <small class="form-hint">Violation and warning counts per component, as the platform's Components table shows them. On by default.</small>
+      <small class="form-hint">Violation and warning counts per component. Off by default.</small>
       <div class="form-group form-row">
         <label for="cardcfg-finding-counts">Finding counts</label>
         <label class="toggle">
           <input type="checkbox" id="cardcfg-finding-counts" name="finding_counts"
-                 {% if eff.get('finding_counts', True) %}checked{% endif %}
+                 {% if eff.get('finding_counts') %}checked{% endif %}
                  data-override="{{ '1' if is_ov('finding_counts') else '0' }}">
           <span class="toggle-slider"></span>
         </label>
       </div>
-      <small class="form-hint">Total findings plus the Critical/High/Medium/Low breakdown. On by default; off leaves a pure inventory sheet.</small>
+      <small class="form-hint">Total findings plus the Critical/High/Medium/Low breakdown. Off by default.</small>
+      <div class="form-group form-row">
+        <label for="cardcfg-component-status">Component status</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-component-status" name="component_status"
+                 {% if eff.get('component_status') %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('component_status') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <small class="form-hint">Review status per component (NEEDS_REVIEW, CONFIRMED, FALSE_POSITIVE…). Off by default.</small>
+      <div class="form-group form-row">
+        <label for="cardcfg-component-ids">Component IDs</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-component-ids" name="component_ids"
+                 {% if eff.get('component_ids') %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('component_ids') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <small class="form-hint">The platform component UUID. Off by default.</small>
+      <div class="form-group form-row">
+        <label for="cardcfg-source-column">Source</label>
+        <label class="toggle">
+          <input type="checkbox" id="cardcfg-source-column" name="source_column"
+                 {% if eff.get('source_column') %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('source_column') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <small class="form-hint">How the component was introduced (Binary SCA, Upload). Off by default.</small>
       {% endif %}
 
       {% if show_scan_filters %}

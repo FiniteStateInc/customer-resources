@@ -20,9 +20,11 @@
 
 """API client for communicating with the Finite State REST API."""
 
+import hashlib
 import json
 import json.decoder
 import logging
+import math
 import os
 import random
 import shutil
@@ -41,6 +43,52 @@ from fs_report.sqlite_cache import SQLiteCache
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _PERMANENT_STATUS_CODES = frozenset({400, 401, 403, 404, 405, 409, 422})
+
+
+def _retry_wait(retry_after: str | None, retry_count: int) -> float:
+    """Seconds to wait before re-asking a server that failed a retryable call.
+
+    Honours the server's own ``Retry-After`` when it sent a usable one, else a
+    30s/60s/90s ladder capped at 120s. Not exponential-from-1s: a gateway
+    timeout takes ~30s to come back, so a 1s wait just re-asks a server that is
+    still busy. An unusable header — non-numeric, negative, NaN, infinite — is
+    ignored rather than fatal, and an extravagant one is clamped to the same
+    ceiling the ladder obeys. Every paginator routes its pacing through here, so
+    one header behaves the same way whatever the cache mode.
+    """
+    ladder = float(min(30 * (retry_count + 1), 120))
+    if retry_after:
+        try:
+            requested = float(retry_after)
+        except (TypeError, ValueError):
+            return ladder
+        # A server may ask for something unusable: negative, NaN, infinite, or
+        # an hour. Honour the request only within the same bounds the ladder
+        # obeys — an unusable value falls back rather than reaching time.sleep,
+        # which would itself raise on a negative or non-finite wait.
+        if not math.isfinite(requested) or requested < 0:
+            return ladder
+        return min(requested, 120.0)
+    return ladder
+
+
+class APIRequestError(ValueError):
+    """An API request that failed with an HTTP status, after its own retries.
+
+    Subclasses ``ValueError`` because that is what ``fetch_data`` has always
+    raised and callers catch it by that type. The addition is ``status_code``:
+    without it, a caller can only classify the failure by matching the message
+    prefix, which cannot tell a permanent 4xx from a retryable 504 (CST-967).
+    """
+
+    def __init__(
+        self, message: str, status_code: int, retry_after: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        # The server's own pacing request, when it sent one. Captured at the
+        # raise site because the response object does not survive the raise.
+        self.retry_after = retry_after
 
 
 def _is_retryable(status_code: int) -> bool:
@@ -225,22 +273,35 @@ class APIClient:
                     )
                     time.sleep(_wait)
                     continue
-                # Permanent error or retries exhausted — raise with descriptive message
+                # Permanent error or retries exhausted. Every one of these
+                # carries its status: a caller that can only read the message
+                # cannot tell a permanent 401 from a retryable 429, which is
+                # the defect this class exists to close (CST-967). Message text
+                # is deliberately unchanged.
+                retry_after = e.response.headers.get("Retry-After")
                 if status_code == 401:
-                    raise ValueError(
-                        f"Authentication failed: Check your API token. Response: {e.response.text}"
+                    raise APIRequestError(
+                        f"Authentication failed: Check your API token. Response: {e.response.text}",
+                        status_code,
+                        retry_after,
                     ) from e
                 elif status_code == 403:
-                    raise ValueError(
-                        f"Access denied: You may not have permission to access this resource. Response: {e.response.text}"
+                    raise APIRequestError(
+                        f"Access denied: You may not have permission to access this resource. Response: {e.response.text}",
+                        status_code,
+                        retry_after,
                     ) from e
                 elif status_code == 429:
-                    raise ValueError(
-                        f"Rate limit exceeded: Please wait and try again. Response: {e.response.text}"
+                    raise APIRequestError(
+                        f"Rate limit exceeded: Please wait and try again. Response: {e.response.text}",
+                        status_code,
+                        retry_after,
                     ) from e
                 else:
-                    raise ValueError(
-                        f"API request failed: {status_code} - {e.response.text}"
+                    raise APIRequestError(
+                        f"API request failed: {status_code} - {e.response.text}",
+                        status_code,
+                        retry_after,
                     ) from e
             except httpx.RequestError as e:
                 raise ValueError(f"Network error: {e}") from e
@@ -396,14 +457,10 @@ class APIClient:
                     retry_count += 1
                     self.last_fetch_retries += 1
                     retry_after = e.response.headers.get("Retry-After")
-                    if retry_after:
-                        try:
-                            wait = float(retry_after)
-                        except ValueError:
-                            wait = min(30 * retry_count, 120)
-                    elif status in (429, 500, 502, 503, 504):
-                        # Server overloaded / rate limited: use longer backoff
-                        wait = min(30 * retry_count, 120)
+                    if retry_after or status in (429, 500, 502, 503, 504):
+                        # Server overloaded / rate limited: honour its pacing
+                        # request within bounds, else the longer ladder.
+                        wait = _retry_wait(retry_after, retry_count - 1)
                     else:
                         wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
                     label = (
@@ -419,7 +476,14 @@ class APIClient:
                         self.logger.error(
                             f"Max retries exceeded at offset {offset} (last error: HTTP {status}). Aborting."
                         )
-                        break
+                        # Same wire format as the permanent branch above, so
+                        # callers written to the ValueError contract see this
+                        # the same way whatever the cache mode.
+                        raise APIRequestError(
+                            f"API request failed at offset {offset}: "
+                            f"{status} - {str(e.response.text)[:500]}",
+                            status,
+                        ) from e
                     time.sleep(wait)
                     continue
                 except Exception as e:
@@ -576,14 +640,10 @@ class APIClient:
                     retry_count += 1
                     self.last_fetch_retries += 1
                     retry_after = e.response.headers.get("Retry-After")
-                    if retry_after:
-                        try:
-                            wait = float(retry_after)
-                        except ValueError:
-                            wait = min(30 * retry_count, 120)
-                    elif status in (429, 500, 502, 503, 504):
-                        # Server overloaded / rate limited: use longer backoff
-                        wait = min(30 * retry_count, 120)
+                    if retry_after or status in (429, 500, 502, 503, 504):
+                        # Server overloaded / rate limited: honour its pacing
+                        # request within bounds, else the longer ladder.
+                        wait = _retry_wait(retry_after, retry_count - 1)
                     else:
                         wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
                     label = (
@@ -599,7 +659,14 @@ class APIClient:
                         self.logger.error(
                             f"Max retries exceeded at offset {offset} (last error: HTTP {status}). Aborting."
                         )
-                        break
+                        # Same wire format as the permanent branch above, so
+                        # callers written to the ValueError contract see this
+                        # the same way whatever the cache mode.
+                        raise APIRequestError(
+                            f"API request failed at offset {offset}: "
+                            f"{status} - {str(e.response.text)[:500]}",
+                            status,
+                        ) from e
                     time.sleep(wait)
                     continue
                 except Exception as e:
@@ -703,6 +770,31 @@ class APIClient:
             return [data] if data else []
         return [data] if data else []
 
+    def _discard_progress(self, progress_file: str | None) -> None:
+        """Delete a progress file we are abandoning as failed.
+
+        Cleanup on the success path sits after the try/finally and is skipped
+        when an exception propagates, so a failed fetch used to leave a file
+        behind. A failed fetch now leaves no resumable state; an interrupted one
+        (KeyboardInterrupt) still does, which is what resume is for.
+
+        That file is only ever resumed by an identical query: the default name
+        carries a hash of the query params, so a leftover file cannot be picked
+        up by a differently-filtered fetch against the same endpoint.
+        """
+        if not progress_file:
+            return
+        try:
+            if os.path.exists(progress_file):
+                os.remove(progress_file)
+                self.logger.debug(
+                    f"Progress file {progress_file} discarded after a failed fetch."
+                )
+        except Exception as exc:  # pragma: no cover - best effort cleanup
+            self.logger.warning(
+                f"Could not discard progress file {progress_file}: {exc}"
+            )
+
     def _fetch_all_with_json_progress(
         self,
         query: Any,
@@ -753,10 +845,17 @@ class APIClient:
             f"fetch_all_with_resume called for endpoint: {getattr(query, 'endpoint', None)}, progress_file: {progress_file}"
         )
         if not progress_file:
-            # Default: output/findings_progress.json or output/{endpoint}_progress.json
+            # Default: output/{endpoint}-{query-hash}_progress.json.
+            # The hash matters: a batched fetch issues hundreds of queries
+            # against ONE endpoint, each with a different filter. Keyed on the
+            # endpoint alone they all shared a file, so any run that left one
+            # behind fed another batch's rows to the next run's first batch.
             endpoint = query.endpoint.strip("/").replace("/", "_")
+            fingerprint = hashlib.sha256(
+                repr(getattr(query, "params", None)).encode("utf-8")
+            ).hexdigest()[:12]
             progress_file = os.path.join(
-                self.config.output_dir, f"{endpoint}_progress.json"
+                self.config.output_dir, f"{endpoint}-{fingerprint}_progress.json"
             )
         # The progress file lives under config.output_dir, which the engine
         # does not create until render time (after the fetch). Ensure its
@@ -861,26 +960,61 @@ class APIClient:
                             f"end-of-pagination."
                         )
                         break
-                    permanent_prefixes = (
-                        "Authentication failed:",
-                        "Access denied:",
-                        "API request failed:",
-                    )
-                    if msg.startswith(permanent_prefixes):
-                        raise
+                    # Classify on the STATUS, not the message. fetch_data
+                    # flattens the status into the text, and the prefix
+                    # "API request failed:" matches every exhausted status —
+                    # so a 504 used to be re-raised as permanent, skipping the
+                    # retry below, leaving last_fetch_retries at 0, and with it
+                    # the server-recovery cooldown report_engine derives from
+                    # that counter (CST-967).
+                    status = getattr(e, "status_code", None)
+                    if status is not None:
+                        # Typed: the status decides, and the message never
+                        # enters into it.
+                        if not _is_retryable(status):
+                            self._discard_progress(progress_file)
+                            raise
+                        retryable = True
+                    else:
+                        # Untyped ValueError from somewhere that does not carry
+                        # a status. Fall back to the message prefixes.
+                        retryable = False
+                        permanent_prefixes = (
+                            "Authentication failed:",
+                            "Access denied:",
+                            "API request failed:",
+                        )
+                        if msg.startswith(permanent_prefixes):
+                            self._discard_progress(progress_file)
+                            raise
                     # Fall through to transient-retry handling
-                    wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
+                    if retryable:
+                        # Pace for a server that is slow, not flaky: a gateway
+                        # timeout takes ~30s to even come back, so a 1s first
+                        # wait re-asks a server that is still busy. Same ladder
+                        # the no-cache paginator uses.
+                        wait = _retry_wait(getattr(e, "retry_after", None), retry_count)
+                    else:
+                        wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
+                    retry_count += 1
+                    self.last_fetch_retries += 1
+                    # Check exhaustion BEFORE sleeping: waiting out a full
+                    # 120s only to give up burns two minutes per offset for
+                    # nothing.
+                    if retry_count > max_retries:
+                        # Exhausted. This must stay LOUD whatever the error
+                        # was: breaking here would return the rows fetched so
+                        # far, i.e. a report silently missing data, presented
+                        # as complete. Worse than failing.
+                        self.logger.error(
+                            f"Max retries exceeded at offset {offset}. Aborting."
+                        )
+                        self._discard_progress(progress_file)
+                        raise
                     self.logger.debug(
                         f"Transient error at offset {offset}: {e}. Retrying in {wait:.1f}s..."
                     )
                     time.sleep(wait)
-                    retry_count += 1
-                    self.last_fetch_retries += 1
-                    if retry_count > max_retries:
-                        self.logger.error(
-                            f"Max retries exceeded at offset {offset}. Aborting."
-                        )
-                        break
                     continue
                 except Exception as e:
                     # Unhandled transient (e.g. JSON decode, unexpected) — retry

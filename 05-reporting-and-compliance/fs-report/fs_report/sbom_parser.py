@@ -52,6 +52,7 @@ class SBOMComponent:
     name: str
     version: str
     purl: str = ""
+    cpe: str = ""  # CPE 2.3 identifier, when the producer emits one
     group: str = ""  # Maven groupId, npm scope, etc.
     component_type: str = ""  # library, framework, application, etc.
     scope: str = "required"  # required, optional, excluded
@@ -258,6 +259,7 @@ def _parse_component(data: dict[str, Any]) -> SBOMComponent:
         name=str(data.get("name", "")),
         version=str(data.get("version", "")),
         purl=str(data.get("purl", "")),
+        cpe=str(data.get("cpe", "")),
         group=str(data.get("group", "")),
         component_type=str(data.get("type", "")),
         scope=str(data.get("scope", "required")),

@@ -2,9 +2,10 @@
 Pandas transform for the Human Readable SBOM report.
 
 One project version's component inventory, laid out to be read rather than
-parsed. Mirrors the platform's Components table: name, version, policy counts,
-findings broken out by severity, type, supplier, licenses, release date, source,
-review status — plus the component id as a trailing reference column.
+parsed, and shareable by default: name, version, type, supplier, licenses,
+release date, and the PURL/CPE identifiers NTIA asks for. Policy counts,
+findings broken out by severity, review status and the platform component id
+are all opt-in; with every group on it mirrors the platform's Components table.
 
 Three things this module deliberately does NOT do:
 
@@ -12,9 +13,9 @@ Three things this module deliberately does NOT do:
    There is no top-N, no ranking, no cap.
 2. **It does not chart.** The table is the deliverable. Charts on a 795-row
    inventory are decoration that pushes the actual content below the fold.
-3. **It does not reimplement license or source resolution.** Those live in
-   ``component_list`` and are imported, so an SBOM row and a Component List row
-   resolve the same license from the same precedence chain. Copying them is how
+3. **It does not reimplement license resolution.** That lives in
+   ``component_list`` and is imported, so an SBOM row and a Component List row
+   resolve the same license from the same precedence chain. Copying it is how
    the two reports would start disagreeing about a component's license.
 
 ``severityCounts`` is the source for the per-severity columns. The API omits
@@ -27,8 +28,10 @@ the platform UI does not show.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import unquote
 
@@ -36,7 +39,7 @@ import pandas as pd
 
 # Imported, not reimplemented — see the module docstring. These are the same
 # helpers Component List uses, so both reports resolve a component's license and
-# source identically.
+# license identically.
 from fs_report.transforms.pandas.component_list import (
     _best_license_details,
     _map_source_labels,
@@ -55,9 +58,11 @@ SEVERITY_TIERS: tuple[str, ...] = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
 #: software components. Excluded unless ``--include-file-components``.
 FILE_TYPE = "file"
 
-#: Columns present in every configuration, in render order. ``component_id`` is
-#: last on purpose: it is a reference value you look up when you need it, not
-#: something you read across.
+#: Columns present in every configuration, in render order. The identifiers sit
+#: at the TAIL, not next to name/version: a PURL is routinely 60+ characters and
+#: placing it third pushes type/supplier/licenses past readable width, breaking
+#: this recipe's one contract (laid out to be read rather than parsed).
+#: Identifiers are looked *up* when you need them, not read across.
 BASE_COLUMNS: list[str] = [
     "component_name",
     "version",
@@ -65,27 +70,64 @@ BASE_COLUMNS: list[str] = [
     "supplier",
     "licenses",
     "release_date",
-    "source",
-    "status",
-    "component_id",
+    "purl",
+    "cpe",
 ]
 
 #: Inserted after ``version`` when policy columns are on, matching the position
-#: of the platform's Policy Status column.
+#: of the platform's Policy Status column. OFF by default.
 POLICY_COLUMNS: list[str] = ["violations", "warnings"]
 
 #: The finding-count group, inserted before ``component_type``. Toggled as ONE
 #: unit: the platform renders the total and the severity badges as a single
 #: "Findings" column, and a total with no breakdown (or a breakdown with no
-#: total) is a half-answer. Off, the report is a pure inventory sheet.
+#: total) is a half-answer. OFF by default.
 FINDING_COLUMNS: list[str] = ["findings", "critical", "high", "medium", "low"]
 
+#: The component's review/triage status (NEEDS_REVIEW, IN_REVIEW, CONFIRMED,
+#: FALSE_POSITIVE, UNKNOWN). OFF by default: the default artifact is a SHAREABLE
+#: SBOM — what is in the build — and triage state is an internal judgement the
+#: recipient has no context for.
+STATUS_COLUMNS: list[str] = ["status"]
 
-def _columns_for(include_policy: bool, include_findings: bool = True) -> list[str]:
+#: How the component was introduced (Binary SCA, Upload). OFF by default: it is
+#: scan methodology rather than inventory, and a recipient of a shared SBOM has
+#: no use for it. Restorable with ``--source-column`` for anyone whose pipeline
+#: still reads it.
+SOURCE_COLUMNS: list[str] = ["source"]
+
+#: The platform's internal component UUID. OFF by default: it is meaningless
+#: outside the tenant that issued it, so it is not the "other unique identifier"
+#: NTIA asks for — ``purl``/``cpe`` are, and they are on by default. Kept behind
+#: ``--component-ids`` for anyone cross-referencing back into the platform.
+ID_COLUMNS: list[str] = ["component_id"]
+
+#: The four optional groups and their defaults. The default report is a plain
+#: shareable inventory: name, version, type, supplier, license, release date,
+#: PURL, CPE. Everything internal — policy verdicts, finding counts,
+#: review status, platform ids — is opt-in.
+OPTION_DEFAULTS: dict[str, bool] = {
+    "policy_status": False,
+    "finding_counts": False,
+    "component_status": False,
+    "component_ids": False,
+    "source_column": False,
+}
+
+
+def _columns_for(
+    include_policy: bool = False,
+    include_findings: bool = False,
+    include_status: bool = False,
+    include_ids: bool = False,
+    include_source: bool = False,
+) -> list[str]:
     """Render-order column list for the active options.
 
-    Both optional groups sit between ``version`` and ``component_type``, in the
-    order the platform's own table uses: policy first, then findings.
+    Policy and findings sit between ``version`` and ``component_type``, in the
+    order the platform's own table uses. Status and the platform id append at
+    the very end, after the identifiers: inventory data first, internal platform
+    metadata last.
     """
     cut = BASE_COLUMNS.index("component_type")
     middle: list[str] = []
@@ -93,7 +135,18 @@ def _columns_for(include_policy: bool, include_findings: bool = True) -> list[st
         middle += POLICY_COLUMNS
     if include_findings:
         middle += FINDING_COLUMNS
-    return BASE_COLUMNS[:cut] + middle + BASE_COLUMNS[cut:]
+    base = list(BASE_COLUMNS)
+    if include_source:
+        # Back where it was before it left the default set: after `source`'s old
+        # neighbour `release_date`, ahead of the identifiers.
+        at = base.index("purl")
+        base[at:at] = SOURCE_COLUMNS
+    tail: list[str] = []
+    if include_status:
+        tail += STATUS_COLUMNS
+    if include_ids:
+        tail += ID_COLUMNS
+    return base[:cut] + middle + base[cut:] + tail
 
 
 def _pretty_type(value: Any) -> str:
@@ -109,6 +162,105 @@ def _pretty_type(value: Any) -> str:
     return text.replace("-", " ").replace("_", " ").title()
 
 
+#: Appended to `notes` on EVERY run, populated or empty. NTIA's Minimum
+#: Elements explicitly permit declaring a required element a "known unknown"
+#: rather than omitting it silently, and dependency relationships are one here:
+#: component-to-component edges come only from
+#: /component-dependencies/{pvId}/{profCompId}, one level per call, in a
+#: different ID space needing a per-component /lookup?vcId= bridge — 800+ calls
+#: for a large image — and the edges carry no relationship type.
+KNOWN_UNKNOWNS_NOTE = (
+    "Dependency relationships between components are not included: the "
+    "platform's component API does not expose them, so this inventory is a "
+    "flat list. Per NTIA guidance this is declared as a known unknown rather "
+    "than omitted silently. Identifier types other than PURL and CPE (SWID, "
+    "UDI, UPC, GTIN, GMN) are likewise not surfaced."
+)
+
+
+def _provenance(config: Any, project_name: str, version_name: str) -> dict[str, str]:
+    """NTIA's "Author of SBOM Data" and "Timestamp" elements.
+
+    Computed ONCE per report, here, because the transform is the only layer
+    that sees both the config and every renderer's input. Two ``now()`` calls
+    would put two different timestamps in one compliance artifact.
+    """
+    from fs_report import __version__
+
+    return {
+        # %Y-%m-%dT%H:%M:%SZ, matching _metadata_block's own fallback and the
+        # rest of the repo's timestamps. A compliance artifact whose selling
+        # point is a disclosed timestamp should not render it two ways
+        # depending on which code path produced it.
+        "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_by": f"fs-report {__version__}",
+        "source": "Finite State Platform",
+        "tenant": str(getattr(config, "domain", "") or ""),
+        "project": project_name,
+        "version": version_name,
+    }
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Coerce a nested API field to a dict, accepting a JSON string.
+
+    Both ``severityCounts`` and ``softwareIdentifiers`` arrive as dicts from the
+    API and as JSON strings from an older cache row that predates the decode
+    tuple. Anything else (None, a float NaN from a ragged frame, a scalar) reads
+    as empty rather than raising.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _identifiers(rec: Any) -> tuple[str, str]:
+    """``(purl, cpe)`` for one component record.
+
+    Two sources, in order:
+
+    1. ``softwareIdentifiers`` — what ``GET /public/v0/components`` returns.
+    2. ``sbom_purl`` / ``sbom_cpe`` — backfilled by the engine from the
+       CycloneDX export on the ``--version`` path, where the endpoint is
+       ``/versions/{id}/components`` and returns no identifiers at all.
+
+    ``purl`` is singular because ``SoftwareIdentifiersV0.purls`` is
+    ``maxItems: 1``. ``cpe`` joins every value with ``"; "`` — not ``", "``,
+    because CPE 2.3 strings contain commas — deduped, order preserved, never
+    truncated.
+
+    Deliberately does NOT fall back to ``bomRef``: the two endpoints that could
+    supply one are exactly the two that already supply ``softwareIdentifiers``
+    or supply neither, so the branch is unreachable. Deliberately does NOT
+    synthesise ``pkg:generic/<name>@<version>`` either — NTIA asks for the
+    identifiers you have, and a fabricated identifier is a false claim where a
+    blank is an honest known unknown.
+    """
+    identifiers = _as_dict(rec.get("softwareIdentifiers"))
+
+    purls = identifiers.get("purls") or []
+    purl = str(purls[0]).strip() if isinstance(purls, list) and purls else ""
+    if not purl:
+        purl = str(rec.get("sbom_purl") or "").strip()
+
+    raw_cpes = identifiers.get("cpes") or []
+    if not isinstance(raw_cpes, list):
+        raw_cpes = []
+    seen: dict[str, None] = {}
+    for value in raw_cpes:
+        text = str(value).strip()
+        if text:
+            seen.setdefault(text, None)
+    cpe = "; ".join(seen)
+    if not cpe:
+        cpe = str(rec.get("sbom_cpe") or "").strip()
+
+    return purl, cpe
+
+
 def _severity_count(counts: Any, tier: str) -> int:
     """Read one tier out of ``severityCounts``, treating absent as 0.
 
@@ -117,15 +269,7 @@ def _severity_count(counts: Any, tier: str) -> int:
     a count column that is the honest floor, and the total ``findings`` column
     still carries the real number.
     """
-    if isinstance(counts, str):
-        import json
-
-        try:
-            counts = json.loads(counts)
-        except (ValueError, TypeError):
-            return 0
-    if not isinstance(counts, dict):
-        return 0
+    counts = _as_dict(counts)
     for key, value in counts.items():
         if str(key).strip().upper() == tier:
             try:
@@ -283,8 +427,12 @@ def _distinct_version_ids(df: pd.DataFrame) -> list[str]:
 def _empty_summary(
     *,
     include_files: bool,
-    include_policy: bool,
-    include_findings: bool = True,
+    include_policy: bool = False,
+    include_findings: bool = False,
+    include_status: bool = False,
+    include_ids: bool = False,
+    include_source: bool = False,
+    provenance: dict[str, str] | None = None,
     min_note: str = "",
 ) -> dict[str, Any]:
     return {
@@ -299,8 +447,15 @@ def _empty_summary(
         "include_file_components": include_files,
         "include_policy_status": include_policy,
         "include_finding_counts": include_findings,
+        "include_component_status": include_status,
+        "include_component_ids": include_ids,
+        "include_source_column": include_source,
         "project_name": "",
         "version_name": "",
+        # NTIA author + timestamp. Set on the EMPTY path too: an artifact that
+        # says "no components" still has to say who produced that claim and
+        # when, or it cannot be relied on as evidence of anything.
+        "provenance": provenance or {},
         "note": min_note,
     }
 
@@ -330,9 +485,14 @@ def human_readable_sbom_transform(
 ) -> dict[str, Any]:
     """Build the readable component inventory for one project version."""
     include_files = bool(getattr(config, "include_file_components", False))
-    include_policy = bool(getattr(config, "policy_status", True))
-    include_findings = bool(getattr(config, "finding_counts", True))
-    columns = _columns_for(include_policy, include_findings)
+    include_policy = bool(getattr(config, "policy_status", False))
+    include_findings = bool(getattr(config, "finding_counts", False))
+    include_status = bool(getattr(config, "component_status", False))
+    include_ids = bool(getattr(config, "component_ids", False))
+    include_source = bool(getattr(config, "source_column", False))
+    columns = _columns_for(
+        include_policy, include_findings, include_status, include_ids, include_source
+    )
     notes: list[str] = []
 
     df = data if isinstance(data, pd.DataFrame) else pd.DataFrame(data or [])
@@ -349,10 +509,14 @@ def human_readable_sbom_transform(
                 "only file entries, that alone explains the empty result. Pass "
                 "--include-file-components to list them."
             )
+        empty_notes.append(KNOWN_UNKNOWNS_NOTE)
         empty_summary = _empty_summary(
             include_files=include_files,
             include_policy=include_policy,
             include_findings=include_findings,
+            include_status=include_status,
+            include_ids=include_ids,
+            include_source=include_source,
         )
         # Carry the requested scope through. An empty inventory is exactly where
         # the reader most needs to know WHICH project version came back empty —
@@ -371,6 +535,9 @@ def human_readable_sbom_transform(
         empty_summary["version_name"] = _scope_label(
             additional_data, "scope_version_name", config, "version_filter"
         )
+        empty_summary["provenance"] = _provenance(
+            config, empty_summary["project_name"], empty_summary["version_name"]
+        )
         empty_main = pd.DataFrame(columns=columns)
         return {
             "main": empty_main,
@@ -381,7 +548,8 @@ def human_readable_sbom_transform(
         }
 
     df = flatten_component_data(df.copy())
-    df = _map_source_labels(df)
+    if include_source:
+        df = _map_source_labels(df)
 
     # --- Single-version guard ------------------------------------------------
     # This report's whole contract is "one project version". --all-versions (or
@@ -456,6 +624,7 @@ def human_readable_sbom_transform(
             "findings": _as_int(rec.get("findings")),
             "component_id": _first_nonempty(rec, "id"),
         }
+        row["purl"], row["cpe"] = _identifiers(rec)
         for tier in SEVERITY_TIERS:
             row[tier.lower()] = _severity_count(severity, tier)
         if include_policy:
@@ -517,9 +686,38 @@ def human_readable_sbom_transform(
         notes.append(
             f"{decoded_versions:,} component version(s) were stored "
             "percent-encoded (purl escapes `+` as `%2B`) and are shown decoded. "
-            "The platform's stored value is unchanged; look a row up by its "
-            "component id to see it."
+            "The platform's stored value is unchanged; pass --component-ids "
+            "and look the row up by that id to see it."
         )
+
+    # Quantify the NTIA "other unique identifiers" element rather than asserting
+    # it. Silence at 100% keeps the common case clean; a tenant whose extractor
+    # populates neither field then reads as a measured gap in the artifact
+    # itself instead of looking like a bug in this report.
+    with_purl = sum(1 for r in rows if r.get("purl"))
+    with_cpe = sum(1 for r in rows if r.get("cpe"))
+    if rows and (with_purl < len(rows) or with_cpe < len(rows)):
+        notes.append(
+            f"PURL present for {with_purl:,} of {len(rows):,} components; CPE "
+            f"for {with_cpe:,}. Components without an identifier are listed by "
+            "name and version only."
+        )
+    ambiguous = (additional_data or {}).get("identifier_ambiguous_components") or 0
+    if ambiguous:
+        notes.append(
+            f"{ambiguous:,} component row(s) share a name and version with "
+            "another entry in this version's SBOM and disagree on their "
+            "identifiers. Their PURL/CPE are left blank rather than guessed — "
+            "the gap is ambiguity, not absence."
+        )
+    if additional_data and additional_data.get("identifier_backfill_failed"):
+        notes.append(
+            "The CycloneDX lookup used to fill PURL and CPE on a "
+            "version-scoped run failed, so those columns may be blank for "
+            "reasons unrelated to the data. Re-run to retry."
+        )
+
+    notes.append(KNOWN_UNKNOWNS_NOTE)
 
     summary = {
         "total_components": int(len(main)),
@@ -545,6 +743,9 @@ def human_readable_sbom_transform(
         "include_file_components": include_files,
         "include_policy_status": include_policy,
         "include_finding_counts": include_findings,
+        "include_component_status": include_status,
+        "include_component_ids": include_ids,
+        "include_source_column": include_source,
         # Row values first — they are the version actually inventoried. The
         # engine-resolved names back them up: the version-scoped endpoint
         # (/versions/<id>/components) omits `project` on every row, so a run
@@ -562,6 +763,33 @@ def human_readable_sbom_transform(
         ),
         "note": "",
     }
+    summary["provenance"] = _provenance(
+        config, str(summary["project_name"]), str(summary["version_name"])
+    )
+
+    # Run-time disclosure of which optional groups are OFF, always (not just
+    # --verbose). These all DEFAULT off, so a saved Command Center card or
+    # workflow created before that flip stored no override and now renders a
+    # narrower artifact than its author saw. Release notes only reach whoever
+    # reads them; this reaches the run log of the run that actually changed.
+    _off = [
+        flag
+        for flag, on in (
+            ("--policy-status", include_policy),
+            ("--finding-counts", include_findings),
+            ("--component-status", include_status),
+            ("--component-ids", include_ids),
+            ("--source-column", include_source),
+        )
+        if not on
+    ]
+    if _off:
+        logger.info(
+            "Human Readable SBOM: shareable defaults — %s omitted. "
+            "Pass %s to include them.",
+            ", ".join(f.lstrip("-") for f in _off),
+            " ".join(_off),
+        )
 
     if getattr(config, "verbose", False):
         logger.info(
@@ -607,14 +835,23 @@ def _build_json_package(
     # already stripped; leaving the aggregates in the summary would make JSON
     # the one format that still hands back the data the flag exists to remove.
     published = dict(summary)
-    if not summary.get("include_finding_counts", True):
+    # Default FALSE, matching OPTION_DEFAULTS: under the shareable-default
+    # contract an absent flag means the group is OFF, so defaulting to True here
+    # would leak finding/policy aggregates into JSON for any caller that omits
+    # them from `summary`.
+    if not summary.get("include_finding_counts", False):
         for key in ("total_findings", "components_with_findings", "severity_totals"):
             published.pop(key, None)
-    if not summary.get("include_policy_status", True):
+    if not summary.get("include_policy_status", False):
         for key in ("total_violations", "total_warnings"):
             published.pop(key, None)
+    # Top level, not buried in `summary`: a consumer checking NTIA conformance
+    # is asking "who produced this and when", which is a property of the
+    # document, not of the inventory it happens to contain.
+    provenance = published.pop("provenance", {})
     return {
         "report": "Human Readable SBOM",
+        "provenance": _jsonable(provenance),
         "summary": _jsonable(published),
         "components": _jsonable(records),
         "notes": notes,
