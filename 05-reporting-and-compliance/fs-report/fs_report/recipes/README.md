@@ -13,7 +13,7 @@ This directory contains YAML recipe files that define the available reports in t
 | `component_list.yaml` | Component List | Complete inventory of software components across projects |
 | `human_readable_sbom.yaml` | Human Readable SBOM | Readable single-version component inventory, shareable by default (NTIA identifiers and provenance; findings, policy, status and platform ids opt-in) |
 | `user_activity.yaml` | User Activity | Platform usage tracking with user engagement metrics |
-| `version_comparison.yaml` | Version Comparison | Full version and component changelog (every version pair); fixed/new findings and component churn per step; CSV/XLSX include summary + detail *(on-demand)* |
+| `version_comparison.yaml` | Version Comparison | Full version and component changelog (every version pair); fixed/new findings, status changes, and component churn per step; CSV/XLSX include summary + detail *(on-demand)* |
 | `triage_prioritization.yaml` | Triage Prioritization | Context-aware vulnerability triage with optional AI guidance *(on-demand)* |
 | `reachability_vex_coverage.yaml` | Reachability VEX Coverage | How many findings could be auto-resolved — unreachable findings missing NOT_AFFECTED, rolled up per project version with severity breakdown; emits appliable VEX recommendations *(on-demand)* |
 | `platform_usage.yaml` | Platform Usage | Org-wide inventory, scan freshness and metadata hygiene for a superuser — folders/projects/versions, freshness buckets, trailing-12-month trends, and a needs-attention list; no per-user metrics *(on-demand)* |

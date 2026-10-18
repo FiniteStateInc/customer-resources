@@ -19,10 +19,11 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from sse_starlette.sse import EventSourceResponse
 
+from fs_report.coerce import coerce_bool as _coerce_touched_flag
+from fs_report.version_name_filter import split_patterns
 from fs_report.web.dependencies import get_nonce, get_state
 from fs_report.web.shell_context import build_shell_context
 from fs_report.web.state import WebAppState, recipe_override
-from fs_report.workflow_store import coerce_bool as _coerce_touched_flag
 
 if TYPE_CHECKING:
     from fs_report.models import CompoundRecipe, Recipe
@@ -233,6 +234,14 @@ _RUN_STR_KEYS: tuple[str, ...] = (
     "min_severity",
     "scan_types",
     "scan_statuses",
+    # Findings by Project CVSS attack-vector row filter. Comma-joined
+    # multi-select over the wire like scan_types, but coerced to list[str] in
+    # _build_engine_config because Config.attack_vector_filter is a list.
+    "attack_vector_filter",
+    # --include/--exclude-versions: comma-joined glob text, split to list[str]
+    # in _build_engine_config (split_patterns keeps commas inside [...]).
+    "include_versions",
+    "exclude_versions",
     # SP2: destructive VEX-write status filter (comma-joined multi-select, like
     # scan_types/scan_statuses; coerced to list[str] in _build_engine_config).
     "autotriage_status",
@@ -244,6 +253,9 @@ _RUN_STR_KEYS: tuple[str, ...] = (
 _RUN_BOOL_KEYS: tuple[str, ...] = (
     "overwrite",
     "current_version_only",
+    # DEFAULT-TRUE (Version Comparison's /cves/updates lookups); a rendered,
+    # unchecked box arrives as "false" -> an explicit opt-out.
+    "external_changes",
     "ai",
     "ai_prompts",
     "ai_analysis",
@@ -746,6 +758,17 @@ PERIOD_RECIPES = {
     "version comparison",
 }
 SCAN_FILTER_RECIPES = {"scan analysis", "scan quality"}
+# --include/--exclude-versions: where the engine can apply the filter — VC/SP
+# version lists, scans, and the findings/component recipes (which honor it under
+# --all-versions). Keep in step with report_engine: Component Impact and CRA
+# Compliance fetch their own data (_VERSION_FILTER_SELF_FETCHING_RECIPES) and
+# Platform Usage is exempt, so none of them offers the control.
+VERSION_NAME_FILTER_RECIPES = (
+    VERSION_RECIPES
+    | SECURITY_PROGRESS_RECIPES
+    | SCAN_FILTER_RECIPES
+    | (CURRENT_VERSION_ONLY_RECIPES - {"component impact"})
+)
 STANDALONE_RECIPES = GENERIC_FINDINGS_RECIPES | _ED | _RVC
 # --product-only reshapes the TOP-LEVEL rows of a portfolio report, so it is
 # offered only on the two recipes whose top level is a project list. Visibility
@@ -754,9 +777,20 @@ STANDALONE_RECIPES = GENERIC_FINDINGS_RECIPES | _ED | _RVC
 # override that sets product_only on another recipe is ignored there rather
 # than silently narrowing that recipe's scope. Keep the two in step.
 PRODUCT_ONLY_RECIPES = _ED | {"executive summary"}
+# external_changes (--no-external-changes): only Version Comparison makes the
+# per-pair /public/v0/cves/updates lookup, so only it offers the opt-out.
+# Spelled out, not aliased to VERSION_RECIPES: a recipe gaining the version
+# pickers does not gain the lookup.
+EXTERNAL_CHANGES_RECIPES = {"version comparison"}
 # --min-severity is honored only where report_engine's MIN_SEVERITY_RECIPES
 # allow-list applies it. Keep the two in step.
 MIN_SEVERITY_RECIPES = _RVC
+# --attack-vector is read by the Findings by Project transform alone, and the
+# engine publishes its filter disclosure for that recipe alone
+# (report_engine's _ATTACK_VECTOR_RECIPES). Keep the two in step: offering the
+# control anywhere else would persist an override no transform reads and no
+# report discloses.
+ATTACK_VECTOR_RECIPES = {"findings by project"}
 # Human Readable SBOM owns both SBOM toggles. Mirrors report_engine's
 # FILE_COMPONENT_OPT_IN_RECIPES — every other component recipe excludes
 # type=file unconditionally, so offering the control there would be a lie.
@@ -990,9 +1024,10 @@ def compute_prerun_fields(
     ``show_component_match``, ``show_component_version``,
     ``show_component_recommended``, ``show_license``, ``show_threat_context``,
     ``show_period``, ``show_current_version_only``, ``show_open_only``,
-    ``show_detected_after``, ``show_standalone``, ``show_product_only``,
-    ``show_scan_filters``,
-    ``show_baseline_date``, ``show_detailed``, ``show_left_right_override``.
+    ``show_detected_after``, ``show_attack_vector``, ``show_standalone``,
+    ``show_product_only``, ``show_external_changes``, ``show_scan_filters``,
+    ``show_baseline_date``, ``show_version_name_filter``, ``show_detailed``,
+    ``show_left_right_override``.
 
     Field-visibility gating (report-config-card-gating)
     ---------------------------------------------------
@@ -1091,6 +1126,8 @@ def compute_prerun_fields(
         # PR3.3a: comparisons always expose finding-types at run time (Decision 11).
         "show_finding_types": is_comparison or bool(selected & FINDING_TYPES_RECIPES),
         "show_version_fields": bool(selected & VERSION_RECIPES),
+        # Version Comparison's per-pair CVE-updates lookup opt-out.
+        "show_external_changes": bool(selected & EXTERNAL_CHANGES_RECIPES),
         "show_project_required": bool(selected & REMEDIATION_RECIPES),
         # Component name filter + its match-mode — the 8 apply_component_filter
         # consumers; component_version is the narrower version-range pair.
@@ -1109,12 +1146,15 @@ def compute_prerun_fields(
         "show_open_only": bool(selected & OPEN_ONLY_RECIPES),
         "show_detected_after": bool(selected & DETECTED_AFTER_RECIPES),
         "show_min_severity": bool(selected & MIN_SEVERITY_RECIPES),
+        # CVSS attack-vector row filter — Findings by Project only.
+        "show_attack_vector": bool(selected & ATTACK_VECTOR_RECIPES),
         "show_sbom_options": bool(selected & SBOM_OPTION_RECIPES),
         "show_standalone": bool(selected & STANDALONE_RECIPES),
         "show_product_only": bool(selected & PRODUCT_ONLY_RECIPES),
         # Scan ingest filters — Scan Analysis / Scan Quality only.
         "show_scan_filters": bool(selected & SCAN_FILTER_RECIPES),
         "show_baseline_date": bool(selected & SECURITY_PROGRESS_RECIPES),
+        "show_version_name_filter": bool(selected & VERSION_NAME_FILTER_RECIPES),
         "show_detailed": bool(selected & EXEC_DASHBOARD_RECIPES),
         # PR3.3a: Left/Right scope-ref override fields (comparison-only).  When
         # True, prerun.html renders two text inputs pre-filled with the baked axis
@@ -1295,6 +1335,20 @@ def validate_run_overrides(overrides: dict[str, Any]) -> list[str]:
                 f"invalid scan_statuses: {', '.join(invalid)}; valid values are"
                 f" {', '.join(sorted(VALID_SCAN_STATUSES))}"
             )
+
+    # ── attack_vector_filter (Findings by Project row filter) ────────
+    # Validated through the same normalizer the transform filters with, so a
+    # name the UI accepted can never be one no row can carry. Rejected here
+    # rather than at run time because the transform raises, which would surface
+    # as a failed run instead of a named field error.
+    attack_vector_raw = overrides.get("attack_vector_filter")
+    if _is_set(attack_vector_raw):
+        from fs_report.cvss import split_attack_vectors
+
+        try:
+            split_attack_vectors(attack_vector_raw)
+        except ValueError as exc:
+            errors.append(f"invalid attack_vector_filter: {exc}")
 
     # ── autotriage_status (SP2 VEX-write status filter) ──────────────
     autotriage_status_raw = overrides.get("autotriage_status")
@@ -1569,6 +1623,28 @@ def _split_status_list(raw: Any) -> list[str] | None:
     return out or None
 
 
+def _split_attack_vectors(raw: Any) -> list[str] | None:
+    """Coerce a comma-joined attack-vector multi-select to canonical labels.
+
+    Shaped like ``_split_status_list`` — ``Config.attack_vector_filter`` is a
+    ``list[str] | None``, so the split happens here, once. The labels go
+    through ``normalize_attack_vectors`` rather than a bare upper/strip so the
+    web surface stores exactly what the CLI stores for the same selection, and
+    the report's filter disclosure reads the same either way.
+
+    Empty (nothing ticked) -> ``None``: no filter, which is what an untouched
+    control must mean. An unrecognized label raises rather than being silently
+    dropped. The card save and the run modal validate first, and workflows
+    cannot carry the key at all (it is not in ``workflow_store``'s override
+    allow-list) — so the raise is a backstop, not a guard a caller relies on. It is still a raise because the
+    alternative, dropping the label, would narrow the report while disclosing
+    a filter that never ran.
+    """
+    from fs_report.cvss import split_attack_vectors
+
+    return split_attack_vectors(raw) or None
+
+
 def _build_engine_config(
     effective: dict[str, Any],
     *,
@@ -1588,12 +1664,14 @@ def _build_engine_config(
     Keys threaded (always-pass style, preserving ``create_config`` defaults):
     ``period``, ``start``, ``end``, ``finding_types``, ``token``, ``domain``,
     ``output``, ``project_filter``, ``folder_filter``, ``version_filter``,
-    ``cache_ttl``, ``cache_dir``, ``current_version_only``, ``overwrite``,
+    ``cache_ttl``, ``cache_dir``, ``current_version_only``,
+    ``external_changes``, ``overwrite``,
     ``ai``, ``ai_depth``, ``ai_prompts``, ``ai_analysis``, ``product_type``,
     ``network_exposure``, ``regulatory``, ``deployment_notes``, ``cve_filter``,
     ``component_filter``, ``component_match``, ``component_version``,
     ``license_filter``, ``threat_context``, ``tp_gate``, ``baseline_date``,
-    ``detected_after``, ``scan_types``, ``scan_statuses``, ``open_only``,
+    ``detected_after``, ``scan_types``, ``scan_statuses``, ``include_versions``,
+    ``exclude_versions``, ``open_only``,
     ``detailed``, ``standalone``, ``product_only``, ``vex_override``, ``top``,
     ``triage``,
     ``verbose``, ``logo``.
@@ -1678,6 +1756,13 @@ def _build_engine_config(
         "cache_ttl": _parse_cache_ttl(effective.get("cache_ttl", "4")),
         "cache_dir": effective.get("cache_dir") or None,
         "current_version_only": bool(effective.get("current_version_only", True)),
+        # DEFAULT TRUE (Config.external_changes): only an explicit opt-out skips
+        # Version Comparison's per-pair /cves/updates lookups. Coerced, so a
+        # hand-edited "false" (card override, config file) is that opt-out
+        # rather than the truthy bool("false").
+        "external_changes": _coerce_touched_flag(
+            effective.get("external_changes", True)
+        ),
         "overwrite": bool(effective.get("overwrite", False)),
         "ai": bool(effective.get("ai", False)),
         "ai_depth": str(effective.get("ai_depth", "summary")),
@@ -1708,6 +1793,14 @@ def _build_engine_config(
         "min_severity": effective.get("min_severity") or None,
         "scan_types": effective.get("scan_types") or None,
         "scan_statuses": effective.get("scan_statuses") or None,
+        # Comma-joined over the wire, list[str] in Config — nothing ticked
+        # means no filter, not an empty filter that would match no row.
+        "attack_vector_filter": _split_attack_vectors(
+            effective.get("attack_vector_filter")
+        ),
+        # Config takes list[str]; the web carries comma-joined text.
+        "include_versions": split_patterns(effective.get("include_versions")),
+        "exclude_versions": split_patterns(effective.get("exclude_versions")),
         "open_only": bool(effective.get("open_only", False)),
         "include_file_components": bool(
             effective.get("include_file_components", False)
@@ -2294,6 +2387,9 @@ _WORKFLOW_BOOL_KEYS: frozenset[str] = frozenset(
         "ai_prompts",
         "overwrite",
         "current_version_only",
+        # DEFAULT TRUE: a hand-authored ``"false"`` must be the opt-out, not the
+        # truthy bool("false") that would silently keep the lookups on.
+        "external_changes",
         "open_only",
         "detailed",
         "standalone",

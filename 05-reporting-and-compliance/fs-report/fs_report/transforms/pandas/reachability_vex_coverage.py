@@ -813,11 +813,21 @@ def reachability_vex_coverage_transform(
             "versions are outside these figures."
         )
     elif not pinned_version:
-        notes.append(
-            "EVERY version of each in-scope project was audited, not just the "
-            "current one — a project with many retained versions contributes all of "
-            "them to the counts below."
-        )
+        # The engine's applied label, not the raw config: the note must agree
+        # with the report's other disclosures about the same run.
+        version_names = str((additional_data or {}).get("version_pattern_filter") or "")
+        if version_names:
+            notes.append(
+                "Every version of each in-scope project that passes the version "
+                f"filter ({version_names}) was audited, not just the current one; "
+                "excluded versions are outside these figures."
+            )
+        else:
+            notes.append(
+                "EVERY version of each in-scope project was audited, not just the "
+                "current one — a project with many retained versions contributes "
+                "all of them to the counts below."
+            )
     standalone = bool(getattr(cfg, "standalone", False)) if cfg is not None else False
     if standalone:
         notes.append(

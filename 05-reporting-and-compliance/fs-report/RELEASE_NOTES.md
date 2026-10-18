@@ -1,5 +1,286 @@
 # Release Notes
 
+## Version 2.2.0 (October 2026)
+
+### Filter versions by name: `--include-versions` / `--exclude-versions`
+
+Reports that cover more than one version can now skip versions by name. The
+motivating case is Security Progress on a product that re-scans the same release
+as interim "checkpoint" versions — the trend should show final releases only:
+
+```bash
+fs-report run --recipe "Security Progress" --project X --exclude-versions '*checkpoint*'
+fs-report run --recipe "Security Progress" --project X \
+    --include-versions '2.4.*' --exclude-versions '*checkpoint*'
+```
+
+Matching works exactly like `--project` globs: case-insensitive, against the
+**whole** version name, so a bare word is an exact match — `checkpoint` matches
+only a version named exactly that; `*checkpoint*` matches any name containing
+it. Both flags repeat. Include patterns are OR'd together, and an exclude always
+wins.
+
+The filter applies to Version Comparison and Security Progress (before the
+`--period` trim, so the baseline kept from just before the window is itself an
+allowed version), Scan Analysis, Scan Quality, and any `--all-versions`
+findings or components fetch (Reachability VEX Coverage included). It never touches an explicit
+`--baseline-version`/`--current-version` pair or an explicit `--version`.
+
+**It does not yet apply to reports that use the latest version of each
+project** — the default (`--current-version-only`) for findings and component
+reports. Choosing the latest *non-excluded* version is not supported yet, so
+those reports run unfiltered and say so in a warning at the end of the run.
+Add `--all-versions` to filter them.
+Platform Usage is exempt by design — a checkpoint scan is still usage — and CRA
+Compliance and Component Impact, which fetch their own data, are left wholly
+unfiltered rather than half-filtered.
+
+A filtered report says so: a **Versions** chip in HTML, a `Versions` row in
+Markdown, and `metadata.filters.include_versions` / `exclude_versions` in JSON.
+A recipe the filter could not apply to logs why at the end of its run, and an
+exclude pattern that matched no version is called out too.
+
+On the web UI the two filters are text fields under **Current version only** in
+the run modal, on the report card's Report tab and in the Builder step
+inspector — shown only on the reports that honour them. Several patterns are
+comma-separated there (a comma inside a `[...]` character class stays part of
+the pattern). A saved filter is per-report, never a global default,
+because a global filter would quietly narrow every run.
+
+### Version Comparison: Status Changes
+
+A new **Status changes** section sits beside Fixed/New findings and Component
+changes. It lists findings present in **both** versions of a pair whose VEX
+status changed, typed by whether the finding still needs action:
+
+| Type | Meaning | Example |
+|---|---|---|
+| **Reopened** | did not need action, now does | `NOT_AFFECTED` → untriaged (the triage did not carry over) |
+| **Closed** | needed action, now does not | `OPEN` → `NOT_AFFECTED` |
+| **Reclassified** | status moved, actionability did not | `OPEN` → `EXPLOITABLE` |
+
+Status is compared **per component version**: the same component version on
+both sides is compared directly, a single upgraded occurrence (`1.0` → `1.1`) is
+compared across the upgrade — so triage that did not follow an upgrade reads as
+Reopened — and any other version newly carrying the finding is listed only when
+it reopens it. A partially triaged finding never reads as Closed. Counts are
+status-change rows (finding × component version), not distinct findings.
+
+It appears in HTML (latest-pair panel, per-step tables in the Version changelog,
+a progression column), in Markdown, and as `_Detail_Status_Changes.csv` plus a
+**Status Changes** XLSX sheet. The Summary CSV gains `Status Changes (vs prev)`
+and Findings Detail gains `Status`, both appended last.
+
+### Version Comparison: external CVE changes now actually load
+
+The **Externally changed** panel and the notes on New findings — CVEs whose
+severity or exploit status a platform update changed between two versions —
+were added in March and **never ran in production**: the engine never gave the
+report an API client, and the fetch called a method `APIClient` does not have,
+with the error swallowed. Both are now fixed, so this data appears for the first
+time:
+
+- **One `/public/v0/cves/updates` lookup per version pair.** Each lookup after
+  the first waits `--request-delay`, the same pacing the report already uses for
+  version fetches. An INFO line every 25 lookups reports progress.
+- **A new External Changes export** — `_Detail_External_Changes.csv` and an
+  XLSX sheet — with one row per finding, per change type, per pair: window dates, CVE, component
+  and version, change type, and old/new severity and exploit maturity. Markdown
+  gains an **External CVE Changes** section.
+- **Opt out** with `--no-external-changes`, `external_changes: false` in the
+  config file, or the **Look up external CVE changes** toggle in the web UI
+  (run modal, report card, Builder step and compound sections). The web toggle
+  is stored only as a per-report opt-out, never a Settings default.
+- **"Not looked up" is said out loud.** When lookups were skipped or one failed,
+  HTML and Markdown say so, so an empty panel never reads as "nothing changed
+  externally". A failed pair's count reads blank, not 0.
+
+Windows longer than 90 days now work too — see the CVE-updates section below.
+
+### BREAKING: Version Comparison's `_Progression.csv` drops its list columns
+
+`_Progression.csv` used to repeat whole lists in single cells —
+`findings_in_version`, `fixed_findings`, `new_findings`, `component_churn`,
+`status_changes`, `externally_changed`, `external_changes_window` — as
+Python-repr text, one cell holding every finding of a version. **Those columns
+are gone.** The rows they carried are in the detail exports (Findings Detail for each
+version's findings; Findings Churn, Component Churn, Status Changes and External
+Changes for what changed), and CSV and XLSX now carry
+the same 18 scalar columns, documented in `docs/COLUMN_REFERENCE.md`. A
+fetch-failed version reads blank or "fetch failed" there, never 0.
+
+**Anything reading those list columns must switch to the detail exports.**
+Additions elsewhere are appended last, so positional readers of the other
+exports are unaffected: Findings Churn gains `External Change Note` (the note
+that used to ride on `new_findings`), and Findings Churn, Component Churn,
+Status Changes and External Changes all end with **`Pair Type`** — `Consecutive`,
+or `Latest across failed version` (below).
+
+### Version Comparison: smaller fixes
+
+- **Markdown New Findings listed every finding of every version.** New and
+  Fixed are now built from Findings Churn's change type, so they list only what
+  changed between versions.
+- **The latest pair could be missing from the exports.** When a failed version
+  sat between the last two fetched versions, the latest pair was not a
+  progression step, so its rows reached the panels but no export. They are now
+  in every detail export, marked `Pair Type` = `Latest across failed version`,
+  and the pair is matched to steps by version ID, so a reused version name
+  cannot hide its rows.
+- **A named scope that matches nothing now fails.** A `--project` or `--folder`
+  with no active project used to write an empty report with exit 0; it now
+  fails the recipe. An empty folder no longer falls through to comparing the
+  whole portfolio.
+- Uncompared pairs read "—" or "Not compared" instead of 0, and each Version
+  changelog step shows at most 50 rows per table, naming the export that holds
+  the rest — the HTML no longer grows with every finding of every version.
+
+### CVE updates: 90-day windows, repeated records, folder scope
+
+The shared `/public/v0/cves/updates` lookup behind Version Comparison, Security
+Progress and CRA Compliance had three defects, found in live runs:
+
+- **Windows over 90 days were rejected.** The endpoint answers any longer
+  window with HTTP 400, so Security Progress `--period 6m` silently showed **no**
+  CVE changes (while `3m` showed thousands), CRA Compliance `--since 120d` found
+  none, and any Version Comparison pair more than 90 days apart could never be
+  looked up. Long windows are now fetched in contiguous slices of at most 90
+  days. A failed slice fails the whole window rather than passing off a partial
+  result as complete: Version Comparison marks the pair "not looked up",
+  Security Progress logs a WARNING and reports none, and **CRA Compliance now
+  stops the run** — a partial CRA report is more dangerous than a failed one,
+  and `last-run` does not advance past an interval that was never checked.
+- **Repeated records inflated counts.** The endpoint returns identical records
+  many times over (one window held 5,858 records for 1,111 distinct changes).
+  They are now dropped, so Security Progress's category counts and Version
+  Comparison's Externally changed rows count each change once.
+- **Security Progress `--folder "Name"` showed no external changes.** The raw
+  `--folder` value was sent as the endpoint's `folderId`, which rejects names and
+  ignores subfolders. The lookup is now unscoped and narrowed to the folder's
+  resolved project tree, subfolders included.
+
+Security Progress also now fails when a `--project` or `--folder` matches no
+active project, and gives an empty report with a warning when no project has two
+versions to compare — instead of taking its fallback, which was an unscoped
+portfolio-wide snapshot.
+
+### Cached fetches: interrupted and simultaneous runs
+
+With `--cache-ttl` set, fs-report's SQLite cache had two ways to return the
+wrong data:
+
+- **An interrupted fetch re-ran into a truncated result.** A fetch stopped
+  after N rows (Ctrl-C, a crash) "resumed" at offset N — with its first N rows
+  deleted — and cached the tail as the complete answer for the whole TTL.
+- **Two runs at once could both get empty data.** The second run saw the first
+  run's live fetch as incomplete and "resumed" it, wiping its rows, so both read
+  back nothing — Version Comparison wrote an empty report with exit 0.
+
+A fetch now **claims** its cache entry, with an owner and a heartbeat on every
+stored page and every retry. A second run that finds a live claim fetches on its
+own without touching the first run's rows. An interrupted fetch is refetched
+from page one — resuming would stitch together two snapshots of an
+offset-paginated API taken up to an hour apart, which can skip records with no
+error, and it never worked anyway. A claim whose heartbeat has been quiet for
+10 minutes counts as abandoned. The startup cleanup now measures idleness from
+the heartbeat, so a live fetch running longer than an hour is no longer deleted
+when another run opens the cache.
+
+### A backend query timeout now narrows the request instead of repeating it
+
+The platform answers an over-large findings page with
+
+```
+HTTP 504
+{"errors":[{"error":"Database query timed out. Try narrowing the request
+ or retrying."}]}
+```
+
+That is a request-cost problem, not a load problem, and the two need opposite
+responses. fs-report treated every 504 as load: it re-sent the identical
+10,000-row page on a 30/60/90/120s ladder, up to eight times. Waiting does not
+make an over-budget query cheaper, so a project version whose findings page sat
+just past the backend's timeout budget could burn **13 minutes and then fail**,
+having asked the same impossible question nine times.
+
+A 504 carrying that body is now answered by **narrowing the page**: 10,000 →
+5,000 → 2,000 → 1,000, retried immediately at each step, because a smaller page
+is a different request rather than another go at the same one. Consequences:
+
+- A report that previously failed outright on a large version now completes on
+  a smaller page size.
+- One the backend genuinely cannot serve fails after trying every page size and
+  allowing the smallest two paced retries: **90 seconds of retry waits instead
+  of 13 minutes of them**, plus the time each of the six timed-out requests
+  takes to come back. (Longer if the server sends a large `Retry-After` — the
+  floor retries honour it, up to the same 120s ceiling the ladder obeys.)
+- **Ordinary overload 5xx are unchanged** — a busy gateway still gets the full
+  patient ladder at full page size, since for that failure waiting is exactly
+  the right response.
+
+The narrowed size persists for the rest of the fetch *and for the rest of the
+run* — the client remembers it per endpoint, so a batched fetch (which issues one
+call per version batch) does not re-escalate and re-earn the same timeout on
+every batch. Offsets advance by the size actually used, so no row is fetched
+twice or missed. All three paginators — SQLite, no-cache, and the legacy
+JSON-progress path used by the default `--cache-ttl 0` — share one policy, so
+behaviour no longer depends on which cache mode a run happens to be in.
+
+`fetch_data`'s own three inner retries are skipped for this error **when a
+paginating caller opts in** (`defer_db_timeout`): only the paginator can narrow,
+so retrying in place just delays the one response that can help. Direct callers
+(`resolve_project`, `test_connection`, per-component fan-outs) keep their
+retries — they have no page to narrow, so dropping them would only fail sooner.
+
+### Failed fetches no longer log a wait they never took
+
+The last line before an abort read `Waiting 120s (attempt 9/8)` — an attempt
+number outside the budget, and a wait that never happened, because the warning
+was emitted just before the exhaustion check and the abort followed in the same
+millisecond. The retry warning is now emitted only when a retry actually
+follows.
+
+### Findings by Project: `--attack-vector`
+
+Keep only findings with the CVSS attack vectors you name:
+
+```bash
+fs-report run --recipe "Findings by Project" --project MyProject --attack-vector network
+fs-report run --recipe "Findings by Project" --folder Products --attack-vector network,adjacent
+```
+
+Values are `network`, `adjacent`, `local` and `physical`, comma-separated and
+case-insensitive; the CVSS `AV:` letters (`N`/`A`/`L`/`P`) are accepted as
+spellings of the same four. Several vectors are a union, unset means no filter,
+and an unknown name exits 2 rather than silently narrowing the report to
+nothing. On the web UI it is an **Attack vector** multi-select on the report
+card's Advanced tab and in the run modal — none ticked means no filter. The
+vectors used are disclosed in the HTML "Applied filter" panel, the Markdown
+metadata table and JSON `metadata.filters.attack_vector`.
+
+It filters the report's own **Attack Vector** column, which is read from the
+NVD-enriched CVSS vector. So a finding NVD published no vector for is excluded,
+and under `--no-nvd` every cell is blank and the filter keeps nothing — a
+warning says which happened. A CVE only ever scored under CVSS v2 carries the
+v2 vocabulary, which has no Physical, so it never matches
+`--attack-vector physical`. CVE Impact's identically named column holds the
+API's own `attackVector` field instead, so the two reports can disagree about a
+finding.
+
+### Customer Brief Detailed: CVE aliases on finding cards
+
+Detailed finding cards for **GHSA, PYSEC, GO and RUSTSEC** findings now list
+their CVE aliases. They come from OSV (`api.osv.dev`), cached for 12 hours in
+`~/.fs-report/osv_cache.db`. Only public advisory IDs with those four prefixes
+are ever sent; `FS-` and other internal IDs never leave the host. If OSV is
+unreachable the run stops asking after the first ID and logs one warning.
+
+For air-gapped runs set `osv_enabled: false`: copy
+`customer_brief_detailed.yaml` into your recipes directory (`--recipes`), set
+the parameter there, and it overrides the bundled recipe. Cards then show no
+alias row, as in 2.1.0. (The platform's per-finding `/cves` endpoint, which an
+earlier change tried, is not an alias source — it returns the finding's own ID.)
+
 ## Version 2.1.0 (September 2026)
 
 ### Human Readable SBOM now carries the NTIA Minimum Elements

@@ -13,20 +13,17 @@ import pandas as pd
 # derive_tiers is imported from the CRA module on purpose: a tier name must mean
 # the same thing in `--exploit-maturity` regardless of which recipe reads it.
 from fs_report.cra.tiers import derive_tiers, normalize_tiers, validate_tier_names
-from fs_report.cvss import looks_like_vector
+
+# The label map is imported, not defined here: `--attack-vector` filters rows
+# against the column these labels populate, so the CLI and this transform have
+# to spell the four vectors identically or the flag would validate a name no
+# cell contains.
+from fs_report.cvss import ATTACK_VECTOR_LABELS as _ATTACK_VECTOR_LABELS
+from fs_report.cvss import looks_like_vector, normalize_attack_vectors
 from fs_report.models import Config
 from fs_report.purl_utils import parse_purl
 
 logger = logging.getLogger(__name__)
-
-# CVSS AV: metric letter -> display label. The letters mean the same thing in
-# v2, v3 and v4; v2 has no P (Physical) and folds physical access into L.
-_ATTACK_VECTOR_LABELS = {
-    "N": "Network",
-    "A": "Adjacent",
-    "L": "Local",
-    "P": "Physical",
-}
 
 
 def _attack_vector_label(vector: Any) -> str:
@@ -408,6 +405,19 @@ def findings_by_project_pandas_transform(
     # misconfiguration regardless of what the fetch happened to return.
     validate_tier_names(maturity_tiers)
 
+    # Attack vectors to keep, as the `Attack Vector` column spells them.
+    # Empty/None = no filter. Normalized (and validated) here for the same
+    # reason the tiers are: the CLI checks at parse time, but a programmatic
+    # caller building a Config directly bypasses that, and an unrecognized
+    # vector name matches no row — so the report would narrow to empty while
+    # disclosing the typo as if it were a real filter. Raises ValueError.
+    #
+    # Ahead of the empty-payload early returns, like the tier validation: a
+    # misconfiguration is a misconfiguration whatever the fetch returned.
+    attack_vectors = normalize_attack_vectors(
+        getattr(config, "attack_vector_filter", None)
+    )
+
     if isinstance(data, pd.DataFrame):
         if data.empty:
             return pd.DataFrame()
@@ -575,6 +585,64 @@ def findings_by_project_pandas_transform(
     output_df[_CVSS_V3_ALIAS_COLUMN] = output_df["CVE ID"].apply(
         lambda cve: _cvss_v3_only(cve_details.get(cve, {})) if cve_details else ""
     )
+
+    # --attack-vector: keep rows whose Attack Vector cell is one of the
+    # requested labels.
+    #
+    # Applied HERE, not beside the maturity and component filters above,
+    # because the column it matches on does not exist until this point: the
+    # label is parsed out of the NVD-enriched CVSS vector a few lines up,
+    # never read from the API's own `attackVector` field. Filtering on the
+    # printed cell is what makes the flag honest: a reader can see the label
+    # each surviving row matched on. The vector printed beside it is the
+    # same string in all but one case — `_cvss_columns` takes the label from
+    # the next candidate when the top one carries no readable `AV:`, so a row
+    # kept by `physical` can sit next to a `CVSS Vector` cell reading `AV:L`.
+    # Documented on `_cvss_columns` and in the report's own filter panel.
+    #
+    # It runs before the NVD URL / FS Link passes below, which are per-row
+    # `.apply`s, so a narrowing run does that work only for rows it keeps.
+    #
+    # A v2-scored CVE labels with the v2 vocabulary (no Physical; physical
+    # access scores as Local), so `--attack-vector physical` cannot return a
+    # CVE NVD never rescored under v3+. That is the column's own coarseness,
+    # documented on it, not a filter bug.
+    if attack_vectors:
+        # Every label is derived from the NVD-enriched vector, so a row
+        # without one can never match whatever was asked for. Counted off the
+        # column rather than off `cve_details`, because enrichment being
+        # present says nothing about any individual row: a SAST/credentials
+        # finding, a GHSA/PYSEC id NVD never scored, and a CVE with no
+        # published vector all land here while other rows label fine. Dropped
+        # silently they read as "no such findings", which is the one reading
+        # this filter must not invite.
+        blank = int((output_df["Attack Vector"].fillna("") == "").sum())
+        if blank:
+            logger.warning(
+                "--attack-vector %s: %d of %d rows have no Attack Vector and "
+                "are excluded — no NVD-published CVSS vector to read AV: from "
+                "(--no-nvd, a non-CVE finding type, or a CVE NVD never "
+                "scored).%s",
+                ", ".join(attack_vectors),
+                blank,
+                len(output_df),
+                (
+                    " That is every row, so the filter retains nothing."
+                    if blank == len(output_df)
+                    else ""
+                ),
+            )
+        # .copy() marks this frame as owned before the columns below are
+        # assigned onto it. Under pandas 3's copy-on-write a mask slice is
+        # already a fresh object, so this is explicitness rather than a fix
+        # for the SettingWithCopyWarning pandas 2 raised here (that class no
+        # longer exists); it is what keeps the later assignments from being
+        # read as chained writes on a slice.
+        output_df = output_df[output_df["Attack Vector"].isin(attack_vectors)].copy()
+        if output_df.empty:
+            # Same rule as the filters above: filtered-to-zero keeps the
+            # output schema so tabular formats still get a header row.
+            return pd.DataFrame(columns=_CSV_COLUMNS)
 
     # NVD URL — constructed from CVE ID (GHSA IDs link to GitHub Advisories,
     # PYSEC IDs link to OSV)

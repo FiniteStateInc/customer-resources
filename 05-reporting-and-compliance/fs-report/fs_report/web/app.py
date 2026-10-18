@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.cors import CORSMiddleware
 
+from fs_report.coerce import coerce_bool
 from fs_report.web.security import (
     CSRFMiddleware,
     LocalhostGuardMiddleware,
@@ -72,6 +73,29 @@ def create_app(*, port: int = 8321) -> FastAPI:
             return f"/static/{path}"
 
     templates.env.globals["static_v"] = _static_v
+
+    # Checkbox state for the Findings by Project attack-vector multi-select,
+    # on both surfaces that render it. A stored filter can be a list (YAML),
+    # an alias, padded, or lowercased — all of which run — so comparing the
+    # raw string against the four canonical labels would draw an empty control
+    # over a live filter, and calling .split() on a list would 500 the
+    # fragment. An unreadable value renders as nothing ticked (the save path
+    # rejects it, and _split_attack_vectors raises on the run path, so the
+    # operator is told either way — silently blanking the control is only the
+    # display half).
+    def _attack_vectors(raw: object) -> list[str]:
+        from fs_report.cvss import split_attack_vectors
+
+        try:
+            return split_attack_vectors(raw)
+        except ValueError:
+            return []
+
+    templates.env.globals["attack_vectors"] = _attack_vectors
+
+    # The run path's truthy coercion, so a template reads a saved bool (a
+    # hand-edited string "false" included) exactly as the engine will.
+    templates.env.filters["coerce_bool"] = coerce_bool
     app.state.templates = templates
 
     # ── Routers ───────────────────────────────────────────────────

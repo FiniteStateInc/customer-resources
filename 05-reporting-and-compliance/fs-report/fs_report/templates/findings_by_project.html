@@ -96,8 +96,8 @@
        and the extra weight is what carries 11px text on them.
 
        The class suffixes are the labels lowercased, so they are coupled to
-       _ATTACK_VECTOR_LABELS in transforms/pandas/findings_by_project.py by
-       construction. A test pins the two together: rename a label and CI fails
+       ATTACK_VECTOR_LABELS in fs_report/cvss.py by construction (the
+       transform re-imports it; --attack-vector validates against it). A test pins the two together: rename a label and CI fails
        rather than the styling silently disappearing. #}
     /* Attack Vector — own palette, deliberately not the severity colours. */
     .fbp-av {
@@ -197,17 +197,19 @@
             <p class="subtitle">Comprehensive inventory of security findings across projects.</p>
         </div>
 
-        {% if folder_path or project_label or exploit_maturity_filter %}
+        {% if folder_path or project_label or exploit_maturity_filter or attack_vector_filter %}
         <div class="panel" style="margin-bottom: 20px;">
             {{ fs.panel_head("Applied filter") }}
             {% if folder_path %}<p><strong>Folder:</strong> {{ folder_path }}</p>{% endif %}
             {% if project_label %}<p><strong>Project filter:</strong> {{ project_label }}</p>{% endif %}
             {% if exploit_maturity_filter %}<p><strong>Exploit maturity:</strong> {{ exploit_maturity_filter }}</p>{% endif %}
+            {% if attack_vector_filter %}<p><strong>Attack vector:</strong> {{ attack_vector_filter }}</p>{% endif %}
             {# The footer states what was actually narrowed. A maturity-only run is
                portfolio-wide, so the scope sentence alone would misdescribe it. #}
             <p style="color: var(--ink-mute);">
               {%- if folder_path or project_label %}Showing findings for the specified scope only.{% endif %}
               {%- if exploit_maturity_filter %} Rows are limited to findings carrying at least one of the exploit-maturity tiers above; tiers do not imply one another, so a finding whose highest tier is not listed is excluded.{% endif %}
+              {%- if attack_vector_filter %} Rows are limited to findings whose Attack Vector column reads one of the vectors above. That label is parsed from the CVSS vector beside it — or, where that vector carries no readable AV: metric, from the next vector NVD published for the same CVE, which is the one case the two cells can disagree. A finding NVD published no vector for is excluded; where enrichment was skipped or unavailable that is every row, and the table is empty rather than unfiltered.{% endif %}
             </p>
         </div>
         {% endif %}

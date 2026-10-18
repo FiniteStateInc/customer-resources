@@ -982,6 +982,39 @@
                 </div>
               </div>
 
+              {# Version Comparison's per-pair /cves/updates lookups — a
+                 DEFAULT-TRUE bool like current_version_only (toggle off persists
+                 an explicit false; back on clears it to inherit). #}
+              <div x-show="stepApplies(inspStep(), 'show_external_changes')" x-cloak>
+                <div class="wfb-toggle">
+                  <span class="tl">Look up external CVE changes</span>
+                  <div class="wfb-sw" :class="{ on: defaultTrueOn(inspStep(), 'external_changes') }"
+                       role="switch" :aria-checked="defaultTrueOn(inspStep(), 'external_changes')" tabindex="0"
+                       @click="toggleDefaultTrue('external_changes')"
+                       @keydown.enter.prevent="toggleDefaultTrue('external_changes')"
+                       @keydown.space.prevent="toggleDefaultTrue('external_changes')"></div>
+                </div>
+                <small class="wfb-foot-note">One CVE-updates lookup per version pair. Off skips them: no Externally changed findings, New-finding notes or External Changes export.</small>
+              </div>
+
+              <div x-show="stepApplies(inspStep(), 'show_version_name_filter')" x-cloak>
+                <div class="wfb-field">
+                  <label for="insp-include-versions">Include versions</label>
+                  <input class="wfb-inp" type="text" id="insp-include-versions"
+                         placeholder="e.g. 2.4.*"
+                         :value="inspStep().overrides.include_versions || ''"
+                         @change="applyOverride('include_versions', $event.target.value)">
+                </div>
+                <div class="wfb-field">
+                  <label for="insp-exclude-versions">Exclude versions</label>
+                  <input class="wfb-inp" type="text" id="insp-exclude-versions"
+                         placeholder="e.g. *checkpoint*"
+                         :value="inspStep().overrides.exclude_versions || ''"
+                         @change="applyOverride('exclude_versions', $event.target.value)">
+                  <small class="wfb-foot-note">Comma-separated globs on the whole version name (use <code>*checkpoint*</code>, not <code>checkpoint</code>). Findings and component reports apply them only with Current version only off; the run log names any report that ignores them.</small>
+                </div>
+              </div>
+
               {# AI enrichment + depth — only for AI-capable recipes (show_ai). #}
               <div x-show="stepApplies(inspStep(), 'show_ai')" x-cloak>
               <div class="wfb-toggle">
@@ -1549,6 +1582,20 @@
                  @click="secToggleCvo()"
                  @keydown.enter.prevent="secToggleCvo()"
                  @keydown.space.prevent="secToggleCvo()"></div>
+          </div>
+
+          {# Version Comparison sections only — DEFAULT-TRUE like Current version
+             only above (toggle off persists an explicit false). #}
+          <div x-show="stepApplies({ ref: secRecipe(inspSection()) }, 'show_external_changes')" x-cloak>
+            <div class="wfb-toggle">
+              <span class="tl">Look up external CVE changes</span>
+              <div class="wfb-sw" :class="{ on: secDefaultTrueOn(inspSection(), 'external_changes') }"
+                   role="switch" :aria-checked="secDefaultTrueOn(inspSection(), 'external_changes')" tabindex="0"
+                   @click="secToggleDefaultTrue('external_changes')"
+                   @keydown.enter.prevent="secToggleDefaultTrue('external_changes')"
+                   @keydown.space.prevent="secToggleDefaultTrue('external_changes')"></div>
+            </div>
+            <small class="wfb-foot-note">One CVE-updates lookup per version pair. Off skips them: no Externally changed findings, New-finding notes or External Changes export.</small>
           </div>
 
           {# AI enrichment + depth. #}

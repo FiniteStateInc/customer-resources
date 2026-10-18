@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import base64
 import logging
-import time as _time
+import re
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,11 @@ import pandas as pd
 from fs_report.models import Config
 
 logger = logging.getLogger(__name__)
+
+_CVE_ID_RE = re.compile(r"^CVE-\d{4}-\d{4,}$")
+# Public OSV advisory databases whose IDs may be sent to api.osv.dev for
+# alias lookup. Anything else (FS- IDs, opaque findingIds) never leaves.
+_OSV_ADVISORY_ID_RE = re.compile(r"^(GHSA|PYSEC|GO|RUSTSEC)-")
 
 _OPEN_STATUSES = {"OPEN", "NO_STATUS", "IN_TRIAGE", "UNKNOWN"}
 _TRIAGED_STATUSES = {
@@ -113,6 +118,8 @@ def _normalize_findings(raw_findings: list[dict[str, Any]]) -> pd.DataFrame:
     _EMPTY_COLS = [
         "finding_id",
         "cve_id",
+        "vuln_id",
+        "finding_type",
         "title",
         "severity",
         "cvss_score",
@@ -202,6 +209,15 @@ def _normalize_findings(raw_findings: list[dict[str, Any]]) -> pd.DataFrame:
                 or _safe_str(rec.get("title"))
                 or _safe_str(rec.get("name"))
             ),
+            # Bare vulnerability ID for lookups: live records carry it in
+            # ``findingId`` with no ``cveId``, so ``cve_id`` above falls back
+            # to the "<id> - <component>" title.
+            "vuln_id": (
+                _safe_str(rec.get("findingId"))
+                or _safe_str(rec.get("cveId"))
+                or _safe_str(rec.get("cve_id"))
+            ),
+            "finding_type": _safe_str(rec.get("type")).lower(),
             "title": _safe_str(rec.get("title")) or _safe_str(rec.get("name")),
             "severity": _safe_str(rec.get("severity"), "UNKNOWN").upper(),
             "cvss_score": cvss_score,
@@ -312,53 +328,71 @@ def _build_component_description_map(
     return desc_map
 
 
-def _fetch_cve_aliases(
-    df: pd.DataFrame,
-    api_client: Any | None,
-) -> dict[str, list[str]]:
-    """Fetch CVE aliases for FS-prefixed findings via per-finding API calls.
+def _make_osv_client(config: Any) -> Any:
+    """OSV client for alias lookups (patched out in tests)."""
+    from fs_report.osv_client import OSVClient
 
-    Uses GET /public/v0/findings/{pvId}/{fId}/cves.
-    Only calls for non-CVE-prefixed finding IDs.
-    Returns mapping of finding_id -> list of alias CVE IDs.
+    return OSVClient(cache_dir=getattr(config, "cache_dir", None))
+
+
+def _fetch_cve_aliases(df: pd.DataFrame, osv: Any) -> dict[str, list[str]]:
+    """Map finding_id -> CVE aliases for non-CVE vulnerability IDs, via OSV.
+
+    The platform's ``/findings/{pvId}/{fId}/cves`` cannot supply these: live
+    it returns the vulncheck-nvd2 record of the finding's own ID, keyed by
+    that ID. OSV's ``aliases`` field is the GHSA/PYSEC -> CVE mapping.
+
+    Allowlist: only findings whose ``type`` is ``cve`` (or missing) and whose
+    ID is a public OSV advisory ID (GHSA, PYSEC, GO, RUSTSEC) are looked up.
+    ``binary-sast`` ``FS-`` IDs, config and SAST findings, CVE IDs and opaque
+    IDs cost nothing and never leave the host. One lookup per unique ID.
     """
-    if api_client is None or df.empty:
+    if df.empty:
         return {}
 
-    aliases: dict[str, list[str]] = {}
-    seen: set[tuple[str, str]] = set()
-
+    ids_by_finding: dict[str, str] = {}
     for _, row in df.iterrows():
-        cve_id = str(row.get("cve_id", ""))
-        if cve_id.startswith("CVE-"):
+        vuln_id = str(row.get("vuln_id") or "")
+        if not _OSV_ADVISORY_ID_RE.match(vuln_id):
             continue
-
+        finding_type = str(row.get("finding_type") or "")
+        if finding_type and finding_type != "cve":
+            continue
         fid = str(row.get("finding_id", ""))
-        pvid = str(row.get("project_version_id", ""))
-        if not fid or not pvid:
-            continue
+        if fid:
+            ids_by_finding[fid] = vuln_id
 
-        key = (pvid, fid)
-        if key in seen:
-            continue
-        seen.add(key)
+    unique_ids = list(dict.fromkeys(ids_by_finding.values()))
+    if not unique_ids:
+        return {}
 
-        try:
-            resp = api_client.get(f"/public/v0/findings/{pvid}/{fid}/cves")
-            if isinstance(resp, list):
-                alias_ids = [
-                    str(item.get("cveId", ""))
-                    for item in resp
-                    if isinstance(item, dict) and item.get("cveId")
-                ]
-                if alias_ids:
-                    aliases[fid] = alias_ids
-            _time.sleep(0.5)
-        except Exception:
-            logger.debug(
-                "Failed to fetch CVE aliases for %s/%s", pvid, fid, exc_info=True
-            )
+    try:
+        found = osv.get_aliases(unique_ids)
+    except Exception as exc:
+        logger.warning(
+            "CVE alias lookup (OSV) failed for %d ID(s); their cards show no "
+            "aliases (%s)",
+            len(unique_ids),
+            exc,
+        )
+        return {}
 
+    failed = [i for i in unique_ids if found.get(i) is None]
+    if failed:
+        # One line per run, not per finding, and visible without --verbose.
+        logger.warning(
+            "CVE alias lookup (OSV) failed for %d of %d ID(s); their cards show "
+            "no aliases (first: %s)",
+            len(failed),
+            len(unique_ids),
+            failed[0],
+        )
+
+    aliases: dict[str, list[str]] = {}
+    for fid, vuln_id in ids_by_finding.items():
+        cves = [a for a in (found.get(vuln_id) or []) if _CVE_ID_RE.match(a)]
+        if cves:
+            aliases[fid] = list(dict.fromkeys(cves))
     return aliases
 
 
@@ -803,8 +837,18 @@ def customer_brief_transform(
             raw_components if isinstance(raw_components, list) else []
         )
 
-        api_client = additional_data.get("api_client")
-        cve_aliases = _fetch_cve_aliases(detailed_df, api_client)
+        cve_aliases: dict[str, list[str]] = {}
+        if recipe_params.get("osv_enabled", True):
+            try:
+                osv = _make_osv_client(config)
+            except Exception as exc:
+                # Aliases are optional; an unwritable cache must not fail the run.
+                logger.warning("CVE alias lookup (OSV) unavailable: %s", exc)
+            else:
+                try:
+                    cve_aliases = _fetch_cve_aliases(detailed_df, osv)
+                finally:
+                    osv.close()
 
         result["detailed_findings"] = _build_detail_cards(
             detailed_df, comp_desc_map, cve_aliases

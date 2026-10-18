@@ -10,6 +10,7 @@ Shows version-over-version progression for each project:
 """
 
 import logging
+import time
 from collections import Counter
 from typing import Any
 
@@ -17,14 +18,19 @@ import pandas as pd
 
 from fs_report.purl_utils import _version_tuple
 from fs_report.transforms.pandas._cve_updates import (
+    _SEVERITY_RANK,
+    _exploit_rank,
     _process_cve_updates,
-    _to_iso8601z,
+    fetch_cve_updates_window,
 )
 from fs_report.transforms.pandas.comparison._shared import (
     EXCLUDED_COMPONENT_TYPES as _EXCLUDED_COMPONENT_TYPES,
 )
 from fs_report.transforms.pandas.comparison._shared import (
     add_finding_match_key as _add_finding_match_key,
+)
+from fs_report.transforms.pandas.comparison._shared import (
+    needs_action_mask as _needs_action_mask,
 )
 from fs_report.transforms.pandas.comparison._shared import version_sort_key
 
@@ -46,6 +52,9 @@ _SUMMARY_COLUMNS = [
     "Fixed (vs prev)",
     "New (vs prev)",
     "Components",
+    # Appended last so readers indexing the existing columns by position are
+    # unaffected.
+    "Status Changes (vs prev)",
 ]
 
 _DETAIL_FINDINGS_COLUMNS = [
@@ -58,6 +67,7 @@ _DETAIL_FINDINGS_COLUMNS = [
     "Component Version",
     "Score",
     "Title",
+    "Status",
 ]
 
 _DETAIL_CHURN_COLUMNS = [
@@ -71,7 +81,62 @@ _DETAIL_CHURN_COLUMNS = [
     "Component Version",
     "Score",
     "Title",
+    # Platform-update explanation on New rows (see _annotate_new_findings),
+    # then the pair's provenance — both appended after the original columns
+    # so positional readers of those are unaffected.
+    "External Change Note",
+    "Pair Type",
 ]
+
+_STATUS_CHANGE_COLUMNS = [
+    "Project",
+    "From Version",
+    "To Version",
+    "Change Type",
+    "ID",
+    "Severity",
+    "Component Name",
+    "Component Version",
+    "Status Before",
+    "Status After",
+    "Title",
+    "Pair Type",
+]
+
+_EXTERNAL_CHANGE_COLUMNS = [
+    "Project",
+    "From Version",
+    "To Version",
+    "Window Start",
+    "Window End",
+    "CVE ID",
+    "Component Name",
+    "Component Version",
+    "Change Type",
+    "Old Severity",
+    "New Severity",
+    "Old Exploit",
+    "New Exploit",
+    "Pair Type",
+]
+
+# "Pair Type" values: a progression step, or the latest pair when a failed
+# version separates its ends (so it is no step).
+PAIR_CONSECUTIVE = "Consecutive"
+PAIR_LATEST_ACROSS_FAILED = "Latest across failed version"
+
+# Status-change types, in display order: a finding that needs action again
+# is the one a reader must not miss, so it leads.
+STATUS_CHANGE_ORDER = ["reopened", "closed", "reclassified"]
+STATUS_CHANGE_LABELS = {
+    "reopened": "Reopened",
+    "closed": "Closed",
+    "reclassified": "Reclassified",
+}
+
+# Display value for a finding that was never triaged (null, empty or the
+# platform's own NO_STATUS), so the three never read as a status change.
+NO_STATUS = "NO_STATUS"
 
 _COMPONENT_CHURN_COLUMNS = [
     "Project",
@@ -82,6 +147,7 @@ _COMPONENT_CHURN_COLUMNS = [
     "Version Baseline",
     "Version Current",
     "Findings Impact",
+    "Pair Type",
 ]
 
 
@@ -117,10 +183,20 @@ def version_comparison_transform(
     additional_data = additional_data or {}
     projects_raw = additional_data.get("projects", [])
     api_client = additional_data.get("api_client")
+    # External CVE changes are looked up only with a client and unless the run
+    # opted out (--no-external-changes / external_changes: false).
+    if not _config_value(config, "external_changes", True):
+        external_changes_lookup = "skipped"
+        api_client = None
+    elif api_client is None:
+        external_changes_lookup = "unavailable"
+    else:
+        external_changes_lookup = "done"
+    pacer = _RequestPacer(float(_config_value(config, "request_delay", 0) or 0))
 
     if not projects_raw:
         logger.warning("No project data for version comparison")
-        return _empty_result()
+        return _empty_result(external_changes_lookup)
 
     project_results: list[dict[str, Any]] = []
     all_summary_rows: list[dict] = []
@@ -134,7 +210,9 @@ def version_comparison_transform(
             logger.debug("Skipping %s — only %d version(s)", pname, len(versions))
             continue
 
-        result = _process_single_project(pname, versions, api_client=api_client)
+        result = _process_single_project(
+            pname, versions, api_client=api_client, pacer=pacer
+        )
         # Skip projects where all versions were filtered out (e.g. failed scans)
         if not result.get("progression"):
             continue
@@ -144,7 +222,7 @@ def version_comparison_transform(
 
     if not project_results:
         logger.warning("No projects with ≥ 2 versions to compare")
-        return _empty_result()
+        return _empty_result(external_changes_lookup)
 
     # Aggregate KPI: first version of first project → latest of latest
     agg_kpi = _aggregate_kpi(project_results)
@@ -153,6 +231,8 @@ def version_comparison_transform(
     detail_findings_rows: list[dict[str, Any]] = []
     detail_findings_churn_rows: list[dict[str, Any]] = []
     detail_component_churn_rows: list[dict[str, Any]] = []
+    detail_status_change_rows: list[dict[str, Any]] = []
+    detail_external_change_rows: list[dict[str, Any]] = []
     for proj in project_results:
         pname = proj.get("project_name", "Unknown")
         for step in proj.get("progression", []):
@@ -174,64 +254,39 @@ def version_comparison_transform(
                             else ""
                         ),
                         "Title": row.get("title", ""),
+                        "Status": row.get("status", ""),
                     }
                 )
         for step in proj.get("progression", []):
             if not step.get("from_version"):
                 continue
-            from_ver = step["from_version"]
-            to_ver = step.get("version", "")
-            for row in step.get("fixed_findings", []):
-                detail_findings_churn_rows.append(
-                    {
-                        "Project": pname,
-                        "From Version": from_ver,
-                        "To Version": to_ver,
-                        "Change Type": "Fixed",
-                        "ID": row.get("display_id", row.get("findingId", "")),
-                        "Severity": row.get("severity", ""),
-                        "Component Name": row.get("component_name", ""),
-                        "Component Version": row.get("component_version", ""),
-                        "Score": (
-                            round(row.get("risk", 0) / 10.0, 1)
-                            if row.get("risk")
-                            else ""
-                        ),
-                        "Title": row.get("title", ""),
-                    }
-                )
-            for row in step.get("new_findings", []):
-                detail_findings_churn_rows.append(
-                    {
-                        "Project": pname,
-                        "From Version": from_ver,
-                        "To Version": to_ver,
-                        "Change Type": "New",
-                        "ID": row.get("display_id", row.get("findingId", "")),
-                        "Severity": row.get("severity", ""),
-                        "Component Name": row.get("component_name", ""),
-                        "Component Version": row.get("component_version", ""),
-                        "Score": (
-                            round(row.get("risk", 0) / 10.0, 1)
-                            if row.get("risk")
-                            else ""
-                        ),
-                        "Title": row.get("title", ""),
-                    }
-                )
-            for row in step.get("component_churn", []):
-                detail_component_churn_rows.append(
-                    {
-                        "Project": pname,
-                        "From Version": from_ver,
-                        "To Version": to_ver,
-                        "Change Type": row.get("change_type", ""),
-                        "Component Name": row.get("name", ""),
-                        "Version Baseline": row.get("version_baseline", ""),
-                        "Version Current": row.get("version_current", ""),
-                        "Findings Impact": row.get("findings_impact", 0),
-                    }
-                )
+            pair_rows = _pair_detail_rows(
+                pname,
+                step["from_version"],
+                step.get("version", ""),
+                step,
+                PAIR_CONSECUTIVE,
+            )
+            detail_findings_churn_rows.extend(pair_rows["findings_churn"])
+            detail_component_churn_rows.extend(pair_rows["component_churn"])
+            detail_external_change_rows.extend(pair_rows["external_changes"])
+            detail_status_change_rows.extend(pair_rows["status_changes"])
+        # The latest pair is the last two FETCHED versions. When a failed
+        # version separates them it is no progression step, so the latest-pair
+        # panels would show rows no export carries — add them here.
+        ld = proj.get("latest_delta") or {}
+        if ld and not ld.get("unavailable") and not _latest_pair_is_a_step(proj):
+            pair_rows = _pair_detail_rows(
+                pname,
+                ld.get("baseline_version", ""),
+                ld.get("current_version", ""),
+                ld,
+                PAIR_LATEST_ACROSS_FAILED,
+            )
+            detail_findings_churn_rows.extend(pair_rows["findings_churn"])
+            detail_component_churn_rows.extend(pair_rows["component_churn"])
+            detail_external_change_rows.extend(pair_rows["external_changes"])
+            detail_status_change_rows.extend(pair_rows["status_changes"])
 
     detail_findings_df = (
         pd.DataFrame(detail_findings_rows) if detail_findings_rows else pd.DataFrame()
@@ -245,6 +300,13 @@ def version_comparison_transform(
         pd.DataFrame(detail_component_churn_rows)
         if detail_component_churn_rows
         else pd.DataFrame()
+    )
+
+    detail_status_changes_df = pd.DataFrame(
+        detail_status_change_rows, columns=_STATUS_CHANGE_COLUMNS
+    )
+    detail_external_changes_df = pd.DataFrame(
+        detail_external_change_rows, columns=_EXTERNAL_CHANGE_COLUMNS
     )
 
     # Apply canonical column ordering to detail DataFrames
@@ -283,6 +345,18 @@ def version_comparison_transform(
     for pr in project_results:
         pr.pop("_summary_rows", None)
 
+    if pacer.count:
+        logger.info(
+            "Version Comparison: %d external CVE-change lookups, %d failed "
+            "(%d External Changes export rows)",
+            pacer.count,
+            pacer.failed,
+            len(detail_external_changes_df),
+        )
+    # A failed lookup reads like "nothing changed externally" unless the
+    # report says otherwise.
+    if external_changes_lookup == "done" and pacer.failed:
+        external_changes_lookup = "incomplete"
     logger.info(
         "Version comparison: %d project(s), %d total versions processed",
         len(project_results),
@@ -303,12 +377,193 @@ def version_comparison_transform(
         "detail_findings": detail_findings_df,
         "detail_findings_churn": detail_findings_churn_df,
         "detail_component_churn": detail_component_churn_df,
+        "detail_status_changes": detail_status_changes_df,
+        "detail_external_changes": detail_external_changes_df,
         "project_count": len(project_results),
         "is_pair_comparison": any(
             pr.get("is_pair_comparison") for pr in project_results
         ),
         "partial_report": bool(failed_names),
         "failed_version_names": failed_names,
+        "external_changes_lookup": external_changes_lookup,
+    }
+
+
+def _config_value(config: Any, key: str, default: Any) -> Any:
+    """Read ``key`` from a Config, a plain dict or nothing."""
+    if config is None:
+        return default
+    if isinstance(config, dict):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
+class _RequestPacer:
+    """Waits ``delay`` seconds before every request but the first — the same
+    pacing ``--request-delay`` gives the version fetches — shared across the
+    whole run so back-to-back requests from consecutive projects are paced
+    too. Also counts lookups and failed lookups for the run's log and its
+    ``external_changes_lookup`` state."""
+
+    # Log progress every this many lookups, so a long history is visibly
+    # working rather than silent.
+    PROGRESS_EVERY = 25
+
+    def __init__(self, delay: float) -> None:
+        self.delay = delay
+        self.count = 0
+        self.failed = 0
+
+    def wait(self) -> None:
+        if self.count and self.delay > 0:
+            time.sleep(self.delay)
+        self.count += 1
+        if self.count % self.PROGRESS_EVERY == 0:
+            logger.info(
+                "Version Comparison: %d external CVE-change lookups so far",
+                self.count,
+            )
+
+
+def _latest_pair_is_a_step(proj: dict[str, Any]) -> bool:
+    """Whether the latest pair is one of the progression steps (so its rows
+    already reach the exports through the step)."""
+    ld = proj.get("latest_delta") or {}
+    for step in proj.get("progression", []):
+        if step.get("delta_unavailable"):
+            continue
+        # Version IDs identify a version; names repeat (rebuilds, re-uploads).
+        # Labels are the fallback only when an ID is missing on either end.
+        ids = (
+            ld.get("_baseline_version_id"),
+            ld.get("_current_version_id"),
+            step.get("_from_version_id"),
+            step.get("_version_id"),
+        )
+        if all(ids):
+            same = step.get("_from_version_id") == ld.get(
+                "_baseline_version_id"
+            ) and step.get("_version_id") == ld.get("_current_version_id")
+        else:
+            same = step.get("from_version") == ld.get("baseline_version") and step.get(
+                "version"
+            ) == ld.get("current_version")
+        if same:
+            return True
+    return False
+
+
+def _pair_detail_rows(
+    pname: str,
+    from_ver: str,
+    to_ver: str,
+    pair: dict[str, Any],
+    pair_type: str,
+) -> dict[str, list[dict[str, Any]]]:
+    """Detail-export rows for one version pair — a progression step or the
+    latest pair, which carry the same keys (fixed_findings, new_findings,
+    component_churn, externally_changed, external_changes_window,
+    status_changes)."""
+    churn_rows: list[dict[str, Any]] = []
+    component_rows: list[dict[str, Any]] = []
+    external_rows: list[dict[str, Any]] = []
+    status_rows: list[dict[str, Any]] = []
+    for row in pair.get("fixed_findings", []):
+        churn_rows.append(
+            {
+                "Project": pname,
+                "From Version": from_ver,
+                "To Version": to_ver,
+                "Change Type": "Fixed",
+                "ID": row.get("display_id", row.get("findingId", "")),
+                "Severity": row.get("severity", ""),
+                "Component Name": row.get("component_name", ""),
+                "Component Version": row.get("component_version", ""),
+                "Score": (
+                    round(row.get("risk", 0) / 10.0, 1) if row.get("risk") else ""
+                ),
+                "Title": row.get("title", ""),
+                "External Change Note": "",
+            }
+        )
+    for row in pair.get("new_findings", []):
+        churn_rows.append(
+            {
+                "Project": pname,
+                "From Version": from_ver,
+                "To Version": to_ver,
+                "Change Type": "New",
+                "ID": row.get("display_id", row.get("findingId", "")),
+                "Severity": row.get("severity", ""),
+                "Component Name": row.get("component_name", ""),
+                "Component Version": row.get("component_version", ""),
+                "Score": (
+                    round(row.get("risk", 0) / 10.0, 1) if row.get("risk") else ""
+                ),
+                "Title": row.get("title", ""),
+                "External Change Note": row.get("external_change_note") or "",
+            }
+        )
+    for row in pair.get("component_churn", []):
+        component_rows.append(
+            {
+                "Project": pname,
+                "From Version": from_ver,
+                "To Version": to_ver,
+                "Change Type": row.get("change_type", ""),
+                "Component Name": row.get("name", ""),
+                "Version Baseline": row.get("version_baseline", ""),
+                "Version Current": row.get("version_current", ""),
+                "Findings Impact": row.get("findings_impact", 0),
+            }
+        )
+    window = pair.get("external_changes_window") or {}
+    for row in pair.get("externally_changed", []):
+        external_rows.append(
+            {
+                "Project": pname,
+                "From Version": from_ver,
+                "To Version": to_ver,
+                "Window Start": window.get("from", ""),
+                "Window End": window.get("to", ""),
+                "CVE ID": row.get("cve_id", ""),
+                "Component Name": row.get("component_name", ""),
+                "Component Version": row.get("component_version", ""),
+                "Change Type": str(row.get("change_type", ""))
+                .replace("_", " ")
+                .title(),
+                "Old Severity": row.get("old_severity") or "",
+                "New Severity": row.get("new_severity") or "",
+                "Old Exploit": row.get("old_exploit") or "",
+                "New Exploit": row.get("new_exploit") or "",
+            }
+        )
+    for row in pair.get("status_changes", []):
+        status_rows.append(
+            {
+                "Project": pname,
+                "From Version": from_ver,
+                "To Version": to_ver,
+                "Change Type": STATUS_CHANGE_LABELS.get(
+                    row.get("change_type", ""), row.get("change_type", "")
+                ),
+                "ID": row.get("display_id", ""),
+                "Severity": row.get("severity", ""),
+                "Component Name": row.get("component_name", ""),
+                "Component Version": row.get("component_version", ""),
+                "Status Before": row.get("status_baseline", ""),
+                "Status After": row.get("status_current", ""),
+                "Title": row.get("title", ""),
+            }
+        )
+    for row_list in (churn_rows, component_rows, external_rows, status_rows):
+        for out in row_list:
+            out["Pair Type"] = pair_type
+    return {
+        "findings_churn": churn_rows,
+        "component_churn": component_rows,
+        "external_changes": external_rows,
+        "status_changes": status_rows,
     }
 
 
@@ -321,6 +576,7 @@ def _process_single_project(
     project_name: str,
     versions: list[dict[str, Any]],
     api_client: Any = None,
+    pacer: "_RequestPacer | None" = None,
 ) -> dict[str, Any]:
     """
     Build the progression data for a single project.
@@ -378,7 +634,30 @@ def _process_single_project(
     summary_rows: list[dict] = []
 
     # Track CVE updates for the last pair to reuse in latest_delta (avoids double fetch)
-    _last_ext_updates: dict[str, list[dict]] = {}
+    # External CVE updates per (baseline created, current created) window,
+    # so the latest pair reuses its progression step's request when there is
+    # one — and gets its own when a failed version sits between its ends.
+    ext_by_window: dict[tuple[str, str], dict[str, list[dict]]] = {}
+    # Windows whose lookup failed: their counts read "not looked up" (None),
+    # not a misleading 0.
+    failed_windows: set[tuple[str, str]] = set()
+
+    def _ext_updates(start: str, end: str) -> dict[str, list[dict]]:
+        if (start, end) not in ext_by_window:
+            if pacer is not None:
+                pacer.wait()
+            errors: list[str] = []
+            ext_by_window[(start, end)] = _fetch_external_cve_changes(
+                api_client, start, end, errors=errors
+            )
+            if errors:
+                # Drop any pages fetched before the failure: a partial list
+                # would export rows under a count that reads "not looked up".
+                ext_by_window[(start, end)] = {}
+                failed_windows.add((start, end))
+                if pacer is not None:
+                    pacer.failed += 1
+        return ext_by_window[(start, end)]
 
     for i, (v_meta, f_df, c_df) in enumerate(version_dfs):
         vname = v_meta.get("name", v_meta.get("id", f"v{i+1}"))
@@ -407,13 +686,15 @@ def _process_single_project(
                 "fixed_severity_summary": "—",
                 "new_severity_summary": "—",
                 "component_churn": [],
+                "status_changes": [],
+                "status_changed_count": None,
                 "externally_changed": [],
-                "externally_changed_count": 0,
+                "externally_changed_count": None,
                 "external_changes_window": {},
                 "fetch_failed": True,
                 "delta_unavailable": True,
             }
-            progression.append(step)
+            progression.append(_with_version_ids(step, version_dfs, i))
             continue
 
         total = len(f_df)
@@ -444,8 +725,12 @@ def _process_single_project(
             step["fixed_severity_summary"] = "0"
             step["new_severity_summary"] = "0"
             step["component_churn"] = []
+            step["status_changes"] = []
+            step["status_changed_count"] = 0
             step["externally_changed"] = []
-            step["externally_changed_count"] = 0
+            # The first version has no pair: 0 when external changes are looked
+            # up (like fixed/new), None when they are not.
+            step["externally_changed_count"] = 0 if api_client is not None else None
             step["external_changes_window"] = {}
         else:
             prev_v_meta_i = version_dfs[i - 1][0]
@@ -461,23 +746,24 @@ def _process_single_project(
                 step["fixed_severity_summary"] = "—"
                 step["new_severity_summary"] = "—"
                 step["component_churn"] = []
+                step["status_changes"] = []
+                step["status_changed_count"] = None
                 step["externally_changed"] = []
-                step["externally_changed_count"] = 0
+                step["externally_changed_count"] = None
                 step["external_changes_window"] = {}
-                progression.append(step)
+                progression.append(_with_version_ids(step, version_dfs, i))
                 continue
             prev_f_df = version_dfs[i - 1][1]
             prev_c_df = version_dfs[i - 1][2]
             fixed_df, new_df, unchanged_df = _classify_findings(prev_f_df, f_df)
             churn_df = _classify_components(prev_c_df, c_df)
             churn_df = _attach_findings_impact(churn_df, fixed_df, new_df)
+            status_df = _classify_status_changes(prev_f_df, f_df)
 
             # Fetch external CVE changes for this version pair
             prev_created = prev_v_meta_i.get("created", "")
             if api_client is not None:
-                ext_updates = _fetch_external_cve_changes(
-                    api_client, prev_created, created
-                )
+                ext_updates = _ext_updates(prev_created, created)
                 new_df = _annotate_new_findings(new_df, ext_updates)
                 externally_changed = _build_externally_changed(
                     unchanged_df, ext_updates
@@ -486,8 +772,6 @@ def _process_single_project(
                     "from": prev_created[:10] if prev_created else "",
                     "to": created[:10] if created else "",
                 }
-                if i == len(version_dfs) - 1:
-                    _last_ext_updates = ext_updates
             else:
                 externally_changed = []
                 ext_window = {}
@@ -506,11 +790,20 @@ def _process_single_project(
                 _severity_counts(new_df)
             )
             step["component_churn"] = _df_to_records(churn_df)
+            step["status_changes"] = _df_to_records(status_df)
+            step["status_changed_count"] = len(status_df)
             step["externally_changed"] = externally_changed
-            step["externally_changed_count"] = len(externally_changed)
+            # None = not looked up (no client, the run opted out, or the
+            # lookup failed).
+            step["externally_changed_count"] = (
+                len(externally_changed)
+                if api_client is not None
+                and (prev_created, created) not in failed_windows
+                else None
+            )
             step["external_changes_window"] = ext_window
 
-        progression.append(step)
+        progression.append(_with_version_ids(step, version_dfs, i))
 
     # Count fetch_failed versions for KPI tracking
     n_versions_excluded = sum(
@@ -555,13 +848,18 @@ def _process_single_project(
         component_churn = _attach_findings_impact(
             component_churn, fixed_latest, new_latest
         )
+        status_latest = _classify_status_changes(kpi_prev_f_df, kpi_last_f_df)
 
-        # Annotate new_latest and compute externally_changed for the latest pair.
-        # Reuse _last_ext_updates from the loop (same pair) to avoid a double fetch.
+        # Annotate new_latest and compute externally_changed for the latest
+        # pair — the last two FETCHED versions, whose window the progression
+        # loop has already requested unless a failed version separates them.
         if api_client is not None:
-            new_latest = _annotate_new_findings(new_latest, _last_ext_updates)
+            latest_updates = _ext_updates(
+                kpi_prev_v_meta.get("created", ""), kpi_last_v_meta.get("created", "")
+            )
+            new_latest = _annotate_new_findings(new_latest, latest_updates)
             latest_externally_changed = _build_externally_changed(
-                unchanged_latest, _last_ext_updates
+                unchanged_latest, latest_updates
             )
             latest_ext_window: dict[str, str] = {
                 "from": kpi_prev_v_meta.get("created", "")[:10],
@@ -571,7 +869,9 @@ def _process_single_project(
             latest_externally_changed = []
             latest_ext_window = {}
 
-        bv_name = kpi_prev_v_meta.get("name", "")
+        # Same label the progression steps use (name, else ID), so the latest
+        # pair is recognised when it is a step.
+        bv_name = kpi_prev_v_meta.get("name", kpi_prev_v_meta.get("id", ""))
         bv_proj = kpi_prev_v_meta.get("project_name", "")
     else:
         # No valid baseline — skip delta computation entirely.
@@ -579,6 +879,9 @@ def _process_single_project(
         new_latest = _make_findings_df([])
         unchanged_latest = _make_findings_df([])
         component_churn = _classify_components(pd.DataFrame(), pd.DataFrame())
+        status_latest = _classify_status_changes(
+            _make_findings_df([]), _make_findings_df([])
+        )
         latest_externally_changed = []
         latest_ext_window = {}
         bv_name = ""
@@ -612,19 +915,24 @@ def _process_single_project(
                 "Fixed (vs prev)": step["fixed"],
                 "New (vs prev)": step["new"],
                 "Components": step["components"],
+                "Status Changes (vs prev)": step["status_changed_count"],
             }
         )
 
     # Build display labels for baseline/current that include project name
     # when the two versions come from different projects.
     # Use non-failed endpoints so labels reflect actual comparison targets.
-    cv_name = kpi_last_v_meta.get("name", "")
+    cv_name = kpi_last_v_meta.get("name", kpi_last_v_meta.get("id", ""))
     cv_proj = kpi_last_v_meta.get("project_name", "")
     cross_project = bv_proj and cv_proj and bv_proj != cv_proj
     baseline_label = f"{bv_proj} / {bv_name}" if cross_project else bv_name
     current_label = f"{cv_proj} / {cv_name}" if cross_project else cv_name
 
     latest_delta: dict[str, Any] = {
+        "_baseline_version_id": (
+            str(kpi_prev_v_meta.get("id", "") or "") if _kpi_prev_available else ""
+        ),
+        "_current_version_id": str(kpi_last_v_meta.get("id", "") or ""),
         "baseline_version": bv_name,
         "current_version": cv_name,
         "baseline_project_name": bv_proj,
@@ -641,8 +949,21 @@ def _process_single_project(
         "fixed_count": len(fixed_latest),
         "new_count": len(new_latest),
         "unchanged_count": len(unchanged_latest),
+        "status_changes": _df_to_records(status_latest),
+        "status_changed_count": len(status_latest),
+        "status_change_counts": _status_change_counts(status_latest),
         "externally_changed": latest_externally_changed,
-        "externally_changed_count": len(latest_externally_changed),
+        "externally_changed_count": (
+            len(latest_externally_changed)
+            if api_client is not None
+            and _kpi_prev_available
+            and (
+                kpi_prev_v_meta.get("created", ""),
+                kpi_last_v_meta.get("created", ""),
+            )
+            not in failed_windows
+            else None
+        ),
         "external_changes_window": latest_ext_window,
     }
     if not _kpi_prev_available:
@@ -656,6 +977,21 @@ def _process_single_project(
         "kpi": kpi,
         "_summary_rows": summary_rows,
     }
+
+
+def _with_version_ids(
+    step: dict[str, Any],
+    version_dfs: list[tuple[dict, pd.DataFrame, pd.DataFrame]],
+    i: int,
+) -> dict[str, Any]:
+    """Stamp a progression step with its versions' IDs (internal, ``_``-keyed:
+    the progression export leaves them out) so a pair can be matched by
+    identity rather than by name."""
+    step["_version_id"] = str(version_dfs[i][0].get("id", "") or "")
+    step["_from_version_id"] = (
+        str(version_dfs[i - 1][0].get("id", "") or "") if i > 0 else ""
+    )
+    return step
 
 
 def _df_to_records(df: pd.DataFrame) -> list[dict]:
@@ -733,10 +1069,22 @@ def _aggregate_kpi(project_results: list[dict[str, Any]]) -> dict[str, Any]:
         _last_non_none(pr["progression"], "components") for pr in project_results
     )
 
-    total_fixed_latest = sum(
-        pr["latest_delta"]["fixed_count"] for pr in project_results
-    )
-    total_new_latest = sum(pr["latest_delta"]["new_count"] for pr in project_results)
+    # Latest-pair counts sum only the projects whose latest pair was actually
+    # compared; with none compared they are None ("—"), not a measured zero.
+    compared = [
+        pr["latest_delta"]
+        for pr in project_results
+        if not pr["latest_delta"].get("unavailable")
+    ]
+
+    def _latest_sum(key: str) -> int | None:
+        if not compared:
+            return None
+        return sum(int(ld.get(key) or 0) for ld in compared)
+
+    total_fixed_latest = _latest_sum("fixed_count")
+    total_new_latest = _latest_sum("new_count")
+    total_status_changed_latest = _latest_sum("status_changed_count")
 
     def _delta(a: int, b: int) -> dict:
         d = b - a
@@ -750,6 +1098,7 @@ def _aggregate_kpi(project_results: list[dict[str, Any]]) -> dict[str, Any]:
         "components": _delta(comp_first, comp_last),
         "fixed_count": total_fixed_latest,
         "new_count": total_new_latest,
+        "status_changed_count": total_status_changed_latest,
         "baseline_version": "First versions",
         "current_version": "Latest versions",
         "project_count": len(project_results),
@@ -761,7 +1110,7 @@ def _aggregate_kpi(project_results: list[dict[str, Any]]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _empty_result() -> dict[str, Any]:
+def _empty_result(external_changes_lookup: str = "unavailable") -> dict[str, Any]:
     return {
         "projects": [],
         "kpi": {
@@ -771,6 +1120,7 @@ def _empty_result() -> dict[str, Any]:
             "components": {"baseline": 0, "current": 0, "delta": 0, "pct": 0.0},
             "fixed_count": 0,
             "new_count": 0,
+            "status_changed_count": 0,
             "baseline_version": "",
             "current_version": "",
             "project_count": 0,
@@ -779,7 +1129,10 @@ def _empty_result() -> dict[str, Any]:
         "detail_findings": pd.DataFrame(),
         "detail_findings_churn": pd.DataFrame(),
         "detail_component_churn": pd.DataFrame(),
+        "detail_status_changes": pd.DataFrame(),
+        "detail_external_changes": pd.DataFrame(),
         "project_count": 0,
+        "external_changes_lookup": external_changes_lookup,
     }
 
 
@@ -802,6 +1155,7 @@ def _make_findings_df(raw: list[dict]) -> pd.DataFrame:
                 "component_name",
                 "component_version",
                 "title",
+                "status",
             ]
         )
 
@@ -829,6 +1183,16 @@ def _make_findings_df(raw: list[dict]) -> pd.DataFrame:
 
     # Normalise severity to uppercase (before match_key so fingerprint is consistent)
     df["severity"] = df["severity"].fillna("UNSPECIFIED").str.upper()
+
+    # Normalise VEX status. Null, empty and the platform's NO_STATUS all mean
+    # "never triaged" and collapse to one value, so a version whose rows carry
+    # null never reads as a status change against one whose rows say NO_STATUS.
+    status = (
+        df["status"].fillna("").astype(str).str.strip().str.upper()
+        if "status" in df.columns
+        else pd.Series("", index=df.index)
+    )
+    df["status"] = status.where(status != "", NO_STATUS)
 
     # Build a stable match key for version-over-version comparison.
     # Logic lives in comparison._shared.add_finding_match_key — imported here
@@ -910,6 +1274,197 @@ def _classify_findings(
     )
 
     return fixed_df, new_df, unchanged_df
+
+
+_STATUS_CHANGE_FRAME_COLUMNS = [
+    "change_type",
+    "match_key",
+    "display_id",
+    "severity",
+    "risk",
+    "component_name",
+    "component_version",
+    "title",
+    "status_baseline",
+    "status_current",
+]
+
+
+def _version_key(version: str) -> str:
+    """A hashable string for :func:`_version_identity`.
+
+    ``_version_identity`` returns a tuple for numeric versions and a string
+    otherwise; tagging keeps the two from colliding in one column.
+    """
+    identity = _version_identity(version)
+    if isinstance(identity, tuple):
+        return "n:" + ".".join(str(part) for part in identity)
+    return "s:" + identity
+
+
+def _status_order(rows: pd.DataFrame) -> pd.Series:
+    """Sort key putting the status that represents a group first.
+
+    Needs-action first, then alphabetical: a function of the group's SET of
+    statuses alone, so a re-score that reorders rows by severity or risk can
+    never change which status represents it (fail-open, as
+    :func:`comparison._shared.needs_action` does).
+    """
+    return (~rows["_needs_action"]).astype(int).astype(str) + "|" + rows["status"]
+
+
+def _status_representatives(df: pd.DataFrame) -> pd.DataFrame:
+    """Reduce a findings frame to one row per finding per component version.
+
+    A finding (``match_key``) can carry several rows at the SAME component
+    version — ``1.0`` and ``1.0.0`` included, by :func:`_version_identity`.
+    When those rows disagree on status, :func:`_status_order` picks the one
+    that still needs action, so a partially-triaged finding never reads as
+    closed.  Severity and risk only pick which row carrying that status is
+    displayed.
+    """
+    ranked = df.assign(
+        _needs_action=_needs_action_mask(df["status"]),
+        _sev_rank=df["severity"].map(SEVERITY_RANK).fillna(99),
+        _risk=pd.to_numeric(df["risk"], errors="coerce").fillna(0),
+        _version=df["component_version"].map(_clean_cell),
+    )
+    ranked["_vkey"] = ranked["_version"].map(_version_key)
+    ranked["_status_order"] = _status_order(ranked)
+    ranked = ranked.sort_values(
+        ["match_key", "_vkey", "_status_order", "_sev_rank", "_risk", "display_id"],
+        ascending=[True, True, True, True, False, True],
+        kind="stable",
+    )
+    return ranked.drop_duplicates(["match_key", "_vkey"], keep="first").reset_index(
+        drop=True
+    )
+
+
+def _pair_status_rows(
+    base: pd.DataFrame, curr: pd.DataFrame
+) -> list[tuple[int, int, bool]]:
+    """Pair each finding's current rows with what they are compared against.
+
+    Returns ``(base row, current row, like_for_like)``.  Within one
+    ``match_key``:
+
+    - the same component version on both sides is compared directly;
+    - when exactly one version is left over on each side, those two are the
+      same occurrence moved (an upgrade ``1.0`` → ``1.1``) and are compared;
+    - any other current version left over has no counterpart, so it is
+      compared with the finding's baseline status (its representative across
+      every baseline row, :func:`_status_order`) and is NOT like-for-like —
+      the caller reports it only when it reopens the finding.
+
+    A baseline version left over is never compared: a version leaving a
+    finding is not a triage decision.
+    """
+
+    def _by_key(df: pd.DataFrame) -> dict[str, dict[str, tuple[str, int, str]]]:
+        grouped: dict[str, dict[str, tuple[str, int, str]]] = {}
+        for idx, key, vkey, version, order in zip(
+            df.index,
+            df["match_key"],
+            df["_vkey"],
+            df["_version"],
+            df["_status_order"],
+            strict=True,
+        ):
+            grouped.setdefault(key, {})[vkey] = (version, idx, order)
+        return grouped
+
+    base_by_key = _by_key(base)
+    curr_by_key = _by_key(curr)
+    pairs: list[tuple[int, int, bool]] = []
+    for key in sorted(base_by_key.keys() & curr_by_key.keys()):
+        b = base_by_key[key]
+        c = curr_by_key[key]
+        held = sorted(b.keys() & c.keys(), key=lambda v: version_sort_key(c[v][0]))
+        pairs.extend((b[v][1], c[v][1], True) for v in held)
+        b_left = [v for v in b if v not in c]
+        c_left = sorted(
+            (v for v in c if v not in b), key=lambda v: version_sort_key(c[v][0])
+        )
+        if len(b_left) == 1 and len(c_left) == 1:
+            pairs.append((b[b_left[0]][1], c[c_left[0]][1], True))
+        elif c_left:
+            finding_status = min(b.values(), key=lambda entry: entry[2])[1]
+            pairs.extend((finding_status, c[v][1], False) for v in c_left)
+    return pairs
+
+
+def _classify_status_changes(
+    baseline: pd.DataFrame, current: pd.DataFrame
+) -> pd.DataFrame:
+    """Findings present in both versions whose VEX status changed.
+
+    Findings that appear or disappear are Fixed/New, never status changes, so
+    only keys on both sides are compared, row by row across component
+    versions (:func:`_pair_status_rows`).  Each change is typed by whether
+    the finding needs action (:func:`comparison._shared.needs_action`):
+
+    - ``reopened``: did not need action, now does (e.g. ``NOT_AFFECTED`` on the
+      baseline, untriaged on the current — the triage did not carry over).
+    - ``closed``: needed action, now does not (e.g. ``OPEN`` → ``NOT_AFFECTED``).
+    - ``reclassified``: the status moved but actionability did not
+      (e.g. ``OPEN`` → ``EXPLOITABLE``, ``NOT_AFFECTED`` → ``FALSE_POSITIVE``).
+
+    A current version with no like-for-like counterpart is reported only as
+    ``reopened`` — a new occurrence that needs action on a finding that did
+    not — so it is never hidden, and never claims a closure it cannot show.
+
+    Each row is one component version of a finding; identity, severity and
+    title come from its current-version row.  Rows are ordered reopened,
+    closed, reclassified, then by severity, risk and ID.
+    """
+    if baseline.empty or current.empty:
+        return pd.DataFrame(columns=_STATUS_CHANGE_FRAME_COLUMNS)
+
+    base = _status_representatives(baseline)
+    curr = _status_representatives(current)
+    pairs = _pair_status_rows(base, curr)
+    if not pairs:
+        return pd.DataFrame(columns=_STATUS_CHANGE_FRAME_COLUMNS)
+
+    before = base.loc[[b for b, _, _ in pairs]].reset_index(drop=True)
+    after = curr.loc[[c for _, c, _ in pairs]].reset_index(drop=True)
+    like_for_like = [same for _, _, same in pairs]
+    after["_like_for_like"] = like_for_like
+    changed = (before["status"] != after["status"]).to_numpy()
+    if not changed.any():
+        return pd.DataFrame(columns=_STATUS_CHANGE_FRAME_COLUMNS)
+
+    rows = after[changed].copy()
+    before = before[changed]
+    rows["status_baseline"] = before["status"].to_numpy()
+    rows["status_current"] = rows["status"]
+    was_actionable = before["_needs_action"].astype(bool).to_numpy()
+    is_actionable = rows["_needs_action"].astype(bool).to_numpy()
+    rows["change_type"] = "reclassified"
+    rows.loc[was_actionable & ~is_actionable, "change_type"] = "closed"
+    rows.loc[~was_actionable & is_actionable, "change_type"] = "reopened"
+    rows = rows[rows["_like_for_like"] | (rows["change_type"] == "reopened")]
+    if rows.empty:
+        return pd.DataFrame(columns=_STATUS_CHANGE_FRAME_COLUMNS)
+
+    rows["_type_rank"] = rows["change_type"].map(
+        {t: i for i, t in enumerate(STATUS_CHANGE_ORDER)}
+    )
+    rows["risk"] = rows["_risk"]
+    rows = rows.sort_values(
+        ["_type_rank", "_sev_rank", "risk", "display_id"],
+        ascending=[True, True, False, True],
+        kind="stable",
+    )
+    result: pd.DataFrame = rows[_STATUS_CHANGE_FRAME_COLUMNS].reset_index(drop=True)
+    return result
+
+
+def _status_change_counts(df: pd.DataFrame) -> dict[str, int]:
+    """Return ``{change_type: count}`` with every type present (zero-filled)."""
+    counts = Counter(df["change_type"].tolist()) if not df.empty else Counter()
+    return {t: int(counts.get(t, 0)) for t in STATUS_CHANGE_ORDER}
 
 
 def _component_identity(name: Any, version: Any) -> tuple[str, tuple[int, ...] | str]:
@@ -1322,45 +1877,28 @@ def _fetch_external_cve_changes(
     api_client: Any,
     baseline_created: str,
     current_created: str,
+    errors: list[str] | None = None,
 ) -> dict[str, list[dict]]:
     """Fetch and classify CVE updates between two version creation dates.
 
     Returns the same structure as ``_process_cve_updates``:
     ``{"added": [...], "severity_escalated": [...], "exploit_gained": [...], ...}``
-    Returns an empty dict if ``api_client`` is None or dates are missing.
+    Returns an empty dict when nothing was fetched — no ``api_client``,
+    missing dates, a failed request or no updates in the window — so callers
+    that short-circuit on an empty result still do. A failed request or a
+    missing date also appends to ``errors`` when it is given.
     """
-    if api_client is None:
-        return {}
-
-    start = _to_iso8601z(baseline_created)
-    end = _to_iso8601z(current_created)
-    if not start or not end:
-        return {}
-
-    params: dict[str, Any] = {
-        "startDate": start,
-        "endDate": end,
-        "limit": 100,
-        "offset": 0,
-    }
-    results: list[dict] = []
-    while True:
-        try:
-            batch = api_client.get("/public/v0/cves/updates", params=params)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Could not fetch CVE updates (offset=%d): %s", params["offset"], exc
-            )
-            break
-        if not batch:
-            break
-        results.extend(batch)
-        if len(batch) < 100:
-            break
-        params["offset"] += 100
-
-    logger.debug("Fetched %d CVE updates for window %s → %s", len(results), start, end)
-    return _process_cve_updates(results)
+    # The same fetch Security Progress runs, over this pair's window. The
+    # endpoint carries no timestamps, so each pair needs its own lookup (one
+    # or more requests: windows over 90 days are fetched in slices).
+    # Never folder-scoped: config.folder_filter is the raw --folder input,
+    # and the endpoint's folderId rejects names and ignores subfolders (see
+    # cra_compliance.py). The results are matched against this project's own
+    # findings, so a portfolio-wide window loses nothing.
+    updates = fetch_cve_updates_window(
+        api_client, baseline_created, current_created, errors=errors
+    )
+    return _process_cve_updates(updates) if updates else {}
 
 
 def _build_externally_changed(
@@ -1392,10 +1930,11 @@ def _build_externally_changed(
 
     unchanged_cve_ids = set(cve_df["_eff_cve"])
     result: list[dict] = []
-
+    # One row per finding per change type: several updates of one CVE with
+    # the same change type collapse to the highest-risk one (see
+    # ``_strongest_updates``).
     for change_type in ("severity_escalated", "exploit_gained", "exploit_subsided"):
-        for upd in cve_updates.get(change_type, []):
-            cve_id = upd.get("cve_id", "")
+        for cve_id, upd in _strongest_updates(cve_updates, change_type).items():
             if cve_id not in unchanged_cve_ids:
                 continue
             matching = cve_df[cve_df["_eff_cve"] == cve_id]
@@ -1403,6 +1942,7 @@ def _build_externally_changed(
                 entry: dict[str, Any] = {
                     "cve_id": cve_id,
                     "component_name": row.get("component_name", ""),
+                    "component_version": row.get("component_version", ""),
                     "change_type": change_type,
                     "projects": upd.get("projects", []),
                 }
@@ -1421,6 +1961,46 @@ def _build_externally_changed(
     return result
 
 
+def _strongest_updates(
+    cve_updates: dict[str, list[dict]], change_type: str
+) -> dict[str, dict]:
+    """The highest-risk update of each CVE among ``change_type``'s updates.
+
+    A window can hold several updates of one CVE with the same change type
+    (live: one CVE gained ``weaponized`` and ``poc`` in a window), and the
+    endpoint carries no timestamps to order them. Picking by risk instead of
+    by list position is order-independent and never understates: the highest
+    new severity (then the lowest old one, the wider jump) for escalations,
+    the highest new exploit maturity (then the lowest old one) for gains, and
+    the highest remaining maturity for a subsided exploit. Ties keep the
+    first update.
+    """
+
+    def _sev(value: Any) -> int:
+        return _SEVERITY_RANK.get(str(value or "").upper(), 0)
+
+    def _risk(upd: dict) -> tuple[int, int]:
+        if change_type == "severity_escalated":
+            return (_sev(upd.get("new_severity")), -_sev(upd.get("old_severity")))
+        if change_type == "exploit_gained":
+            return (
+                _exploit_rank(upd.get("new_exploit")),
+                -_exploit_rank(upd.get("old_exploit")),
+            )
+        return (
+            _exploit_rank(upd.get("new_exploit")),
+            _exploit_rank(upd.get("old_exploit")),
+        )
+
+    strongest: dict[str, dict] = {}
+    for upd in cve_updates.get(change_type, []):
+        cve_id = upd.get("cve_id", "")
+        held = strongest.get(cve_id)
+        if held is None or _risk(upd) > _risk(held):
+            strongest[cve_id] = upd
+    return strongest
+
+
 def _annotate_new_findings(
     new_df: pd.DataFrame,
     cve_updates: dict[str, list[dict]],
@@ -1434,12 +2014,8 @@ def _annotate_new_findings(
     if new_df.empty or not cve_updates:
         return new_df
 
-    escalated = {
-        u.get("cve_id", ""): u for u in cve_updates.get("severity_escalated", [])
-    }
-    exploit_gained = {
-        u.get("cve_id", ""): u for u in cve_updates.get("exploit_gained", [])
-    }
+    escalated = _strongest_updates(cve_updates, "severity_escalated")
+    exploit_gained = _strongest_updates(cve_updates, "exploit_gained")
 
     def _note(row: pd.Series) -> str:
         cve_id = str(row.get("cveId") or "").strip()

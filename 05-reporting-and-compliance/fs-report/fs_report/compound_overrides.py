@@ -32,16 +32,15 @@ A compound recipe may carry an authored ``global`` block plus per-section
   workflow ``_effective_step_config`` applies via
   ``merge_with_period_range_clearing``.
 
-This module imports only ``fs_report.workflow_store`` (dependency-light), so it
-is safe to import from both the web routers and ``report_engine`` without an
-import cycle.
+This module imports only the leaf ``fs_report.coerce``, so it is safe to import
+from both the web routers and ``report_engine`` without an import cycle.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fs_report.workflow_store import coerce_bool
+from fs_report.coerce import coerce_bool
 
 # ---------------------------------------------------------------------------
 # RESTRICTED per-section override whitelist
@@ -73,6 +72,10 @@ COMPOUND_OVERRIDE_WHITELIST: frozenset[str] = frozenset(
         # Finding-type + version selection
         "finding_types",
         "current_version_only",
+        # Version Comparison's per-pair /cves/updates lookups (DEFAULT TRUE; a
+        # section stores only the explicit opt-out). Not destructive — it only
+        # skips read requests — so it is safe in this restricted set.
+        "external_changes",
         # AI
         "ai",
         "ai_depth",
@@ -88,7 +91,9 @@ _DATE_KEYS: tuple[str, ...] = ("period", "start", "end")
 
 # Override keys that must be coerced str→bool (a hand-edited / inline YAML
 # ``"ai": "false"`` must become ``False``, never the truthy ``bool("false")``).
-_BOOL_KEYS: frozenset[str] = frozenset({"ai", "current_version_only", "product_only"})
+_BOOL_KEYS: frozenset[str] = frozenset(
+    {"ai", "current_version_only", "external_changes", "product_only"}
+)
 
 
 def _coerce_value(key: str, value: Any) -> Any:
@@ -130,8 +135,8 @@ def normalize_compound_global(raw: Any) -> dict[str, Any]:
       ``target_agnostic`` are preserved verbatim (plain persisted bools, NOT
       engine keys — they steer precedence in :func:`effective_child_config`).
     * Scope (``project_filter`` / ``folder_filter`` / ``version_filter``),
-      ``finding_types``, ``current_version_only``, ``ai``, and ``ai_depth`` are
-      carried through when set.
+      ``finding_types``, ``current_version_only``, ``external_changes``, ``ai``,
+      and ``ai_depth`` are carried through when set.
 
     Returns a fresh dict; ``raw`` is never mutated.
     """
@@ -151,6 +156,7 @@ def normalize_compound_global(raw: Any) -> dict[str, Any]:
         "product_only",
         "finding_types",
         "current_version_only",
+        "external_changes",
         "ai",
         "ai_depth",
     ):

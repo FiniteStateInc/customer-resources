@@ -23,6 +23,7 @@ from fs_report.cli.common import (
     setup_logging,
 )
 from fs_report.cra import tiers as cra_tiers
+from fs_report.cvss import normalize_attack_vectors
 from fs_report.models import Config
 from fs_report.period_parser import PeriodParser
 from fs_report.renderers.pdf_renderer import cleanup_pdf_engines
@@ -265,6 +266,7 @@ def create_config(
     component_match: str = "contains",
     component_version: Union[str, None] = None,
     license_filter: Union[str, None] = None,
+    attack_vector_filter: Union[list[str], None] = None,
     threat_context: Union[str, None] = None,
     skip_nvd: bool = False,
     scoring_file: Union[str, None] = None,
@@ -291,6 +293,7 @@ def create_config(
     compare_version: Union[str, None] = None,
     standalone: bool = False,
     product_only: bool = False,
+    external_changes: Union[bool, None] = None,
     detailed: bool = False,
     theme: Union[str, None] = None,
     since: str = "24h",
@@ -304,6 +307,8 @@ def create_config(
     snapshot_diff: str = "on",
     left_scope: Union[str, None] = None,
     right_scope: Union[str, None] = None,
+    include_versions: Union[list[str], None] = None,
+    exclude_versions: Union[list[str], None] = None,
 ) -> Config:
     """Build a Config object from CLI args, config file, and env vars."""
     _component_match: Literal["contains", "exact"] = cast(
@@ -343,6 +348,11 @@ def create_config(
         "request_delay",
         0.5,
         config_data=cfg,
+    )
+    # Passed to Config as-is: pydantic's bool parsing reads a hand-written
+    # "false"/"no"/"off"/"0" as False and rejects a typo, like any other key.
+    external_changes = merge_config(
+        external_changes, None, "external_changes", True, config_data=cfg
     )
     batch_size = merge_config(
         batch_size if batch_size != 5 else None,
@@ -630,6 +640,7 @@ def create_config(
         component_match=_component_match,
         component_version=component_version,
         license_filter=license_filter,
+        attack_vector_filter=attack_vector_filter,
         threat_context=threat_context,
         skip_nvd=skip_nvd,
         scoring_file=scoring_file,
@@ -651,6 +662,7 @@ def create_config(
         compare_version=compare_version,
         standalone=standalone,
         product_only=product_only,
+        external_changes=external_changes,
         detailed_mode=detailed,
         theme=_theme,
         since=since,
@@ -664,6 +676,8 @@ def create_config(
         snapshot_diff=snapshot_diff,
         left_scope=left_scope,
         right_scope=right_scope,
+        include_versions=include_versions,
+        exclude_versions=exclude_versions,
     )
 
 
@@ -719,6 +733,7 @@ def run_reports(
     component_match: str = "contains",
     component_version: Union[str, None] = None,
     license_filter: Union[str, None] = None,
+    attack_vector_filter: Union[list[str], None] = None,
     threat_context: Union[str, None] = None,
     skip_nvd: bool = False,
     scoring_file: Union[str, None] = None,
@@ -745,6 +760,7 @@ def run_reports(
     compare_version: Union[str, None] = None,
     standalone: bool = False,
     product_only: bool = False,
+    external_changes: Union[bool, None] = None,
     detailed: bool = False,
     theme: Union[str, None] = None,
     since: str = "24h",
@@ -758,6 +774,8 @@ def run_reports(
     snapshot_diff: str = "on",
     left_scope: Union[str, None] = None,
     right_scope: Union[str, None] = None,
+    include_versions: Union[list[str], None] = None,
+    exclude_versions: Union[list[str], None] = None,
     progress_file: Union[str, None] = None,
 ) -> Any:
     """Execute the report generation pipeline."""
@@ -824,6 +842,7 @@ def run_reports(
             component_match=component_match,
             component_version=component_version,
             license_filter=license_filter,
+            attack_vector_filter=attack_vector_filter,
             threat_context=threat_context,
             skip_nvd=skip_nvd,
             scoring_file=scoring_file,
@@ -845,6 +864,7 @@ def run_reports(
             compare_version=compare_version,
             standalone=standalone,
             product_only=product_only,
+            external_changes=external_changes,
             detailed=detailed,
             theme=theme,
             since=since,
@@ -858,6 +878,8 @@ def run_reports(
             snapshot_diff=snapshot_diff,
             left_scope=left_scope,
             right_scope=right_scope,
+            include_versions=include_versions,
+            exclude_versions=exclude_versions,
         )
 
         # str() coercion: compare_auth_token is the merged CLI-flag/env/config
@@ -906,6 +928,10 @@ def run_reports(
             )
         if config.current_version_only:
             logger.info("  Current version only: Yes (filtering to latest versions)")
+        if config.include_versions:
+            logger.info(f"  Include versions: {config.include_versions}")
+        if config.exclude_versions:
+            logger.info(f"  Exclude versions: {config.exclude_versions}")
         if config.detected_after:
             logger.info(f"  Detected after: {config.detected_after}")
         if config.min_severity:
@@ -1418,6 +1444,27 @@ def run_command(
         ),
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
+    attack_vector: Union[str, None] = typer.Option(
+        None,
+        "--attack-vector",
+        help=(
+            "CVSS attack vectors to keep, comma-separated. Values: "
+            "network, adjacent, local, physical (case-insensitive; the CVSS "
+            "AV: letters N/A/L/P are also accepted, as is 'adjacent-network'). "
+            "Honored by Findings by Project (optional row filter, no default, "
+            "unset = no filter, always narrowed client-side). Ignored by every "
+            "other recipe. "
+            "Matched against that report's own Attack Vector column, which is "
+            "parsed from the AV: metric of the NVD-enriched CVSS vector and "
+            "NOT from the API's attackVector field — so with --no-nvd the "
+            "column is empty and the filter retains nothing. "
+            "A CVE NVD only ever scored under CVSS v2 carries the v2 "
+            "vocabulary, which has no Physical: it scores physical access as "
+            "Local, so such a CVE can never match --attack-vector physical. "
+            "Unknown names are rejected."
+        ),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
     include_status: Union[str, None] = typer.Option(
         None,
         "--include-status",
@@ -1592,6 +1639,31 @@ def run_command(
         "this flag is inert in that mode and only affects --detailed runs.",
         rich_help_panel=_SCOPE,
     ),
+    include_versions: list[str] = typer.Option(
+        None,
+        "--include-versions",
+        help=(
+            "Keep only versions whose name matches this glob, wherever a report "
+            "covers more than one version (Version Comparison, Security Progress, "
+            "--all-versions runs, Scan Analysis/Quality). Same matching as a "
+            "--project glob: case-insensitive, whole name, so use wildcards — "
+            "e.g. '2.4.*'. Repeatable; patterns are OR'd."
+        ),
+        rich_help_panel=_SCOPE,
+    ),
+    exclude_versions: list[str] = typer.Option(
+        None,
+        "--exclude-versions",
+        help=(
+            "Drop versions whose name matches this glob, e.g. '*checkpoint*' "
+            "(a bare word matches only that exact name). Same scope and matching "
+            "as --include-versions; exclude wins. Repeatable. Never applied to "
+            "an explicit --version (except by Version Comparison / Security "
+            "Progress, which ignore --version) or --baseline-version / "
+            "--current-version pair."
+        ),
+        rich_help_panel=_SCOPE,
+    ),
     cache_ttl: Union[str, None] = typer.Option(
         None,
         "--cache-ttl",
@@ -1736,6 +1808,17 @@ def run_command(
         "--current-version",
         "--current",  # alias for backwards compatibility
         help="Current version ID for Version Comparison report.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    external_changes: Union[bool, None] = typer.Option(
+        None,
+        "--external-changes/--no-external-changes",
+        help="Version Comparison: look up external CVE changes (on by default) — "
+        "one /public/v0/cves/updates lookup per version pair (a pair over 90 "
+        "days apart takes one request per 90 days), each after the "
+        "first waiting --request-delay. --no-external-changes skips them; the Externally "
+        "changed panel, New-finding notes and External Changes export are then "
+        "empty and their counts blank. Config-file key: external_changes.",
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
     open_only: bool = typer.Option(
@@ -2072,6 +2155,17 @@ def run_command(
         except ValueError as exc:
             typer.echo(f"--exploit-maturity: {exc}", err=True)
             raise typer.Exit(code=2) from exc
+    # Same guard for --attack-vector, for the same reason: a name outside the
+    # four CVSS vectors matches no row, so accepting it would hand back an
+    # empty Findings by Project report that discloses the typo as if it were a
+    # real filter. Normalizing here also means the report's filter disclosure
+    # reads back the canonical labels its own Attack Vector column uses, not
+    # whatever spelling was typed.
+    try:
+        _attack_vectors = normalize_attack_vectors(_split_csv(attack_vector))
+    except ValueError as exc:
+        typer.echo(f"--attack-vector: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
     _valid_snapshot_diff = {"on", "read-only", "off"}
     if snapshot_diff not in _valid_snapshot_diff:
         typer.echo(
@@ -2206,6 +2300,11 @@ def run_command(
         component_filter=component_filter,
         component_match=component_match,
         license_filter=license_filter,
+        # `or None`: nothing typed is "no filter", the shape the web path
+        # already stores and the field documents. An empty list is falsy
+        # everywhere that reads it today, but it serializes as a filter that
+        # was set and matched nothing.
+        attack_vector_filter=_attack_vectors or None,
         threat_context=threat_context,
         skip_nvd=skip_nvd,
         scoring_file=scoring_file,
@@ -2233,6 +2332,7 @@ def run_command(
         compare_version=compare_version,
         standalone=standalone,
         product_only=product_only,
+        external_changes=external_changes,
         detailed=detailed,
         theme=theme,
         since=since,
@@ -2246,6 +2346,8 @@ def run_command(
         snapshot_diff=snapshot_diff,
         left_scope=left_scope,
         right_scope=right_scope,
+        include_versions=include_versions,
+        exclude_versions=exclude_versions,
         progress_file=progress_file,
     )
 

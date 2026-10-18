@@ -24,6 +24,11 @@ DEFAULTS: dict[str, Any] = {
     "output_dir": "./output",
     "finding_types": "cve",
     "current_version_only": True,
+    # Version Comparison's per-pair /cves/updates lookup (Config default True).
+    # Baseline True so a card override stores only the opt-out. Deliberately NOT
+    # a Settings-page field: a saved global opt-out would silently drop the
+    # Externally-changed data from every Version Comparison run.
+    "external_changes": True,
     "overwrite": False,
     "verbose": False,
     "ai": False,

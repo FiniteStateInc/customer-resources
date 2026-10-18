@@ -963,6 +963,7 @@
         if (fe.name === 'st_cb') continue; /* handled via hidden scan_types */
         if (fe.name === 'ss_cb') continue; /* handled via hidden scan_statuses */
         if (fe.name === 'as_cb') continue; /* SP2: handled via hidden autotriage_status */
+        if (fe.name === 'av_cb') continue; /* handled via hidden attack_vector_filter */
         params.append(fe.name, fe.checked ? 'true' : 'false');
       } else if (fe.id === ftHiddenId) {
         var vals = [];
@@ -986,6 +987,16 @@
           ssVals.push(cb.value);
         });
         params.append('scan_statuses', ssVals.join(','));
+      } else if (fe.id === 'cardcfg-attack-vector') {
+        /* Rebuild attack_vector_filter from checked av_cb boxes at serialize
+           time (mirrors scan_types/scan_statuses). Nothing ticked sends an
+           empty value, which the backend reads as "inherit / no filter" —
+           that is how the user CLEARS a saved vector filter. */
+        var avVals = [];
+        form.querySelectorAll('input[name="av_cb"]:checked').forEach(function (cb) {
+          avVals.push(cb.value);
+        });
+        params.append('attack_vector_filter', avVals.join(','));
       } else if (fe.id === 'cardcfg-autotriage-status') {
         /* SP2: rebuild autotriage_status from checked as_cb boxes at serialize
            time (mirrors scan_types/scan_statuses). */
@@ -1135,6 +1146,22 @@
   function _wireCardScanCheckboxes(back) {
     var stHidden = back.querySelector('#cardcfg-scan-types');
     var ssHidden = back.querySelector('#cardcfg-scan-statuses');
+
+    /* Attack vector (Findings by Project only, so guard for absence). Rendered
+       on the same Advanced tab; kept live for the same reason as the two
+       below. */
+    var avHidden = back.querySelector('#cardcfg-attack-vector');
+    if (avHidden) {
+      var avBoxes = back.querySelectorAll('input[name="av_cb"]');
+      var syncAv = function () {
+        var vals = [];
+        back.querySelectorAll('input[name="av_cb"]:checked').forEach(function (cb) {
+          vals.push(cb.value);
+        });
+        avHidden.value = vals.join(',');
+      };
+      avBoxes.forEach(function (cb) { cb.addEventListener('change', syncAv); });
+    }
 
     if (stHidden) {
       var stBoxes = back.querySelectorAll('input[name="st_cb"]');
@@ -1745,6 +1772,7 @@
         { boxName: 'st_cb', hiddenId: 'pre-scan-types' },
         { boxName: 'ss_cb', hiddenId: 'pre-scan-statuses' },
         { boxName: 'as_cb', hiddenId: 'pre-autotriage-status' }, /* SP2 */
+        { boxName: 'av_cb', hiddenId: 'pre-attack-vector' },
       ].forEach(function (g) {
         var hidden = cfgModal.querySelector('#' + g.hiddenId);
         if (!hidden) return;
@@ -1789,6 +1817,8 @@
             /* scan statuses checkboxes — skip, handled via hidden #pre-scan-statuses */
           } else if (fe.name === 'as_cb') {
             /* SP2 autotriage statuses — skip, handled via hidden #pre-autotriage-status */
+          } else if (fe.name === 'av_cb') {
+            /* attack vectors — skip, handled via hidden #pre-attack-vector */
           } else {
             params.append(fe.name, fe.checked ? 'true' : 'false');
           }
@@ -1810,6 +1840,14 @@
           var ssVals = [];
           ssBoxes.forEach(function (cb) { ssVals.push(cb.value); });
           params.append('scan_statuses', ssVals.join(','));
+        } else if (fe.id === 'pre-attack-vector') {
+          /* Rebuild attack_vector_filter from checked av_cb checkboxes. Sent
+             even when empty so the key is in the modal's present-key set and a
+             cleared selection suppresses the saved card override. */
+          var avBoxes = form.querySelectorAll('input[name="av_cb"]:checked');
+          var avVals = [];
+          avBoxes.forEach(function (cb) { avVals.push(cb.value); });
+          params.append('attack_vector_filter', avVals.join(','));
         } else if (fe.id === 'pre-autotriage-status') {
           /* SP2: rebuild autotriage_status from checked as_cb checkboxes */
           var asBoxes = form.querySelectorAll('input[name="as_cb"]:checked');

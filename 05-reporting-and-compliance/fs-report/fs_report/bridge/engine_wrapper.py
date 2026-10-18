@@ -124,6 +124,7 @@ class EngineWrapper:
         """
         from fs_report.cli.run import create_config
         from fs_report.report_engine import ReportCancelled, ReportEngine
+        from fs_report.version_name_filter import split_patterns
 
         cancel_event = self._cancel_events.get(run_id)
         if cancel_event is None:
@@ -184,6 +185,8 @@ class EngineWrapper:
                 component_version=config_params.get("componentVersion"),
                 baseline_version=config_params.get("baselineVersion"),
                 baseline_date=config_params.get("baselineDate"),
+                include_versions=split_patterns(config_params.get("includeVersions")),
+                exclude_versions=split_patterns(config_params.get("excludeVersions")),
                 current_version=config_params.get("currentVersion"),
                 top=int(config_params.get("top", 0)),
                 triage=int(config_params.get("triage", 0)),

@@ -43,6 +43,11 @@ def _build_active_filters(effective: dict[str, Any]) -> list[dict[str, str]]:
     cve = str(effective.get("cve_filter") or "").strip()
     if cve:
         chips.append({"label": "CVE", "value": cve})
+    # --include/--exclude-versions display label (engine metadata; empty when
+    # the recipe never covered more than one version).
+    versions = str(effective.get("version_pattern_filter") or "").strip()
+    if versions:
+        chips.append({"label": "Versions", "value": versions})
     return chips
 
 

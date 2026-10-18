@@ -14,7 +14,7 @@ A powerful, stand-alone reporting utility for Finite State customers that genera
 
 ## Available Reports
 
-Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, including Version Comparison’s full version and component changelog and CSV/XLSX detail exports (findings detail, findings churn, component churn).
+Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, including Version Comparison’s full version and component changelog and CSV/XLSX detail exports (findings detail, findings churn, component churn, status changes).
 
 **Operational** — period-bound, showing trends and activity within a time window:
 
@@ -44,7 +44,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Remediation Package | Actionable remediation plan with fix-version validation, structured options (upgrade/workaround/mitigation), and optional AI enrichment *(on-demand)* |
 | Component Remediation Package | Zero-day remediation guidance for a component — upgrade paths, breaking changes, mitigations, and AI-powered recommendations *(on-demand)* |
 | Component Impact | Portfolio blast radius for a named component — affected projects, versions, and severity breakdown *(on-demand)* |
-| Version Comparison | Full version and component changelog (every version pair); fixed/new findings and component churn per step; CSV/XLSX include summary plus detail *(on-demand)* |
+| Version Comparison | Full version and component changelog (every version pair); fixed/new findings, status changes, and component churn per step; CSV/XLSX include summary plus detail *(on-demand)* |
 | CRA Compliance | EU Cyber Resilience Act Article 14 — 5-section morning-queue (🔥 SLA-Breach, 🆕 Newly Above Threshold, 🔁 Re-emerged, ⏰ Still-in-Triage, 📋 Snapshot) with CISA KEV notification clock, action-driven KPIs (OVERDUE / DUE_SOON / Unknown Clock / Reachable / In Triage), VulnCheck threat-actor evidence on queue rows, and `--since` delta detection for daily automation runs *(on-demand)* |
 | False Positive Analysis | Surface likely false positives using mechanical checks and AI applicability analysis; auto-apply VEX with `--autotriage` *(on-demand)* |
 | Scan Quality | Per-asset scan coverage and quality signals — scan type gaps and reachability unknowns *(on-demand)* |
@@ -205,6 +205,12 @@ fs-report run --period 1w                              # Latest version per proj
 fs-report run --period 1w --all-versions               # All historical versions (slower)
 ```
 
+Where a report covers several versions (Version Comparison, Security Progress, `--all-versions` runs, Scan Analysis/Quality), filter them by name with `--include-versions` / `--exclude-versions`. These are globs matched like `--project`: case-insensitive, whole name. Both flags repeat, and exclude wins:
+
+```bash
+fs-report run --recipe "Security Progress" --period 3m --project "MyProduct" --exclude-versions '*checkpoint*'
+```
+
 **CVE Impact** — investigate specific CVEs across your portfolio:
 
 ```bash
@@ -234,14 +240,14 @@ FS_REPORT_EVIDENCE_WORKERS=1 fs-report run \
     --recipe "CVE Component Evidence" --project "MyProject" --version 1234567890
 ```
 
-**Persistent cache** — crash recovery and faster reruns:
+**Persistent cache** — faster reruns, shared between reports:
 
 ```bash
 fs-report run --cache-ttl 1h                           # Cache data for 1 hour
 fs-report run --cache-ttl 30m                          # 30 minutes
 fs-report run --no-cache                               # Force fresh data
 fs-report cache status                                 # Show cache stats
-fs-report cache clear                                  # Delete all cached data
+fs-report cache clear                                  # Clear the API data cache (asks first; --yes in scripts; --all adds AI + NVD)
 ```
 
 **List resources**:
@@ -317,7 +323,7 @@ The reporting kit includes intelligent caching to improve performance and reduce
 - **Latest Version Only (Default)**: By default, reports only include findings from the latest version of each project, reducing data volume by 60-70%. Use `--all-versions` if you need historical data.
 - **Automatic Cache Sharing**: When running multiple reports, data is automatically cached and shared between reports
 - **Progress Indicators**: The CLI shows "Fetching" for API calls and "Using cache" for cached data
-- **Crash Recovery**: Progress is tracked in SQLite, so interrupted fetches resume automatically
+- **Safe Interrupted and Concurrent Runs**: With `--cache-ttl`, a fetch caches nothing until it completes, so an interrupted fetch is fetched again from the first page on the next run; fetches that did complete (e.g. finished version batches of a portfolio sweep) are reused. Two runs fetching the same data never overwrite each other's cache entry
 - **Efficient Filtering**: Project and version filtering is applied at the API level for optimal performance
 
 Example output showing cache usage:
@@ -331,22 +337,22 @@ Using cache for /public/v0/findings | 38879 records
 For long-running reports or iterative development, enable the persistent cache:
 
 ```bash
-# Cache data for 1 hour - enables crash recovery and faster reruns
+# Cache data for 1 hour - faster reruns, completed fetches survive an interrupted run
 fs-report run --cache-ttl 1h
 
 # Force fresh data (ignore cache)
 fs-report run --no-cache
 
-# Clear all cached data
+# Clear the API data cache for this domain (asks first; --yes for scripts, --all adds AI + NVD)
 fs-report cache clear
 ```
 
 Benefits:
 - **80% smaller storage** than JSON progress files
-- **Crash recovery** — resume interrupted fetches automatically
+- **Interrupted runs** — completed fetches are kept; an interrupted fetch starts again from the first page
 - **Faster reruns** — skip API calls for cached data within TTL
 
-Cache location: `~/.fs-report/cache.db`
+Cache location: `~/.fs-report/<domain>-<account digest>.db` (e.g. `your-domain.finitestate.io-0123456789abcdef.db`), one file per platform domain and account (`fs-report cache status` shows which).
 
 ## AI Features
 

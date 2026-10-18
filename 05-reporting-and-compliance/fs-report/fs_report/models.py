@@ -1310,6 +1310,33 @@ class Config(BaseModel):
         False,
         description="Reverse version sort order (newest/last first).",
     )
+    external_changes: bool = Field(
+        True,
+        description="Version Comparison: look up external CVE changes (severity "
+        "escalations, exploit-maturity changes from platform updates) with one "
+        "/public/v0/cves/updates lookup per version pair. False skips the "
+        "requests; those counts then read blank (not looked up).",
+    )
+    include_versions: list[str] | None = Field(
+        None,
+        description="Version-name globs to keep wherever a report covers more than one "
+        "version (Version Comparison, Security Progress, --all-versions findings and "
+        "component runs (incl. Executive Dashboard --detailed), Scan "
+        "Analysis/Quality). Not yet applied to the latest-version choice of "
+        "latest-per-project reports, Executive Dashboard summary mode, or the "
+        "self-fetching CRA "
+        "Compliance and Component Impact; Platform Usage is exempt. Same semantics as the "
+        "--project glob: case-insensitive fnmatch on the whole name, so a pattern "
+        "without wildcards is an exact match. Patterns are OR'd. Never applied to an "
+        "explicit --baseline-version / --current-version pair, or to an explicit "
+        "--version except in Version Comparison / Security Progress (which ignore it).",
+    )
+    exclude_versions: list[str] | None = Field(
+        None,
+        description="Version-name globs to drop wherever a report covers more than one "
+        "version (e.g. '*checkpoint*'). Same matching as include_versions; exclude "
+        "wins over include.",
+    )
     open_only: bool = Field(
         False,
         description="Only count open findings (exclude NOT_AFFECTED, FALSE_POSITIVE, RESOLVED, RESOLVED_WITH_PEDIGREE). "
@@ -1353,6 +1380,20 @@ class Config(BaseModel):
         description="Comma-separated license name(s) to filter the License Report "
         "(case-insensitive substring match, e.g. 'GPL,AGPL'). "
         "Restricts the report to components/projects whose declared license matches.",
+    )
+    attack_vector_filter: list[str] | None = Field(
+        None,
+        description="CVSS attack vectors to keep, honored by Findings by Project "
+        "(optional row filter, always client-side, no default, None/empty = no "
+        "filter). Ignored by other recipes, whose reports therefore disclose no "
+        "filter. Values: Network, Adjacent, Local, Physical — case-insensitive, "
+        "and the CVSS AV: letters N/A/L/P are accepted for them. Matched against "
+        "the report's own Attack Vector column, which is parsed from the AV: "
+        "metric of the NVD-enriched CVSS vector, NOT from the API's attackVector "
+        "field: with NVD enrichment unavailable (--no-nvd) that column is empty "
+        "and the filter retains nothing. A CVE scored only under CVSS v2 labels "
+        "with the v2 vocabulary, which has no Physical (physical access scores as "
+        "Local).",
     )
     skip_nvd: bool = Field(
         False,

@@ -867,6 +867,11 @@ class HTMLRenderer:
             "exploit_maturity_filter": report_data.metadata.get(
                 "exploit_maturity_filter", ""
             ),
+            # Attack vectors the run was filtered to ("" when unset), for the
+            # same reason: a narrowed table must say what narrowed it.
+            "attack_vector_filter": report_data.metadata.get(
+                "attack_vector_filter", ""
+            ),
             "domain": slim_metadata["domain"],
             "logo_path": slim_metadata["logo_path"],
             # Add period label for scan frequency chart
@@ -905,6 +910,9 @@ class HTMLRenderer:
                 "component_filter": report_data.metadata.get("component_filter", ""),
                 "component_version": report_data.metadata.get("component_version", ""),
                 "cve_filter": report_data.metadata.get("cve_filter", ""),
+                "version_pattern_filter": report_data.metadata.get(
+                    "version_pattern_filter", ""
+                ),
             }
         )
 

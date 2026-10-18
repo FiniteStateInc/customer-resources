@@ -19,11 +19,11 @@
 # SOFTWARE.
 
 """
-SQLite-based cache for API data with TTL support and crash recovery.
+SQLite-based cache for API data with TTL support and concurrent-run safety.
 
 This module provides a persistent cache that:
 - Trims API responses to only needed fields (~80% storage reduction)
-- Supports crash recovery via implicit progress tracking
+- A fetch claims its cache entry, so concurrent runs never wipe each other's rows
 - Enables optional cache reuse across runs with configurable TTL
 
 [BETA] This feature is experimental. Default behavior (fresh data each run)
@@ -40,6 +40,7 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -221,6 +222,13 @@ _USER_VISIBLE_NEW_COLUMNS = {
     ("findings", "exploit_maturity"),
 }
 
+# An incomplete fetch whose owner has not written a heartbeat for this long is
+# treated as crashed: another run may claim it and start it over. Owners beat on
+# every stored page and every retry; the longest gap between beats is one retry
+# wait (capped at 120s) plus one request timeout (120s), so 10 minutes leaves
+# headroom without stranding a crashed fetch for long.
+FETCH_STALE_SECONDS = 600
+
 
 # =============================================================================
 # Database Schema
@@ -235,7 +243,9 @@ CREATE TABLE IF NOT EXISTS cache_meta (
     created_at REAL NOT NULL,
     completed_at REAL,
     record_count INTEGER DEFAULT 0,
-    ttl_seconds INTEGER
+    ttl_seconds INTEGER,
+    owner TEXT,
+    heartbeat_at REAL
 );
 
 -- Findings table (trimmed fields only)
@@ -743,6 +753,14 @@ def get_fields_for_endpoint(endpoint: str) -> dict:
 # =============================================================================
 
 
+class CacheClaimLost(Exception):
+    """This instance no longer owns the fetch it was writing.
+
+    Another run took the entry over after this one went quiet for longer than
+    ``FETCH_STALE_SECONDS``. Whatever the entry holds now is not this fetch's.
+    """
+
+
 @dataclass
 class CacheStats:
     """Statistics about cache usage."""
@@ -756,7 +774,7 @@ class CacheStats:
 
 class SQLiteCache:
     """
-    SQLite-based cache for API data with TTL support and crash recovery.
+    SQLite-based cache for API data with TTL support and concurrent-run safety.
 
     [BETA] This feature is experimental.
     """
@@ -827,6 +845,12 @@ class SQLiteCache:
         # do not race on the shared connection/WAL file.
         self._lock = threading.Lock()
 
+        # (query_hash, thread id) -> owner token for the fetches claimed here
+        # (see start_fetch). Keyed per thread so that, on an instance shared by
+        # threads, one thread's cleanup can never act on another's claim of the
+        # same query. Another run holds a different token and cannot write.
+        self._fetch_tokens: dict[tuple[str, int], str] = {}
+
         # Session start time - cache validity is checked against this, not current time
         # This ensures cache doesn't expire mid-report for long-running reports
         self.session_start_time = time.time()
@@ -885,6 +909,8 @@ class SQLiteCache:
             ("components", "software_identifiers", "TEXT"),
             ("components", "bom_ref", "TEXT"),
             ("scans", "mechanism", "TEXT"),
+            ("cache_meta", "owner", "TEXT"),
+            ("cache_meta", "heartbeat_at", "REAL"),
         ]
         # ``_USER_VISIBLE_NEW_COLUMNS`` (module-level) enumerates the columns
         # whose absence on already-cached rows is user-visible; adding one emits
@@ -895,8 +921,14 @@ class SQLiteCache:
             try:
                 conn.execute(f"SELECT {col} FROM {table} LIMIT 1")
             except sqlite3.OperationalError:
-                # Column doesn't exist — add it
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+                # Column doesn't exist — add it. Another run starting at the same
+                # moment may add it first; that is not an error.
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column" not in str(e).lower():
+                        raise
+                    continue
                 logger.debug(f"Migrated: added {col} ({col_type}) to {table}")
                 if (table, col) in _USER_VISIBLE_NEW_COLUMNS:
                     logger.warning(
@@ -1167,7 +1199,7 @@ class SQLiteCache:
         """
         Get the current progress (record count) for an incomplete fetch.
 
-        Used for crash recovery - returns the number of records already fetched.
+        Returns the number of records an in-progress fetch has stored so far.
 
         Args:
             endpoint: API endpoint
@@ -1208,9 +1240,23 @@ class SQLiteCache:
                 except sqlite3.OperationalError:
                     return 0
 
-    def start_fetch(self, endpoint: str, params: dict, ttl: int | None = None) -> str:
+    def start_fetch(
+        self, endpoint: str, params: dict, ttl: int | None = None
+    ) -> str | None:
         """
-        Start tracking a new fetch operation.
+        Claim a query's cache entry, emptied, for a fetch this instance will write.
+
+        The claim is atomic across processes (``BEGIN IMMEDIATE``). It fails —
+        returning ``None`` and touching nothing — while any fetch of the same
+        query is live: incomplete, owned, with a heartbeat newer than
+        ``FETCH_STALE_SECONDS``. That includes one held by this instance (two
+        threads sharing it). The caller should then fetch without the cache.
+        Clearing a live fetch's rows here is how two concurrent runs used to read
+        back an empty project list.
+
+        A fetch never resumes from a crashed one's rows: an offset-paginated
+        API read in two sittings can shift between them and skip records, so a
+        claim always starts the entry empty.
 
         Args:
             endpoint: API endpoint
@@ -1218,29 +1264,99 @@ class SQLiteCache:
             ttl: TTL for this cache entry
 
         Returns:
-            Query hash for this fetch
+            Query hash for this fetch, or ``None`` if a live fetch owns it.
         """
         query_hash = generate_query_hash(endpoint, params)
         ttl = ttl if ttl is not None else self.default_ttl
+        token = uuid.uuid4().hex
+        now = time.time()
 
         with self._lock:
             with self._get_connection() as conn:
-                # Clear any existing data for this query
-                self._clear_query_data(conn, query_hash, endpoint)
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT completed_at, owner, heartbeat_at FROM cache_meta"
+                    " WHERE query_hash = ?",
+                    (query_hash,),
+                ).fetchone()
+                if (
+                    row is not None
+                    and row["completed_at"] is None
+                    and row["owner"] is not None
+                    and row["heartbeat_at"] is not None
+                    and now - row["heartbeat_at"] < FETCH_STALE_SECONDS
+                ):
+                    conn.rollback()
+                    logger.debug(f"Fetch of {endpoint} is live; not claiming it")
+                    return None
 
-                # Insert new metadata entry
+                self._clear_query_data(conn, query_hash, endpoint)
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO cache_meta
-                    (query_hash, endpoint, query_params, created_at, completed_at, record_count, ttl_seconds)
-                    VALUES (?, ?, ?, ?, NULL, 0, ?)
+                    (query_hash, endpoint, query_params, created_at, completed_at,
+                     record_count, ttl_seconds, owner, heartbeat_at)
+                    VALUES (?, ?, ?, ?, NULL, 0, ?, ?, ?)
                     """,
-                    (query_hash, endpoint, json.dumps(params), time.time(), ttl),
+                    (query_hash, endpoint, json.dumps(params), now, ttl, token, now),
                 )
                 conn.commit()
+                self._fetch_tokens[self._token_key(query_hash)] = token
 
         self.cache_misses += 1
         return query_hash
+
+    @staticmethod
+    def _token_key(query_hash: str) -> tuple[str, int]:
+        return (query_hash, threading.get_ident())
+
+    def _beat(self, conn: sqlite3.Connection, query_hash: str) -> bool:
+        """Refresh this instance's claim on ``query_hash``; False if it lost it."""
+        token = self._fetch_tokens.get(self._token_key(query_hash))
+        if token is None:
+            return False
+        cursor = conn.execute(
+            "UPDATE cache_meta SET heartbeat_at = ?"
+            " WHERE query_hash = ? AND owner = ? AND completed_at IS NULL",
+            (time.time(), query_hash, token),
+        )
+        return cursor.rowcount == 1
+
+    def touch_fetch(self, query_hash: str) -> None:
+        """Keep a claimed fetch live while it waits (e.g. between retries).
+
+        Raises:
+            CacheClaimLost: another run took the entry over.
+        """
+        with self._lock:
+            with self._get_connection() as conn:
+                if not self._beat(conn, query_hash):
+                    raise CacheClaimLost(query_hash)
+
+    def abandon_fetch(self, query_hash: str, endpoint: str) -> None:
+        """Drop a claimed fetch that will not finish, so the next run starts clean.
+
+        Called when a fetch stops early (an error, Ctrl-C). Without it the claim
+        would block caching for every run in the next ``FETCH_STALE_SECONDS``.
+        Does nothing if this instance no longer owns the entry.
+        """
+        token = self._fetch_tokens.get(self._token_key(query_hash))
+        if token is None:
+            return
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                cursor = conn.execute(
+                    "DELETE FROM cache_meta"
+                    " WHERE query_hash = ? AND owner = ? AND completed_at IS NULL",
+                    (query_hash, token),
+                )
+                if cursor.rowcount == 1:
+                    self._clear_query_data(conn, query_hash, endpoint)
+                conn.commit()
+        # Only once the claim is gone: if the delete failed (a locked database),
+        # a later call can still release it.
+        self._fetch_tokens.pop(self._token_key(query_hash), None)
 
     def _clear_query_data(
         self, conn: sqlite3.Connection, query_hash: str, endpoint: str
@@ -1269,6 +1385,9 @@ class SQLiteCache:
 
         Returns:
             Number of records stored, or 0 if endpoint not supported
+
+        Raises:
+            CacheClaimLost: this instance no longer owns ``query_hash``.
         """
         if not records:
             return 0
@@ -1286,6 +1405,12 @@ class SQLiteCache:
 
         with self._lock:
             with self._get_connection() as conn:
+                # Ownership check and inserts share one write transaction, so a
+                # takeover cannot slip in between them.
+                conn.execute("BEGIN IMMEDIATE")
+                if not self._beat(conn, query_hash):
+                    conn.rollback()
+                    raise CacheClaimLost(query_hash)
                 stored = 0
                 for record in trimmed_records:
                     record["query_hash"] = query_hash
@@ -1372,22 +1497,76 @@ class SQLiteCache:
             values,
         )
 
-    def complete_fetch(self, query_hash: str) -> None:
+    def complete_fetch(self, query_hash: str) -> bool:
         """
-        Mark a fetch as complete.
+        Mark a fetch this instance claimed as complete and release the claim.
 
         Args:
             query_hash: Query hash from start_fetch
+
+        Returns:
+            False if this instance no longer owns the fetch (another run took it
+            over), in which case the entry is left alone.
         """
+        token = self._fetch_tokens.get(self._token_key(query_hash))
+        if token is None:
+            return False
         with self._lock:
             with self._get_connection() as conn:
-                conn.execute(
-                    "UPDATE cache_meta SET completed_at = ? WHERE query_hash = ?",
-                    (time.time(), query_hash),
+                cursor = conn.execute(
+                    "UPDATE cache_meta SET completed_at = ?, owner = NULL"
+                    " WHERE query_hash = ? AND owner = ? AND completed_at IS NULL",
+                    (time.time(), query_hash, token),
                 )
                 conn.commit()
+                completed = cursor.rowcount == 1
+        self._fetch_tokens.pop(self._token_key(query_hash), None)
 
-        logger.debug(f"Fetch completed for query {query_hash}")
+        logger.debug(f"Fetch completed for query {query_hash}: {completed}")
+        return completed
+
+    def finish_fetch(self, query_hash: str, endpoint: str) -> list[dict]:
+        """Mark a claimed fetch complete and read its rows, in one transaction.
+
+        Reading after a separate ``complete_fetch`` would leave a gap in which
+        another run (``--refresh``) could claim and empty the entry, so this run
+        would return nothing for a fetch it finished.
+
+        Raises:
+            CacheClaimLost: this instance no longer owns ``query_hash``.
+        """
+        token = self._fetch_tokens.get(self._token_key(query_hash))
+        if token is None:
+            raise CacheClaimLost(query_hash)
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                cursor = conn.execute(
+                    "UPDATE cache_meta SET completed_at = ?, owner = NULL"
+                    " WHERE query_hash = ? AND owner = ? AND completed_at IS NULL",
+                    (time.time(), query_hash, token),
+                )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    self._fetch_tokens.pop(self._token_key(query_hash), None)
+                    raise CacheClaimLost(query_hash)
+                records = self._read_records(conn, query_hash, endpoint)
+                conn.commit()
+        self._fetch_tokens.pop(self._token_key(query_hash), None)
+        return records
+
+    def _read_records(
+        self, conn: sqlite3.Connection, query_hash: str, endpoint: str
+    ) -> list[dict]:
+        try:
+            table_name = get_table_for_endpoint(endpoint)
+        except ValueError:
+            return []
+        fields = get_fields_for_endpoint(endpoint)
+        rows = conn.execute(
+            f"SELECT * FROM {table_name} WHERE query_hash = ?", (query_hash,)
+        ).fetchall()
+        return [self._row_to_record(dict(row), fields) for row in rows]
 
     def clear(self, endpoint: str | None = None) -> None:
         """
@@ -1660,6 +1839,9 @@ class SQLiteCache:
 
         with self._lock:
             with self._get_connection() as conn:
+                # Select and delete in one write transaction, so a run that
+                # claims an entry in between cannot have its fresh fetch deleted.
+                conn.execute("BEGIN IMMEDIATE")
                 # Find expired completed entries
                 cursor = conn.execute(
                     """
@@ -1702,10 +1884,12 @@ class SQLiteCache:
 
     def cleanup_incomplete(self) -> int:
         """
-        Remove incomplete fetch entries older than 1 hour (from crashed/interrupted runs).
+        Remove incomplete fetch entries idle for over 1 hour (from crashed/interrupted runs).
 
-        Only removes entries older than 1 hour to avoid deleting an in-progress
-        fetch from the current session.
+        Idle is measured from the owner's last heartbeat, not from when the fetch
+        started: every run opens the cache and runs this, so a start-time cutoff
+        deleted another run's live fetch once it had paginated for an hour.
+        Entries from before heartbeats existed fall back to ``created_at``.
 
         Returns:
             Number of entries removed
@@ -1716,12 +1900,15 @@ class SQLiteCache:
 
         with self._lock:
             with self._get_connection() as conn:
-                # Find incomplete entries older than 1 hour
+                # Select and delete in one write transaction (see cleanup_expired).
+                conn.execute("BEGIN IMMEDIATE")
+                # Find incomplete entries idle for over 1 hour
                 cursor = conn.execute(
                     """
                     SELECT query_hash, endpoint
                     FROM cache_meta
-                    WHERE completed_at IS NULL AND created_at < ?
+                    WHERE completed_at IS NULL
+                      AND COALESCE(heartbeat_at, created_at) < ?
                     """,
                     (one_hour_ago,),
                 )

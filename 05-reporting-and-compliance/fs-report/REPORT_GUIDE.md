@@ -179,6 +179,8 @@ fs-report run --recipe "Executive Summary" --period 90d
 fs-report run --recipe "Security Progress" --period 2m --project openwrt
 ```
 
+**Skipping intermediate versions:** if your version names mark interim builds (for example `2.4.1-checkpoint-2026-08-28`), drop them with `--exclude-versions '*checkpoint*'`. Keep one release line with `--include-versions '2.4.*'`. Matching is a case-insensitive glob on the whole version name, the same as `--project`, so a bare `checkpoint` would match nothing. Changes made in a skipped version count toward the next version that is kept. The report header shows a **Versions** chip naming the filter.
+
 **What it shows:**
 - **Portfolio KPI cards** — Total Resolved, Total New, Net Change, Projects Improved
 - **Per-project progress table** — Baseline (open at period start), Current (open now), Resolved, New, Net Change — sorted by most improved
@@ -299,6 +301,10 @@ fs-report run --recipe "Component Vulnerability Analysis" --period 30d
 
 **Tiers do not imply one another.** The platform stores one exploit-maturity value per finding: its *highest* tier. So `--exploit-maturity poc` returns findings whose highest tier is `poc` and excludes `weaponized` ones — even though a weaponized exploit means a PoC also exists. The platform UI's PoC filter treats the tiers as ordered and *does* show weaponized findings, so **use `--exploit-maturity poc,weaponized` if you are reconciling the report against a PoC-filtered view in the UI.** Enumerate every tier you want; the filter never widens on its own.
 
+**Attack-vector filter:** `--attack-vector` narrows the inventory to findings whose `Attack Vector` cell reads one of the vectors named — `network`, `adjacent`, `local`, `physical` (case-insensitive; the CVSS `AV:` letters `N`/`A`/`L`/`P` are accepted too). Several vectors are a union. Omit the flag for the full inventory. The vectors a run used are stated in the HTML "Applied filter" panel, the Markdown metadata table and the JSON metadata, so a narrowed report can't be mistaken for a complete one.
+
+**The filter matches the column, and the column comes from NVD.** The label is parsed from the `AV:` metric of the vector in the row's `CVSS Vector` cell — not from the platform's own `attackVector` field — so a finding NVD published no vector for has a blank cell and is excluded, and a run with `--no-nvd` (or with NVD enrichment otherwise unavailable) has a blank cell on *every* row and retains nothing. That case logs a warning so an empty report is not mistaken for "no such findings". Note also that a CVE NVD only ever scored under **CVSS v2** labels with the v2 vocabulary, which has no Physical value and scores physical access as `Local` — so `--attack-vector physical` cannot return one. And because **CVE Impact's column of the same name carries the API's `attackVector` field**, the two reports can disagree about one finding; they are different sources, not a discrepancy to reconcile.
+
 **The KEV column means CISA KEV.** That column has always reflected CISA KEV membership only, so a row the filter kept via `vc-kev` (or via `kev` through VulnCheck alone) can show a blank KEV cell. That is the column's meaning, not a filter miss — the row is present because the filter matched, and the tiers it matched on are the ones in the report's filter disclosure.
 
 **Example commands:**
@@ -311,6 +317,9 @@ fs-report run --recipe "Findings by Project" --project "MyProject"
 
 # Only findings with real-world exploitation signals
 fs-report run --recipe "Findings by Project" --folder "Products" --exploit-maturity kev,ransomware,threat_actor
+
+# Only remotely-reachable findings (network or adjacent attack vector)
+fs-report run --recipe "Findings by Project" --project "MyProject" --attack-vector network,adjacent
 ```
 
 ---
@@ -1038,7 +1047,7 @@ fs-report run --recipe "Reachability VEX Coverage" --project MyProject \
   --autotriage --autotriage-status NOT_AFFECTED
 ```
 
-**Large organizations.** Pass `--cache-ttl 24h` on a portfolio sweep — findings are cached per project version as each batch lands, so an interrupted run resumes instead of restarting, but that resume is only active when a TTL is set. Add `--verbose` for a per-version progress line. Use `--min-severity high` to scope to CRITICAL and HIGH; when a floor is active every figure is labelled with it, because the denominator is then severity-scoped rather than portfolio-wide.
+**Large organizations.** Pass `--cache-ttl 24h` on a portfolio sweep — each batch of findings is cached once its fetch completes, so a re-run after an interruption reuses every batch that finished and fetches only the interrupted one again, from its first page. That reuse needs a TTL. Add `--verbose` for a per-version progress line. Use `--min-severity high` to scope to CRITICAL and HIGH; when a floor is active every figure is labelled with it, because the denominator is then severity-scoped rather than portfolio-wide.
 
 **`--open-only` is ignored** for this report. `NOT_AFFECTED` findings are its coverage denominator, so excluding them would report 0% coverage on every project. The run logs a warning and the report renders a banner.
 
@@ -1073,7 +1082,7 @@ fs-report run --recipe "Platform Usage"
 # One business unit
 fs-report run --recipe "Platform Usage" --folder "EU-Routers"
 
-# Large tenant: make an interrupted run resume instead of restart
+# Large tenant: a re-run after an interruption reuses the fetches that completed
 fs-report run --recipe "Platform Usage" --cache-ttl 24h
 ```
 
@@ -1362,7 +1371,7 @@ The four queue sections (🔥/🆕/🔁/⏰) are mutually exclusive per row — 
 
 **Key CLI flags** (CRA-specific; full list in [fs-report CLI skill doc](.claude/skills/fs-report-cli/SKILL.md#cra-compliance)):
 
-- `--since` — delta window for 🆕/🔁 sections (`24h` default; also `7d`, ISO 8601 datetime, or `last-run`)
+- `--since` — delta window for 🆕/🔁 sections (`24h` default; also `7d`, ISO 8601 datetime, or `last-run`). Windows longer than 90 days are fine — they are looked up in 90-day slices. If the CVE-updates lookup for the window fails, the report **stops with an error** instead of rendering without that window's changes, and `last-run` stays where it was so the next run covers the gap.
 - `--exploit-maturity` — override active tiers (default: `kev,ransomware,threat_actor,weaponized,botnet`; `poc`, `commercial`, and `reported` are recognized but opt-in). `kev` covers CISA KEV **or** VulnCheck KEV; `cisa-kev` and `vc-kev` narrow to a single catalog (they replace `kev` rather than adding to it — `cisa-kev,vc-kev` is equivalent to `kev`).
 - `--include-status` / `--exclude-status` — VEX status filters
 - `--reachable-only` — restrict to reachable findings
@@ -1543,8 +1552,9 @@ fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --ai \
 - KPI delta cards: total findings, critical, high, and component counts (before → after). Component counts are distinct components — lowercased name + normalized version, the same identity churn matching uses — so an inventory shipping one name at several versions counts each version, not each name once
 - Severity comparison: grouped bar chart showing each severity level side by side
 - **Changes (latest pair):** Fixed findings table (resolved issues) and New findings table (regressions), side by side with severity summaries
+- **Status Changes (latest pair):** Findings present in both versions whose VEX status changed — **Reopened** (needs action again, e.g. a `NOT_AFFECTED` triage that did not carry over to the new version), **Closed** (no longer needs action, e.g. `OPEN` → `NOT_AFFECTED`), or **Reclassified** (status moved without changing whether it needs action, e.g. `OPEN` → `EXPLOITABLE`)
 - **Component Changes (latest pair):** Added, removed, and updated components with finding impact
-- **Version changelog:** One collapsible entry per version pair (e.g. 3.14 → 3.15) with Fixed | New findings tables and **Component changes** for that pair. The first entry is expanded by default; click a row to expand others.
+- **Version changelog:** One collapsible entry per version pair (e.g. 3.14 → 3.15) with Fixed | New findings tables, **Status changes** and **Component changes** for that pair. The first entry is expanded by default; click a row to expand others. Each table in an entry shows at most 50 rows and says how many more there are; every row is in the matching CSV/XLSX export (re-run with CSV or XLSX output after an HTML-only run). The latest-pair panels above list everything.
 
 **Key visualizations:**
 - **Project Summary** (multi-project) — One row per project with version names and deltas
@@ -1554,22 +1564,29 @@ fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --ai \
 - **Component Churn** — Added, removed, updated components with finding impact
 - **Version changelog** — Per-version-pair fixed/new findings and component changes (expand to see)
 
-**"Fixed" Definition:** A finding is fixed if it is present in the baseline version but **absent from the current version**. Matching is by CVE ID (preferred) or finding ID.
+**"Fixed" Definition:** A finding is fixed if it is present in the baseline version but **absent from the current version**. A finding is identified by its component name plus CVE ID (case-insensitive), so the same CVE on two components is two findings; findings without a CVE fall back to component name plus title. The same identity decides Fixed, New and Status Changes.
+
+**Status changes vs. Fixed:** A finding triaged to `RESOLVED` or `NOT_AFFECTED` is still present in the version, so it is a **status change** (Closed), not a fix. "Needs action" follows the platform taxonomy: `NOT_AFFECTED`, `FALSE_POSITIVE`, `RESOLVED` and `RESOLVED_WITH_PEDIGREE` do not need action; everything else (untriaged, `IN_TRIAGE`, `EXPLOITABLE`, unknown statuses) does. A finding can appear at several component versions in one version (same CVE and component); status is compared per component version, and each such version is its own row (the counts are rows, not distinct findings). The same component version on both sides is compared directly (`1.0` and `1.0.0` count as one). When exactly one version is left over on each side — an upgrade such as `1.0` → `1.1` — those two are compared, so triage that did not follow the upgrade reads as Reopened. Any other component version newly carrying the finding has no like-for-like counterpart: it is compared with the finding's baseline status and listed only when it reopens the finding (needs action where the finding did not), so a new untriaged occurrence of a triaged finding is never hidden. A component version that stops carrying the finding is not a status change; it still shows in Findings Detail. When two rows of a finding at the same component version disagree, the status that still needs action represents them, so a partial triage never reads as Closed.
 
 **CSV and XLSX (detail exports):**  
 In addition to the **Summary** (one row per version), the report produces detail exports:
 
 | Export | Content |
 |--------|---------|
-| **Summary** | One row per version: Project, Version, Date, Total/Critical/High/Medium/Low, Fixed (vs prev), New (vs prev), Components |
-| **Findings Detail** | One row per finding per version: Project, Version, Date, ID, Severity, Component Name/Version, Risk, Title |
-| **Findings Churn** | One row per finding that was fixed or new in some version pair: Project, From Version, To Version, Change Type (Fixed/New), ID, Severity, Component, Risk, Title |
+| **Summary** | One row per version: Project, Version, Date, Total/Critical/High/Medium/Low, Fixed (vs prev), New (vs prev), Components, Status Changes (vs prev) (status-change rows, one per finding per component version) |
+| **Findings Detail** | One row per finding per version: Project, Version, Date, ID, Severity, Component Name/Version, Score, Title, Status |
+| **Findings Churn** | One row per finding that was fixed or new in some version pair: Project, From Version, To Version, Change Type (Fixed/New), ID, Severity, Component, Score, Title, External Change Note (on New rows whose CVE was escalated by a platform update, not a developer change) |
 | **Component Churn** | One row per component change (added/removed/updated) across version pairs: Project, From Version, To Version, Change Type, Component Name, Version Baseline/Current, Findings Impact |
+| **Status Changes** | One row per finding (per component version) whose VEX status changed in some version pair: Project, From Version, To Version, Change Type (Reopened/Closed/Reclassified), ID, Severity, Component, Status Before, Status After, Title |
+| **External Changes** | One row per finding present in both versions of a pair whose CVE severity or exploit status was changed by a platform intelligence update in that window: Project, From/To Version, Window Start/End, CVE ID, Component Name/Version, Change Type (Severity Escalated / Exploit Gained / Exploit Subsided), Old/New Severity, Old/New Exploit |
 
-- **CSV:** Main file `Version Comparison.csv` (summary) plus `Version Comparison_Detail_Findings.csv`, `Version Comparison_Detail_Findings_Churn.csv`, and `Version Comparison_Detail_Component_Churn.csv` when data exists.
-- **XLSX:** Single workbook with sheets **Summary**, **Findings Detail**, **Findings Churn**, and **Component Churn** (sheets omitted if empty).
+- **CSV:** Main file `Version Comparison.csv` (summary) plus `Version Comparison_Detail_Findings.csv`, `Version Comparison_Detail_Findings_Churn.csv`, `Version Comparison_Detail_Component_Churn.csv`, `Version Comparison_Detail_Status_Changes.csv`, and `Version Comparison_Detail_External_Changes.csv` when data exists.
+- **XLSX:** Single workbook with sheets **Summary**, **Findings Detail**, **Findings Churn**, **Component Churn**, **Status Changes**, and **External Changes** (sheets omitted if empty).
+- **Progression:** `Version Comparison_Progression.csv` and `_Progression.xlsx` — one row per version with its counts and fetch status (see `docs/COLUMN_REFERENCE.md`). Per-version lists are not repeated there; they are the detail exports above.
+- **A latest pair across a failed version:** when a failed version sits between the last two fetched versions, the latest pair (shown in the latest-pair panels) is not one of the version-to-version steps, so its rows are added to each detail export with that pair's From/To versions and `Pair Type` = `Latest across failed version` (every other row says `Consecutive`). Pairs are matched to steps by version ID, so reused version names never hide these rows.
+- **Markdown:** New and Fixed findings sections list the Findings Churn rows for each version pair, followed by Status Changes, External CVE Changes and Component Churn.
 
-**Note on "new" findings:** A finding may appear as "new" in a version even when the component was not updated, because the CVE itself was published or had its severity changed externally (NVD update). Use the [Security Progress](#security-progress) report to track CVE-level changes from the NVD during the same period.
+**Note on "new" findings:** A finding may appear as "new" in a version even when the component was not updated, because the CVE itself was published or had its severity changed externally (NVD update). Such New findings carry an External Change Note, and findings present in both versions whose CVE severity or exploit maturity changed in the window are listed under **Externally changed** (and in the External Changes export). The report makes one `/public/v0/cves/updates` lookup per version pair for this (a busy window can take more than one page of results); each pair's lookup after the first waits `--request-delay`, and the run log reports progress every 25 lookups plus a total. `--no-external-changes` (config key `external_changes: false`; in the web UI, the **Look up external CVE changes** toggle) skips them, and the HTML and Markdown then say external changes were not looked up; if any lookup fails they say the external changes may be incomplete. Use the [Security Progress](#security-progress) report to track CVE-level changes across the whole portfolio for a period.
 
 **What to look for:**
 | Healthy | Needs Attention |
@@ -1824,7 +1841,7 @@ Most reports generate output in multiple formats:
 | **XLSX** | Excel users, formatted reports, filtering | `output/{Report Name}/{Report Name}.xlsx` |
 | **Markdown** | LLM/agent consumption, token-efficient structured output | `output/{Report Name}/{Report Name}.md` |
 
-**Version Comparison** (full version and component changelog) produces additional detail in CSV and XLSX: alongside the summary file/sheet, it writes **Findings Detail**, **Findings Churn** (fixed/new per version pair), and **Component Churn** as separate CSV files or as additional sheets in the same XLSX workbook. See [Version Comparison](#version-comparison) for the full export table.
+**Version Comparison** (full version and component changelog) produces additional detail in CSV and XLSX: alongside the summary file/sheet, it writes **Findings Detail**, **Findings Churn** (fixed/new per version pair), **Component Churn**, and **Status Changes** (VEX status changes per version pair) as separate CSV files or as additional sheets in the same XLSX workbook. See [Version Comparison](#version-comparison) for the full export table.
 
 ---
 

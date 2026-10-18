@@ -11,6 +11,7 @@ parameters:
   mode: detailed
   all_severities: false
   max_detailed_findings: 100
+  osv_enabled: true      # CVE aliases for GHSA/PYSEC findings from api.osv.dev
 
 query:
   endpoint: "/public/v0/findings"

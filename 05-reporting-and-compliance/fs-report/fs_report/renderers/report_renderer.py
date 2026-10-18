@@ -36,6 +36,20 @@ from fs_report.renderers.html_renderer import HTMLRenderer
 from fs_report.renderers.md_renderer import MarkdownRenderer
 from fs_report.renderers.xlsx_renderer import XLSXRenderer
 
+# Version Comparison progression-step structures (lists, and the external
+# changes' window dict) whose content is exported as its own detail file, so
+# the _Progression CSV/XLSX leaves them out. The window dates are the two
+# versions' `created` dates, already on the progression rows.
+_VC_PROGRESSION_DETAIL_LISTS = (
+    "findings_in_version",
+    "fixed_findings",
+    "new_findings",
+    "component_churn",
+    "status_changes",
+    "externally_changed",
+    "external_changes_window",
+)
+
 
 class ReportRenderer:
     """Main renderer that coordinates all output formats."""
@@ -415,10 +429,14 @@ class ReportRenderer:
             detail_findings = additional_data.get("detail_findings")
             detail_findings_churn = additional_data.get("detail_findings_churn")
             detail_component_churn = additional_data.get("detail_component_churn")
+            detail_status_changes = additional_data.get("detail_status_changes")
+            detail_external_changes = additional_data.get("detail_external_changes")
             has_detail = recipe.name == "Version Comparison" and (
                 detail_findings is not None
                 or detail_findings_churn is not None
                 or detail_component_churn is not None
+                or detail_status_changes is not None
+                or detail_external_changes is not None
             )
             # Build the VC progression DataFrame (always, for all VC runs).
             vc_progression_df: pd.DataFrame | None = None
@@ -447,8 +465,24 @@ class ReportRenderer:
                             )
                         else:
                             vc_progression_df["status"] = "ok"
-                        # Drop internal boolean flags (superseded by status).
-                        for _drop_col in ("fetch_failed", "delta_unavailable"):
+                        # Drop internal boolean flags (superseded by status)
+                        # and the per-step lists that have their own detail
+                        # export (Findings Detail / Findings Churn / Component
+                        # Churn / Status Changes / External Changes) — as
+                        # Python reprs here they only bloated the file, one
+                        # cell per version holding every finding.
+                        for _drop_col in (
+                            "fetch_failed",
+                            "delta_unavailable",
+                            *_VC_PROGRESSION_DETAIL_LISTS,
+                            # Internal "_"-keyed fields (version IDs used to
+                            # match pairs) are not export columns.
+                            *[
+                                c
+                                for c in vc_progression_df.columns
+                                if str(c).startswith("_")
+                            ],
+                        ):
                             if _drop_col in vc_progression_df.columns:
                                 vc_progression_df = vc_progression_df.drop(
                                     columns=[_drop_col]
@@ -474,6 +508,16 @@ class ReportRenderer:
                 detail_component_churn_df = (
                     detail_component_churn
                     if isinstance(detail_component_churn, pd.DataFrame)
+                    else pd.DataFrame()
+                )
+                detail_status_changes_df = (
+                    detail_status_changes
+                    if isinstance(detail_status_changes, pd.DataFrame)
+                    else pd.DataFrame()
+                )
+                detail_external_changes_df = (
+                    detail_external_changes
+                    if isinstance(detail_external_changes, pd.DataFrame)
                     else pd.DataFrame()
                 )
 
@@ -576,6 +620,18 @@ class ReportRenderer:
                     )
                     self.csv_renderer.render(detail_component_churn_df, churn_csv)
                     generated_files.append(str(churn_csv))
+                if has_detail and not detail_status_changes_df.empty:
+                    status_csv = (
+                        output_dir / f"{base_filename}_Detail_Status_Changes.csv"
+                    )
+                    self.csv_renderer.render(detail_status_changes_df, status_csv)
+                    generated_files.append(str(status_csv))
+                if has_detail and not detail_external_changes_df.empty:
+                    external_csv = (
+                        output_dir / f"{base_filename}_Detail_External_Changes.csv"
+                    )
+                    self.csv_renderer.render(detail_external_changes_df, external_csv)
+                    generated_files.append(str(external_csv))
                 if has_scan_quality_detail and not scan_quality_detail_df.empty:
                     detail_csv = output_dir / f"{base_filename}_Detail.csv"
                     self.csv_renderer.render(scan_quality_detail_df, detail_csv)
@@ -651,6 +707,10 @@ class ReportRenderer:
                         and not detail_component_churn_df.empty
                     ):
                         sheets.append(("Component Churn", detail_component_churn_df))
+                    if not detail_status_changes_df.empty:
+                        sheets.append(("Status Changes", detail_status_changes_df))
+                    if not detail_external_changes_df.empty:
+                        sheets.append(("External Changes", detail_external_changes_df))
                     sheets.extend(trailing_sheets)
                     self.xlsx_renderer.render_multi_sheet(sheets, xlsx_path)
                 elif recipe.name == "Executive Dashboard":
@@ -821,11 +881,10 @@ class ReportRenderer:
         'fetch failed' so the workbook is honest about which versions
         could not be fetched.
 
-        Columns whose values contain lists or dicts (findings_in_version,
-        fixed_findings, new_findings, component_churn, externally_changed,
-        external_changes_window, etc.) are dropped from the XLSX because
-        openpyxl rejects non-scalar cell values. The full nested data is
-        still available in the sibling _Progression.csv file.
+        The per-step lists never reach here — they are exported as their own
+        detail files (_VC_PROGRESSION_DETAIL_LISTS). Any other column whose
+        values are lists or dicts is still dropped, because openpyxl rejects
+        non-scalar cell values.
         """
         from openpyxl import Workbook
         from openpyxl.styles import PatternFill
@@ -834,12 +893,23 @@ class ReportRenderer:
             start_color="FFF2F2", end_color="FFF2F2", fill_type="solid"
         )
         NUMERIC_COLS = frozenset(
-            {"total", "critical", "high", "medium", "low", "components", "new", "fixed"}
+            {
+                "total",
+                "critical",
+                "high",
+                "medium",
+                "low",
+                "components",
+                "new",
+                "fixed",
+                "status_changed_count",
+                "externally_changed_count",
+            }
         )
 
-        # Drop columns containing non-scalar values (lists/dicts). openpyxl
-        # only accepts scalars in cells; the CSV output keeps these columns
-        # via pandas' repr-based stringification.
+        # Drop any column holding non-scalar values (lists/dicts) that is not
+        # already excluded by _VC_PROGRESSION_DETAIL_LISTS: openpyxl only
+        # accepts scalars in cells.
         scalar_df = df.copy()
         for col in list(scalar_df.columns):
             sample_non_null = scalar_df[col].dropna()
@@ -938,6 +1008,22 @@ class ReportRenderer:
         maturity = report_data.metadata.get("exploit_maturity_filter", "")
         if maturity:
             filters["exploit_maturity"] = [t.strip() for t in maturity.split(",")]
+        # Attack vectors, on the same terms: engine-sourced, published as a
+        # list because the filter is multi-valued, and splitting the display
+        # string is lossless (the four labels contain no commas).
+        vectors = report_data.metadata.get("attack_vector_filter", "")
+        if vectors:
+            filters["attack_vector"] = [v.strip() for v in vectors.split(",")]
+        # Version-name globs, from the config but gated on the engine's
+        # applied-flag (the metadata label), for the same reason as above. Lists,
+        # not the display string: a glob may itself contain a comma.
+        if report_data.metadata.get("version_pattern_filter") and self.config:
+            include = list(getattr(self.config, "include_versions", None) or [])
+            exclude = list(getattr(self.config, "exclude_versions", None) or [])
+            if include:
+                filters["include_versions"] = include
+            if exclude:
+                filters["exclude_versions"] = exclude
         return filters
 
     def _render_json(

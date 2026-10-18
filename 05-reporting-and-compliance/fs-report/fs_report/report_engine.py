@@ -48,6 +48,7 @@ import httpx
 import pandas as pd
 
 from fs_report.api_client import APIClient
+from fs_report.coerce import coerce_bool as _coerce_bool
 from fs_report.data_cache import DataCache
 from fs_report.data_transformer import DataTransformer
 from fs_report.dependency_resolver import DependencyNode, DependencyResolver
@@ -72,6 +73,14 @@ from fs_report.scope_ref import ResolvedScope, ScopeRef, ScopeRefError
 from fs_report.scope_ref import parse as _parse_scope_ref
 from fs_report.slug import slug as _slug
 from fs_report.sqlite_cache import _trim_factors
+from fs_report.version_name_filter import (
+    FilterStats,
+    VersionNameFilter,
+    filter_records,
+    filter_versions,
+    record_version_name,
+    version_entry_name,
+)
 
 
 @dataclass
@@ -166,6 +175,39 @@ def _exploit_maturity_label(recipe_name: str, config: Any) -> str:
     )
 
 
+# Recipes whose reports disclose ``--attack-vector``. Same rule as
+# ``_EXPLOIT_MATURITY_RECIPES`` above: only the recipe that applies the filter
+# may claim it, because a co-run recipe stating "Attack Vector: Network" over
+# an unfiltered inventory is a false disclosure.
+_ATTACK_VECTOR_RECIPES: frozenset[str] = frozenset({"Findings by Project"})
+
+
+def _attack_vector_filter_label(recipe_name: str, config: Any) -> str:
+    """Display string for the attack vectors a recipe was filtered to.
+
+    Empty when the recipe ignores the flag or none were requested. Normalized
+    through the same function the filter itself uses, so the disclosure reads
+    back exactly the labels the rows were matched against.
+
+    A bad name discloses nothing rather than raising. The transform has
+    already rejected it by the time metadata is assembled, naming the flag;
+    raising again here would replace that message with the engine's generic
+    "Failed to process recipe …", which names neither the flag nor the value.
+    Same reason ``_exploit_maturity_label`` calls the non-validating
+    ``normalize_tiers``.
+    """
+    if recipe_name not in _ATTACK_VECTOR_RECIPES:
+        return ""
+    from fs_report.cvss import normalize_attack_vectors
+
+    try:
+        return ", ".join(
+            normalize_attack_vectors(getattr(config, "attack_vector_filter", None))
+        )
+    except ValueError:
+        return ""
+
+
 # Recipes that rewrite the *shape* of the findings frame in-flight — per-batch
 # scoring, flattening, or column pruning — before it is stored in the in-memory
 # ``_findings_cache``.
@@ -208,6 +250,22 @@ def _findings_payload_shape(recipe_name: str) -> str:
     return _FINDINGS_PAYLOAD_SHAPES.get(recipe_name, "raw")
 
 
+# Recipes whose transform fetches (some of) its own data, which the version
+# filter does not reach yet. Filtering only the engine's share would leave one
+# report half-filtered under a disclosure that claims all of it, so the filter
+# is switched off for these recipes and the skip reason says why. CRA
+# Compliance discards the engine's stub query entirely; Component Impact
+# builds its blast radius from its own /components query.
+_VERSION_FILTER_SELF_FETCHING_RECIPES: frozenset[str] = frozenset(
+    {"CRA Compliance", "Component Impact"}
+)
+
+
+def _has_bare_pattern(patterns: Iterable[str]) -> bool:
+    """True when a version pattern has no glob wildcard (an exact-name match)."""
+    return any(not any(c in p for c in "*?[") for p in patterns)
+
+
 def _findings_cache_key(
     endpoint: str,
     combined_filter: str | None,
@@ -215,6 +273,7 @@ def _findings_cache_key(
     project_ids: Iterable[Any],
     recipe_name: str,
     exploit_maturity: str = "",
+    version_names: str = "",
 ) -> str:
     """Key for the in-memory ``_findings_cache`` on the batched-by-project path.
 
@@ -228,6 +287,11 @@ def _findings_cache_key(
     one string and removes the assumption. Canonicalized here (sorted, no
     spaces) so equivalent tier sets share a key regardless of caller order or
     display formatting.
+
+    ``version_names`` (the ``--include/--exclude-versions`` label) follows the
+    same reasoning: the cached frame is the one left AFTER the per-batch
+    version-name filter. Appended only when set, so unfiltered keys are
+    unchanged.
     """
     maturity_canonical = ",".join(
         sorted(t.strip() for t in exploit_maturity.split(",") if t.strip())
@@ -238,6 +302,8 @@ def _findings_cache_key(
         f"|shape:{_findings_payload_shape(recipe_name)}"
         f"|maturity:{maturity_canonical}"
     )
+    if version_names:
+        parts += f"|versions:{version_names}"
     return hashlib.sha256(parts.encode()).hexdigest()[:16]
 
 
@@ -1051,6 +1117,11 @@ class ReportEngine:
     _sbom_enrichment_failed: bool = False
     _sbom_ambiguous_components: int = 0
     _components_from_version_endpoint: bool = False
+    # --include/--exclude-versions per-recipe applied flag (see __init__);
+    # class-level for the same __new__-built-engine reason.
+    _version_name_filter_applied: bool = False
+    _version_filter_stats_obj: FilterStats | None = None
+    _version_filter_disabled: bool = False
     _product_member_map: Mapping[str, tuple[str, str]] = MappingProxyType({})
     # Empty TUPLE, not a list: a mutable class default would leak one run's
     # disclosure into every other engine in the process.
@@ -1234,6 +1305,12 @@ class ReportEngine:
         # config.version_filter is not a substitute: it is blank on a
         # current-version run and holds a bare numeric ID otherwise.
         self._resolved_version_label: str = ""
+        # Per-recipe: True once --include/--exclude-versions governed one of
+        # this recipe's multi-version fetches. The report discloses the filter
+        # only then — a latest-version-only report must not claim a filter
+        # that never touched its data.
+        self._version_name_filter_applied = False
+        self._version_filter_stats_obj = None
         # SBOM-flag warnings are emitted once per run, not once per recipe.
         self._warned_sbom_flags: set[str] = set()
 
@@ -1286,6 +1363,9 @@ class ReportEngine:
 
         # Folder scoping state (populated by _resolve_folder_scope in run())
         self._folder_project_ids: set[str] | None = None
+        # The --project glob that matched several projects (it then scopes the
+        # run through _folder_project_ids, with project_filter cleared).
+        self._project_glob: str | None = None
         self._folder_scope_folder_ids: set[str] | None = None
         self._project_folder_map: dict[str, str] = {}  # project_id -> folder_name
         self._folder_name: str | None = None
@@ -2200,6 +2280,122 @@ class ReportEngine:
         except Exception:
             return []
 
+    # ── --include-versions / --exclude-versions ───────────────────────
+
+    def _governing_version_name_filter(
+        self, *, honors_version_target: bool = True
+    ) -> VersionNameFilter | None:
+        """The run's version-name filter, or None when it must not apply.
+
+        An explicit ``--version`` target is never filtered: the operator named
+        that version, so a matching exclude pattern would silently empty the
+        report instead of honoring the request. Version Comparison and Security
+        Progress ignore ``--version`` (they discover every version), so their
+        paths pass ``honors_version_target=False`` and stay filtered.
+        """
+        flt = VersionNameFilter.from_config(self.config)
+        if not flt.active or self._version_filter_disabled:
+            return None
+        if honors_version_target and self.config.version_filter:
+            return None
+        return flt
+
+    def _filter_records_by_version_name(
+        self,
+        records: list[dict],
+        *,
+        context: str,
+        honors_version_target: bool = True,
+    ) -> list[dict]:
+        """Drop finding/component/scan rows from versions the filter excludes.
+
+        Call on RAW records, before any per-batch flatten/prune: several of
+        those drop ``projectVersion`` and with it the only name to match on.
+        """
+        flt = self._governing_version_name_filter(
+            honors_version_target=honors_version_target
+        )
+        if flt is None:
+            return records
+        self._version_name_filter_applied = True
+        kept, dropped = filter_records(records, flt)
+        stats = self._version_filter_stats()
+        stats.rows_seen += len(records)
+        stats.rows_dropped += len(records) - len(kept)
+        stats.unnamed_rows += sum(1 for r in records if not record_version_name(r))
+        stats.exclude_hits += sum(
+            1 for r in records if flt.excluded_by_pattern(record_version_name(r))
+        )
+        if dropped:
+            self.logger.info(
+                "Version filter (%s): dropped %d %s row(s) from %d version(s)",
+                flt.label(),
+                len(records) - len(kept),
+                context,
+                len(dropped),
+            )
+        return kept
+
+    def _filter_version_list_by_name(
+        self, versions: list[dict], *, context: str
+    ) -> list[dict]:
+        """Filtered COPY of a version list (never mutate a cached list).
+
+        Only Version Comparison / Security Progress discovery calls this, and
+        both ignore ``--version``, so an explicit target never disables it.
+        """
+        flt = self._governing_version_name_filter(honors_version_target=False)
+        if flt is None:
+            return versions
+        self._version_name_filter_applied = True
+        kept, dropped = filter_versions(versions, flt)
+        stats = self._version_filter_stats()
+        stats.versions_seen += len(versions)
+        stats.versions_dropped += len(dropped)
+        stats.exclude_hits += sum(
+            1 for v in versions if flt.excluded_by_pattern(version_entry_name(v))
+        )
+        if dropped:
+            self.logger.info(
+                "Version filter (%s): %s — excluded %d of %d version(s): %s",
+                flt.label(),
+                context,
+                len(dropped),
+                len(versions),
+                ", ".join(version_entry_name(v) or str(v.get("id")) for v in dropped),
+            )
+        return kept
+
+    def _filter_exec_dashboard_components(self, additional_data: dict) -> None:
+        """Version-filter ED --detailed components, all or nothing.
+
+        That component fetch always spans every version, but the dashboard's
+        findings follow the scope: under the default latest-version scope they
+        are unfiltered (choosing the latest non-excluded version is not
+        supported yet). Filtering the components alone there would put a
+        Versions disclosure over a page that is mostly unfiltered, so this
+        only filters when the findings are filtered too (--all-versions).
+        """
+        if not additional_data.get("components") or self.config.current_version_only:
+            return
+        additional_data["components"] = self._filter_records_by_version_name(
+            additional_data["components"], context="component"
+        )
+        # Runs after the label was first handed to the transform.
+        additional_data["version_pattern_filter"] = self._version_name_filter_label()
+
+    def _version_filter_stats(self) -> FilterStats:
+        """This recipe's stats, created on first use (see the per-recipe reset)."""
+        if self._version_filter_stats_obj is None:
+            self._version_filter_stats_obj = FilterStats()
+        return self._version_filter_stats_obj
+
+    def _version_name_filter_label(self) -> str:
+        """Disclosure string for the current recipe; empty unless applied."""
+        if not self._version_name_filter_applied:
+            return ""
+        return VersionNameFilter.from_config(self.config).label()
+
     def _get_project_versions(self, project_id: int | str) -> list[dict]:
         """Fetch all versions for a project, walking pages and caching the
         result on the engine instance.
@@ -2945,10 +3141,18 @@ class ReportEngine:
                             qh = self.api_client.sqlite_cache.start_fetch(
                                 endpoint, params, self.api_client.cache_ttl
                             )
-                            self.api_client.sqlite_cache.store_records(
-                                qh, endpoint, version_records
-                            )
-                            self.api_client.sqlite_cache.complete_fetch(qh)
+                            # None: another run is fetching this query; leave it.
+                            if qh:
+                                try:
+                                    self.api_client.sqlite_cache.store_records(
+                                        qh, endpoint, version_records
+                                    )
+                                    self.api_client.sqlite_cache.complete_fetch(qh)
+                                finally:
+                                    # No-op once completed; else frees the claim.
+                                    self.api_client.sqlite_cache.abandon_fetch(
+                                        qh, endpoint
+                                    )
                     except Exception:
                         self.logger.warning(
                             f"Failed to warm SQLite cache for version {vid}; continuing without cache"
@@ -3404,6 +3608,7 @@ class ReportEngine:
                             + ", ".join(sorted(names))
                         )
                         self._folder_project_ids = {str(m[0]) for m in matches}
+                        self._project_glob = filter_value
                         self.config.project_filter = None
                 else:
                     original_name = filter_value
@@ -4586,9 +4791,11 @@ class ReportEngine:
         # hand-authored ``product_only: "false"`` would land on the Config as a
         # truthy string and silently product-scope a section that asked not to be.
         if "product_only" in child_eff:
-            from fs_report.workflow_store import coerce_bool as _coerce_bool
-
             update["product_only"] = _coerce_bool(child_eff["product_only"])
+        # Same reason: a string "false" would keep a Version Comparison section's
+        # /cves/updates lookups ON when the section asked to skip them.
+        if "external_changes" in child_eff:
+            update["external_changes"] = _coerce_bool(child_eff["external_changes"])
         # Date mode → start_date/end_date. A section ``period`` is resolved to a
         # window via PeriodParser (same as create_config); a section start/end
         # pair is used verbatim. period↔range exclusion was already applied by
@@ -4629,6 +4836,9 @@ class ReportEngine:
         saved_api_config = self.api_client.config
         saved_resolved_name = self.resolved_project_name
         saved_folder_ids = self._folder_project_ids
+        # Names the scope _folder_project_ids holds when a glob built it; it
+        # travels with that set.
+        saved_project_glob = self._project_glob
         # Saved for the same reason as _folder_project_ids: Platform Usage scopes
         # its FOLDER inventory from this set, so a leak across sections silently
         # produces wrong folder totals and false or missing hygiene flags in a
@@ -4651,6 +4861,7 @@ class ReportEngine:
         # child's glob/folder expansion doesn't leak in.
         if scope_overridden:
             self._folder_project_ids = None
+            self._project_glob = None
             self._folder_scope_folder_ids = None
             self.resolved_project_name = None
             self.resolved_folder_path = []
@@ -4669,6 +4880,7 @@ class ReportEngine:
             self.api_client.config = saved_api_config
             self.resolved_project_name = saved_resolved_name
             self._folder_project_ids = saved_folder_ids
+            self._project_glob = saved_project_glob
             self._folder_scope_folder_ids = saved_folder_scope_ids
             self.resolved_folder_path = saved_folder_path
             self._product_scope = saved_product_scope
@@ -6425,6 +6637,23 @@ class ReportEngine:
     # Version Comparison: specialised data fetcher
     # ------------------------------------------------------------------
 
+    def _explicit_scope_label(self) -> str | None:
+        """The scope the user named with --project/--folder, for messages.
+
+        ``None`` for a portfolio-wide run, including ``--product-only`` alone,
+        which narrows through ``_folder_project_ids`` without naming a scope.
+        """
+        if self.config.project_filter:
+            # project_filter holds the resolved ID; prefer the project's name
+            # (resolved from the user's name, ID or single-match glob).
+            name = self.resolved_project_name or self.config.project_filter
+            return f"project '{name}'"
+        if self.config.folder_filter:
+            return f"folder '{self._folder_name or self.config.folder_filter}'"
+        if self._project_glob:
+            return f"projects matching '{self._project_glob}'"
+        return None
+
     def _fetch_version_comparison_data(self, recipe: Any) -> list[dict]:
         """
         Fetch findings for every version of every in-scope project so the
@@ -6676,7 +6905,9 @@ class ReportEngine:
                     project_ids_and_names.append((pid, pname))
                     break
 
-        elif self._folder_project_ids:
+        # ``is not None``: a folder with no projects is an empty set, and must
+        # not fall through to the whole-portfolio branch below.
+        elif self._folder_project_ids is not None:
             self.logger.info(
                 "Version Comparison: %d project(s) from folder '%s'",
                 len(self._folder_project_ids),
@@ -6695,8 +6926,19 @@ class ReportEngine:
                     project_ids_and_names.append((pid, p.get("name", pid)))
 
         if not project_ids_and_names:
-            self.logger.warning("No projects found for version comparison")
             self._version_comparison_data = {}
+            scope = self._explicit_scope_label()
+            if scope:
+                # An explicit scope that matches nothing is an error, not an
+                # empty report: returning [] wrote a blank Version Comparison
+                # with exit 0, and sent Security Progress to its flat fallback,
+                # an unscoped portfolio query.
+                raise ValueError(
+                    f"{recipe.name}: {scope} has no active project in the "
+                    f"platform's project list ({len(all_projects)} projects "
+                    "returned), so there are no versions to compare."
+                )
+            self.logger.warning("No projects found for version comparison")
             return []
 
         # ── Fetch version lists per project (with caching) ─────────────
@@ -6754,6 +6996,23 @@ class ReportEngine:
                     # on success. Persist to SQLite too if configured.
                     if sqlite_cache and cache_ttl > 0:
                         sqlite_cache.store_version_list(pid, versions)
+
+                # --include/--exclude-versions, on a copy (the list above is
+                # the shared cache entry) and BEFORE the --period trim, so the
+                # pre-window baseline it keeps is itself an allowed version.
+                _n_before = len(versions)
+                versions = self._filter_version_list_by_name(
+                    versions, context=f"project '{pname}'"
+                )
+                if _n_before >= 2 and len(versions) < 2:
+                    self._version_filter_stats().projects_emptied.append(pname)
+                    self.logger.warning(
+                        "Version filter left '%s' with %d of %d version(s) — "
+                        "nothing to compare, so the project is skipped.",
+                        pname,
+                        len(versions),
+                        _n_before,
+                    )
 
                 # Apply --period filter (single-project mode only; folder /
                 # portfolio modes and explicit-pair mode skip this).
@@ -7040,8 +7299,107 @@ class ReportEngine:
                 ", ".join(sorted(PRODUCT_ONLY_RECIPES)),
             )
             with self._product_scope_suspended():
-                return self._process_recipe_scoped(recipe)
-        return self._process_recipe_scoped(recipe)
+                result = self._process_recipe_scoped(recipe)
+        else:
+            result = self._process_recipe_scoped(recipe)
+        self._report_version_name_filter_outcome(recipe)
+        return result
+
+    def _report_version_name_filter_outcome(self, recipe: Recipe) -> None:
+        """Warn when --include/--exclude-versions did not do what was asked.
+
+        Covers the cases where the report alone would mislead: the flags never
+        reached this recipe's data, the patterns matched nothing (a bare word
+        is a whole-name match), they removed everything, or rows carried no
+        version name to match on.
+        """
+        flt = VersionNameFilter.from_config(self.config)
+        if not flt.active:
+            return
+        name = recipe.name
+        if not self._version_name_filter_applied:
+            self.logger.warning(
+                "--include-versions/--exclude-versions did not apply to %s: %s.",
+                name,
+                self._version_name_filter_skip_reason(name),
+            )
+            return
+        stats = self._version_filter_stats()
+        label = flt.label()
+        if stats.unnamed_rows:
+            self.logger.warning(
+                "Version filter (%s): %d %s row(s) carried no version name — "
+                "include patterns drop such rows, exclude patterns keep them.",
+                label,
+                stats.unnamed_rows,
+                name,
+            )
+        seen = stats.rows_seen + stats.versions_seen
+        dropped = stats.rows_dropped + stats.versions_dropped
+        # Only EXCLUDE patterns can be a silent no-op: an include that matches
+        # nothing removes everything (next branch), and one that matches
+        # everything is a correct filter that simply kept every version.
+        # The whole-name hint only when a pattern has no wildcard: advice the
+        # operator already followed teaches them to ignore these warnings.
+        hint = (
+            " Patterns match the WHOLE version name, like --project: use "
+            "'*checkpoint*', not 'checkpoint', to match part of a name."
+        )
+        if seen and flt.exclude and not stats.exclude_hits:
+            self.logger.warning(
+                "Version filter (%s): no version in %s matched an exclude pattern.%s",
+                label,
+                name,
+                hint if _has_bare_pattern(flt.exclude) else "",
+            )
+        if seen and dropped == seen:
+            self.logger.warning(
+                "Version filter (%s) removed every version from %s — the "
+                "report is empty because of the filter, not the data.%s",
+                label,
+                name,
+                hint if _has_bare_pattern(flt.include) else "",
+            )
+
+    def _version_name_filter_skip_reason(self, recipe_name: str) -> str:
+        """Why the filter did not apply, checked in the order it is decided.
+
+        Recipe-level exemptions come first: they hold whatever the scope
+        flags say (``_governing_version_name_filter`` checks
+        ``_version_filter_disabled`` before the explicit ``--version``), so
+        naming ``--version`` for them would send the operator after a flag
+        whose removal changes nothing.
+        """
+        if recipe_name in _VERSION_FILTER_SELF_FETCHING_RECIPES:
+            return "it fetches its own data, which the filter does not reach yet"
+        if recipe_name == "Platform Usage":
+            return "it counts every scan as platform usage, whatever its version"
+        if recipe_name == "Executive Dashboard" and not getattr(
+            self.config, "detailed_mode", True
+        ):
+            return "summary mode does not filter versions yet"
+        if recipe_name in ("Version Comparison", "Security Progress"):
+            # Same order as _fetch_version_comparison_data: cross-server wins.
+            if getattr(self, "compare_api_client", None) is not None:
+                return (
+                    "a cross-server comparison takes one version per side, "
+                    "which is never filtered"
+                )
+            if self.config.baseline_version and self.config.current_version:
+                return (
+                    "an explicit --baseline-version/--current-version pair is "
+                    "never filtered"
+                )
+            return "it found no project with versions to compare"
+        if self.config.version_filter:
+            return "an explicit --version target is never filtered"
+        if self.config.current_version_only:
+            return (
+                "it reports the latest version per project, and choosing the "
+                "latest non-excluded version is not supported yet (findings and "
+                "component reports filter every version under --all-versions)"
+            )
+        return "it did not read data from more than one version"
 
     def _process_recipe_scoped(self, recipe: Recipe) -> ReportData | None:
         """Process a single recipe and return report data."""
@@ -7060,6 +7418,11 @@ class ReportEngine:
             # Per-recipe, like _single_version_recipe: a label resolved for an
             # earlier recipe must never be attributed to this one's scope.
             self._resolved_version_label = ""
+            self._version_name_filter_applied = False
+            self._version_filter_stats_obj = None
+            self._version_filter_disabled = (
+                recipe.name in _VERSION_FILTER_SELF_FETCHING_RECIPES
+            )
 
             # Track whether entity-level caching was used (needs date post-filtering)
             needs_date_postfilter = False
@@ -7179,6 +7542,32 @@ class ReportEngine:
                                 pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
                             )
                             del _fetched
+                        elif self._version_filter_stats().projects_emptied:
+                            # The version filter, not the data, left nothing to
+                            # compare. The flat fallback below is an unscoped
+                            # portfolio query, so taking it here would report
+                            # versions from outside the requested scope.
+                            del _fetched
+                            self.logger.warning(
+                                "Security Progress: no project has two versions "
+                                "to compare after the version filter (it "
+                                "emptied %d); not falling back to the flat "
+                                "snapshot, an unscoped portfolio query.",
+                                len(self._version_filter_stats().projects_emptied),
+                            )
+                            raw_data = pd.DataFrame()
+                        elif self._explicit_scope_label():
+                            # The flat fallback below is an unscoped portfolio
+                            # query; under a named scope it would report
+                            # findings from outside it.
+                            del _fetched
+                            self.logger.warning(
+                                "Security Progress: no project in %s has two "
+                                "versions to compare; not falling back to the "
+                                "flat snapshot, an unscoped portfolio query.",
+                                self._explicit_scope_label(),
+                            )
+                            raw_data = pd.DataFrame()
                         else:
                             # Security Progress: fall back to flat findings fetch
                             # when no multi-version data is available (e.g. single version)
@@ -7188,6 +7577,12 @@ class ReportEngine:
                                 "falling back to flat findings fetch"
                             )
                             _flat = self.api_client.fetch_all_with_resume(recipe.query)
+                            if _flat:
+                                _flat = self._filter_records_by_version_name(
+                                    _flat,
+                                    context="finding",
+                                    honors_version_target=False,
+                                )
                             raw_data = pd.DataFrame(_flat) if _flat else pd.DataFrame()
                             del _flat
                     elif recipe.name == "User Activity":
@@ -7248,6 +7643,13 @@ class ReportEngine:
                             # Use early termination to avoid fetching old scans
                             _fetched = self._fetch_scans_with_early_termination(
                                 scan_query
+                            )
+                        # Scans span every version. Filter a copy: the scan
+                        # list may be the cached one that Executive Summary
+                        # reuses for project discovery.
+                        if _fetched:
+                            _fetched = self._filter_records_by_version_name(
+                                _fetched, context="scan"
                             )
                         raw_data = (
                             pd.DataFrame(_fetched) if _fetched else pd.DataFrame()
@@ -7634,6 +8036,11 @@ class ReportEngine:
                                 _fetched = self.api_client.fetch_all_with_resume(
                                     unified_query
                                 )
+                                # All versions (--all-versions): version-name filter.
+                                if _fetched:
+                                    _fetched = self._filter_records_by_version_name(
+                                        _fetched, context="component"
+                                    )
                                 raw_data = (
                                     pd.DataFrame(_fetched)
                                     if _fetched
@@ -8194,6 +8601,12 @@ class ReportEngine:
                                 _fetched = self.api_client.fetch_all_with_resume(
                                     unified_query
                                 )
+                                # All versions of the project (--all-versions,
+                                # or the latest-version fallback above).
+                                if _fetched:
+                                    _fetched = self._filter_records_by_version_name(
+                                        _fetched, context="finding"
+                                    )
                                 # Feed NVD pipeline before converting to DataFrame
                                 if _nvd_on_records is not None and _fetched:
                                     _nvd_on_records(_fetched)
@@ -8342,6 +8755,11 @@ class ReportEngine:
                                 # exists AFTER per-batch pruning/scoring, so a
                                 # pruning recipe must never share a key with a
                                 # raw-shape reader issuing the same query.
+                                # The version-name filter governs this frame
+                                # whether it is fetched or served from cache.
+                                _vn_filter = self._governing_version_name_filter()
+                                if _vn_filter is not None:
+                                    self._version_name_filter_applied = True
                                 _cache_key = _findings_cache_key(
                                     recipe.query.endpoint,
                                     combined_filter,
@@ -8350,6 +8768,9 @@ class ReportEngine:
                                     recipe.name,
                                     exploit_maturity=_exploit_maturity_label(
                                         recipe.name, self.config
+                                    ),
+                                    version_names=(
+                                        _vn_filter.label() if _vn_filter else ""
                                     ),
                                 )
 
@@ -8400,6 +8821,12 @@ class ReportEngine:
                                                     batch_query, show_progress=False
                                                 )
                                             )
+                                            # Before flatten/prune: those drop
+                                            # the version name on some recipes.
+                                            if batch_data:
+                                                batch_data = self._filter_records_by_version_name(
+                                                    batch_data, context="finding"
+                                                )
                                             if batch_data:
                                                 # Feed CVE IDs to NVD pipeline
                                                 if _nvd_on_records is not None:
@@ -8688,6 +9115,14 @@ class ReportEngine:
                                                 batch_query, show_progress=False
                                             )
                                         )
+                                        # Before flatten/prune: those drop the
+                                        # version name on some recipes.
+                                        if batch_data:
+                                            batch_data = (
+                                                self._filter_records_by_version_name(
+                                                    batch_data, context="finding"
+                                                )
+                                            )
                                         if batch_data:
                                             # Feed CVE IDs to NVD pipeline
                                             if _nvd_on_records is not None:
@@ -8872,6 +9307,13 @@ class ReportEngine:
                             finally:
                                 if recipe.category == "assessment":
                                     self.config.start_date = _saved_start
+                            # Scan Quality spans every version. Platform Usage
+                            # is exempt: it measures platform usage, and a
+                            # checkpoint scan is still usage.
+                            if _fetched and recipe.name != "Platform Usage":
+                                _fetched = self._filter_records_by_version_name(
+                                    _fetched, context="scan"
+                                )
                         else:
                             _generic_filters: list[str] = []
                             if self.config.project_filter:
@@ -9022,7 +9464,7 @@ class ReportEngine:
                         f"'{recipe.name}' is an operational report that only "
                         f"shows activity within the reporting period "
                         f"({self.config.start_date} to {self.config.end_date}). "
-                        f"The project '{self.config.project_filter}' may have "
+                        f"The project '{self.resolved_project_name or self.config.project_filter}' may have "
                         f"no activity in this window. Try a longer --period or "
                         f"use an assessment recipe (e.g. Triage Prioritization, "
                         f"CVE Impact) for point-in-time analysis."
@@ -9286,6 +9728,11 @@ class ReportEngine:
             additional_data: dict[str, Any] = {}
             # Add config for pandas transform functions
             additional_data["config"] = self.config
+            # The version-name filter as APPLIED to this recipe ("" when it
+            # was not) — the one source a transform may disclose it from.
+            additional_data["version_pattern_filter"] = (
+                self._version_name_filter_label()
+            )
             # Disclosed in the report rather than logged only: a blank PURL
             # column with no explanation reads as "no component has a PURL".
             if getattr(self, "_sbom_enrichment_failed", False):
@@ -9449,6 +9896,8 @@ class ReportEngine:
             # Inject API client and domain for recipes that need live API access
             if recipe.name in (
                 "Security Progress",
+                # External CVE changes per version pair (/cves/updates).
+                "Version Comparison",
                 "Component Impact",
                 "Assessment Overview",
                 "Customer Brief",
@@ -9472,6 +9921,14 @@ class ReportEngine:
                     additional_data["scans_fetch_truncated"] = (
                         self._scan_fetch_truncated
                     )
+                if recipe.name == "Security Progress" and self.config.folder_filter:
+                    # Its /cves/updates lookup is portfolio-wide (folderId
+                    # rejects names, ignores subfolders); the transform keeps
+                    # the records touching this tree. Keyed on folder_filter
+                    # so a zero-project folder still scopes (to nothing); an
+                    # unresolved tree passes None, which the transform warns
+                    # about and treats as "no external changes".
+                    additional_data["folder_project_ids"] = self._folder_project_ids
                 if recipe.name == "Platform Usage" and self.config.folder_filter:
                     # Keyed on folder_filter, NOT on the truthiness of the id set.
                     # A folder that resolves to ZERO projects is a legitimate
@@ -9680,6 +10137,8 @@ class ReportEngine:
                                 f"Could not fetch components for Executive Dashboard: {e}"
                             )
                             additional_data["components"] = []
+
+                self._filter_exec_dashboard_components(additional_data)
 
             if recipe.additional_queries:
                 for query_name, query_config in recipe.additional_queries.items():
@@ -10034,6 +10493,17 @@ class ReportEngine:
                     "exploit_maturity_filter": _exploit_maturity_label(
                         recipe.name, self.config
                     ),
+                    # Attack vectors the run was filtered to, on the same
+                    # contract as the key above: one display string, read by
+                    # every renderer, empty for a recipe that ignores the flag.
+                    "attack_vector_filter": _attack_vector_filter_label(
+                        recipe.name, self.config
+                    ),
+                    # --include/--exclude-versions, same single-source rule:
+                    # set only when the filter governed one of THIS recipe's
+                    # multi-version fetches, so a latest-version-only report
+                    # never claims a filter that did not touch its data.
+                    "version_pattern_filter": self._version_name_filter_label(),
                     "domain": self.config.domain,
                     "logo_path": self._resolve_logo_path(),
                 },
@@ -10920,10 +11390,16 @@ class ReportEngine:
             qh = self.api_client.sqlite_cache.start_fetch(
                 "/public/v0/scans", sqlite_params, self.api_client.cache_ttl
             )
-            self.api_client.sqlite_cache.store_records(
-                qh, "/public/v0/scans", all_scans
-            )
-            self.api_client.sqlite_cache.complete_fetch(qh)
+            # None: another run is fetching this query; leave it.
+            if qh:
+                try:
+                    self.api_client.sqlite_cache.store_records(
+                        qh, "/public/v0/scans", all_scans
+                    )
+                    self.api_client.sqlite_cache.complete_fetch(qh)
+                finally:
+                    # No-op once completed; else frees the claim.
+                    self.api_client.sqlite_cache.abandon_fetch(qh, "/public/v0/scans")
             # See the SQLite cache-hit branch above: this rides beside the
             # structured scans cache under the same key rather than a new
             # column, since it is a single boolean only this report reads.

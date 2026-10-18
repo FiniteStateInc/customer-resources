@@ -57,6 +57,21 @@
                 </label>
             </div>
             {% endif %}
+            {% if show_version_name_filter %}
+            <div class="form-group">
+                <label for="pre-include-versions">Include versions</label>
+                <input type="text" id="pre-include-versions" name="include_versions"
+                       placeholder="e.g. 2.4.*"
+                       value="{% set _v = state.get('include_versions', '') %}{{ _v if _v is string else (_v or [])|join(', ') }}">
+            </div>
+            <div class="form-group">
+                <label for="pre-exclude-versions">Exclude versions</label>
+                <input type="text" id="pre-exclude-versions" name="exclude_versions"
+                       placeholder="e.g. *checkpoint*"
+                       value="{% set _v = state.get('exclude_versions', '') %}{{ _v if _v is string else (_v or [])|join(', ') }}">
+                <small class="form-hint">Comma-separated globs matched against the whole version name, so use wildcards: <code>*checkpoint*</code>, not <code>checkpoint</code>. Findings and component reports apply them only with Current version only off; the run log names any report that ignores them.</small>
+            </div>
+            {% endif %}
             {# Products only FIRST: it picks the population, and Standalone then
                decides whether each row carries its dependencies. #}
             {% if show_product_only %}
@@ -212,6 +227,22 @@
                        placeholder="Or paste version ID directly">
             </div>
             </div>
+            {% endif %}
+            {# DEFAULT-TRUE, Version Comparison only (show_external_changes) —
+               mirrors the current_version_only checkbox: the drawer submits it
+               as 'true'/'false', so unchecking is an explicit opt-out. #}
+            {% if show_external_changes %}
+            <div class="form-group form-row">
+                <label for="pre-external-changes">Look up external CVE changes</label>
+                <label class="toggle">
+                    {# Read like the engine does (coerce_bool), so a hand-edited
+                       string "false" shows unchecked instead of truthy-checked. #}
+                    <input type="checkbox" id="pre-external-changes" name="external_changes"
+                           {% if state.get('external_changes', True) | coerce_bool %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <small class="form-hint">One CVE-updates lookup per version pair. Off skips them: no Externally changed findings, New-finding notes or External Changes export.</small>
             {% endif %}
 
             {# Opens for a triage recipe OR any autotriage-capable one: the
@@ -466,7 +497,7 @@
 
         {# Filters — hide the whole section when no child filter is consumed by
            the selected recipe(s) (Round-1 M1-11). #}
-        {% if show_component_match or show_component_version or show_detected_after or show_min_severity or show_scan_filters %}
+        {% if show_component_match or show_component_version or show_detected_after or show_min_severity or show_attack_vector or show_scan_filters %}
         <details class="form-section">
             <summary class="form-section-title">Filters</summary>
             {% if show_component_match %}
@@ -509,6 +540,26 @@
                     <option value="low" {% if cur_ms == 'low' %}selected{% endif %}>Low and above</option>
                 </select>
                 <small class="form-hint">Audit only findings at or above this severity. Any floor excludes <code>none</code>/<code>info</code> — leave on <em>All severities</em> to cover everything.</small>
+            </div>
+            {% endif %}
+            {# Findings by Project only (show_attack_vector). Mirrors the card
+               back: nothing ticked = no filter, so there is no "All vectors"
+               option meaning the same thing twice. #}
+            {% if show_attack_vector %}
+            <div class="form-group">
+                <label>Attack vector</label>
+                <div class="finding-type-checkboxes">
+                    {# Canonical labels whatever shape the stored filter is
+                       in — see app.py's `attack_vectors` and the card back. #}
+                    {% set cur_av_list = attack_vectors(state.get('attack_vector_filter', '')) %}
+                    {% set cur_av = cur_av_list | join(',') %}
+                    <label class="finding-type-cb"><input type="checkbox" name="av_cb" value="Network" {% if 'Network' in cur_av_list %}checked{% endif %}> Network</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="av_cb" value="Adjacent" {% if 'Adjacent' in cur_av_list %}checked{% endif %}> Adjacent</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="av_cb" value="Local" {% if 'Local' in cur_av_list %}checked{% endif %}> Local</label>
+                    <label class="finding-type-cb"><input type="checkbox" name="av_cb" value="Physical" {% if 'Physical' in cur_av_list %}checked{% endif %}> Physical</label>
+                </div>
+                <input type="hidden" id="pre-attack-vector" name="attack_vector_filter" value="{{ cur_av }}">
+                <small class="form-hint">Keep only findings with these CVSS attack vectors. <strong>None ticked = no filter.</strong> Read from the <code>AV:</code> metric of the row's NVD CVSS vector, so findings with no published vector are excluded.</small>
             </div>
             {% endif %}
             {% if show_scan_filters %}

@@ -73,10 +73,17 @@ from typing import Any
 
 import yaml
 
+from fs_report.coerce import coerce_bool as _coerce_bool
 from fs_report.slug import slug as make_slug
+from fs_report.version_name_filter import split_patterns
+from fs_report.web.routers.run import (
+    EXTERNAL_CHANGES_RECIPES as _EXTERNAL_CHANGES_RECIPES,
+)
+from fs_report.web.routers.run import (
+    VERSION_NAME_FILTER_RECIPES as _VERSION_NAME_FILTER_RECIPES,
+)
 from fs_report.web.routers.run import merge_with_period_range_clearing as _merge_clear
 from fs_report.web.shell_utils import shquote as _shquote
-from fs_report.workflow_store import coerce_bool as _coerce_bool
 
 # ---------------------------------------------------------------------------
 # Target constants
@@ -123,6 +130,8 @@ _CONFIG_KEY_TO_FLAG: dict[str, str] = {
     "license_filter": "--license",
     "threat_context": "--context",
     "baseline_date": "--baseline-date",
+    "include_versions": "--include-versions",
+    "exclude_versions": "--exclude-versions",
     "detected_after": "--detected-after",
     "min_severity": "--min-severity",
     "scan_types": "--scan-type",
@@ -138,6 +147,9 @@ _CONFIG_KEY_TO_FLAG: dict[str, str] = {
     "standalone": "--standalone",
     "product_only": "--product-only",
     "vex_override": "--vex-override",
+    # external_changes is deliberately absent, like current_version_only: it
+    # is default-true and its flag is the negation (--no-external-changes),
+    # emitted by its own block in serialize_cli.
 }
 
 # Keys that are boolean flags (emitted as bare ``--flag``, no value argument).
@@ -156,6 +168,9 @@ _BOOL_FLAGS: frozenset[str] = frozenset(
 # SP1 report-config keys that are NOT finite-state-actions GHA inputs.  When a
 # step's effective config sets any of these, the GHA serializer emits a single
 # ``# note: …`` comment line (they configure in the recipe / platform instead).
+_VERSION_FILTER_KEYS: frozenset[str] = frozenset(
+    {"include_versions", "exclude_versions"}
+)
 _GHA_UNSUPPORTED_NEW_KEYS: frozenset[str] = frozenset(
     {
         "tp_gate",
@@ -164,6 +179,8 @@ _GHA_UNSUPPORTED_NEW_KEYS: frozenset[str] = frozenset(
         "license_filter",
         "threat_context",
         "baseline_date",
+        "include_versions",
+        "exclude_versions",
         "detected_after",
         "min_severity",
         "scan_types",
@@ -213,6 +230,9 @@ _BOOL_OVERRIDE_KEYS: frozenset[str] = frozenset(
         "ai_prompts",
         "overwrite",
         "current_version_only",
+        # DEFAULT TRUE: an uncoerced string "false" would read truthy and drop
+        # the --no-external-changes the workflow asked for.
+        "external_changes",
         "open_only",
         "detailed",
         "standalone",
@@ -307,6 +327,12 @@ def _effective_config(
     # global_block by the merge). Strip them.
     effective.pop("period_touched", None)
     effective.pop("range_touched", None)
+    # external_changes is a step-level setting only: the run path takes no
+    # global value for it (_WORKFLOW_GLOBAL_ENGINE_KEYS omits it, and
+    # _normalize_global drops it), so a global one exported here would export a
+    # --no-external-changes the in-app run never applies.
+    if "external_changes" not in overrides:
+        effective.pop("external_changes", None)
 
     # Coerce boolean keys so string "false" / "0" / "no" does not silently
     # enable a bare CLI flag (bool("false") is True).
@@ -523,6 +549,16 @@ def serialize_cli(model: dict[str, Any]) -> str:
         if "current_version_only" in eff and eff["current_version_only"] is False:
             parts.append("--all-versions")
 
+        # Version Comparison's /cves/updates lookups — DEFAULT TRUE, so the only
+        # non-default to emit is the opt-out on an explicit (coerced) False.
+        # Gated like --min-severity: a copied override on a recipe that never
+        # makes the lookup must not export a flag the engine ignores.
+        if (
+            ref.strip().lower() in _EXTERNAL_CHANGES_RECIPES
+            and eff.get("external_changes", True) is False
+        ):
+            parts.append("--no-external-changes")
+
         # SP1 new str keys.
         tp_gate = eff.get("tp_gate")
         if _nonempty(tp_gate):
@@ -552,6 +588,19 @@ def serialize_cli(model: dict[str, Any]) -> str:
         detected_after = eff.get("detected_after")
         if _nonempty(detected_after):
             parts.append(f"--detected-after {_shquote(str(detected_after))}")
+
+        # Repeatable flags the CLI does NOT comma-split: one flag per pattern,
+        # quoted so the shell never expands the glob. Gated like --min-severity:
+        # a hand-edited or copied override on a recipe that ignores the filter
+        # (Platform Usage, CRA, Component Impact, ...) must not export a
+        # command that LOOKS version-scoped.
+        if ref.strip().lower() in _VERSION_NAME_FILTER_RECIPES:
+            for key, flag in (
+                ("include_versions", "--include-versions"),
+                ("exclude_versions", "--exclude-versions"),
+            ):
+                for pattern in split_patterns(eff.get(key)) or ():
+                    parts.append(f"{flag} {_shquote(pattern)}")
 
         # Gated to the recipes the engine actually honors it for. A global or
         # copied step override could otherwise put --min-severity on an exported
@@ -928,10 +977,15 @@ def serialize_github_action(model: dict[str, Any]) -> str:
         # The SBOM toggles are handled separately below so they are gated to the
         # one recipe that reads them: a Component List step must never be told
         # to go configure knobs it ignores.
+        # Version-name filters are gated like serialize_cli: a recipe that
+        # ignores them must not be told to go configure them.
+        _honors_versions = ref.strip().lower() in _VERSION_NAME_FILTER_RECIPES
         unsupported_set_keys = [
             k
             for k in _GHA_UNSUPPORTED_NEW_KEYS
-            if k not in _SBOM_TOGGLE_KEYS and bool(eff.get(k))
+            if k not in _SBOM_TOGGLE_KEYS
+            and bool(eff.get(k))
+            and (_honors_versions or k not in _VERSION_FILTER_KEYS)
         ]
         # current_version_only is also NOT a finite-state-actions input (the
         # action has no current-version-only / all-versions input). It is a
@@ -942,6 +996,14 @@ def serialize_github_action(model: dict[str, Any]) -> str:
         # latest-only default with no warning).
         if "current_version_only" in eff and eff["current_version_only"] is False:
             unsupported_set_keys.append("current_version_only")
+        # external_changes is likewise DEFAULT-TRUE and not an action input:
+        # surface its opt-out (Version Comparison only — no other recipe makes
+        # the lookup) rather than silently exporting a run that makes them.
+        if (
+            ref.strip().lower() in _EXTERNAL_CHANGES_RECIPES
+            and eff.get("external_changes", True) is False
+        ):
+            unsupported_set_keys.append("external_changes")
         # The four SBOM toggles, at NON-DEFAULT (ON) values only, and only on the
         # recipe that reads them — the same gate serialize_cli applies. All four
         # default OFF, so "non-default" is simply truthy; coerced first so a

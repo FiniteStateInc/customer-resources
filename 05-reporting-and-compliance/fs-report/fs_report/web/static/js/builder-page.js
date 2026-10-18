@@ -1066,6 +1066,28 @@
         this.afterInspectorChange();
       },
 
+      /* secDefaultTrueOn / secToggleDefaultTrue — the section twin of
+         defaultTrueOn / toggleDefaultTrue for any other DEFAULT-TRUE key
+         (external_changes): absent => on (inherit), the only stored value is
+         an explicit `false`, and a hand-edited string "false" reads OFF. */
+      secDefaultTrueOn: function (sec, key) {
+        if (!sec || !sec.overrides) return true;
+        return sec.overrides[key] === undefined
+          ? true
+          : coerceBool(sec.overrides[key]);
+      },
+      secToggleDefaultTrue: function (key) {
+        var sec = this.inspSection();
+        if (!sec) return;
+        if (!sec.overrides) sec.overrides = {};
+        if (this.secDefaultTrueOn(sec, key)) {
+          sec.overrides[key] = false;
+        } else {
+          delete sec.overrides[key];
+        }
+        this.afterInspectorChange();
+      },
+
       /* secFindingTypeChecked / secToggleFindingType — finding_types override for
          a section.  Reuses the shared normalize/effective helpers so the
          CVE-default + clear-on-default semantics match the step inspector. */

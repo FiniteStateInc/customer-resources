@@ -849,14 +849,12 @@ def cra_compliance_transform(
         # Build a config copy scoped to the CRA --since window (not the
         # global --period / start_date+end_date from the recipe).
         #
-        # Clear folder_filter on the copy: _fetch_cve_updates passes it
-        # raw as the `folderId` query param, which silently fails on
-        # folder NAMES (the server treats "EU Products" as a malformed
-        # ID → empty/error response) and ignores subfolder trees. The
-        # CRA path does folder scoping client-side via the engine-resolved
-        # `folder_project_ids` post-filter (R2-3) so this raw pass-through
+        # Clear folder_filter on the copy. _fetch_cve_updates no longer
+        # sends any folder (`folderId` rejects names like "EU Products"
+        # and ignores subfolder trees), so this is belt-and-braces: the
+        # CRA path scopes client-side via the engine-resolved
+        # `folder_project_ids` post-filter (R2-3), and a raw pass-through
         # would short-circuit the result set BEFORE that filter runs.
-        # Round 3 review M2-1.
         cra_window_config = config.model_copy(
             update={
                 "start_date": since_start,
@@ -864,7 +862,20 @@ def cra_compliance_transform(
                 "folder_filter": None,
             }
         )
-        raw_updates = _cve_updates._fetch_cve_updates(api_client, cra_window_config)
+        lookup_errors: list[str] = []
+        raw_updates = _cve_updates._fetch_cve_updates(
+            api_client, cra_window_config, errors=lookup_errors
+        )
+        if lookup_errors:
+            # Same rule as _fetch_findings: a CRA report missing the window's
+            # maturity crossings is worse than no report — and rendering it
+            # would advance last_run_at past the interval never looked at.
+            raise RuntimeError(
+                f"/cves/updates lookup for the --since window {since_start} to "
+                f"{since_end} failed: {lookup_errors[0]}. A partial CRA "
+                "notification report is more dangerous than a hard failure — "
+                "refusing to render without the window's maturity crossings."
+            )
         normalized = [_cve_updates.normalize_update(r) for r in raw_updates]
 
         # Project-scope filter (raises clear error on unresolved name)

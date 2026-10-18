@@ -70,9 +70,18 @@ _STR_KEYS: tuple[str, ...] = (
     "min_severity",
     "scan_types",
     "scan_statuses",
+    # Findings by Project CVSS attack-vector filter (comma-joined multi-select).
+    # No DEFAULTS entry -> also in _NO_GLOBAL_KEYS below: a global default
+    # attack vector would silently narrow every future inventory, and nothing
+    # ticked has to keep meaning "no filter".
+    "attack_vector_filter",
     # SP2: VEX-write status filter (comma-joined multi-select, no DEFAULTS entry
     # -> also listed in _NO_GLOBAL_KEYS below, like scan_types/scan_statuses).
     "autotriage_status",
+    # --include/--exclude-versions glob text. No DEFAULTS entry (a saved global
+    # filter would silently narrow every run) -> also in _NO_GLOBAL_KEYS.
+    "include_versions",
+    "exclude_versions",
 )
 _INT_KEYS: tuple[str, ...] = ("top", "triage")
 _BOOL_KEYS: tuple[str, ...] = (
@@ -80,6 +89,9 @@ _BOOL_KEYS: tuple[str, ...] = (
     "ai_prompts",
     "overwrite",
     "current_version_only",
+    # DEFAULT TRUE (DEFAULTS entry), so the diff-vs-global rule stores only the
+    # opt-out; Version Comparison's card is the only one that renders it.
+    "external_changes",
     "open_only",
     "include_file_components",
     "policy_status",
@@ -122,7 +134,10 @@ _NO_GLOBAL_KEYS: frozenset[str] = frozenset(
         "min_severity",
         "scan_types",
         "scan_statuses",
+        "attack_vector_filter",  # comma-joined vector filter, no DEFAULTS entry
         "autotriage_status",  # SP2: comma-joined status filter, no DEFAULTS entry
+        "include_versions",  # version-name glob text, no DEFAULTS entry
+        "exclude_versions",
     }
 )
 

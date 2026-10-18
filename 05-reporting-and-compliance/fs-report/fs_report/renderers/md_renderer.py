@@ -188,6 +188,13 @@ class MarkdownRenderer:
         if maturity:
             rows.append(("Exploit Maturity", maturity))
 
+        vectors = meta.get("attack_vector_filter", "")
+        if vectors:
+            rows.append(("Attack Vector", vectors))
+        versions = meta.get("version_pattern_filter", "")
+        if versions:
+            rows.append(("Versions", versions))
+
         start = meta.get("start_date", "")
         end = meta.get("end_date", "")
         if start and end:
@@ -1228,17 +1235,28 @@ class MarkdownRenderer:
             kpi = {}
         partial_report = bool(tr.get("partial_report", False))
         failed_version_names: list[str] = tr.get("failed_version_names", []) or []
-        detail_findings = ad.get("detail_findings")
-        if not isinstance(detail_findings, pd.DataFrame):
-            detail_findings = tr.get("detail_findings")
-        if not isinstance(detail_findings, pd.DataFrame):
-            detail_findings = pd.DataFrame()
-        detail_churn = ad.get("detail_findings_churn", tr.get("detail_churn"))
+        detail_churn = ad.get("detail_findings_churn")
+        if not isinstance(detail_churn, pd.DataFrame):
+            detail_churn = tr.get("detail_findings_churn", tr.get("detail_churn"))
         if not isinstance(detail_churn, pd.DataFrame):
             detail_churn = pd.DataFrame()
-        component_churn = ad.get("detail_component_churn", tr.get("component_churn"))
+        component_churn = ad.get("detail_component_churn")
+        if not isinstance(component_churn, pd.DataFrame):
+            component_churn = tr.get(
+                "detail_component_churn", tr.get("component_churn")
+            )
         if not isinstance(component_churn, pd.DataFrame):
             component_churn = pd.DataFrame()
+        status_changes = ad.get(
+            "detail_status_changes", tr.get("detail_status_changes")
+        )
+        if not isinstance(status_changes, pd.DataFrame):
+            status_changes = pd.DataFrame()
+        external_changes = ad.get(
+            "detail_external_changes", tr.get("detail_external_changes")
+        )
+        if not isinstance(external_changes, pd.DataFrame):
+            external_changes = pd.DataFrame()
 
         parts = ["# Version Comparison", ""]
         parts.append(self._metadata_block(report_data, recipe))
@@ -1254,6 +1272,26 @@ class MarkdownRenderer:
             )
             parts.append(
                 f"> ⚠ **Partial report:** could not fetch versions: {failed_str}"
+            )
+            parts.append("")
+
+        # Say when external CVE changes were not looked up, so their absence
+        # is never read as "nothing changed externally".
+        ext_lookup = tr.get("external_changes_lookup", "done")
+        if ext_lookup in ("skipped", "unavailable"):
+            reason = (
+                "`--no-external-changes` or the web toggle turned off"
+                if ext_lookup == "skipped"
+                else "no API access"
+            )
+            parts.append(
+                f"> External CVE changes were not looked up for this run ({reason})."
+            )
+            parts.append("")
+        elif ext_lookup == "incomplete":
+            parts.append(
+                "> Some external CVE-change lookups failed (see the run log), "
+                "so external CVE changes may be incomplete."
             )
             parts.append("")
 
@@ -1279,6 +1317,9 @@ class MarkdownRenderer:
             metrics.append(("Fixed Findings", _safe_int(fixed)))
         if new:
             metrics.append(("New Findings", _safe_int(new)))
+        status_changed = kpi.get("status_changed_count", 0)
+        if status_changed:
+            metrics.append(("Status Changes", _safe_int(status_changed)))
         if metrics:
             parts.append(self._summary_table(metrics))
         else:
@@ -1301,9 +1342,12 @@ class MarkdownRenderer:
 
                 if progression:
                     parts.append(
-                        "| Version | Total | Critical | High | Medium | Low | New | Fixed |"
+                        "| Version | Total | Critical | High | Medium | Low | New | Fixed "
+                        "| Status Changes |"
                     )
-                    parts.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+                    parts.append(
+                        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+                    )
 
                     def _fmt_cell(val: Any) -> str:
                         return "—" if val is None else str(_safe_int(val))
@@ -1327,8 +1371,9 @@ class MarkdownRenderer:
                         fixed_v = _fmt_cell(
                             step.get("fixed", step.get("fixed_findings"))
                         )
+                        status_v = _fmt_cell(step.get("status_changed_count"))
                         parts.append(
-                            f"| {vname} | {total} | {crit} | {high} | {med} | {low} | {new_v} | {fixed_v} |"
+                            f"| {vname} | {total} | {crit} | {high} | {med} | {low} | {new_v} | {fixed_v} | {status_v} |"
                         )
                 elif versions:
                     parts.append(
@@ -1355,44 +1400,39 @@ class MarkdownRenderer:
                         )
                 parts.append("")
 
-        # Detail: New/Fixed Findings
-        if not detail_findings.empty:
-            # Try to split into new vs fixed
-            status_col = None
-            for candidate in ["status", "change_type", "delta_type"]:
-                if candidate in detail_findings.columns:
-                    status_col = candidate
-                    break
-
-            if status_col:
-                new_df = detail_findings[
-                    detail_findings[status_col]
-                    .fillna("")
-                    .str.upper()
-                    .isin(["NEW", "ADDED"])
-                ]
-                fixed_df = detail_findings[
-                    detail_findings[status_col]
-                    .fillna("")
-                    .str.upper()
-                    .isin(["FIXED", "RESOLVED", "REMOVED"])
-                ]
-            else:
-                new_df = detail_findings
-                fixed_df = pd.DataFrame()
-
-            if not new_df.empty:
-                parts.append("## New Findings")
-                parts.append(self._df_to_table(new_df, max_rows=200))
-                parts.append("")
-
-            if not fixed_df.empty:
-                parts.append("## Fixed Findings")
-                parts.append(self._df_to_table(fixed_df, max_rows=200))
-                parts.append("")
-        elif not detail_churn.empty:
+        # New / Fixed findings per version pair, from Findings Churn. Findings
+        # Detail lists every finding of every version and is never the source
+        # of these sections.
+        residual = detail_churn
+        if "Change Type" in detail_churn.columns:
+            change = detail_churn["Change Type"].fillna("").astype(str).str.upper()
+            shown = [c for c in detail_churn.columns if c != "Change Type"]
+            for heading, label in (
+                ("New Findings", "NEW"),
+                ("Fixed Findings", "FIXED"),
+            ):
+                rows = detail_churn[change == label]
+                if not rows.empty:
+                    parts.append(f"## {heading}")
+                    parts.append(self._df_to_table(rows[shown], max_rows=200))
+                    parts.append("")
+            residual = detail_churn[~change.isin(["NEW", "FIXED"])]
+        # Rows the New/Fixed split did not claim still render, as one table.
+        if not residual.empty:
             parts.append("## Findings Churn")
-            parts.append(self._df_to_table(detail_churn, max_rows=200))
+            parts.append(self._df_to_table(residual, max_rows=200))
+            parts.append("")
+
+        # Status Changes — findings in both versions whose VEX status moved
+        if not status_changes.empty:
+            parts.append("## Status Changes")
+            parts.append(self._df_to_table(status_changes, max_rows=200))
+            parts.append("")
+
+        # External CVE Changes — platform updates to CVEs in both versions
+        if not external_changes.empty:
+            parts.append("## External CVE Changes")
+            parts.append(self._df_to_table(external_changes, max_rows=200))
             parts.append("")
 
         # Component Churn
@@ -2570,12 +2610,16 @@ class MarkdownRenderer:
         if project:
             scope_parts.append(f"Project: {project}")
         scope = ", ".join(scope_parts) if scope_parts else "All Projects"
+        # This renderer skips _metadata_block, so it carries the
+        # --include/--exclude-versions disclosure itself.
+        versions = meta.get("version_pattern_filter", "")
+        versions_str = f" | **Versions:** {versions}" if versions else ""
 
         date_str = datetime.now(UTC).strftime("%Y-%m-%d")
 
         parts = [
             "# Scan Quality Report",
-            f"**Generated:** {date_str} | **Scope:** {scope}",
+            f"**Generated:** {date_str} | **Scope:** {scope}{versions_str}",
             "",
         ]
 

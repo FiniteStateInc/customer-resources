@@ -7,8 +7,21 @@ Launched when ``fs-report`` is invoked with no subcommand.
 from __future__ import annotations
 
 import webbrowser
+from typing import TYPE_CHECKING, Any
 
-from fs_report.web.app import create_app
+if TYPE_CHECKING:
+    from fs_report.web.app import create_app
+
+
+def __getattr__(name: str) -> Any:
+    # ``create_app`` loads lazily: core modules import pure submodules such as
+    # ``fs_report.web.workflow_meta``, and an eager import here would pull the
+    # FastAPI app (and everything it imports) into their import graph.
+    if name == "create_app":
+        from fs_report.web.app import create_app
+
+        return create_app
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def run_web(
@@ -53,6 +66,8 @@ def run_web(
             log_level="warning",
         )
     else:
+        from fs_report.web.app import create_app
+
         app = create_app()
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 

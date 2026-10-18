@@ -35,7 +35,8 @@
 {% set show_report_tab = show_finding_types or show_period or show_current_version_only
    or show_product_only or show_standalone
    or show_license or show_open_only or show_baseline_date or show_detailed
-   or show_component or show_cve or show_version_fields %}
+   or show_component or show_cve or show_version_fields
+   or show_version_name_filter or show_external_changes %}
 <div class="wf-cfg" data-recipe="{{ recipe }}">
   <div class="wf-cfg-head">
     <span class="wf-cfg-title">{{ recipe }}</span>
@@ -118,6 +119,24 @@
                  data-override="{{ '1' if is_ov('current_version_only') else '0' }}">
           <span class="toggle-slider"></span>
         </label>
+      </div>
+      {% endif %}
+
+      {% if show_version_name_filter %}
+      <div class="form-group">
+        <label for="cardcfg-include-versions">Include versions</label>
+        <input type="text" id="cardcfg-include-versions" name="include_versions"
+               placeholder="e.g. 2.4.*"
+               value="{% set _v = eff.get('include_versions', '') %}{{ _v if _v is string else (_v or [])|join(', ') }}"
+               data-override="{{ '1' if is_ov('include_versions') else '0' }}">
+      </div>
+      <div class="form-group">
+        <label for="cardcfg-exclude-versions">Exclude versions</label>
+        <input type="text" id="cardcfg-exclude-versions" name="exclude_versions"
+               placeholder="e.g. *checkpoint*"
+               value="{% set _v = eff.get('exclude_versions', '') %}{{ _v if _v is string else (_v or [])|join(', ') }}"
+               data-override="{{ '1' if is_ov('exclude_versions') else '0' }}">
+        <small class="form-hint">Comma-separated globs matched against the whole version name, so use wildcards: <code>*checkpoint*</code>, not <code>checkpoint</code>. Findings and component reports apply them only with Current version only off; the run log names any report that ignores them.</small>
       </div>
       {% endif %}
 
@@ -271,6 +290,24 @@
                  placeholder="Or paste version ID directly">
         </div>
       </div>
+      {% endif %}
+
+      {# DEFAULT-TRUE, Version Comparison only — same shape as the cvo toggle:
+         unchecked stores an explicit false override; re-checking equals the
+         global default, so the save drops it (inherit). #}
+      {% if show_external_changes %}
+      <div class="form-group form-row">
+        <label for="cardcfg-external-changes">Look up external CVE changes</label>
+        <label class="toggle">
+          {# Read like the engine does (coerce_bool), so a hand-edited string
+             "false" shows unchecked instead of truthy-checked. #}
+          <input type="checkbox" id="cardcfg-external-changes" name="external_changes"
+                 {% if eff.get('external_changes', True) | coerce_bool %}checked{% endif %}
+                 data-override="{{ '1' if is_ov('external_changes') else '0' }}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <small class="form-hint">One CVE-updates lookup per version pair. Off skips them: no Externally changed findings, New-finding notes or External Changes export.</small>
       {% endif %}
 
       {% if not show_report_tab %}
@@ -574,6 +611,32 @@
           <option value="low" {% if cur_ms == 'low' %}selected{% endif %}>Low and above</option>
         </select>
         <small class="form-hint">Audit only findings at or above this severity. Any floor excludes <code>none</code>/<code>info</code>, so leave it on <em>All severities</em> to cover everything.</small>
+      </div>
+      {% endif %}
+
+      {# Findings by Project only (show_attack_vector / ATTACK_VECTOR_RECIPES).
+         Comma-joined hidden field + checkbox group, like the scan filters
+         below — nothing ticked is the unfiltered default, so there is no
+         "All vectors" option to mean the same thing twice. #}
+      {% if show_attack_vector %}
+      <div class="form-group">
+        <label>Attack vector</label>
+        {# Canonical labels, whatever shape the stored filter is in (list,
+           alias, padded, lowercased) — see app.py's `attack_vectors`. The
+           hidden field posts the canonical join, so a Save converges the
+           stored value on what the boxes show. #}
+        {% set cur_av_list = attack_vectors(eff.get('attack_vector_filter','')) %}
+        {% set cur_av = cur_av_list | join(',') %}
+        <div class="finding-type-checkboxes">
+          <label class="finding-type-cb"><input type="checkbox" name="av_cb" value="Network" {% if 'Network' in cur_av_list %}checked{% endif %}> Network</label>
+          <label class="finding-type-cb"><input type="checkbox" name="av_cb" value="Adjacent" {% if 'Adjacent' in cur_av_list %}checked{% endif %}> Adjacent</label>
+          <label class="finding-type-cb"><input type="checkbox" name="av_cb" value="Local" {% if 'Local' in cur_av_list %}checked{% endif %}> Local</label>
+          <label class="finding-type-cb"><input type="checkbox" name="av_cb" value="Physical" {% if 'Physical' in cur_av_list %}checked{% endif %}> Physical</label>
+        </div>
+        <input type="hidden" id="cardcfg-attack-vector" name="attack_vector_filter"
+               value="{{ cur_av }}"
+               data-override="{{ '1' if is_ov('attack_vector_filter') else '0' }}">
+        <small class="form-hint">Keep only findings with these CVSS attack vectors. <strong>None ticked = no filter.</strong> Read from the <code>AV:</code> metric of the row's NVD CVSS vector, so findings with no published vector are excluded.</small>
       </div>
       {% endif %}
 

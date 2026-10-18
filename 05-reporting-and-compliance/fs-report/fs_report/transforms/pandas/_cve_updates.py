@@ -21,11 +21,22 @@ Wire format for /cves/updates records:
       - oldValue is null for type=="new"; newValue is null for type=="retract"
       - The endpoint carries NO timestamps and NO inKev/exploitInfo deltas
         (API wishlist #15-#17).
+
+    Notes (live, 2026-10-15):
+      - A startDate..endDate window over 90 days is rejected with HTTP 400;
+        ``fetch_cve_updates_window`` fetches longer windows in slices.
+      - Identical records repeat (a Jan-2026 window: 5,858 records, 1,111
+        distinct); the fetch drops exact repeats. Paging is stable.
+      - Severity and exploitMaturity values are lowercase; older records
+        (Jan-Mar 2026) are type "update" with oldValue null and only
+        exploitMaturity set, and an empty projects list.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,6 +45,11 @@ import pandas as pd
 from fs_report.models import Config
 
 logger = logging.getLogger(__name__)
+
+# The endpoint rejects a startDate..endDate window longer than this with HTTP
+# 400 ("CVE update windows may not exceed 90 days"; observed live 2026-10-15,
+# not in the OpenAPI spec). Exactly 90 days is accepted.
+_MAX_WINDOW_DAYS = 90
 
 # Severity rank mapping for comparison
 _SEVERITY_RANK: dict[str, int] = {
@@ -61,30 +77,109 @@ def _to_iso8601z(date_str: str | None) -> str | None:
         return None
 
 
-def _fetch_cve_updates(api_client: Any, config: Config) -> list[dict]:
-    """Fetch all CVE updates from /public/v0/cves/updates with pagination.
+def _fetch_cve_updates(
+    api_client: Any, config: Config, errors: list[str] | None = None
+) -> list[dict]:
+    """Fetch all CVE updates for the run's period (``config`` start/end dates).
 
-    Returns empty list if api_client is None or dates are missing.
+    Never folder-scoped. ``config.folder_filter`` is the raw ``--folder``
+    input — often a folder name — and the endpoint's ``folderId`` rejects
+    names and ignores subfolders, so passing it through made a ``--folder
+    "Name"`` run silently get no external changes. A caller that needs folder
+    scope narrows the result itself with ``scope_updates_to_projects`` and
+    the engine-resolved folder tree (Security Progress), or post-filters
+    against its own findings (Version Comparison, CRA Compliance).
+
+    Returns empty list if api_client is None or dates are missing, and when
+    the lookup failed — then a WARNING says no updates are reported, and
+    ``errors`` (when given) receives the reason, as from
+    ``fetch_cve_updates_window``.
+    """
+    start_date = getattr(config, "start_date", None)
+    end_date = getattr(config, "end_date", None)
+    failures: list[str] = []
+    updates = fetch_cve_updates_window(
+        api_client, start_date, end_date, errors=failures
+    )
+    if errors is not None:
+        errors.extend(failures)
+    # One line per run period here; the per-window fetch logs at DEBUG
+    # because Version Comparison repeats it for every version pair.
+    if failures:
+        logger.warning(
+            "CVE updates for period %s to %s could not be looked up; " "reporting none",
+            _to_iso8601z(start_date) or start_date,
+            _to_iso8601z(end_date) or end_date,
+        )
+    elif api_client is not None:
+        logger.info(
+            "Fetched %d CVE updates for period %s to %s",
+            len(updates),
+            _to_iso8601z(start_date),
+            _to_iso8601z(end_date),
+        )
+    return updates
+
+
+def scope_updates_to_projects(
+    updates: list[dict], project_ids: AbstractSet[Any]
+) -> list[dict]:
+    """Keep the /cves/updates records that touch any of ``project_ids``.
+
+    Each kept record's ``projects`` list is narrowed to those projects, so a
+    report scoped to a folder tree never names a project outside it. IDs
+    compare as strings (the engine's folder set holds strings; the wire may
+    carry numbers). A record with no in-scope project is dropped.
+    """
+    wanted = {str(pid) for pid in project_ids}
+    scoped: list[dict] = []
+    for update in updates:
+        projects = [
+            p
+            for p in update.get("projects") or []
+            if isinstance(p, dict) and str(p.get("id")) in wanted
+        ]
+        if projects:
+            scoped.append({**update, "projects": projects})
+    return scoped
+
+
+def fetch_cve_updates_window(
+    api_client: Any,
+    start_date: str | None,
+    end_date: str | None,
+    errors: list[str] | None = None,
+) -> list[dict]:
+    """Fetch all CVE updates from /public/v0/cves/updates between two dates,
+    with pagination.
+
+    Dates may be ``YYYY-MM-DD`` or ISO datetimes. There is deliberately no
+    folder parameter: the endpoint's ``folderId`` rejects names and ignores
+    subfolders, so callers scope the result client-side (see
+    ``_fetch_cve_updates``). Returns an empty list if api_client is None or either
+    date is missing or unparseable. When ``errors`` is given, a missing date or
+    a failed request appends a message to it, so a caller can tell "no updates"
+    from "could not look".
+
+    A window longer than the endpoint's 90-day cap is fetched as contiguous
+    slices. The result is all or nothing: a failed request fails the whole
+    window, returning no records (never the slices or pages fetched before
+    it, which would read as the full window's updates) and requesting no
+    later slice. Exact-duplicate records, which the endpoint repeats, are
+    dropped.
     """
     if api_client is None:
         return []
 
-    start = _to_iso8601z(getattr(config, "start_date", None))
-    end = _to_iso8601z(getattr(config, "end_date", None))
+    start = _to_iso8601z(start_date)
+    end = _to_iso8601z(end_date)
 
     if not start or not end:
+        if errors is not None:
+            message = f"missing or unparseable date ({start_date!r}, {end_date!r})"
+            logger.warning("Could not look up CVE updates: %s", message)
+            errors.append(message)
         return []
-
-    params: dict[str, Any] = {
-        "startDate": start,
-        "endDate": end,
-        "limit": 100,
-        "offset": 0,
-    }
-
-    folder_filter = getattr(config, "folder_filter", None)
-    if folder_filter:
-        params["folderId"] = folder_filter
 
     # APIClient exposes its httpx client directly (no `.get()` helper); use it
     # the same way the rest of the codebase does for endpoints that don't fit
@@ -92,6 +187,71 @@ def _fetch_cve_updates(api_client: Any, config: Config) -> list[dict]:
     url = f"{api_client.base_url}/public/v0/cves/updates"
 
     results: list[dict] = []
+    seen: set[str] = set()
+    for slice_start, slice_end in _window_slices(start, end):
+        if not _fetch_window_slice(
+            api_client, url, slice_start, slice_end, results, seen, errors
+        ):
+            # A failed slice fails the window. Partial records would read as
+            # the whole window's updates — a silent undercount — so none are
+            # returned, and later slices are not worth the requests.
+            return []
+
+    logger.debug("Fetched %d CVE updates for period %s to %s", len(results), start, end)
+    return results
+
+
+def _window_slices(start: str, end: str) -> list[tuple[str, str]]:
+    """Split ``start``..``end`` into consecutive windows the endpoint accepts.
+
+    The endpoint rejects windows longer than ``_MAX_WINDOW_DAYS`` with HTTP
+    400. ``startDate`` is exclusive and ``endDate`` inclusive, so slices that
+    share a boundary neither overlap nor leave a gap. A window that is short
+    enough — or empty or reversed, which the endpoint answers with no
+    records — is sent as it is.
+    """
+    lo, hi = pd.Timestamp(start), pd.Timestamp(end)
+    step = pd.Timedelta(days=_MAX_WINDOW_DAYS)
+    if hi - lo <= step:
+        return [(start, end)]
+    slices: list[tuple[str, str]] = []
+    while hi - lo > step:
+        nxt = lo + step
+        slices.append((_format_z(lo), _format_z(nxt)))
+        lo = nxt
+    slices.append((_format_z(lo), end))
+    return slices
+
+
+def _format_z(ts: pd.Timestamp) -> str:
+    return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _fetch_window_slice(
+    api_client: Any,
+    url: str,
+    start: str,
+    end: str,
+    results: list[dict],
+    seen: set[str],
+    errors: list[str] | None,
+) -> bool:
+    """Page one slice into ``results``, skipping records already in ``seen``.
+
+    The endpoint repeats identical records (one Jan-2026 window held 5,858
+    records for 1,110 CVEs), and every consumer counts records, so an exact
+    repeat is dropped. Records that differ in any field — another change of
+    the same CVE, or the same change for other projects — are kept.
+
+    Returns False when a request failed (logged, and appended to
+    ``errors`` when given).
+    """
+    params: dict[str, Any] = {
+        "startDate": start,
+        "endDate": end,
+        "limit": 100,
+        "offset": 0,
+    }
     while True:
         try:
             response = api_client.client.get(url, params=params, timeout=60)
@@ -105,23 +265,47 @@ def _fetch_cve_updates(api_client: Any, config: Config) -> list[dict]:
             else:
                 batch = []
         except Exception as exc:  # noqa: BLE001
+            message = _request_error_message(exc)
             logger.warning(
-                "Could not fetch CVE updates (offset=%d): %s", params["offset"], exc
+                "Could not fetch CVE updates for %s to %s (offset=%d): %s",
+                start,
+                end,
+                params["offset"],
+                message,
             )
-            break
+            if errors is not None:
+                errors.append(message)
+            return False
 
         if not batch:
-            break
+            return True
 
-        results.extend(batch)
+        for record in batch:
+            key = json.dumps(record, sort_keys=True, default=str)
+            if key not in seen:
+                seen.add(key)
+                results.append(record)
 
         if len(batch) < 100:
-            break
+            return True
 
         params["offset"] += 100
 
-    logger.info("Fetched %d CVE updates for period %s to %s", len(results), start, end)
-    return results
+
+def _request_error_message(exc: Exception) -> str:
+    """The exception text plus the response body when there is one: httpx's
+    ``raise_for_status`` message omits the body, which is where the endpoint
+    says why it refused (e.g. "CVE update windows may not exceed 90 days")."""
+    response = getattr(exc, "response", None)
+    body = ""
+    if response is not None:
+        try:
+            body = (response.text or "").strip()
+        except Exception:  # noqa: BLE001
+            body = ""
+    if not body:
+        return str(exc)
+    return f"{exc} — {body[:500]}"
 
 
 def _exploit_rank(maturity: str | None) -> int:

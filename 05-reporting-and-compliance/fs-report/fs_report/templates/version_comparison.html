@@ -218,6 +218,15 @@
     .vc-badge-fixed { background: var(--sev-low-bg);      color: var(--sev-low-text); }
     .vc-badge-new   { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
     .vc-badge-churn { background: var(--surface-muted);   color: var(--ink-mute); }
+    .vc-badge-status { background: var(--surface-muted);  color: var(--ink-strong); }
+
+    /* Status-change chips: reopened findings need action again (red),
+       closed ones no longer do (green), reclassified moved sideways. */
+    .vc-change-badge.vc-status-reopened     { background: var(--sev-critical-bg); color: var(--sev-critical-text); }
+    .vc-change-badge.vc-status-closed       { background: var(--sev-low-bg);      color: var(--sev-low-text); }
+    .vc-change-badge.vc-status-reclassified { background: var(--surface-muted);   color: var(--ink-strong); }
+    .vc-status-move { white-space: nowrap; }
+    .vc-status-move .vc-status-arrow { color: var(--ink-mute); padding: 0 4px; }
 </style>
 
 {% if render_mode != 'fragment' %}
@@ -226,6 +235,60 @@
 {% endif %}
 
 {% import "_console_macros.html" as fs with context %}
+
+{# Truncation note for a table that shipped only `limit` of `total` rows:
+   names how many were left out and which CSV/XLSX export lists them all
+   (an HTML-only run must be re-run with CSV or XLSX output to get it). #}
+{% macro vc_more_note(total, limit, export_name, colspan) %}
+{% if limit is not none and total > limit %}
+<tr class="vc-more-note-row">
+    <td colspan="{{ colspan }}" class="vc-empty-state">{{ total - limit }} more not shown — every row is in the {{ export_name }} export (CSV or XLSX output).</td>
+</tr>
+{% endif %}
+{% endmacro %}
+{# Status-change table — shared by the latest-pair panel and each changelog
+   step. Rows: change_type (reopened|closed|reclassified), display_id,
+   severity, component_name, component_version, status_baseline,
+   status_current, title. Rows past `cap` hide behind the show-more toggle
+   (fragments show every row: no JS to toggle); rows past `limit` are not
+   shipped at all (vc_more_note). #}
+{% macro vc_status_table(rows, table_id, cap=15, limit=none) %}
+{% set shown = rows[:limit] if limit is not none else rows %}
+<table class="data-table" id="{{ table_id }}">
+    <thead>
+        <tr>
+            <th>Change</th>
+            <th>ID</th>
+            <th>Severity</th>
+            <th>Component</th>
+            <th>Status</th>
+            <th>Title</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in shown %}
+        <tr class="{% if loop.index > cap and render_mode != 'fragment' %}vc-hidden-row{% endif %}">
+            <td><span class="vc-change-badge vc-status-{{ row.change_type }}">{{ row.change_type | title }}</span></td>
+            <td>{{ row.display_id if row.display_id else '—' }}</td>
+            <td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td>
+            <td>{{ row.component_name }}{% if row.component_version %} {{ row.component_version }}{% endif %}</td>
+            <td class="vc-status-move">{{ row.status_baseline | replace('_', ' ') | title }}<span class="vc-status-arrow">→</span>{{ row.status_current | replace('_', ' ') | title }}</td>
+            <td>{{ row.title if row.title else '—' }}</td>
+        </tr>
+        {% endfor %}
+        {% if shown | length > cap and render_mode != 'fragment' %}
+        <tr class="vc-show-more-row">
+            <td colspan="6">
+                <button class="vc-show-more-btn" onclick="vc_toggleRows('{{ table_id }}')">
+                    Show {{ shown | length - cap }} more…
+                </button>
+            </td>
+        </tr>
+        {% endif %}
+        {{ vc_more_note(rows | length, limit, "Status Changes", 6) }}
+    </tbody>
+</table>
+{% endmacro %}
 
 {# Defensive context defaults — defined OUTSIDE the gate so any
    downstream reference (status_bar, topbar) is safe in both
@@ -258,7 +321,7 @@
        still get the H1 + subtitle (round-2 M1-4). #}
     <div class="page-head">
         <h1 data-fs-section-title>Version Comparison</h1>
-        <p class="subtitle">Per-project progression of findings across versions; fixed + new counts per pair; component churn; externally-driven CVE changes.</p>
+        <p class="subtitle">Per-project progression of findings across versions; fixed + new counts per pair; finding status changes; component churn; externally-driven CVE changes.</p>
     </div>
 
 {% if transform_result and transform_result.projects and transform_result.projects | length > 0 %}
@@ -274,6 +337,17 @@
         {{ failed_version_names | length }} version{{ 's' if failed_version_names | length != 1 else '' }} could not be fetched
         ({{ failed_version_names | join(", ") }}). These appear as placeholders below.
     </div>
+    {% endif %}
+
+    {# External CVE changes not looked up — say so, so "no Externally changed
+       panel" is never read as "nothing changed externally". #}
+    {% set ext_lookup = result.get('external_changes_lookup', 'done') %}
+    {% if ext_lookup == 'skipped' %}
+    <p class="vc-section-prose vc-external-lookup-note">External CVE changes were not looked up for this run (<code>--no-external-changes</code> or the web toggle "Look up external CVE changes" turned off): no Externally changed findings, New-finding notes or External Changes export.</p>
+    {% elif ext_lookup == 'unavailable' %}
+    <p class="vc-section-prose vc-external-lookup-note">External CVE changes were not looked up for this run (no API access): no Externally changed findings, New-finding notes or External Changes export.</p>
+    {% elif ext_lookup == 'incomplete' %}
+    <p class="vc-section-prose vc-external-lookup-note">Some external CVE-change lookups failed (see the run log), so Externally changed findings, New-finding notes and the External Changes export may be incomplete.</p>
     {% endif %}
 
     {# Aggregate KPI row — nested baseline→current shape per
@@ -340,13 +414,19 @@
         <div class="kpi-card">
             <div class="kpi-title">Fixed (latest)</div>
             <div class="kpi-values">
-                <span class="vc-num-improved">{{ kpi.fixed_count | default(0) }}</span>
+                <span class="vc-num-improved">{% if kpi.fixed_count is none %}—{% else %}{{ kpi.fixed_count | default(0) }}{% endif %}</span>
             </div>
         </div>
         <div class="kpi-card">
             <div class="kpi-title">New (latest)</div>
             <div class="kpi-values">
-                <span class="vc-num-regressed">{{ kpi.new_count | default(0) }}</span>
+                <span class="vc-num-regressed">{% if kpi.new_count is none %}—{% else %}{{ kpi.new_count | default(0) }}{% endif %}</span>
+            </div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Status changes (latest)</div>
+            <div class="kpi-values">
+                <span>{% if kpi.status_changed_count is none %}—{% else %}{{ kpi.status_changed_count | default(0) }}{% endif %}</span>
             </div>
         </div>
     </div>
@@ -398,11 +478,15 @@
                 </div>
                 <div class="vc-mini-kpi">
                     <div class="label">Latest Fixed</div>
-                    <div class="value">{% if proj.latest_delta.fixed_count is defined %}{{ proj.latest_delta.fixed_count }}{% else %}—{% endif %}</div>
+                    <div class="value">{% if proj.latest_delta.fixed_count is defined and not proj.latest_delta.unavailable %}{{ proj.latest_delta.fixed_count }}{% else %}—{% endif %}</div>
                 </div>
                 <div class="vc-mini-kpi">
                     <div class="label">Latest New</div>
-                    <div class="value">{% if proj.latest_delta.new_count is defined %}{{ proj.latest_delta.new_count }}{% else %}—{% endif %}</div>
+                    <div class="value">{% if proj.latest_delta.new_count is defined and not proj.latest_delta.unavailable %}{{ proj.latest_delta.new_count }}{% else %}—{% endif %}</div>
+                </div>
+                <div class="vc-mini-kpi">
+                    <div class="label">Latest Status Changes</div>
+                    <div class="value">{% if proj.latest_delta.status_changed_count is defined and not proj.latest_delta.unavailable %}{{ proj.latest_delta.status_changed_count }}{% else %}—{% endif %}</div>
                 </div>
             </div>
 
@@ -436,6 +520,7 @@
                                 <th class="num">Low</th>
                                 <th class="num">Fixed</th>
                                 <th class="num">New</th>
+                                <th class="num">Status Changes</th>
                                 <th class="num">Components</th>
                             </tr>
                         </thead>
@@ -459,6 +544,9 @@
                                 <td class="num {% if step.new and step.new > 0 %}vc-delta-regressed{% else %}vc-delta-zero{% endif %}">
                                     {% if step.new is none %}—{% elif step.new > 0 %}+{{ step.new }}{% elif loop.index0 == 0 %}—{% else %}0{% endif %}
                                 </td>
+                                <td class="num {% if not step.status_changed_count %}vc-delta-zero{% endif %}">
+                                    {% if step.status_changed_count is none or loop.index0 == 0 %}—{% else %}{{ step.status_changed_count }}{% endif %}
+                                </td>
                                 <td class="num">{% if step.components is none %}—{% else %}{{ step.components }}{% endif %}</td>
                             </tr>
                             {% endfor %}
@@ -475,18 +563,24 @@
                `external_change_note`. Hidden-row toggle renamed
                vc_toggleRows; row IDs scoped per project. #}
             {% set ld = proj.latest_delta | default({}) %}
+            {# Compared = a latest pair with a valid baseline. An empty delta
+               (the all-failed shape) and an unavailable one both read "—". #}
+            {% set ld_compared = ld and not ld.unavailable %}
             <div class="panel" style="margin-bottom: 16px;">
                 {# Empty latest_delta (all-failed project) renders em-dash
                    placeholders for the count badges, matching the
                    pre-migration template's `default('—')` behavior.
                    tests/test_renderers.py:3003 asserts this. #}
-                {{ fs.panel_head("Changes (" ~ (ld.baseline_label | default(ld.baseline_version | default('—'))) ~ " → " ~ (ld.current_label | default(ld.current_version | default('—'))) ~ ")", meta=(ld.fixed_count | default('—') | string) ~ " fixed · " ~ (ld.new_count | default('—') | string) ~ " new" ~ ((" · " ~ (ld.externally_changed_count | string) ~ " external") if (ld.externally_changed_count | default(0) > 0) else "")) }}
+                {{ fs.panel_head("Changes (" ~ (ld.baseline_label | default(ld.baseline_version | default('—'))) ~ " → " ~ (ld.current_label | default(ld.current_version | default('—'))) ~ ")", meta=((ld.fixed_count | default('—') | string) if ld_compared else '—') ~ " fixed · " ~ ((ld.new_count | default('—') | string) if ld_compared else '—') ~ " new" ~ ((" · " ~ (ld.externally_changed_count | string) ~ " external") if ((ld.externally_changed_count or 0) > 0) else "")) }}
 
                 <div class="vc-changes-summary">
-                    <span class="vc-changes-fixed">Fixed: {{ ld.fixed_severity_summary | default('—') }}</span>
-                    <span class="vc-changes-new">New: {{ ld.new_severity_summary | default('—') }}</span>
+                    <span class="vc-changes-fixed">Fixed: {{ ld.fixed_severity_summary | default('—') if ld_compared else '—' }}</span>
+                    <span class="vc-changes-new">New: {{ ld.new_severity_summary | default('—') if ld_compared else '—' }}</span>
                 </div>
 
+                {% if not ld_compared %}
+                <p class="vc-empty-state">Not compared — this pair has no valid baseline.</p>
+                {% else %}
                 <div class="vc-changes-two-col">
                     <div class="vc-changes-col">
                         <h4 class="vc-changes-col-title">Fixed in {{ ld.current_label | default(ld.current_version) }}</h4>
@@ -570,7 +664,32 @@
                         {% endif %}
                     </div>
                 </div>
+                {% endif %}
             </div>
+
+            {# Status changes — findings present in BOTH versions whose VEX
+               status changed (latest_delta.status_changes). Fixed/New
+               findings are never listed here. Hidden when the latest
+               delta is unavailable (no valid baseline). #}
+            {% if ld_compared %}
+            {% set scc = ld.status_change_counts | default({}) %}
+            <div class="panel" style="margin-bottom: 16px;">
+                {{ fs.panel_head("Status changes (" ~ (ld.baseline_label | default(ld.baseline_version)) ~ " → " ~ (ld.current_label | default(ld.current_version)) ~ ")", meta=(ld.status_changed_count | default(0) | string) ~ " changed") }}
+                <p class="vc-section-prose">Findings present in both versions whose triage status changed, one row per affected component version. <strong>Reopened</strong> findings need action again — often a triage decision that did not carry over to the new version. <strong>Closed</strong> findings no longer need action. <strong>Reclassified</strong> findings changed status without changing whether they need action.</p>
+                <div class="vc-changes-summary">
+                    <span class="vc-changes-new">Reopened: {{ scc.reopened | default(0) }}</span>
+                    <span class="vc-changes-fixed">Closed: {{ scc.closed | default(0) }}</span>
+                    <span>Reclassified: {{ scc.reclassified | default(0) }}</span>
+                </div>
+                {% if ld.status_changes and ld.status_changes | length > 0 %}
+                <div class="body" style="overflow-x: auto;">
+                    {{ vc_status_table(ld.status_changes, fragment_scope_class ~ '-vc-status-' ~ proj_idx) }}
+                </div>
+                {% else %}
+                <p class="vc-empty-state">No status changes.</p>
+                {% endif %}
+            </div>
+            {% endif %}
 
             {# Externally-changed: CVEs present in both versions whose
                severity/exploit status changed due to platform
@@ -600,7 +719,7 @@
                             {% for entry in ld.externally_changed %}
                             <tr>
                                 <td>{{ entry.cve_id }}</td>
-                                <td>{{ entry.component_name if entry.component_name else '—' }}</td>
+                                <td>{% if entry.component_name %}{{ entry.component_name }}{% if entry.component_version %} {{ entry.component_version }}{% endif %}{% else %}—{% endif %}</td>
                                 <td>{{ entry.change_type | replace('_', ' ') | title }}</td>
                                 <td>{% if entry.old_severity %}<span class="severity-badge severity-{{ entry.old_severity }}">{{ entry.old_severity }}</span>{% else %}—{% endif %}</td>
                                 <td>{% if entry.new_severity %}<span class="severity-badge severity-{{ entry.new_severity }}">{{ entry.new_severity }}</span>{% else %}—{% endif %}</td>
@@ -670,6 +789,10 @@
             {% if proj.progression | length > 2 %}
             <div class="panel vc-changelog-section" style="margin-bottom: 16px;">
                 {{ fs.panel_head("Version changelog", meta="all version-to-version changes") }}
+                {# Each step ships at most this many rows per table, so a long
+                   version history cannot balloon the page; the rest are named
+                   and live in the CSV/XLSX detail exports. #}
+                {% set step_row_limit = 50 %}
                 {% for step in proj.progression %}
                 {% if step.from_version %}
                 {% set step_churn = step.component_churn | default([]) %}
@@ -682,6 +805,7 @@
                         <span class="vc-changelog-version">{{ step.from_version }} → {{ step.version }}</span>
                         <span class="vc-badge vc-badge-fixed">{% if step.fixed is none %}—{% else %}{{ step.fixed }}{% endif %} fixed</span>
                         <span class="vc-badge vc-badge-new">{% if step.new is none %}—{% else %}{{ step.new }}{% endif %} new</span>
+                        <span class="vc-badge vc-badge-status">{% if step.status_changed_count is none %}—{% else %}{{ step.status_changed_count }}{% endif %} status change{{ 's' if step.status_changed_count != 1 else '' }}</span>
                         <span class="vc-badge vc-badge-churn">{{ step_churn | length }} component{{ 's' if (step_churn | length) != 1 else '' }}</span>
                     </div>
                     <div class="vc-changelog-entry-body">
@@ -718,7 +842,7 @@
                                         <tr><th>ID</th><th>Severity</th><th>Component</th><th class="num">Score</th><th>Title</th></tr>
                                     </thead>
                                     <tbody>
-                                        {% for row in step.fixed_findings %}
+                                        {% for row in step.fixed_findings[:step_row_limit] %}
                                         <tr class="{% if loop.index > 10 and render_mode != 'fragment' %}vc-hidden-row{% endif %}">
                                             <td>{{ row.display_id if row.display_id else '—' }}</td>
                                             <td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td>
@@ -727,15 +851,17 @@
                                             <td>{{ row.title if row.title else '—' }}</td>
                                         </tr>
                                         {% endfor %}
-                                        {% if step.fixed_findings | length > 10 and render_mode != 'fragment' %}
+                                        {% set step_shipped = [step.fixed_findings | length, step_row_limit] | min %}
+                                        {% if step_shipped > 10 and render_mode != 'fragment' %}
                                         <tr class="vc-show-more-row">
                                             <td colspan="5">
                                                 <button class="vc-show-more-btn" onclick="vc_toggleRows('{{ step_fixed_id }}')">
-                                                    Show {{ step.fixed_findings | length - 10 }} more…
+                                                    Show {{ step_shipped - 10 }} more…
                                                 </button>
                                             </td>
                                         </tr>
                                         {% endif %}
+                                        {{ vc_more_note(step.fixed_findings | length, step_row_limit, "Findings Churn", 5) }}
                                     </tbody>
                                 </table>
                                 {% else %}
@@ -750,7 +876,7 @@
                                         <tr><th>ID</th><th>Severity</th><th>Component</th><th class="num">Score</th><th>Title</th></tr>
                                     </thead>
                                     <tbody>
-                                        {% for row in step.new_findings %}
+                                        {% for row in step.new_findings[:step_row_limit] %}
                                         <tr class="{% if loop.index > 10 and render_mode != 'fragment' %}vc-hidden-row{% endif %}">
                                             <td>{{ row.display_id if row.display_id else '—' }}</td>
                                             <td><span class="severity-badge severity-{{ row.severity }}">{{ row.severity }}</span></td>
@@ -759,15 +885,17 @@
                                             <td>{{ row.title if row.title else '—' }}</td>
                                         </tr>
                                         {% endfor %}
-                                        {% if step.new_findings | length > 10 and render_mode != 'fragment' %}
+                                        {% set step_shipped = [step.new_findings | length, step_row_limit] | min %}
+                                        {% if step_shipped > 10 and render_mode != 'fragment' %}
                                         <tr class="vc-show-more-row">
                                             <td colspan="5">
                                                 <button class="vc-show-more-btn" onclick="vc_toggleRows('{{ step_new_id }}')">
-                                                    Show {{ step.new_findings | length - 10 }} more…
+                                                    Show {{ step_shipped - 10 }} more…
                                                 </button>
                                             </td>
                                         </tr>
                                         {% endif %}
+                                        {{ vc_more_note(step.new_findings | length, step_row_limit, "Findings Churn", 5) }}
                                     </tbody>
                                 </table>
                                 {% else %}
@@ -776,15 +904,26 @@
                             </div>
                         </div>
 
+                        <h4 class="vc-changes-col-title" style="margin-top: 16px;">Status changes</h4>
+                        {% if step.status_changed_count is none %}
+                        <p class="vc-empty-state">Not compared — this pair has no valid baseline.</p>
+                        {% elif step.status_changes and step.status_changes | length > 0 %}
+                        {{ vc_status_table(step.status_changes, fragment_scope_class ~ '-vc-step-status-' ~ proj_idx ~ '-' ~ loop.index, cap=10, limit=step_row_limit) }}
+                        {% else %}
+                        <p class="vc-empty-state">No status changes in this step.</p>
+                        {% endif %}
+
                         <h4 class="vc-changes-col-title" style="margin-top: 16px;">Component changes</h4>
                         {% if step_churn and step_churn | length > 0 %}
-                        <table class="data-table">
+                        {% set step_churn_id = fragment_scope_class ~ '-vc-step-churn-' ~ proj_idx ~ '-' ~ loop.index %}
+                        {% set churn_shipped = [step_churn | length, step_row_limit] | min %}
+                        <table class="data-table" id="{{ step_churn_id }}">
                             <thead>
                                 <tr><th>Change</th><th>Component</th><th>Old</th><th>New</th><th class="num">Findings Impact</th></tr>
                             </thead>
                             <tbody>
-                                {% for c in step_churn %}
-                                <tr>
+                                {% for c in step_churn[:step_row_limit] %}
+                                <tr class="{% if loop.index > 10 and render_mode != 'fragment' %}vc-hidden-row{% endif %}">
                                     <td><span class="vc-change-badge vc-change-{{ c.change_type | lower }}">{{ c.change_type | replace('_', ' ') | title }}</span></td>
                                     <td>{{ c.name }}</td>
                                     <td>{{ c.version_baseline | default('—', true) }}</td>
@@ -792,6 +931,16 @@
                                     <td class="num">{{ c.findings_impact | default(0) }}</td>
                                 </tr>
                                 {% endfor %}
+                                {% if churn_shipped > 10 and render_mode != 'fragment' %}
+                                <tr class="vc-show-more-row">
+                                    <td colspan="5">
+                                        <button class="vc-show-more-btn" onclick="vc_toggleRows('{{ step_churn_id }}')">
+                                            Show {{ churn_shipped - 10 }} more…
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endif %}
+                                {{ vc_more_note(step_churn | length, step_row_limit, "Component Churn", 5) }}
                             </tbody>
                         </table>
                         {% else %}
@@ -956,9 +1105,15 @@ function vc_toggleChangelog(entryId) {
 
     {% if transform_result and transform_result.projects %}
     {% for proj in transform_result.projects %}
+    {# Only the fields the chart plots — the steps also carry every
+       finding of the version, which would ship whole in the script. #}
+    {% set chart_points = [] %}
+    {% for s in proj.progression %}
+    {% set _ = chart_points.append({"version": s.version, "total": s.total, "fixed": s.fixed, "new": s.new}) %}
+    {% endfor %}
     _initProjectChart(
         '{{ fragment_scope_class }}-vc-chart-{{ loop.index }}',
-        {{ proj.progression | tojson }}
+        {{ chart_points | tojson }}
     );
     {% endfor %}
     {% endif %}

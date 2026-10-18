@@ -36,6 +36,7 @@ from typing import Any
 
 import yaml
 
+from fs_report.coerce import coerce_bool  # also re-exported for old importers
 from fs_report.paths import get_workflows_dir
 from fs_report.slug import slug as make_slug
 from fs_report.web.workflow_meta import (
@@ -45,30 +46,6 @@ from fs_report.web.workflow_meta import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Shared truthy-coercion
-# ---------------------------------------------------------------------------
-
-
-def coerce_bool(value: Any) -> bool:
-    """Coerce *value* to a real bool using the run path's truthy semantics.
-
-    A value is True only if it is already ``True`` (a real bool) or its string
-    form (stripped, lowercased) is one of ``"true"`` / ``"on"`` / ``"1"`` /
-    ``"yes"``.  Everything else — including the strings ``"false"`` / ``"0"`` /
-    ``"no"`` — is False (never the truthy ``bool("false")``).
-
-    This single shared helper is the home for the coercion the run path
-    (``run._coerce_touched_flag``), the export path
-    (``workflow_export._coerce_bool``), and the ``target_agnostic`` strip
-    (here + in those modules) all use, so a hand-edited / inline YAML string
-    boolean such as ``"false"`` is read consistently everywhere.
-    """
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in ("true", "on", "1", "yes")
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +221,8 @@ _VALID_OVERRIDE_STR_KEYS = frozenset(
         "license_filter",
         "threat_context",
         "baseline_date",
+        "include_versions",
+        "exclude_versions",
         "detected_after",
         "min_severity",
         "scan_types",
@@ -262,6 +241,9 @@ _VALID_OVERRIDE_BOOL_KEYS = frozenset(
         "ai_prompts",
         "overwrite",
         "current_version_only",
+        # Version Comparison's /cves/updates lookups — DEFAULT TRUE, so a step
+        # persists only the explicit opt-out (false).
+        "external_changes",
         "open_only",
         "include_file_components",
         "policy_status",

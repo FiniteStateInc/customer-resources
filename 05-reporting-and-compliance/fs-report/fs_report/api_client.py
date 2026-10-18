@@ -31,7 +31,7 @@ import shutil
 import tempfile
 import time
 from json.decoder import JSONDecodeError
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import httpx
 from httpx import HTTPStatusError
@@ -39,7 +39,7 @@ from tqdm import tqdm
 
 from fs_report.data_cache import DataCache
 from fs_report.models import Config, QueryConfig, QueryParams
-from fs_report.sqlite_cache import SQLiteCache
+from fs_report.sqlite_cache import CacheClaimLost, SQLiteCache
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _PERMANENT_STATUS_CODES = frozenset({400, 401, 403, 404, 405, 409, 422})
@@ -70,6 +70,167 @@ def _retry_wait(retry_after: str | None, retry_count: int) -> float:
             return ladder
         return min(requested, 120.0)
     return ladder
+
+
+# Page sizes a paginated fetch falls back through when the server reports it
+# could not finish a page in time. The /findings 504 body is explicit about
+# what it wants:
+#     {"errors":[{"error":"Database query timed out. Try narrowing the
+#      request or retrying."}]}
+# Re-sending the SAME oversized page cannot satisfy that — the query costs what
+# it costs however long we wait — so narrow first and only fall back on waiting
+# once the ladder bottoms out.
+_PAGE_SIZE_LADDER = (10000, 5000, 2000, 1000)
+
+# Retries allowed once the page size is already at the ladder's floor. A DB
+# timeout on a 1,000-row page may still be a genuinely transient blip, so give
+# it a couple of paced attempts — but not the full 8-deep ladder, which spent
+# 13 minutes on a query that was never going to complete.
+_DB_TIMEOUT_FLOOR_RETRIES = 2
+
+_DB_TIMEOUT_MARKER = "database query timed out"
+
+
+def _is_db_timeout(body: str | None) -> bool:
+    """True when a 5xx body says the backend's own query timed out.
+
+    Distinguishes "this request is too expensive" from "this server is busy".
+    The two need opposite responses: narrow the request vs. wait for load to
+    pass, and treating the first as the second is what made a doomed fetch take
+    13 minutes to fail.
+    """
+    if not body:
+        return False
+    return _DB_TIMEOUT_MARKER in body.lower()
+
+
+def _narrow_page_size(limit: int) -> int | None:
+    """Next page size strictly below ``limit``, or None at/below the floor.
+
+    A caller-chosen size that is already smaller than the floor (e.g. a 100-row
+    probe) has nothing to narrow to and returns None — if the backend cannot
+    serve 100 rows, 1,000 will not help either.
+
+    Only the ordering and the floor matter, never the top rung: a `limit` above
+    every rung (a raised ``max_page_size``) still narrows, to the largest rung
+    below it. So the ladder cannot silently stop working if the page-size cap
+    moves.
+    """
+    for candidate in _PAGE_SIZE_LADDER:
+        if candidate < limit:
+            return candidate
+    return None
+
+
+class _PageRetryPlan(NamedTuple):
+    """What to do about one failed page of a paginated fetch.
+
+    ``action`` is one of:
+      ``narrow``     — retry the same offset at ``limit``, immediately.
+      ``wait``       — normal transient-load ladder; sleep ``wait`` and retry.
+      ``wait_floor`` — DB timeout at the smallest page size; sleep and retry,
+                       against the shorter floor budget.
+      ``abort``      — give up and raise; ``message`` says why.
+    """
+
+    action: str
+    limit: int
+    wait: float
+    message: str
+
+
+def _plan_page_retry(
+    *,
+    status: int,
+    body: str | None,
+    retry_after: str | None,
+    offset: int,
+    limit: int,
+    retry_count: int,
+    db_floor_retries: int,
+    max_retries: int,
+) -> _PageRetryPlan:
+    """Decide how a paginator should respond to a retryable page error.
+
+    Pure so the policy can be tested without a server. ``retry_count`` and
+    ``db_floor_retries`` are the counts BEFORE this failure, so the caller
+    increments only for the branch the plan actually selects.
+
+    Every paginated path routes its retry policy through here, so the SQLite,
+    no-cache and legacy-JSON loops cannot drift apart on it.
+    """
+    # Narrowing is gated on a 5xx, not on the body alone. 429 means "you are
+    # asking too often" — it must be paced, and pacing is the one thing
+    # narrowing skips. A rate-limit body that happens to quote a database
+    # timeout (a wrapped upstream message) would otherwise jump the ladder.
+    if status >= 500 and _is_db_timeout(body):
+        narrowed = _narrow_page_size(limit)
+        if narrowed is not None:
+            return _PageRetryPlan(
+                action="narrow",
+                limit=narrowed,
+                wait=0.0,
+                message=(
+                    f"Server could not complete a {limit}-record page at offset "
+                    f"{offset} (HTTP {status}: database query timed out). "
+                    f"Narrowing to limit={narrowed} and retrying."
+                ),
+            )
+        if db_floor_retries >= _DB_TIMEOUT_FLOOR_RETRIES:
+            return _PageRetryPlan(
+                action="abort",
+                limit=limit,
+                wait=0.0,
+                message=(
+                    f"Database query timed out at offset {offset} on the "
+                    f"smallest page size (limit={limit}) after "
+                    f"{_DB_TIMEOUT_FLOOR_RETRIES} retries. Narrowing the "
+                    f"request did not help and waiting will not either. "
+                    f"Aborting."
+                ),
+            )
+        wait = _retry_wait(retry_after, db_floor_retries)
+        return _PageRetryPlan(
+            action="wait_floor",
+            limit=limit,
+            wait=wait,
+            message=(
+                f"Database query timed out at offset {offset} on the smallest "
+                f"page size (limit={limit}). Waiting {wait:.0f}s (floor retry "
+                f"{db_floor_retries + 1}/{_DB_TIMEOUT_FLOOR_RETRIES})..."
+            ),
+        )
+
+    if retry_count >= max_retries:
+        return _PageRetryPlan(
+            action="abort",
+            limit=limit,
+            wait=0.0,
+            message=(
+                f"Max retries exceeded at offset {offset} "
+                f"(last error: HTTP {status}). Aborting."
+            ),
+        )
+
+    if retry_after or status == 429 or status >= 500:
+        # Server overloaded / rate limited: honour its pacing request within
+        # bounds, else the longer ladder. The condition tracks what
+        # `_is_retryable` admits (429 plus ANY 5xx) rather than a literal list
+        # of five codes — an odd-but-retryable 507/521/599 was dropping to the
+        # ~2s exponential branch and re-asking a still-dead gateway.
+        wait = _retry_wait(retry_after, retry_count)
+    else:
+        wait = (2 ** min(retry_count + 1, 6)) + random.uniform(0, 1)
+    label = "Rate limited (429)" if status == 429 else f"Server error ({status})"
+    return _PageRetryPlan(
+        action="wait",
+        limit=limit,
+        wait=wait,
+        message=(
+            f"{label} at offset {offset}. Waiting {wait:.0f}s "
+            f"(attempt {retry_count + 1}/{max_retries})..."
+        ),
+    )
 
 
 class APIRequestError(ValueError):
@@ -132,6 +293,14 @@ class APIClient:
         # Track retries in the most recent fetch call so callers (e.g. the
         # version-batching loop) can adapt cooldowns after server errors.
         self.last_fetch_retries: int = 0
+        # Page size this client has learned an endpoint cannot serve, per
+        # endpoint, for the life of the run. A narrowing is otherwise a local
+        # in one paginator call, and the version-batching loop issues ONE call
+        # per batch — so a 140-batch fetch re-escalated to the full page size
+        # and re-earned the same gateway timeout 140 times. Keyed on the
+        # endpoint because the cost is a property of the endpoint and tenant,
+        # not of the particular filter. Never widened, only narrowed.
+        self._learned_page_size: dict[str, int] = {}
 
         # Initialize SQLite cache if TTL is set or explicitly provided
         if sqlite_cache:
@@ -170,8 +339,50 @@ class APIClient:
 
         self.max_page_size: int = 10000
 
-    def fetch_data(self, query: QueryConfig) -> list[dict[str, Any]]:
-        """Fetch a single page of data from the API based on query configuration."""
+    def _apply_learned_page_size(self, endpoint: str, limit: int) -> int:
+        """Start a fetch at a page size this run has already proven servable.
+
+        Returns ``limit`` unchanged when nothing has been learned for the
+        endpoint, or when what was learned is no smaller than what the caller
+        asked for — the memory only ever narrows.
+        """
+        learned = self._learned_page_size.get(endpoint)
+        if learned is not None and learned < limit:
+            self.logger.debug(
+                f"Starting {endpoint} at limit={learned}: this run already saw "
+                f"the server fail to complete a larger page."
+            )
+            return learned
+        return limit
+
+    def _remember_page_size(self, endpoint: str, limit: int) -> None:
+        """Record a page size that actually returned a page.
+
+        Called on SUCCESS, never at the moment of narrowing: a fetch that walks
+        the whole ladder and still aborts has proven nothing except that the
+        endpoint is unservable, and recording the floor there would make every
+        later fetch on it pay 10x the round trips for no benefit.
+        """
+        previous = self._learned_page_size.get(endpoint)
+        if previous is None or limit < previous:
+            self._learned_page_size[endpoint] = limit
+
+    def fetch_data(
+        self, query: QueryConfig, *, defer_db_timeout: bool = False
+    ) -> list[dict[str, Any]]:
+        """Fetch a single page of data from the API based on query configuration.
+
+        Args:
+            query: Query configuration.
+            defer_db_timeout: Skip the inner retries for a backend
+                query-timeout 5xx and raise at once, so a *paginating* caller
+                can narrow the page instead — the one response that can help,
+                which three same-size retries only delay. Off by default
+                because it is a loss for every direct caller
+                (``resolve_project``, ``test_connection``, per-component
+                fan-outs): they have no page to narrow, so dropping their
+                retries would just fail sooner.
+        """
         self.logger.debug(f"Fetching data from endpoint: {query.endpoint}")
 
         # Check cache first
@@ -264,8 +475,21 @@ class APIClient:
                     return result
             except HTTPStatusError as e:
                 status_code = e.response.status_code
-                if _is_retryable(status_code) and _attempt < _max_retries:
-                    # Transient error — back off and retry
+                if (
+                    _is_retryable(status_code)
+                    and _attempt < _max_retries
+                    and not (
+                        defer_db_timeout
+                        and status_code >= 500
+                        and _is_db_timeout(e.response.text)
+                    )
+                ):
+                    # Transient error — back off and retry. A backend query
+                    # timeout is excluded only for a paginating caller that
+                    # asked to handle it (defer_db_timeout): narrowing the page
+                    # is the one response that can help, and three same-size
+                    # retries here only delay it. A direct caller keeps its
+                    # retries — it has no page to narrow.
                     _wait = (2**_attempt) + random.uniform(0, 1)
                     self.logger.warning(
                         f"{status_code} on {query.endpoint}, "
@@ -322,8 +546,10 @@ class APIClient:
         """
         Fetch all paginated results with robust retry, progress logging, and resume support.
 
-        If SQLite cache is enabled (cache_ttl > 0), uses SQLite for efficient storage
-        and crash recovery. Otherwise, falls back to JSON progress files.
+        If SQLite cache is enabled (cache_ttl > 0), uses SQLite: a fetch is cached
+        only once it completes, and an interrupted one restarts from the first page
+        (no mid-fetch resume). Otherwise, falls back to JSON progress files, which
+        do resume from the last offset after an interruption.
 
         Args:
             query: Query configuration
@@ -354,7 +580,8 @@ class APIClient:
         self, query: Any, max_retries: int = 8, show_progress: bool = True
     ) -> list[dict]:
         """
-        Fetch all paginated results using SQLite cache for storage and crash recovery.
+        Fetch all paginated results using the SQLite cache. Caches only complete
+        fetches; an interrupted one is refetched from page one (see start_fetch).
 
         [BETA] This method uses the new SQLite-based caching system.
 
@@ -386,27 +613,37 @@ class APIClient:
                 )
                 return cached_data
 
-        # Check for incomplete fetch (crash recovery)
-        existing_count = self.sqlite_cache.get_progress(endpoint, params)
-        offset = existing_count
-
-        if existing_count > 0:
+        # Claim the entry. If another run is fetching this query right now, the
+        # claim fails and this run fetches on its own without touching that
+        # run's rows. A claim always starts empty: an interrupted fetch is
+        # re-run from the first page, never resumed (see start_fetch).
+        query_hash = self.sqlite_cache.start_fetch(endpoint, params, self.cache_ttl)
+        if query_hash is None:
             self.logger.info(
-                f"Resuming from SQLite cache: {existing_count} records already fetched"
+                f"Another run is fetching {endpoint}; fetching it without the cache"
             )
-            query_hash = self.sqlite_cache.start_fetch(endpoint, params, self.cache_ttl)
-            # Don't clear existing data - we're resuming
-        else:
-            # Start a new fetch
-            query_hash = self.sqlite_cache.start_fetch(endpoint, params, self.cache_ttl)
+            return self._fetch_all_no_cache(query, max_retries, show_progress)
+        offset = 0
 
         # Fetch remaining data
         limit = getattr(query.params, "limit", self.max_page_size) or self.max_page_size
         limit = min(limit, self.max_page_size)
+        resolved_limit = limit
+        narrowed_limit = self._apply_learned_page_size(endpoint, limit)
+        # Pin an explicit wire `limit` ONLY once we have deliberately changed
+        # the page size (a learned narrowing here, or a narrowing later in the
+        # loop). Comparing against the RESOLVED limit, not the query's raw one:
+        # a QueryParams with limit unset resolves to max_page_size internally
+        # but previously sent NO limit param, and forcing one in would be a
+        # silent wire change on a backend this client already documents as
+        # 400ing on limit>1000.
+        page_size_pinned = narrowed_limit != limit
+        limit = narrowed_limit
         consecutive_empty_pages = 0
         max_consecutive_empty = 3
         retry_count = 0
-        total_stored = existing_count
+        db_floor_retries = 0
+        total_stored = 0
         seen_ids: set[str] = set()  # Track IDs to detect duplicates
 
         bar_desc = f"           Fetching {endpoint}"
@@ -416,14 +653,21 @@ class APIClient:
             ncols=100,
             bar_format="{desc} |{bar}| {n_fmt} records",
             disable=not show_progress,
-            initial=existing_count,
         )
 
         fetch_completed = False
+        claim_lost = False
         try:
             while True:
                 page_query = query.model_copy(deep=True)
                 page_query.params.offset = offset
+                # Make the loop's own `limit` authoritative for the request, so
+                # a narrowed page size actually reaches the wire. The cache key
+                # (`params`, resolved once above) deliberately keeps the
+                # ORIGINAL limit: narrowing is a transport detail and must not
+                # split one logical fetch across two cache entries.
+                if page_size_pinned:
+                    page_query.params.limit = limit
 
                 self.logger.debug(f"Fetching: {endpoint} offset={offset} limit={limit}")
 
@@ -454,28 +698,26 @@ class APIClient:
                             f"API request failed at offset {offset}: "
                             f"{status} - {str(e.response.text)[:500]}"
                         ) from e
-                    retry_count += 1
-                    self.last_fetch_retries += 1
-                    retry_after = e.response.headers.get("Retry-After")
-                    if retry_after or status in (429, 500, 502, 503, 504):
-                        # Server overloaded / rate limited: honour its pacing
-                        # request within bounds, else the longer ladder.
-                        wait = _retry_wait(retry_after, retry_count - 1)
-                    else:
-                        wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
-                    label = (
-                        "Rate limited (429)"
-                        if status == 429
-                        else f"Server error ({status})"
+                    plan = _plan_page_retry(
+                        status=status,
+                        body=e.response.text,
+                        retry_after=e.response.headers.get("Retry-After"),
+                        offset=offset,
+                        limit=limit,
+                        retry_count=retry_count,
+                        db_floor_retries=db_floor_retries,
+                        max_retries=max_retries,
                     )
-                    self.logger.warning(
-                        f"{label} at offset {offset}. "
-                        f"Waiting {wait:.0f}s (attempt {retry_count}/{max_retries})..."
-                    )
-                    if retry_count > max_retries:
-                        self.logger.error(
-                            f"Max retries exceeded at offset {offset} (last error: HTTP {status}). Aborting."
-                        )
+                    if plan.action != "narrow":
+                        # report_engine reads last_fetch_retries to decide the
+                        # server is struggling and needs a sustained elevated
+                        # inter-batch cooldown. A narrowing is request-cost
+                        # adaptation, not load, so counting it there would slow
+                        # every following batch for a condition that waiting
+                        # does not fix.
+                        self.last_fetch_retries += 1
+                    if plan.action == "abort":
+                        self.logger.error(plan.message)
                         # Same wire format as the permanent branch above, so
                         # callers written to the ValueError contract see this
                         # the same way whatever the cache mode.
@@ -484,25 +726,59 @@ class APIClient:
                             f"{status} - {str(e.response.text)[:500]}",
                             status,
                         ) from e
-                    time.sleep(wait)
+                    # Warn only when a retry actually follows. The old order
+                    # logged "Waiting 120s (attempt 9/8)" and then aborted in
+                    # the same millisecond, so the last line of a failed fetch
+                    # promised a wait that never happened.
+                    self.logger.warning(plan.message)
+                    # Keep the claim alive across retries, narrowing included:
+                    # a quiet claim past FETCH_STALE_SECONDS can be taken over.
+                    self.sqlite_cache.touch_fetch(query_hash)
+                    if plan.action == "narrow":
+                        # A smaller page is a different request, not another go
+                        # at the same one — so both retry budgets reset.
+                        limit = plan.limit
+                        page_size_pinned = True
+                        retry_count = 0
+                        db_floor_retries = 0
+                        continue
+                    if plan.action == "wait_floor":
+                        db_floor_retries += 1
+                    else:
+                        retry_count += 1
+                    time.sleep(plan.wait)
                     continue
                 except Exception as e:
-                    retry_count += 1
                     self.last_fetch_retries += 1
-                    wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
+                    wait = (2 ** min(retry_count + 1, 6)) + random.uniform(0, 1)
+                    # Exhaustion checked BEFORE the warning, same as the
+                    # status-bearing branch above: otherwise this path prints
+                    # its own "attempt 9/8" promising a wait it never takes.
+                    if retry_count + 1 > max_retries:
+                        self.logger.error(
+                            f"Max retries exceeded at offset {offset} "
+                            f"(last error: {e}). Aborting."
+                        )
+                        break
+                    retry_count += 1
                     self.logger.warning(
                         f"Error at offset {offset}: {e}. "
                         f"Retrying in {wait:.1f}s (attempt {retry_count}/{max_retries})..."
                     )
-                    if retry_count > max_retries:
-                        self.logger.error(
-                            f"Max retries exceeded at offset {offset}. Aborting."
-                        )
-                        break
+                    self.sqlite_cache.touch_fetch(query_hash)
                     time.sleep(wait)
                     continue
 
+                # A page came back: both retry budgets reset. db_floor_retries
+                # has to reset here too — left running, floor waits spent at an
+                # early offset would abort a later one after fewer than its own
+                # allowance, failing a long pagination because page 1 was slow.
                 retry_count = 0
+                db_floor_retries = 0
+                # This size demonstrably works for this endpoint — record it so
+                # sibling fetches in the same run skip the rungs that failed.
+                if limit < resolved_limit:
+                    self._remember_page_size(endpoint, limit)
 
                 # Filter out null/empty rows (can appear for archived/excluded items)
                 page = [rec for rec in page if rec] if page else page
@@ -555,18 +831,48 @@ class APIClient:
                 if self.request_delay > 0:
                     time.sleep(self.request_delay)
 
+        except CacheClaimLost:
+            claim_lost = True
+        except BaseException:
+            # An error or Ctrl-C: release the claim so the next run starts clean
+            # instead of waiting out FETCH_STALE_SECONDS. A cache failure here
+            # must not replace the error the caller needs to see.
+            try:
+                self.sqlite_cache.abandon_fetch(query_hash, endpoint)
+            except Exception as cleanup_error:
+                self.logger.debug(f"Could not release cache claim: {cleanup_error}")
+            raise
         finally:
             pbar.close()
 
-        # Mark fetch as complete only on clean loop exits
-        if fetch_completed:
-            self.sqlite_cache.complete_fetch(query_hash)
-        self.logger.debug(
-            f"Fetch complete: {total_stored} records stored in SQLite cache"
-        )
-
-        # Return all records from cache
-        return self.sqlite_cache.get_cached_data(endpoint, params) or []
+        try:
+            if claim_lost:
+                raise CacheClaimLost(query_hash)
+            if fetch_completed:
+                # Marked complete and read back in one transaction.
+                records = self.sqlite_cache.finish_fetch(query_hash, endpoint)
+                self.logger.debug(
+                    f"Fetch complete: {total_stored} records stored in SQLite cache"
+                )
+                return records
+            # The loop gave up (retries exhausted): return what it fetched, as
+            # before, but cache none of it.
+            return self.sqlite_cache.get_cached_data(endpoint, params) or []
+        except CacheClaimLost:
+            # Another run took the entry over (this one went quiet past
+            # FETCH_STALE_SECONDS); its rows are not this fetch's.
+            self.logger.warning(
+                f"Lost the cache entry for {endpoint} to another run; "
+                "fetching it again without the cache"
+            )
+            return self._fetch_all_no_cache(query, max_retries, show_progress)
+        finally:
+            # A no-op once finished; a cache failure here must not replace the
+            # records this function is returning.
+            try:
+                self.sqlite_cache.abandon_fetch(query_hash, endpoint)
+            except Exception as cleanup_error:
+                self.logger.debug(f"Could not release cache claim: {cleanup_error}")
 
     def _fetch_all_no_cache(
         self, query: Any, max_retries: int = 8, show_progress: bool = True
@@ -586,10 +892,17 @@ class APIClient:
         endpoint = query.endpoint
         limit = getattr(query.params, "limit", self.max_page_size) or self.max_page_size
         limit = min(limit, self.max_page_size)
+        resolved_limit = limit
+        narrowed_limit = self._apply_learned_page_size(endpoint, limit)
+        # See the SQLite paginator: pin a wire `limit` only once the page size
+        # has deliberately changed from the resolved one.
+        page_size_pinned = narrowed_limit != limit
+        limit = narrowed_limit
         offset = 0
         consecutive_empty_pages = 0
         max_consecutive_empty = 3
         retry_count = 0
+        db_floor_retries = 0
         all_results: list[dict] = []
         seen_ids: set[str] = set()
 
@@ -606,6 +919,10 @@ class APIClient:
             while True:
                 page_query = query.model_copy(deep=True)
                 page_query.params.offset = offset
+                # See the SQLite paginator: the loop's `limit` must reach the
+                # wire for page-size narrowing to do anything.
+                if page_size_pinned:
+                    page_query.params.limit = limit
 
                 self.logger.debug(
                     f"Fetching (no-cache): {endpoint} offset={offset} limit={limit}"
@@ -637,28 +954,26 @@ class APIClient:
                             f"API request failed at offset {offset}: "
                             f"{status} - {str(e.response.text)[:500]}"
                         ) from e
-                    retry_count += 1
-                    self.last_fetch_retries += 1
-                    retry_after = e.response.headers.get("Retry-After")
-                    if retry_after or status in (429, 500, 502, 503, 504):
-                        # Server overloaded / rate limited: honour its pacing
-                        # request within bounds, else the longer ladder.
-                        wait = _retry_wait(retry_after, retry_count - 1)
-                    else:
-                        wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
-                    label = (
-                        "Rate limited (429)"
-                        if status == 429
-                        else f"Server error ({status})"
+                    plan = _plan_page_retry(
+                        status=status,
+                        body=e.response.text,
+                        retry_after=e.response.headers.get("Retry-After"),
+                        offset=offset,
+                        limit=limit,
+                        retry_count=retry_count,
+                        db_floor_retries=db_floor_retries,
+                        max_retries=max_retries,
                     )
-                    self.logger.warning(
-                        f"{label} at offset {offset}. "
-                        f"Waiting {wait:.0f}s (attempt {retry_count}/{max_retries})..."
-                    )
-                    if retry_count > max_retries:
-                        self.logger.error(
-                            f"Max retries exceeded at offset {offset} (last error: HTTP {status}). Aborting."
-                        )
+                    if plan.action != "narrow":
+                        # report_engine reads last_fetch_retries to decide the
+                        # server is struggling and needs a sustained elevated
+                        # inter-batch cooldown. A narrowing is request-cost
+                        # adaptation, not load, so counting it there would slow
+                        # every following batch for a condition that waiting
+                        # does not fix.
+                        self.last_fetch_retries += 1
+                    if plan.action == "abort":
+                        self.logger.error(plan.message)
                         # Same wire format as the permanent branch above, so
                         # callers written to the ValueError contract see this
                         # the same way whatever the cache mode.
@@ -667,25 +982,55 @@ class APIClient:
                             f"{status} - {str(e.response.text)[:500]}",
                             status,
                         ) from e
-                    time.sleep(wait)
+                    # Warn only when a retry actually follows. The old order
+                    # logged "Waiting 120s (attempt 9/8)" and then aborted in
+                    # the same millisecond, so the last line of a failed fetch
+                    # promised a wait that never happened.
+                    self.logger.warning(plan.message)
+                    if plan.action == "narrow":
+                        # A smaller page is a different request, not another go
+                        # at the same one — so both retry budgets reset.
+                        limit = plan.limit
+                        page_size_pinned = True
+                        retry_count = 0
+                        db_floor_retries = 0
+                        continue
+                    if plan.action == "wait_floor":
+                        db_floor_retries += 1
+                    else:
+                        retry_count += 1
+                    time.sleep(plan.wait)
                     continue
                 except Exception as e:
-                    retry_count += 1
                     self.last_fetch_retries += 1
-                    wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
+                    wait = (2 ** min(retry_count + 1, 6)) + random.uniform(0, 1)
+                    # Exhaustion checked BEFORE the warning, same as the
+                    # status-bearing branch above: otherwise this path prints
+                    # its own "attempt 9/8" promising a wait it never takes.
+                    if retry_count + 1 > max_retries:
+                        self.logger.error(
+                            f"Max retries exceeded at offset {offset} "
+                            f"(last error: {e}). Aborting."
+                        )
+                        break
+                    retry_count += 1
                     self.logger.warning(
                         f"Error at offset {offset}: {e}. "
                         f"Retrying in {wait:.1f}s (attempt {retry_count}/{max_retries})..."
                     )
-                    if retry_count > max_retries:
-                        self.logger.error(
-                            f"Max retries exceeded at offset {offset}. Aborting."
-                        )
-                        break
                     time.sleep(wait)
                     continue
 
+                # A page came back: both retry budgets reset. db_floor_retries
+                # has to reset here too — left running, floor waits spent at an
+                # early offset would abort a later one after fewer than its own
+                # allowance, failing a long pagination because page 1 was slow.
                 retry_count = 0
+                db_floor_retries = 0
+                # This size demonstrably works for this endpoint — record it so
+                # sibling fetches in the same run skip the rungs that failed.
+                if limit < resolved_limit:
+                    self._remember_page_size(endpoint, limit)
                 page = [rec for rec in page if rec] if page else page
 
                 if not page:
@@ -703,12 +1048,26 @@ class APIClient:
                 page_ids: set[str] = {
                     str(rec.get("id")) for rec in page if rec.get("id")
                 }
+                # Same rule as the SQLite paginator: stop only when the whole
+                # page is repeats, and keep a mixed page's new records. Stopping
+                # at the first repeat dropped them, so a run on this path (e.g.
+                # one that found another run fetching the same query) could get
+                # fewer records than a cached run.
                 duplicates = page_ids & seen_ids
-                if duplicates:
+                if page_ids and duplicates == page_ids:
                     self.logger.debug(
-                        f"Found {len(duplicates)} duplicate record IDs at offset {offset}. Stopping pagination."
+                        f"All {len(page_ids)} records at offset {offset} are duplicates. Stopping pagination."
                     )
                     break
+                if duplicates:
+                    self.logger.debug(
+                        f"Found {len(duplicates)}/{len(page_ids)} duplicate record IDs at offset {offset}; continuing."
+                    )
+                    page = [
+                        rec
+                        for rec in page
+                        if not rec.get("id") or str(rec.get("id")) not in seen_ids
+                    ]
 
                 seen_ids.update(page_ids)
                 all_results.extend(page)
@@ -808,7 +1167,7 @@ class APIClient:
         DEPRECATED: This method will be removed in a future release.
         Use --cache-ttl to enable the new SQLite-based caching which provides:
         - ~80% smaller storage through field trimming
-        - Better crash recovery
+        - Safe interrupted and concurrent runs (complete fetches only)
         - Optional cross-run caching with TTL
 
         Stores progress/results in a JSON file (progress_file). Resumes from last offset if interrupted.
@@ -839,8 +1198,15 @@ class APIClient:
         all_results = []
         limit = getattr(query.params, "limit", self.max_page_size) or self.max_page_size
         limit = min(limit, self.max_page_size)
+        resolved_limit = limit
+        narrowed_limit = self._apply_learned_page_size(query.endpoint, limit)
+        # See the SQLite paginator: pin a wire `limit` only once the page size
+        # has deliberately changed from the resolved one.
+        page_size_pinned = narrowed_limit != limit
+        limit = narrowed_limit
         consecutive_empty_pages = 0
         max_consecutive_empty = 3  # Stop after 3 consecutive empty pages
+        db_floor_retries = 0
         self.logger.debug(
             f"fetch_all_with_resume called for endpoint: {getattr(query, 'endpoint', None)}, progress_file: {progress_file}"
         )
@@ -896,6 +1262,12 @@ class APIClient:
             while True:
                 page_query = query.model_copy(deep=True)
                 page_query.params.offset = offset
+                # See the SQLite paginator: the loop's `limit` must reach the
+                # wire for page-size narrowing to do anything. This path caches
+                # per page via `fetch_data`, so a narrowed page is simply a
+                # different (correct) cache entry.
+                if page_size_pinned:
+                    page_query.params.limit = limit
                 self.logger.debug(
                     f"Fetching: {query.endpoint} offset={offset} limit={limit}"
                 )
@@ -919,7 +1291,9 @@ class APIClient:
                             f"           Using cache for {getattr(query, 'endpoint', '')}"
                         )
 
-                    page = self.fetch_data(page_query)
+                    # This paginator CAN narrow, so a backend query timeout
+                    # should reach it rather than be retried in place.
+                    page = self.fetch_data(page_query, defer_db_timeout=True)
                     self.logger.debug(
                         f"API response received for {self.config.domain}{query.endpoint}"
                     )
@@ -987,51 +1361,97 @@ class APIClient:
                         if msg.startswith(permanent_prefixes):
                             self._discard_progress(progress_file)
                             raise
-                    # Fall through to transient-retry handling
-                    if retryable:
-                        # Pace for a server that is slow, not flaky: a gateway
-                        # timeout takes ~30s to even come back, so a 1s first
-                        # wait re-asks a server that is still busy. Same ladder
-                        # the no-cache paginator uses.
-                        wait = _retry_wait(getattr(e, "retry_after", None), retry_count)
-                    else:
-                        wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
-                    retry_count += 1
-                    self.last_fetch_retries += 1
-                    # Check exhaustion BEFORE sleeping: waiting out a full
-                    # 120s only to give up burns two minutes per offset for
-                    # nothing.
-                    if retry_count > max_retries:
+                    # Fall through to transient-retry handling. Routed through
+                    # the same planner as the other two paginators so the
+                    # narrow-before-wait policy cannot drift between cache
+                    # modes. `status` is None only on the untyped-and-transient
+                    # path (e.g. "Network error: ..."), which has no HTTP status
+                    # to plan on — 0 keeps it out of the 429/5xx pacing branch.
+                    plan = _plan_page_retry(
+                        status=status if status is not None else 0,
+                        body=msg if retryable else None,
+                        retry_after=getattr(e, "retry_after", None),
+                        offset=offset,
+                        limit=limit,
+                        retry_count=retry_count,
+                        db_floor_retries=db_floor_retries,
+                        max_retries=max_retries,
+                    )
+                    if plan.action != "narrow":
+                        # See the SQLite paginator: a narrowing is not a
+                        # server-load signal and must not drive report_engine's
+                        # elevated inter-batch cooldown.
+                        self.last_fetch_retries += 1
+                    if plan.action == "abort":
                         # Exhausted. This must stay LOUD whatever the error
                         # was: breaking here would return the rows fetched so
                         # far, i.e. a report silently missing data, presented
                         # as complete. Worse than failing.
                         self.logger.error(
-                            f"Max retries exceeded at offset {offset}. Aborting."
+                            plan.message
+                            if status is not None
+                            else (
+                                f"Max retries exceeded at offset {offset} "
+                                f"(last error: {msg}). Aborting."
+                            )
                         )
                         self._discard_progress(progress_file)
                         raise
-                    self.logger.debug(
-                        f"Transient error at offset {offset}: {e}. Retrying in {wait:.1f}s..."
-                    )
-                    time.sleep(wait)
+                    if plan.action == "narrow":
+                        self.logger.warning(plan.message)
+                        limit = plan.limit
+                        page_size_pinned = True
+                        retry_count = 0
+                        db_floor_retries = 0
+                        continue
+                    if plan.action == "wait_floor":
+                        self.logger.warning(plan.message)
+                        db_floor_retries += 1
+                    else:
+                        retry_count += 1
+                        # WARNING, not DEBUG. This is the default path
+                        # (`--cache-ttl 0` attaches no SQLite cache), and at
+                        # DEBUG an operator watching a stalled run during an
+                        # incident saw nothing at all while the other two
+                        # paginators logged every wait. An untyped error has
+                        # no status for the planner's "Server error (N)" line,
+                        # so it names the error itself.
+                        self.logger.warning(
+                            plan.message
+                            if status is not None
+                            else (
+                                f"Transient error at offset {offset}: {msg}. "
+                                f"Waiting {plan.wait:.0f}s "
+                                f"(attempt {retry_count}/{max_retries})..."
+                            )
+                        )
+                    time.sleep(plan.wait)
                     continue
                 except Exception as e:
                     # Unhandled transient (e.g. JSON decode, unexpected) — retry
-                    wait = (2 ** min(retry_count, 6)) + random.uniform(0, 1)
-                    self.logger.debug(
-                        f"Transient error at offset {offset}: {e}. Retrying in {wait:.1f}s..."
-                    )
-                    time.sleep(wait)
-                    retry_count += 1
                     self.last_fetch_retries += 1
-                    if retry_count > max_retries:
+                    wait = (2 ** min(retry_count + 1, 6)) + random.uniform(0, 1)
+                    # Exhaustion checked BEFORE sleeping and before the log
+                    # line: this branch used to sleep out a full backoff and
+                    # then give up, and announce a retry it never made.
+                    if retry_count + 1 > max_retries:
                         self.logger.error(
-                            f"Max retries exceeded at offset {offset}. Aborting."
+                            f"Max retries exceeded at offset {offset} "
+                            f"(last error: {e}). Aborting."
                         )
                         break
+                    retry_count += 1
+                    self.logger.warning(
+                        f"Transient error at offset {offset}: {e}. "
+                        f"Retrying in {wait:.1f}s (attempt {retry_count}/{max_retries})..."
+                    )
+                    time.sleep(wait)
                     continue
-                retry_count = 0  # Reset on success
+                # Reset BOTH budgets on success — see the SQLite paginator.
+                retry_count = 0
+                db_floor_retries = 0
+                if limit < resolved_limit:
+                    self._remember_page_size(query.endpoint, limit)
                 # Filter out null/empty rows (can appear for archived/excluded items)
                 page = [rec for rec in page if rec] if page else page
                 if not page:

@@ -22,8 +22,9 @@
 OSV (Open Source Vulnerabilities) API client for fix version resolution.
 
 Queries the OSV.dev API to resolve ecosystem-native fixed versions for
-vulnerable packages identified by PURL.  Uses batch queries for efficiency
-and SQLite caching to minimise redundant API calls.
+vulnerable packages identified by PURL, and the CVE aliases of advisory IDs
+(GHSA, PYSEC, ...).  Uses batch queries for efficiency and SQLite caching to
+minimise redundant API calls.
 
 No authentication required.  No documented rate limits.
 
@@ -41,6 +42,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -49,6 +51,7 @@ logger = logging.getLogger(__name__)
 OSV_API_BASE = "https://api.osv.dev/v1"
 OSV_QUERY_URL = f"{OSV_API_BASE}/query"
 OSV_BATCH_URL = f"{OSV_API_BASE}/querybatch"
+OSV_VULN_URL = f"{OSV_API_BASE}/vulns"
 
 # Batch size limit per OSV docs
 _MAX_BATCH_SIZE = 1000
@@ -109,6 +112,11 @@ class OSVClient:
         self._conn.execute("""CREATE TABLE IF NOT EXISTS osv_fix_cache (
                 purl TEXT PRIMARY KEY,
                 data_json TEXT NOT NULL,
+                fetched_at TEXT NOT NULL
+            )""")
+        self._conn.execute("""CREATE TABLE IF NOT EXISTS osv_alias_cache (
+                vuln_id TEXT PRIMARY KEY,
+                aliases_json TEXT NOT NULL,
                 fetched_at TEXT NOT NULL
             )""")
         self._conn.commit()
@@ -347,6 +355,108 @@ class OSVClient:
                     )
                     return {}
         return {}
+
+    def get_aliases(self, vuln_ids: list[str]) -> dict[str, list[str] | None]:
+        """Return OSV's ``aliases`` for each advisory ID (GHSA, PYSEC, ...).
+
+        Uses GET /v1/vulns/{id}, one request per uncached ID. An ID OSV does
+        not know (404) maps to ``[]`` and is cached like any answer. A failed
+        lookup (other HTTP error, network error after retries) maps to
+        ``None`` and is not cached, so the next run asks again.
+        """
+        results: dict[str, list[str] | None] = {}
+        unreachable = False
+        for vuln_id in dict.fromkeys(i for i in vuln_ids if i):
+            cached = self._get_cached_aliases(vuln_id)
+            if cached is not None:
+                self._cache_hits += 1
+                results[vuln_id] = cached
+                continue
+            if unreachable:
+                # One ID already exhausted its retries on transport errors;
+                # on a blackholed network each further ID would cost the same.
+                results[vuln_id] = None
+                continue
+            try:
+                aliases = self._fetch_aliases(vuln_id)
+            except requests.RequestException as e:
+                logger.debug(f"OSV unreachable at {vuln_id}: {e}")
+                unreachable = True
+                results[vuln_id] = None
+                continue
+            if aliases is not None:
+                self._save_cached_aliases(vuln_id, aliases)
+            results[vuln_id] = aliases
+        return results
+
+    def _fetch_aliases(self, vuln_id: str) -> list[str] | None:
+        """GET one OSV record's aliases; None when the lookup failed.
+
+        Raises the last ``requests.RequestException`` once every attempt
+        failed on transport, so the caller can stop querying a host it
+        cannot reach.
+        """
+        url = f"{OSV_VULN_URL}/{quote(vuln_id, safe='')}"
+        for attempt in range(_MAX_RETRIES):
+            try:
+                resp = self._session.get(url, timeout=_REQUEST_TIMEOUT)
+                self._request_count += 1
+                if resp.status_code == 200:
+                    aliases = resp.json().get("aliases") or []
+                    return [str(a) for a in aliases if a]
+                if resp.status_code == 404:
+                    return []
+                if resp.status_code == 429:
+                    wait = _RETRY_BACKOFF_BASE * (2**attempt)
+                    logger.warning(f"OSV rate limited, waiting {wait:.0f}s")
+                    time.sleep(wait)
+                    continue
+                logger.debug(f"OSV {vuln_id}: HTTP {resp.status_code}")
+                return None
+            except ValueError as e:
+                logger.debug(f"OSV {vuln_id}: unreadable response: {e}")
+                return None
+            except requests.RequestException:
+                if attempt < _MAX_RETRIES - 1:
+                    time.sleep(_RETRY_BACKOFF_BASE * (2**attempt))
+                else:
+                    raise
+        return None
+
+    def _get_cached_aliases(self, vuln_id: str) -> list[str] | None:
+        if not self._conn:
+            return None
+        with self._db_lock:
+            try:
+                row = self._conn.execute(
+                    "SELECT aliases_json, fetched_at FROM osv_alias_cache"
+                    " WHERE vuln_id = ?",
+                    (vuln_id,),
+                ).fetchone()
+                if row:
+                    fetched_at = datetime.fromisoformat(row["fetched_at"])
+                    if fetched_at.tzinfo is None:
+                        fetched_at = fetched_at.replace(tzinfo=UTC)
+                    age = (datetime.now(UTC) - fetched_at).total_seconds()
+                    if age < self._cache_ttl:
+                        return list(json.loads(row["aliases_json"]))
+            except Exception as e:
+                logger.debug(f"OSV alias cache read error for {vuln_id}: {e}")
+        return None
+
+    def _save_cached_aliases(self, vuln_id: str, aliases: list[str]) -> None:
+        if not self._conn:
+            return
+        with self._db_lock:
+            try:
+                self._conn.execute(
+                    """INSERT OR REPLACE INTO osv_alias_cache
+                       (vuln_id, aliases_json, fetched_at) VALUES (?, ?, ?)""",
+                    (vuln_id, json.dumps(aliases), datetime.now(UTC).isoformat()),
+                )
+                self._conn.commit()
+            except Exception as e:
+                logger.debug(f"OSV alias cache write error for {vuln_id}: {e}")
 
     # -----------------------------------------------------------------------
     # Response parsing

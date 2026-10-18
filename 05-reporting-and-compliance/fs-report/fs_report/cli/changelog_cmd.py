@@ -134,7 +134,9 @@ def changelog(
 
         version = release["version"]
         date = release.get("date", "")
-        console.print(f"\n[bold cyan]v{version}[/bold cyan]  [dim]{date}[/dim]")
+        # A version number gets a "v"; a heading such as "Unreleased" does not.
+        heading = f"v{version}" if str(version)[:1].isdigit() else str(version)
+        console.print(f"\n[bold cyan]{heading}[/bold cyan]  [dim]{date}[/dim]")
 
         for change in changes:
             ctype = change.get("type", "changed")

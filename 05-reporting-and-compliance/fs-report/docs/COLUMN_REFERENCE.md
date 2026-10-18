@@ -416,7 +416,7 @@ schema sidecar. All five are computed once, so they agree.
 
 ## Version Comparison
 
-The Version Comparison report produces four DataFrames for CSV/XLSX export.
+The Version Comparison report produces six DataFrames for CSV/XLSX export, plus the Progression file.
 
 ### Summary (one row per version)
 
@@ -433,6 +433,7 @@ The Version Comparison report produces four DataFrames for CSV/XLSX export.
 | 9 | `Fixed (vs prev)` | int | Findings fixed since previous version |
 | 10 | `New (vs prev)` | int | New findings since previous version |
 | 11 | `Components` | int | Distinct component count (lowercased name + normalized version — the same identity churn matching uses) |
+| 12 | `Status Changes (vs prev)` | int | Status-change rows since the previous version — one per finding per component version (see Status Changes) |
 
 ### Findings Detail (one row per finding per version)
 
@@ -445,8 +446,9 @@ The Version Comparison report produces four DataFrames for CSV/XLSX export.
 | 5 | `Severity` | string | CRITICAL, HIGH, MEDIUM, LOW, INFO, UNSPECIFIED |
 | 6 | `Component Name` | string | Affected component |
 | 7 | `Component Version` | string | Component version |
-| 8 | `Risk` | float | CVSS risk score (0-10) |
+| 8 | `Score` | float | Risk score (0-10); blank when the platform reports none |
 | 9 | `Title` | string | Finding title/description |
+| 10 | `Status` | string | VEX status in this version; `NO_STATUS` when never triaged |
 
 ### Findings Churn (one row per fixed or new finding per version pair)
 
@@ -460,8 +462,10 @@ The Version Comparison report produces four DataFrames for CSV/XLSX export.
 | 6 | `Severity` | string | CRITICAL, HIGH, MEDIUM, LOW, INFO, UNSPECIFIED |
 | 7 | `Component Name` | string | Affected component |
 | 8 | `Component Version` | string | Component version |
-| 9 | `Risk` | float | CVSS risk score (0-10) |
+| 9 | `Score` | float | Risk score (0-10); blank when the platform reports none |
 | 10 | `Title` | string | Finding title/description |
+| 11 | `External Change Note` | string | On a New row whose CVE severity or exploit maturity was raised by a platform update in the window: says so (not a developer-introduced regression). Empty otherwise |
+| 12 | `Pair Type` | string | `Consecutive` for a version-to-version step; `Latest across failed version` for the latest pair (the last two fetched versions) when a failed version sits between them |
 
 ### Component Churn (one row per component change per version pair)
 
@@ -475,6 +479,72 @@ The Version Comparison report produces four DataFrames for CSV/XLSX export.
 | 6 | `Version Baseline` | string | Component version in baseline (empty if added) |
 | 7 | `Version Current` | string | Component version in current (empty if removed) |
 | 8 | `Findings Impact` | int | Number of findings attributed to this component change |
+| 9 | `Pair Type` | string | `Consecutive` for a version-to-version step; `Latest across failed version` for the latest pair (the last two fetched versions) when a failed version sits between them |
+
+### Status Changes (one row per finding per component version whose VEX status changed, per version pair)
+
+Only findings present in **both** versions are compared; findings that appear or disappear are Findings Churn. A finding at several component versions is compared per component version: the same version directly (`1.0` = `1.0.0`); a single leftover version on each side as one upgraded occurrence; any other newly-carrying version against the finding's baseline status, listed only when it reopens the finding. A version that stops carrying the finding is not listed.
+
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `Project` | string | Project name |
+| 2 | `From Version` | string | Baseline version name |
+| 3 | `To Version` | string | Current version name |
+| 4 | `Change Type` | string | `Reopened` (now needs action again), `Closed` (no longer needs action), or `Reclassified` (status changed, actionability did not) |
+| 5 | `ID` | string | CVE ID or finding ID |
+| 6 | `Severity` | string | Severity of this component version in the current version |
+| 7 | `Component Name` | string | Affected component |
+| 8 | `Component Version` | string | Component version in the current version |
+| 9 | `Status Before` | string | VEX status in the baseline version (`NO_STATUS` when never triaged) |
+| 10 | `Status After` | string | VEX status in the current version |
+| 11 | `Title` | string | Finding title/description |
+| 12 | `Pair Type` | string | `Consecutive` for a version-to-version step; `Latest across failed version` for the latest pair (the last two fetched versions) when a failed version sits between them |
+
+### External Changes (one row per finding per version pair whose CVE changed externally)
+
+Findings present in both versions of a pair whose CVE severity or exploit maturity was changed by a platform intelligence update (`/public/v0/cves/updates`) between the two versions' creation dates — not by a developer change. The report makes one `/public/v0/cves/updates` lookup per version pair to find them (more pages on a busy window; a pair more than 90 days apart is fetched as ≤90-day slices, the endpoint's cap). A finding is listed once per change type even when the platform recorded the change several times; with several different changes of one type in the window (the platform records no time to order them), the Old/New values are the highest-risk one — the highest new severity or exploit maturity — not necessarily the latest; each pair's lookup after the first waits `--request-delay`. With `--no-external-changes`, or without API access (programmatic use of the transform), none are looked up: no rows, and `externally_changed_count` is blank.
+
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `Project` | string | Project name |
+| 2 | `From Version` | string | Baseline version name |
+| 3 | `To Version` | string | Current version name |
+| 4 | `Window Start` | string | Baseline version created date (YYYY-MM-DD) |
+| 5 | `Window End` | string | Current version created date (YYYY-MM-DD) |
+| 6 | `CVE ID` | string | CVE identifier |
+| 7 | `Component Name` | string | Affected component |
+| 8 | `Component Version` | string | Component version in the current version — tells two occurrences of one CVE apart |
+| 9 | `Change Type` | string | `Severity Escalated`, `Exploit Gained`, or `Exploit Subsided` |
+| 10 | `Old Severity` | string | Severity before the update (Severity Escalated only) |
+| 11 | `New Severity` | string | Severity after the update; on an exploit change, the CVE's current (unchanged) severity |
+| 12 | `Old Exploit` | string | Exploit maturity before the update (exploit changes only) |
+| 13 | `New Exploit` | string | Exploit maturity after the update (exploit changes only) |
+| 14 | `Pair Type` | string | `Consecutive` for a version-to-version step; `Latest across failed version` for the latest pair (the last two fetched versions) when a failed version sits between them |
+
+### Progression (`_Progression.csv` / `_Progression.xlsx`, one row per version)
+
+| # | Column | Type | Description |
+|---|--------|------|-------------|
+| 1 | `project` | string | Project name |
+| 2 | `version` | string | Version name |
+| 3 | `status` | string | `ok`, or `fetch_failed` when the version's data could not be fetched |
+| 4 | `version_project_name` | string | Project the version belongs to (differs from `project` only in a cross-project pair) |
+| 5 | `created` | string | Version created date (YYYY-MM-DD) |
+| 6 | `total` | int | Findings in this version |
+| 7 | `critical` | int | Critical severity count |
+| 8 | `high` | int | High severity count |
+| 9 | `medium` | int | Medium severity count |
+| 10 | `low` | int | Low severity count |
+| 11 | `components` | int | Distinct component count |
+| 12 | `new` | int | Findings new since the previous version |
+| 13 | `fixed` | int | Findings fixed since the previous version |
+| 14 | `from_version` | string | Previous version name (empty on the first version) |
+| 15 | `fixed_severity_summary` | string | e.g. `2 CRITICAL, 1 HIGH` |
+| 16 | `new_severity_summary` | string | e.g. `1 MEDIUM` |
+| 17 | `status_changed_count` | int | Status-change rows since the previous version (see Status Changes) |
+| 18 | `externally_changed_count` | int | External Changes rows for this version pair (see External Changes); blank when not looked up (`--no-external-changes`, no API access, or the lookup failed) |
+
+The CSV and XLSX carry the same columns (internal `_`-keyed fields, such as the version IDs used to match pairs, are never exported). On a `fetch_failed` row the counts are empty in the CSV and read `fetch failed` in the XLSX. Per-version finding, churn, status-change and external-change lists are not repeated here — they are the detail exports above.
 
 ---
 

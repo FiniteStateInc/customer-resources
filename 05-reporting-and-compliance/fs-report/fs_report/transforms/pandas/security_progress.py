@@ -39,6 +39,7 @@ from fs_report.transforms.pandas._cve_updates import (  # noqa: F401
     _fetch_cve_updates,
     _process_cve_updates,
     _to_iso8601z,
+    scope_updates_to_projects,
 )
 
 logger = logging.getLogger(__name__)
@@ -324,7 +325,9 @@ def security_progress_transform(
 
     # Fetch CVE updates from /public/v0/cves/updates
     api_client = additional_data.get("api_client")
-    cve_updates = _process_cve_updates(_fetch_cve_updates(api_client, config))
+    cve_updates = _process_cve_updates(
+        _scoped_cve_updates(api_client, config, additional_data)
+    )
     cve_update_summary = _cve_update_summary(cve_updates)
 
     projects_data = additional_data.get("projects")
@@ -336,6 +339,38 @@ def security_progress_transform(
 
     # Fallback: flat snapshot (backward compat)
     return _transform_flat_snapshot(data, config, cve_updates, cve_update_summary)
+
+
+def _scoped_cve_updates(
+    api_client: Any, config: Config, additional_data: dict[str, Any]
+) -> list[dict]:
+    """The period's /cves/updates records, narrowed to the run's folder tree.
+
+    The lookup itself is never folder-scoped (see ``_fetch_cve_updates``), so
+    a ``--folder`` run keeps only the records touching a project in the
+    engine-resolved tree — names and subfolders included. A folder that
+    resolves to zero projects legitimately shows no updates. Without a
+    resolved set (no engine), refuse rather than widen to the portfolio.
+
+    The cost: the lookup pages the whole period's updates, not the folder's,
+    so an empty tree skips it entirely.
+    """
+    if not getattr(config, "folder_filter", None):
+        return _fetch_cve_updates(api_client, config)
+    folder_project_ids = additional_data.get("folder_project_ids")
+    if folder_project_ids is not None and not folder_project_ids:
+        return []
+    if folder_project_ids is None:
+        logger.warning(
+            "Security Progress: --folder=%r is set but no resolved folder "
+            "project set was given; skipping external CVE changes rather "
+            "than reporting the whole portfolio's.",
+            config.folder_filter,
+        )
+        return []
+    return scope_updates_to_projects(
+        _fetch_cve_updates(api_client, config), folder_project_ids
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -906,7 +941,8 @@ def _build_flat_summary(
         cve_updates_note = "CVE change data fetched from /public/v0/cves/updates"
     else:
         cve_updates_note = (
-            "No CVE updates fetched (api_client not available or no changes in period)"
+            "No CVE updates for this report's scope (api_client not available, "
+            "no changes in period, or none touching the --folder tree)"
         )
 
     summary: dict[str, Any] = {
