@@ -96,6 +96,14 @@ def create_app(*, port: int = 8321) -> FastAPI:
     # The run path's truthy coercion, so a template reads a saved bool (a
     # hand-edited string "false" included) exactly as the engine will.
     templates.env.filters["coerce_bool"] = coerce_bool
+
+    # SBOM Export standard -> encodings matrix (first = default), rendered for
+    # the client-side encoding filter. The server re-validates on submit.
+    from fs_report.sbom_export.options import VALID_ENCODINGS
+
+    templates.env.globals["sbom_encodings"] = {
+        k: list(v) for k, v in VALID_ENCODINGS.items()
+    }
     app.state.templates = templates
 
     # ── Routers ───────────────────────────────────────────────────

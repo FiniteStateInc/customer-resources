@@ -12,6 +12,7 @@ Additive scoring: Points-based scoring for remaining findings
 """
 
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -55,7 +56,11 @@ POINTS_VECTOR_LOCAL = 5
 POINTS_VECTOR_PHYSICAL = 0
 
 EPSS_MAX_POINTS = 20  # 20 × percentile
-CVSS_MAX_POINTS = 10  # 10 × (score/10)
+CVSS_MAX_POINTS = 10  # 10 × (CVSS/10)
+
+# The platform's ``risk`` field is CVSS × 10 (cvssScore 6.9 → risk 69).
+RISK_PER_CVSS_POINT = 10.0
+CVSS_MAX_SCORE = 10.0
 
 POINTS_VEX_RESOLVED = -50  # NOT_AFFECTED, RESOLVED, RESOLVED_WITH_PEDIGREE
 
@@ -200,7 +205,8 @@ _FRIENDLY_LABELS: dict[str, str] = {
     "in_kev": "in CISA KEV",
     "attack_vector": "attack vector",
     "epss_percentile": "EPSS percentile",
-    "risk": "CVSS score",
+    "risk": "platform risk (CVSS × 10)",
+    "cvss_score": "CVSS score",
     "severity": "severity",
 }
 
@@ -1238,6 +1244,7 @@ def triage_prioritization_transform(
         "finding_id",
         "severity",
         "risk",
+        "cvss_score",
         # Triage outputs (the main value of this report)
         "priority_band",
         "triage_score",
@@ -1673,11 +1680,14 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["severity"] = "NONE"
 
-    # --- Risk (CVSS-like score from API) ---
+    # --- Risk (API: CVSS × 10, so 0–100; kept on that scale here because
+    # Remediation Package and Customer Brief reuse this normalizer and
+    # divide by 10 themselves) ---
     if "risk" in df.columns:
         df["risk"] = pd.to_numeric(df["risk"], errors="coerce").fillna(0)
     else:
         df["risk"] = 0.0
+    df["cvss_score"] = (df["risk"] / RISK_PER_CVSS_POINT).round(1)
 
     # --- CWE (weakness type, e.g. CWE-787) ---
     if "cwes" in df.columns:
@@ -1839,8 +1849,9 @@ def calculate_additive_score(
     # EPSS points (0–max scaled by percentile)
     df["_pts_epss"] = (df["epss_percentile"] * epss_max).clip(0, epss_max)
 
-    # CVSS points (0–max scaled by risk/10)
-    df["_pts_cvss"] = (df["risk"] / 10.0 * cvss_max).clip(0, cvss_max)
+    # CVSS points (0–max scaled by CVSS/10)
+    cvss = df["risk"] / RISK_PER_CVSS_POINT
+    df["_pts_cvss"] = (cvss / CVSS_MAX_SCORE * cvss_max).clip(0, cvss_max)
 
     # Sum additive score
     df["triage_score"] = (
@@ -2448,13 +2459,8 @@ def build_factor_radar_data(df: pd.DataFrame, top_n: int = 5) -> dict[str, Any]:
         raw_epss = proj_df["epss_percentile"].mean()
         epss = min(raw_epss * 100, 100) if raw_epss <= 1.0 else min(raw_epss, 100)
 
-        # CVSS/risk: API returns 0–100 scale
-        raw_cvss = proj_df["risk"].mean()
-        cvss = (
-            min((raw_cvss / 10.0) * 100, 100)
-            if raw_cvss <= 10.0
-            else min(raw_cvss, 100)
-        )
+        # CVSS as a percent of 10: the API's risk is CVSS × 10 (0–100)
+        cvss = min(proj_df["risk"].mean(), 100)
 
         datasets.append(
             {
@@ -2613,6 +2619,19 @@ def build_vex_recommendations(
 # =============================================================================
 
 
+def _cvss_from_row(row: pd.Series) -> float | None:
+    """CVSS (0–10) for one finding: ``cvss_score``, else ``risk`` ÷ 10."""
+    for key, divisor in (("cvss_score", 1.0), ("risk", RISK_PER_CVSS_POINT)):
+        raw: Any = row.get(key)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if not math.isnan(value):
+            return value / divisor
+    return None
+
+
 def _build_triage_prompt(
     row: pd.Series,
     nvd_snippet: str = "",
@@ -2633,7 +2652,8 @@ def _build_triage_prompt(
     """
     finding_id = row.get("finding_id", "Unknown")
     severity = row.get("severity", "Unknown")
-    cvss = row.get("risk", 0)
+    cvss_score = _cvss_from_row(row)
+    cvss = "N/A" if cvss_score is None else f"{cvss_score:.1f}"
     attack_vector = row.get("attack_vector", "Unknown")
     epss = row.get("epss_percentile", 0)
     reach_score = row.get("reachability_score", 0)

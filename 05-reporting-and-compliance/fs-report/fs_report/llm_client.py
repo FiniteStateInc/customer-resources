@@ -448,6 +448,51 @@ def get_scoring_methodology(scoring_config: dict | None = None) -> str:
 SCORING_METHODOLOGY = get_scoring_methodology()
 
 
+def _anthropic_text_parts(response: Any) -> list[str]:
+    """Return the text of every ``text`` content block in an Anthropic reply.
+
+    Models with thinking on by default (Claude Opus 5.5, Sonnet 5.5, ...) put a
+    ``thinking`` / ``redacted_thinking`` block *before* the text, so the first
+    content block is not guaranteed to carry ``.text``. Any block that
+    declares a type other than ``text`` is skipped, whatever it is, so new
+    block types the SDK adds later cannot leak into the answer.
+    """
+    parts: list[str] = []
+    for block in getattr(response, "content", None) or []:
+        block_type = getattr(block, "type", None)
+        if isinstance(block_type, str) and block_type != "text":
+            continue
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+    return parts
+
+
+def _anthropic_has_thinking(response: Any) -> bool:
+    """True when the reply carries a ``thinking`` / ``redacted_thinking`` block."""
+    return any(
+        getattr(block, "type", None) in ("thinking", "redacted_thinking")
+        for block in getattr(response, "content", None) or []
+    )
+
+
+def _anthropic_no_text_error(response: Any) -> ValueError:
+    """Describe a reply with no text block: block types plus ``stop_reason``.
+
+    ``stop_reason == "max_tokens"`` means thinking used the whole budget;
+    anything else (``refusal``, ``end_turn``) is a genuinely text-less reply.
+    """
+    kinds = [
+        str(getattr(block, "type", type(block).__name__))
+        for block in getattr(response, "content", None) or []
+    ]
+    stop_reason = getattr(response, "stop_reason", None)
+    return ValueError(
+        "Anthropic response contained no text content block "
+        f"(blocks: {kinds or 'none'}, stop_reason: {stop_reason!r})"
+    )
+
+
 class LLMClient:
     """
     LLM client for generating remediation guidance.
@@ -746,6 +791,25 @@ class LLMClient:
                 )
         raise ValueError(f"Unsupported provider: {self._provider}")
 
+    def _anthropic_create(
+        self, model: str, system_msg: str, prompt: str, max_tokens: int
+    ) -> Any:
+        """One Anthropic Messages call, counted and its usage recorded."""
+        response = self.client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system_msg,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        self._call_count += 1
+        usage = getattr(response, "usage", None)
+        self._record_usage(
+            model,
+            getattr(usage, "input_tokens", 0),
+            getattr(usage, "output_tokens", 0),
+        )
+        return response
+
     def _call_llm(self, prompt: str, model_tier: str, max_tokens: int) -> str:
         """
         Send a prompt to the configured LLM and return the response text.
@@ -765,20 +829,58 @@ class LLMClient:
         system_msg = build_system_message(self._deployment_ctx)
 
         if self._provider == "anthropic":
-            response = self.client.messages.create(
-                model=model,
-                max_tokens=max_tokens,
-                system=system_msg,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            self._call_count += 1
-            usage = getattr(response, "usage", None)
-            self._record_usage(
-                model,
-                getattr(usage, "input_tokens", 0),
-                getattr(usage, "output_tokens", 0),
-            )
-            return response.content[0].text  # type: ignore[no-any-return]
+            response = self._anthropic_create(model, system_msg, prompt, max_tokens)
+            budget = max_tokens
+            if (
+                getattr(response, "stop_reason", None) == "max_tokens"
+                and _anthropic_has_thinking(response)
+                and max_tokens < MAX_ANALYSIS_TOKENS_CAP
+            ):
+                # Thinking shares max_tokens with the answer, so a reply that
+                # thought and then hit the budget is cut off before or inside
+                # its text. Retry once with the hard ceiling. A reply without
+                # thinking that hit the budget is returned as before.
+                logger.info(
+                    "%s hit max_tokens=%d after thinking; retrying once with %d",
+                    model,
+                    max_tokens,
+                    MAX_ANALYSIS_TOKENS_CAP,
+                )
+                first_parts = _anthropic_text_parts(response)
+                try:
+                    retried = self._anthropic_create(
+                        model, system_msg, prompt, MAX_ANALYSIS_TOKENS_CAP
+                    )
+                except Exception as exc:
+                    if not first_parts:
+                        raise
+                    logger.warning(
+                        "%s retry failed (%s); using the truncated first answer",
+                        model,
+                        exc,
+                    )
+                else:
+                    if _anthropic_text_parts(retried) or not first_parts:
+                        response = retried
+                        budget = MAX_ANALYSIS_TOKENS_CAP
+                    else:
+                        logger.warning(
+                            "%s retry returned no text; using the truncated first answer",
+                            model,
+                        )
+            if getattr(response, "stop_reason", None) == "max_tokens":
+                logger.warning(
+                    "%s answer stopped on max_tokens=%d and may be truncated",
+                    model,
+                    budget,
+                )
+            parts = _anthropic_text_parts(response)
+            if not parts:
+                raise _anthropic_no_text_error(response)
+            # Join with no separator: a block boundary is a point inside one
+            # continuous answer, not a line break. Inserting anything could
+            # split a ``KEY: value`` line the line-based parsers expect intact.
+            return "".join(parts)
         else:
             # OpenAI / Copilot / Gemini
             oai_kwargs = {

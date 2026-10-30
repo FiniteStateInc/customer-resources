@@ -33,6 +33,7 @@ Reports fall into two categories. See **`REPORT_GUIDE.md`** for full details, in
 | Findings by Project | Complete findings inventory per project with CVE details, severity, and platform links |
 | Component List | Software inventory (SBOM) for compliance |
 | Human Readable SBOM | Shareable component inventory for one project version; findings, policy and review status are opt-in |
+| SBOM Export | Standards SBOM for one project version: CycloneDX 1.6/1.7 or SPDX 2.3/3.0, with VEX built from live platform data and optional signing *(on-demand, requires `--project`)* |
 | CVE Component Evidence | For a project version, lists CVE-bearing components with their associated CVE IDs and the firmware file paths where each was detected; intended for per-version triage *(on-demand, requires `--project`; `--version` optional — defaults to the current version)* |
 | Triage Prioritization | Context-aware vulnerability triage with exploit + reachability intelligence |
 | Reachability VEX Coverage | How many findings could be auto-resolved right now: findings proven UNREACHABLE that still lack the `NOT_AFFECTED` VEX status, rolled up per project version with a severity breakdown and a headline total. Emits an appliable `vex_recommendations.json`. Reports "analysis never ran" separately from "nothing to do", so a coverage number is never claimed without a denominator *(on-demand; optional `--min-severity`)* |
@@ -220,6 +221,17 @@ fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --project myproject
 fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --ai-prompts
 fs-report run --recipe "CVE Impact" --cve CVE-2024-1234 --ai
 ```
+
+**SBOM Export** — a CycloneDX or SPDX SBOM with VEX for one project version (writes SBOM files only, under `SBOM Export/`):
+
+```bash
+fs-report run --recipe "SBOM Export" --project "MyProject"                           # CycloneDX 1.6 JSON
+fs-report run --recipe "SBOM Export" --project "MyProject" --sbom-standard spdx-2.3   # SPDX 2.3 JSON
+fs-report run --recipe "SBOM Export" --project "MyProject" --sbom-split               # one file per project version
+fs-report run --recipe "SBOM Export" --project "MyProject" --sign-key cosign.key      # plus a Sigstore bundle
+```
+
+See the [Report Guide](REPORT_GUIDE.md#sbom-export) for the encodings, VEX rules, metadata and signing options.
 
 **Remediation Package** — actionable remediation plan with fix validation:
 

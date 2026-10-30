@@ -23,7 +23,18 @@
                        changes (folder, project, or version), called as
                        onChange({ folder, project, version }) where `folder` is
                        the selected folder ID or "" and `project`/`version` keep
-                       the select's current value.  Absent → behaviour unchanged.
+                       the select's current value.  The seed's call reports the
+                       version being restored, before its list has loaded.
+                       Absent → behaviour unchanged.
+
+     Seeding:
+       Each select's `data-value` attribute is its saved value, and an empty one
+       means "nothing saved"; only a select WITHOUT the attribute seeds from its
+       current selection.  A caller that re-calls initScopeDropdowns on the same
+       selects (the Builder's per-step inspector) must always set the attribute,
+       empty included, or the previous selection becomes the new seed.  A newer
+       call supersedes an older one whose seed is still loading: the older seed
+       then neither fills the selects, nor calls onChange or onReady.
 
      Targeting model (spec §7):
        The folder option's VALUE is the folder ID (its visible label remains the
@@ -74,7 +85,41 @@ function initScopeDropdowns(opts) {
        (same as if folderId were omitted — skip folder logic gracefully). */
     var hasFolder = !!(folderSel);
 
+    /* Seed generation.  Re-binding the same selects (the Builder inspector
+       binds them once per selected step) supersedes an earlier bind whose seed
+       is still loading: when that seed lands it must not populate the shared
+       selects, emit, or fire onReady, or it writes the previous step's scope
+       into the current one.  User-driven changes are never gated. */
+    var seedGen = String((parseInt(projectSel.dataset.scopeSeedGen, 10) || 0) + 1);
+    projectSel.dataset.scopeSeedGen = seedGen;
+    function seedCurrent() {
+        /* isConnected: deselecting a Builder step tears the inspector selects
+           down, so the next step binds NEW nodes and this seed is orphaned
+           rather than out-counted. */
+        return projectSel.isConnected && projectSel.dataset.scopeSeedGen === seedGen;
+    }
+    /* onReady once the seed settles — unless a newer bind took over while its
+       version list was loading (that bind fires its own). */
+    function seedSettled() { if (seedCurrent()) fireReady(); }
+
     var allProjects = [];       // [{id, name}, ...] — full project list
+
+    /* Option label for a project: same-named projects (in different folders)
+       show their folder so the picker can tell them apart. The option VALUE
+       stays the name and data-pid carries the ID, so restore is unchanged. */
+    var nameCounts = null, nameCountsFor = null;
+    function projLabel(p) {
+        if (nameCountsFor !== allProjects) {
+            nameCounts = Object.create(null);
+            nameCountsFor = allProjects;
+            allProjects.forEach(function(q) {
+                nameCounts[q.name] = (nameCounts[q.name] || 0) + 1;
+            });
+        }
+        var name = p.name || String(p.id);
+        var folder = p.folder && p.folder.name;
+        return (nameCounts[p.name] > 1 && folder) ? name + ' \u2014 ' + folder : name;
+    }
     var allFolders  = [];       // [{id, name, parentFolderId}, ...] (API shape)
     var folderProjects = [];    // projects currently shown (folder-scoped or all)
     var nonce = window.NONCE || '';
@@ -103,8 +148,10 @@ function initScopeDropdowns(opts) {
 
     /* Notify the caller of the current effective scope.  `folder` is the folder
        select's value (a folder ID, or "" for "Any folder"); project/version keep
-       the select's current value shape.  No-op when opts.onChange is absent. */
-    function emitChange() {
+       the select's current value shape.  No-op when opts.onChange is absent.
+       `pendingVersion` (seed only): the version being restored while the
+       version list is still loading — the select can't hold it yet. */
+    function emitChange(pendingVersion) {
         if (!onChange) return;
         onChange({
             folder:  hasFolder ? (folderSel.value || '') : '',
@@ -114,7 +161,7 @@ function initScopeDropdowns(opts) {
                `data-pid` carries the ID.  Empty for "All projects" and for the
                stale-fallback option (no pid) — callers fall back to the name. */
             projectId: selectedProjectId(),
-            version: versionSel.value || ''
+            version: (pendingVersion != null ? pendingVersion : versionSel.value) || ''
         });
     }
 
@@ -255,13 +302,37 @@ function initScopeDropdowns(opts) {
         if (hasFolder) setLoading(folderSel, true);
         setLoading(versionSel, true);
 
-        var savedProject = projectSel.getAttribute('data-value') || projectSel.value || '';
+        /* A data-value attribute — even an empty one — is the authoritative
+           seed; only a select WITHOUT one seeds from its current value.  The
+           Builder inspector re-binds the SAME selects for each step, so a step
+           with no override (data-value="") would otherwise inherit the previous
+           step's leftover selection and the seed's emitChange() would write it
+           into the new step as an override. */
+        function seedValue(sel) {
+            return sel.hasAttribute('data-value')
+                ? (sel.getAttribute('data-value') || '')
+                : (sel.value || '');
+        }
+        var savedProject = seedValue(projectSel);
         /* Companion pinned/saved project ID (data-project-id) so the restore can
            pick the EXACT same-named project across folders, not the first name
            match (M1-2).  Empty when the seeder provides none → name-only restore. */
         var savedProjectId = projectSel.getAttribute('data-project-id') || '';
-        var savedFolder  = hasFolder ? (folderSel.getAttribute('data-value') || folderSel.value || '') : '';
-        var savedVersion = versionSel.getAttribute('data-value') || versionSel.value || '';
+        var savedFolder  = hasFolder ? seedValue(folderSel) : '';
+        var savedVersion = seedValue(versionSel);
+        /* Show the seed, never a leftover selection that isn't it: an empty
+           seed must not revive the leftover through populateSelect's
+           `currentValue || sel.value` restore, and if the fetch fails the
+           selects must not keep showing another step's scope.  A seed that is
+           already an option stays selected (Settings renders the saved scope as
+           a selected option so Save can't blank it offline). */
+        function showSeed(sel, val) {
+            sel.value = val;
+            if (sel.value !== val) sel.value = '';
+        }
+        showSeed(projectSel, savedProject);
+        if (hasFolder) showSeed(folderSel, savedFolder);
+        showSeed(versionSel, savedVersion);
 
         if (hasFolder) {
             /* Full path: fetch projects + folders in parallel */
@@ -274,6 +345,7 @@ function initScopeDropdowns(opts) {
                 var foldData = results[1];
                 allProjects = (projData.items || projData || []);
                 allFolders  = (foldData.items || foldData || []);
+                if (!seedCurrent()) return;
 
                 /* name→ID migration: callers historically seeded folder
                    data-value with a folder NAME.  Folder option VALUES are now
@@ -294,11 +366,13 @@ function initScopeDropdowns(opts) {
                 setLoading(folderSel, false);
 
                 // Populate projects (filtered if folder selected), then load versions
-                filterProjects(savedProject, savedProjectId).then(function() {
+                filterProjects(savedProject, savedProjectId, seedCurrent).then(function() {
+                    if (!seedCurrent()) return;
                     setLoading(projectSel, false);
-                    var vp;
+                    var vp, pendingVersion;
                     if (projectSel.value) {
-                        vp = loadVersions(projectSel.value, savedVersion, selectedProjectId());
+                        vp = loadVersions(projectSel.value, savedVersion, selectedProjectId(), seedCurrent);
+                        pendingVersion = savedVersion;
                     } else {
                         /* No specific project → disable + clear version (and hide
                            its spinner).  Must NOT setLoading(false) here — that
@@ -308,13 +382,16 @@ function initScopeDropdowns(opts) {
                     }
                     /* emitChange() is the SINGLE programmatic seed emit; fire
                        onReady ONLY after the (possibly async) version restore
-                       resolves so the LAST seed has landed (C2). */
-                    emitChange();
-                    Promise.resolve(vp).then(fireReady, fireReady);
+                       resolves so the LAST seed has landed (C2).  It reports
+                       the version being restored, not the still-loading
+                       select's value. */
+                    emitChange(pendingVersion);
+                    Promise.resolve(vp).then(seedSettled, seedSettled);
                 });
             })
             .catch(function(err) {
                 console.warn('Failed to load scope data:', err);
+                if (!seedCurrent()) return;
                 setLoading(projectSel, false);
                 setLoading(folderSel, false);
                 setLoading(versionSel, false);
@@ -329,30 +406,33 @@ function initScopeDropdowns(opts) {
                 folderProjects.sort(function(a, b) {
                     return (a.name || '').localeCompare(b.name || '');
                 });
+                if (!seedCurrent()) return;
                 populateSelect(projectSel, folderProjects,
                     function(p) { return p.name || String(p.id); },
-                    function(p) { return p.name || String(p.id); },
+                    projLabel,
                     savedProject,
                     projectEmptyLabel,
                     function(p) { return String(p.id); },
                     savedProjectId
                 );
                 setLoading(projectSel, false);
-                var vp;
+                var vp, pendingVersion;
                 if (projectSel.value) {
-                    vp = loadVersions(projectSel.value, savedVersion, selectedProjectId());
+                    vp = loadVersions(projectSel.value, savedVersion, selectedProjectId(), seedCurrent);
+                    pendingVersion = savedVersion;
                 } else {
                     /* No specific project → disable + clear version (see the
                        folder-path note above; setLoading(false) would re-enable). */
                     syncVersionEnabled();
                     vp = Promise.resolve();
                 }
-                emitChange();
+                emitChange(pendingVersion);
                 /* Fire onReady only after the version restore resolves (C2). */
-                Promise.resolve(vp).then(fireReady, fireReady);
+                Promise.resolve(vp).then(seedSettled, seedSettled);
             })
             .catch(function(err) {
                 console.warn('Failed to load scope data:', err);
+                if (!seedCurrent()) return;
                 setLoading(projectSel, false);
                 setLoading(versionSel, false);
                 fireReady();
@@ -361,8 +441,9 @@ function initScopeDropdowns(opts) {
     }
 
     /* ── filter projects by selected folder ──────────────────── */
-    /* Only called when hasFolder is true. */
-    function filterProjects(restoreValue, restoreId) {
+    /* Only called when hasFolder is true.  `isCurrent` (seed only): skips the
+       async populate once a newer bind has superseded this seed. */
+    function filterProjects(restoreValue, restoreId, isCurrent) {
         var folderId = folderSel.value;
         if (!folderId) {
             // No folder selected — show all projects
@@ -372,7 +453,7 @@ function initScopeDropdowns(opts) {
             });
             populateSelect(projectSel, folderProjects,
                 function(p) { return p.name || String(p.id); },
-                function(p) { return p.name || String(p.id); },
+                projLabel,
                 restoreValue,
                 projectEmptyLabel,
                 function(p) { return String(p.id); },
@@ -401,9 +482,10 @@ function initScopeDropdowns(opts) {
             folderProjects.sort(function(a, b) {
                 return (a.name || '').localeCompare(b.name || '');
             });
+            if (isCurrent && !isCurrent()) return;
             populateSelect(projectSel, folderProjects,
                 function(p) { return p.name || String(p.id); },
-                function(p) { return p.name || String(p.id); },
+                projLabel,
                 restoreValue,
                 projectEmptyLabel,
                 function(p) { return String(p.id); },
@@ -413,6 +495,7 @@ function initScopeDropdowns(opts) {
         })
         .catch(function(err) {
             console.warn('Failed to load folder projects:', err);
+            if (isCurrent && !isCurrent()) return;
             setLoading(projectSel, false);
         });
     }
@@ -425,12 +508,24 @@ function initScopeDropdowns(opts) {
         if (spinner) spinner.style.display = 'none';
     }
 
+    /* A version being restored whose list can't load (unknown project, failed
+       fetch) still shows, as populateSelect's fallback option — the seed emit
+       already reported it. */
+    function showUnloadedVersion(restoreValue) {
+        if (!restoreValue) return;
+        populateSelect(versionSel, [],
+            function(v) { return ''; },
+            function(v) { return ''; },
+            restoreValue
+        );
+    }
+
     /* ── load versions for a project ─────────────────────────── */
     /* Returns a Promise that resolves once the version select is populated +
        the saved version restored (C2: so loadAll can fire onReady AFTER the
        async version restore lands).  The synchronous-clear branches resolve
-       immediately. */
-    function loadVersions(projectValue, restoreValue, projectId) {
+       immediately.  `isCurrent` as for filterProjects. */
+    function loadVersions(projectValue, restoreValue, projectId, isCurrent) {
         if (!projectValue) {
             /* No specific project → version is not applicable: clear + disable
                (mirrors syncVersionEnabled; version is project-specific). */
@@ -463,6 +558,7 @@ function initScopeDropdowns(opts) {
             });
         }
         if (!proj) {
+            showUnloadedVersion(restoreValue);
             setLoading(versionSel, false);
             return Promise.resolve();
         }
@@ -473,6 +569,7 @@ function initScopeDropdowns(opts) {
             versions.sort(function(a, b) {
                 return (b.created_at || '').localeCompare(a.created_at || '');
             });
+            if (isCurrent && !isCurrent()) return;
             populateSelect(versionSel, versions,
                 function(v) { return v.name || v.version || String(v.id); },
                 function(v) { return v.name || v.version || String(v.id); },
@@ -481,6 +578,8 @@ function initScopeDropdowns(opts) {
             setLoading(versionSel, false);
         })
         .catch(function() {
+            if (isCurrent && !isCurrent()) return;
+            showUnloadedVersion(restoreValue);
             setLoading(versionSel, false);
         });
     }
@@ -550,7 +649,9 @@ function initScopeDropdowns(opts) {
        onChange and is guarded against double-binding like the others.) */
     if (onChange && !versionSel.dataset.scopeOnChangeBound) {
         versionSel.dataset.scopeOnChangeBound = '1';
-        versionSel.addEventListener('change', emitChange);
+        /* Wrapped: emitChange's argument is the seed-only pendingVersion, so
+           the Event must not reach it. */
+        versionSel.addEventListener('change', function() { emitChange(); });
     }
 
     /* ── kick off ────────────────────────────────────────────── */

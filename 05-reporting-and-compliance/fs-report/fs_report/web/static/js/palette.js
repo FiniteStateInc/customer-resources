@@ -1,7 +1,7 @@
 /**
  * palette.js — ⌘K Command Palette + Keyboard Navigation
  *
- * Owns: #pal palette, #cheat cheatsheet, global keydown handler, #ov click-to-close.
+ * Owns: #pal palette, #cheat cheatsheet, global keydown handler, #shell-ov backdrop click-to-close.
  * Contract: fast-run.js (loads after this file) exposes window.__openFR and
  * window.__setScope. All cross-module calls are guarded.
  *
@@ -43,6 +43,28 @@
   /* Build palette items */
   var ITEMS = [];
 
+  /* Choosing a report opens its configure screen (prerun modal), never a
+     direct run: a palette pick would otherwise launch at the current scope —
+     often the whole portfolio — with only a toast to show for it.  The card
+     body, run bar and R key still launch directly. */
+  function _openRecipeConfigure(label) {
+    if (window.__openConfigure) {
+      /* Pre-fill the scope the palette shows (fast-run's SCOPE, set by a
+         palette project/folder pick, the run bar or the pin), as the user's
+         latest choice: scopeAuthoritative stops the modal refilling a key the
+         user cleared from the run bar or the Settings scope.  An all-empty
+         SCOPE is no choice at all, so it leaves those defaults in place (as a
+         fast-run does by omitting unset keys). */
+      var scope = window.__getScope ? window.__getScope() : null;
+      var chosen = scope && (scope.project || scope.folder || scope.version);
+      window.__openConfigure(
+        label, chosen ? Object.assign({ scopeAuthoritative: true }, scope) : scope || undefined);
+    } else {
+      /* Fallback: legacy redirect only if __openConfigure is absent */
+      location.href = '/?configure=' + encodeURIComponent(label);
+    }
+  }
+
   /* Recipe items */
   recipes.forEach(function (r) {
     var icon = ICON_MAP[r.label] || 'play';
@@ -50,9 +72,9 @@
       type: 'Recipe',
       label: r.label,
       icon: icon,
-      sub: 'run',
+      sub: 'configure',
       run: function () {
-        window.__openFR && window.__openFR(r.label);
+        _openRecipeConfigure(r.label);
       },
       _recipe: r,
     });
@@ -212,7 +234,7 @@
   });
 
   /* ── DOM refs ──────────────────────────────────────────────── */
-  var ov    = document.getElementById('ov');
+  var ov    = document.getElementById('shell-ov');
   var pal   = document.getElementById('pal');
   var q     = document.getElementById('pal-q');
   var list  = document.getElementById('pal-list');
@@ -260,7 +282,7 @@
         html += '<div class="pal-row' + (isSel ? ' sel' : '') + '" data-i="' + i + '">' +
           '<i data-lucide="' + it.icon + '"></i> ' + _esc(it.label) +
           (isSel
-            ? '<span class="enter">↵ run</span>'
+            ? '<span class="enter">↵ ' + _esc(it.sub) + '</span>'
             : '<span class="sub">' + _esc(it.sub) + '</span>') +
           '</div>';
       });
@@ -362,9 +384,10 @@
 
   function closePal() {
     pal.classList.remove('open');
-    /* Only remove #ov.open if no other overlay is open */
-    if (!document.getElementById('fr').classList.contains('open') &&
-        !cheat.classList.contains('open')) {
+    /* Only remove #shell-ov.open if no other overlay is open.  The helpers
+       tolerate a missing #fr: no page renders the old fast-run modal any more
+       (fast-run.js launches without one). */
+    if (!_frOpen() && !_cheatOpen()) {
       ov.classList.remove('open');
     }
   }
@@ -384,21 +407,13 @@
     ov.classList.remove('open');
   }
 
-  function activate(altEnter) {
+  /* Enter, Alt+Enter and a click all run the item; a Recipe item's run()
+     opens its configure screen. */
+  function activate() {
     var it = flat[sel];
     if (!it) return;
     closePal();
-    if (altEnter && it.type === 'Recipe') {
-      /* Alt+Enter → configure: open prerun modal (no redirect) */
-      if (window.__openConfigure) {
-        window.__openConfigure(it.label);
-      } else {
-        /* Fallback: legacy redirect only if __openConfigure is absent */
-        location.href = '/?configure=' + encodeURIComponent(it.label);
-      }
-    } else {
-      it.run();
-    }
+    it.run();
   }
 
   /* ── Input + list interaction ──────────────────────────────── */
@@ -407,7 +422,7 @@
   if (list) {
     list.addEventListener('click', function (e) {
       var r = e.target.closest('.pal-row');
-      if (r) { sel = +r.dataset.i; activate(false); }
+      if (r) { sel = +r.dataset.i; activate(); }
     });
   }
 
@@ -457,7 +472,7 @@
         renderList();
       } else if (e.key === 'Enter') {
         e.preventDefault();
-        activate(e.altKey); /* Alt+Enter = configure */
+        activate(); /* Alt+Enter too: a report opens its configure screen */
       } else if (e.key === 'Escape') {
         closePal();
       }

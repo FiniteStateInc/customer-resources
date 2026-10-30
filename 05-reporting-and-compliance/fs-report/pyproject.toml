@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "fs-report"
-version = "2.2.0"
+version = "2.3.0"
 description = "Finite State Stand-Alone Reporting Kit"
 authors = ["Finite State <support@finitestate.io>"]
 license = "FSL-1.1-MIT"
@@ -64,6 +64,17 @@ pygments = ">=2.20.0"        # CVE-2026-4539 fixed 2.20.0
 python-dotenv = ">=1.2.2"    # GHSA-mf9w-mj56-hr94 fixed 1.2.2
 playwright = "^1.40"
 tinycss2 = ">=1.5.0"
+cyclonedx-python-lib = {version = "^11.12", extras = ["validation"]}
+spdx-tools = "^0.8.5"
+protobuf = ">=7.35.1,<8"
+signxml = "^4"
+rfc8785 = ">=0.1.4"
+jsonschema = "^4.18"  # SPDX 3.0.1 runtime schema validation (sbom_export.run)
+# Imported directly by sbom_export (were transitive only); floors = locked.
+cryptography = ">=48.0.0"
+lxml = ">=6.1.3"
+packageurl-python = ">=0.17.6"
+license-expression = ">=30.4.4"
 
 [tool.poetry.group.tui.dependencies]
 textual = ">=8.0.0,<9"
@@ -85,7 +96,7 @@ pypdf = "^6.13.3"
 pdfplumber = "^0.11.0"
 pytest-asyncio = "^1.4.0"
 pytest-xdist = "^3.6.0"
-jsonschema = "^4.26.0"
+grpcio-tools = "^1.84.0"
 
 [tool.poetry.scripts]
 fs-report = "fs_report.cli:_main"
@@ -111,12 +122,14 @@ extend-exclude = '''
   | \.venv
   | build
   | dist
+  | cdx_proto
 )/
 '''
 
 [tool.ruff]
 target-version = "py311"
 line-length = 88
+extend-exclude = ["fs_report/sbom_export/cdx_proto"]
 
 [tool.ruff.lint]
 select = [
@@ -155,10 +168,10 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
-exclude = ["scripts/sample_data/", "scripts/test/", "scripts/analysis/"]
+exclude = ["scripts/sample_data/", "scripts/test/", "scripts/analysis/", "fs_report/sbom_export/cdx_proto/"]
 
 [[tool.mypy.overrides]]
-module = ["openpyxl", "openpyxl.*"]
+module = ["openpyxl", "openpyxl.*", "jsonschema"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

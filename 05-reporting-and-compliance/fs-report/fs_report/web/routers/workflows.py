@@ -133,15 +133,26 @@ def _apply_scope_override(model: dict, override: dict[str, str]) -> None:
     g["version_filter"] = override.get("version", "")
 
 
-def _override_validation_errors(model: dict) -> list[str]:
+def _override_validation_errors(
+    model: dict, *, key_at_launch: bool = False
+) -> list[str]:
     """Run validate_run_overrides over the workflow global block + each step's
-    overrides; prefix step errors with the step id.  Empty list = OK."""
+    overrides; prefix step errors with the step id.  Empty list = OK.
+
+    ``key_at_launch`` (saves, exports): a signing mode is a saved default whose
+    key comes with each run, so no key is required (runs still require one;
+    an exported script asks for it when it runs)."""
     from fs_report.web.routers.run import (  # inline (avoid cycle)
+        _effective_step_config,
+        is_sbom_export,
+        sbom_option_errors,
         validate_destructive_overrides,
         validate_run_overrides,
     )
 
     gblock = model.get("global", {}) or {}
+    # SBOM options are checked on the MERGED global+step below: either half
+    # alone can look valid (or invalid) when only the merge is what runs.
     errs: list[str] = list(validate_run_overrides(gblock))
     # B7 (#10B): autotriage in the workflow GLOBAL block is always rejected
     # (recipes=[] → no FP context), so the FP autotriage opt-in can only ever be
@@ -160,6 +171,11 @@ def _override_validation_errors(model: dict) -> list[str]:
         sov = step.get("overrides", {}) or {}
         for e in validate_run_overrides(sov):
             errs.append(f"Step {sid!r}: {e}")
+        if is_sbom_export(str(step.get("ref", ""))):
+            # Same merge the runtime executes (drops empty/null step values).
+            merged = _effective_step_config(model, step)
+            for e in sbom_option_errors(merged, key_at_launch=key_at_launch):
+                errs.append(f"Step {sid!r}: {e}")
         # B7: pass the step's recipe ref so an FP step may carry the autotriage
         # opt-in (validate_destructive_overrides gates it FP-only in a workflow).
         _step_ref = str(step.get("ref", ""))
@@ -441,7 +457,7 @@ async def create_workflow(request: Request) -> JSONResponse:
         norm = _normalize_model(body)
     except (WorkflowValidationError, ValueError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
-    errs = _override_validation_errors(norm)
+    errs = _override_validation_errors(norm, key_at_launch=True)
     if errs:
         return JSONResponse({"error": "; ".join(errs), "errors": errs}, status_code=400)
 
@@ -567,7 +583,7 @@ async def export_workflow(
             )
         # M2-1: revalidate the loaded (normalized) model so a hand-edited or
         # legacy saved workflow with bad field values is rejected here.
-        errs = _override_validation_errors(model)
+        errs = _override_validation_errors(model, key_at_launch=True)
         if errs:
             return JSONResponse(
                 {"error": "; ".join(errs), "errors": errs}, status_code=400
@@ -595,7 +611,7 @@ async def export_workflow(
             return JSONResponse({"error": str(exc)}, status_code=400)
         # Validate the NORMALIZED model for field values (bad ISO dates, bad scan
         # enum, etc.) — consistent with the slug branch.
-        errs = _override_validation_errors(model)
+        errs = _override_validation_errors(model, key_at_launch=True)
         if errs:
             return JSONResponse(
                 {"error": "; ".join(errs), "errors": errs}, status_code=400

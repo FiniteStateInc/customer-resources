@@ -86,6 +86,24 @@ _TYPE_SLUG = {
 }
 
 
+# A STARTED scan older than its type's threshold is "likely stuck". Binary and
+# source SCA finish in minutes, so an hour is already generous. Every other type
+# (reachability, SAST, config, SBOM import, unknown) can legitimately run for
+# hours on a large firmware, so it gets a day. Before this applied to every
+# type, a reachability scan abandoned in STARTED was shown as "processing" for
+# months and never aged out (the two-week filter only drops stuck scans).
+_STUCK_AFTER_MINUTES_FAST = 60
+_STUCK_AFTER_MINUTES_SLOW = 24 * 60
+_FAST_SCAN_TYPES = frozenset({"SCA", "SOURCE_SCA"})
+
+
+def _stuck_threshold(scan_type: str) -> int:
+    """Minutes a STARTED scan of this type may wait before it counts as stuck."""
+    if scan_type in _FAST_SCAN_TYPES:
+        return _STUCK_AFTER_MINUTES_FAST
+    return _STUCK_AFTER_MINUTES_SLOW
+
+
 def _format_wait(minutes: float) -> str:
     if minutes < 1:
         return "< 1m"
@@ -121,9 +139,7 @@ def _build_scan_entry(scan: dict[str, Any], now: datetime) -> dict[str, Any]:
     group_key = pv_id if pv_id else f"_orphan_{scan.get('id', '')}"
 
     scan_type = scan.get("type", "Unknown")
-    likely_stuck = (
-        status == "STARTED" and scan_type in ("SCA", "SOURCE_SCA") and wait_minutes > 60
-    )
+    likely_stuck = status == "STARTED" and wait_minutes > _stuck_threshold(scan_type)
     is_done = status in TERMINAL_STATUSES
     is_error = status == "ERROR"
     display_type = _TYPE_DISPLAY.get(scan_type, scan_type)

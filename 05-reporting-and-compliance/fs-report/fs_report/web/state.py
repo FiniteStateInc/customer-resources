@@ -67,6 +67,18 @@ DEFAULTS: dict[str, Any] = {
     "component_status": False,
     "component_ids": False,
     "source_column": False,
+    # SBOM Export baselines = Config/SbomOptions defaults, so a card override
+    # stores only a real change. Encoding / author have no global default
+    # (command_center._NO_GLOBAL_KEYS): blank means the standard's default
+    # encoding and the token user. A signing key path is never saved.
+    "sbom_standard": "cyclonedx-1.6",
+    "sbom_include_vex": True,
+    "sbom_include_dependencies": True,
+    "sbom_split": False,
+    # Signing mode none|cosign|embedded (embedded is derived from it).
+    "sbom_sign_mode": "none",
+    # User-asserted completeness (supplier / data licence: no global default).
+    "sbom_completeness": "unknown",
     "detailed": False,
     "standalone": False,
     # --product-only: portfolio reports list only product-marked projects, with
@@ -97,6 +109,9 @@ class WebAppState:
 
         cfg = load_config_file()
         self._data = {**DEFAULTS, **cfg}
+        # Saved signing keys are not supported (the key is entered per launch);
+        # ignore one left in an older config.yaml.
+        self._data.pop("sbom_sign_key", None)
 
         # Env vars take highest priority for connection settings
         token = os.getenv("FINITE_STATE_AUTH_TOKEN", cfg.get("token", ""))
@@ -212,10 +227,19 @@ def recipe_override(state: WebAppState, recipe_name: str) -> dict[str, Any]:
     overrides = state.get("recipe_overrides", {})
     if not isinstance(overrides, dict):
         return {}
+    from fs_report.slug import slug
+
+    # Keys are saved as display-name.lower(); a slug-form launch must hit them.
     value = overrides.get(recipe_name.lower())
+    if value is None:
+        value = next(
+            (v for k, v in overrides.items() if slug(str(k)) == slug(recipe_name)),
+            None,
+        )
     if not isinstance(value, dict):
         return {}
-    return value
+    # A key path saved by an older card is ignored (entered per launch now).
+    return {k: v for k, v in value.items() if k != "sbom_sign_key"}
 
 
 def effective_value(state: WebAppState, recipe_name: str, key: str) -> Any:

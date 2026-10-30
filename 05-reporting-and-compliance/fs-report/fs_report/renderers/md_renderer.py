@@ -683,6 +683,18 @@ class MarkdownRenderer:
             # Dossier mode: per-CVE detailed sections
             parts.append("## CVE Dossiers")
             parts.append("")
+            lookup_failed = [
+                d.get("cve_id", "Unknown")
+                for d in dossiers
+                if isinstance(d, dict) and d.get("reachability_unavailable")
+            ]
+            if lookup_failed:
+                parts.append(
+                    f"> The findings lookup failed for {', '.join(lookup_failed)}, "
+                    "so reachability and exploit details are missing for those "
+                    "CVEs. Re-run the report to retry."
+                )
+                parts.append("")
             for dossier in dossiers:
                 if not isinstance(dossier, dict):
                     continue
@@ -716,6 +728,14 @@ class MarkdownRenderer:
                     parts.append(f"**Description:** {desc}")
                     parts.append("")
 
+                if dossier.get("reachability_unavailable"):
+                    parts.append(
+                        "**Reachability and exploits unavailable:** the findings "
+                        "lookup failed, so projects show UNKNOWN and known "
+                        "exploits may be missing. Re-run the report to retry."
+                    )
+                    parts.append("")
+
                 # Exploit details
                 exploits = dossier.get("exploit_details", [])
                 if exploits:
@@ -731,6 +751,9 @@ class MarkdownRenderer:
                             if url:
                                 line += f": {url}"
                             parts.append(line)
+                    parts.append("")
+                elif dossier.get("reachability_unavailable"):
+                    parts.append("**Exploits:** not available (the lookup failed).")
                     parts.append("")
 
                 # Project impact
@@ -916,7 +939,7 @@ class MarkdownRenderer:
             find_cols = [
                 "finding_id",
                 "severity",
-                "risk",
+                "cvss_score",
                 "priority_band",
                 "triage_score",
                 "gate_assignment",
@@ -933,7 +956,7 @@ class MarkdownRenderer:
             find_headers = {
                 "finding_id": "Finding ID",
                 "severity": "Severity",
-                "risk": "CVSS",
+                "cvss_score": "CVSS",
                 "priority_band": "Band",
                 "triage_score": "Score",
                 "gate_assignment": "Gate",

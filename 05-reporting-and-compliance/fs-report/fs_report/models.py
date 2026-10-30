@@ -1181,6 +1181,35 @@ class Config(BaseModel):
         "default — they are SAST placeholders with no license, supplier or "
         "release data.",
     )
+    # SBOM Export (names are sbom_<SbomOptions field>; see sbom_export.run).
+    sbom_standard: str = Field("cyclonedx-1.6", description="SBOM Export standard.")
+    sbom_encoding: str | None = Field(None, description="SBOM Export encoding.")
+    sbom_include_vex: bool = Field(True, description="SBOM Export: embed VEX.")
+    sbom_include_dependencies: bool = Field(
+        True, description="SBOM Export: include dependency projects (not --standalone)."
+    )
+    sbom_split: bool = Field(False, description="SBOM Export: one file per project.")
+    sbom_author: str | None = Field(None, description="SBOM Export author override.")
+    sbom_sign_key: str | None = Field(None, description="SBOM Export signing key.")
+    sbom_sign_keyless: bool = Field(False, description="SBOM Export keyless sign.")
+    sbom_sign_identity_token: str | None = Field(
+        None,
+        exclude=True,
+        repr=False,
+        description="Sigstore OIDC token. Secret: never dumped, repr'd or persisted.",
+    )
+    sbom_sign_embedded: bool = Field(False, description="SBOM Export embedded sig.")
+    sbom_supplier: str | None = Field(None, description="SBOM Export: supplier.")
+    sbom_supplier_url: str | None = Field(None, description="SBOM supplier URL.")
+    sbom_supplier_email: str | None = Field(None, description="SBOM supplier email.")
+    sbom_data_license: str | None = Field(None, description="SBOM data licence.")
+    sbom_completeness: str = Field(
+        "unknown", description="SBOM Export: user-asserted completeness."
+    )
+    sbom_primary_license: str | None = Field(None, description="SBOM product licence.")
+    sbom_primary_copyright: str | None = Field(
+        None, description="SBOM product copyright."
+    )
     finding_counts: bool = Field(
         False,
         description="Human Readable SBOM: include the finding-count columns "

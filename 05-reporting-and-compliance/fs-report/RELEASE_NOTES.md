@@ -1,5 +1,215 @@
 # Release Notes
 
+## Version 2.3.0 (October 2026)
+
+### New recipe: SBOM Export (CycloneDX / SPDX with VEX)
+
+A standards SBOM for one project version, built directly from live platform
+data (components plus CVE-type findings) rather than the platform's own SBOM
+export:
+
+```bash
+fs-report run --recipe "SBOM Export" --project "Router FW"                     # CycloneDX 1.6 JSON
+fs-report run --recipe "SBOM Export" --project "Router FW" --sbom-standard spdx-2.3 --sbom-encoding tag-value
+fs-report run --recipe "SBOM Export" --project "Router FW" --sbom-split        # one file per project version
+fs-report run --recipe "SBOM Export" --project "Router FW" --no-vex --standalone
+```
+
+| Standard | Encodings (first is the default) |
+|---|---|
+| `cyclonedx-1.6` (default), `cyclonedx-1.7` | `json`, `xml`, `protobuf` |
+| `spdx-2.3` | `json`, `yaml`, `xml`, `rdf-xml`, `tag-value` |
+| `spdx-3.0` | `json-ld` |
+
+Every combination passes the official validators (CycloneDX CLI, pyspdxtools,
+SPDX tools-java). An invalid standard/encoding pair fails before any API call.
+
+- **Scope.** `--project` must match exactly one project; a name shared by
+  several fails and lists each candidate with its folder (narrow with
+  `--folder` or pass the ID). The default version is the project's current
+  version. Dependency projects are nested in by default.
+- **VEX.** Only CVE-type advisories (CVE, GHSA, PYSEC, CLSA, BIT, ECHO…) —
+  no `FS-*`, config, SAST, credential or crypto findings. A finding nobody
+  has triaged is listed with no analysis: the export never claims
+  `in_triage` on the platform's behalf.
+- **Exploit data.** Vulnerabilities carry CISA KEV, VulnCheck KEV, EPSS
+  score/percentile and exploit maturity when the platform has them: native
+  SPDX 3.0 exploit-catalogue and EPSS assessments, `finitestate:*` properties
+  plus a CISA KEV catalogue advisory link in CycloneDX, and an annotation plus
+  KEV link in SPDX 2.3. Exploit data never sets a VEX status.
+- **No invented data.** A missing licence, supplier or hash is omitted
+  (CycloneDX) or `NOASSERTION` (SPDX). Platform suppliers such as `generic`
+  or `ipkg` are package namespaces, not producers, and are treated as unknown.
+- **Author.** The API token's user by default; `--sbom-author "Acme PSIRT"`
+  writes an organization instead.
+- **Signing** (off by default): `--sign-key cosign.key` writes a Sigstore
+  bundle next to the file without a public Rekor entry (verify with
+  `cosign verify-blob --key cosign.pub --bundle F.bundle --insecure-ignore-tlog=true F`);
+  `--sign-keyless` publishes to Rekor (CLI only); `--sign-key key.pem
+  --sign-embedded` embeds a JSF (CycloneDX JSON) or XML-DSig (CycloneDX XML)
+  signature. Key passwords come only from `COSIGN_PASSWORD`.
+- **Your own metadata** (all optional, never derived from platform data):
+  `--sbom-supplier "Acme Inc"` (plus `--sbom-supplier-url`,
+  `--sbom-supplier-email`) names the supplier of the described product;
+  `--sbom-data-license CC0-1.0` sets the CycloneDX document licence (SPDX
+  documents are always CC0-1.0); `--sbom-completeness complete|incomplete|unknown`
+  records your attestation (default `unknown`) as CycloneDX compositions and
+  SPDX 3.0 relationship completeness. With `--sbom-split` the supplier goes
+  on the exported product's document only, not on its dependency projects;
+  completeness goes on every document. On a demo project these plus an embedded
+  signature lift the sbomqs score from 5.87 to 7.01.
+  `--sbom-primary-license GPL-2.0-only` (an SPDX expression) and
+  `--sbom-primary-copyright "Copyright 2026 Acme Inc"` state the product's
+  licence (as concluded by you) and copyright on the root component/package;
+  sbomqs's FSCT profile fails an SBOM without them. Both are in the web UI too.
+- **No duplicate image entry.** The platform's record of the scanned image
+  (same name as the project, no purl) is folded into the project itself: its
+  SHA-256 becomes the product's hash, its upload date is kept as
+  `finitestate:image_version`, and it is no longer listed beside the product.
+- **Licences.** CycloneDX now carries both the declared and the concluded
+  licence, each acknowledged; when either is an SPDX expression (which
+  CycloneDX 1.6 can't mix with other entries) only the concluded one is kept,
+  or the declared one when there is no concluded licence.
+- **Web UI.** An SBOM Export tile under Compliance with the same options
+  (key-based signing only; the key path is never stored in run history).
+
+On the OpenWRT demo project, sbomqs (v2.1.2) scores the CycloneDX 1.6 export
+6.13 / 7.63 / 4.97 (Interlynk / NTIA 2026 / BSI) against 6.13 / 7.04 / 4.41
+for the platform's own export. The remaining gaps are in the data: component
+hashes are rare, the public API has no component-to-component dependency
+graph, and most platform suppliers are package namespaces.
+
+Fixed before release: with a persistent cache enabled (the web UI default, or
+`--cache-ttl`) the export read components and findings through the trimmed
+cache tables, losing purls, hashes and every VEX entry; it now always reads
+them live.
+
+### Triage Prioritization and Remediation Package: the CVSS factor now scales with CVSS
+
+The platform's `risk` field is CVSS × 10 (a CVSS 6.9 arrives as 69), but the
+CVSS factor read it as a 0–10 score, so nearly every finding with a CVSS got
+the full +10 points. It now scales with the score: CVSS 6.9 adds 6.9 points.
+
+- **Scores drop**, and some findings may move to a lower band. Remediation
+  Package priorities, which reuse the triage score, may drop too.
+- **CVSS reads 6.9, not 69**, in the report's CVSS column and in the AI prompt.
+- **New `cvss_score` column** (CVSS, 0–10) beside `risk` (still CVSS × 10) in
+  CSV/XLSX exports, and usable in gate conditions.
+
+### Scan Queue: a scan stuck in any scan type is flagged
+
+A scan the platform left in `STARTED` showed as "processing" indefinitely
+unless it was an SCA or Source SCA scan; one Reachability scan read as processing for over
+three months. Any scan type is now flagged as stuck after 24 hours (SCA and
+Source SCA after one hour, as before) and drops out of the queue after two weeks.
+
+### Connection errors that outlast the retries now fail the run
+
+When a connection error with no HTTP status (a reset, DNS or TLS failure, or a
+read timeout) failed every retry, the fetch used to end with the rows it had so
+far, and the report ran on that short list as if it were complete. The run now
+fails instead:
+
+```
+API request failed at offset N: max retries exceeded (<error>)
+```
+
+This is usually a network blip: re-run. Nothing from the failed fetch is
+cached. The one exception is the scan list behind Scan Analysis and Platform
+Usage, which keeps the scans fetched so far; Platform Usage says the list was
+cut short, Scan Analysis does not.
+
+### CVE Impact: a failed findings lookup is now visible
+
+CVE Impact fetches reachability and exploit details with one findings lookup
+per CVE. When that lookup failed (for example on a 504), the CVE's projects
+read `UNKNOWN` and its exploits read "None known", with nothing to say a lookup
+had failed. The CVE list, severity, EPSS, KEV and affected projects were
+unaffected, since they come from a separate lookup. Now, for each CVE whose
+lookup failed:
+
+- the HTML dossier carries an amber banner, its exploits read "Not available",
+  and the failed CVEs are named once above the dossiers;
+- the Markdown dossier carries the same notes;
+- CSV/XLSX have a new last column, `Reachability Lookup Failed`;
+- the AI prompt (`--ai`, `--ai-prompts`) says reachability is unknown, not
+  unreachable, and the guidance for that CVE is not cached.
+
+Re-running when the platform responds normally fills these CVEs in.
+
+### A database timeout on a batch of versions no longer fails the report
+
+Folder, product and multi-version runs fetch findings and components a batch of
+project versions at a time (`--batch-size`, default 5). When the platform's
+database could not serve a batch even at the smallest page size, the whole
+report stopped, however many other versions would have loaded. fs-report now
+splits the batch and retries each half, down to one version at a time:
+
+```
+The database timed out fetching 5 versions together (…). Retrying them as 2 + 3: <ids> | <ids>
+```
+
+A run that has to split is slower, but it finishes. Only a version that times
+out on its own still stops the run; the error names the version and ends with
+the platform's response, `requestId` included, for Support.
+
+Executive Dashboard's default summary mode fetches components in its own
+batches of 25 project versions (15 when it fetches more than 200;
+`--batch-size` does not change them) and now splits those too, logging
+`/components batch of 25 projectVersions failed (…); bisecting into 12 + 13`.
+Its `--detailed` mode batches by project and is not covered: there a timeout
+still leaves the report without components. Until you upgrade, `--batch-size 1`
+on the CLI is the workaround for the version-batched reports.
+
+### AI guidance no longer fails on models that think before they answer
+
+`--ai` with an Anthropic model that returns extended thinking (for example
+`--ai-model-high claude-opus-5-5 --ai-model-low claude-sonnet-5-5`) made
+roughly half of the per-finding calls in Triage Prioritization fail with
+`'ThinkingBlock' object has no attribute 'text'`, logged as
+`Finding guidance failed for CVE-…`, and those findings fell back to the
+"guidance unavailable" text. fs-report read only the first content block of
+the reply, which for these models is the thinking block, not the answer.
+
+The client now joins every text block in the reply and skips `thinking`,
+`redacted_thinking` and any other non-text block. These models also share the
+`max_tokens` budget between thinking and the answer, so a reply that thought
+and was then cut off by the budget (`stop_reason: max_tokens`, whether no text
+came back or the answer stopped partway) is retried once with the 16,000-token
+analysis ceiling; if the retry fails or returns nothing, the first reply's
+text is kept. A reply without thinking that hits the budget is returned as
+before. A reply that has no text fails with
+`Anthropic response contained no text content block (blocks: […],
+stop_reason: …)` instead of an attribute error. The default models
+(`claude-opus-4-6` / `claude-sonnet-4-6`) do not think unless asked and are
+unchanged.
+
+### The ⌘K command palette works again
+
+Since 2.0, choosing an item in the ⌘K command palette (Enter or a click) did
+nothing on any page: no report opened, no scope was set, no page opened. Esc
+closed the palette but left its blurred backdrop over the screen until you
+clicked. Both work again. Choosing a report opens its configure screen, set
+to the project or folder you picked in the palette (or your default scope if
+you picked none); start the run from there.
+
+### Builder: a Project or Period override no longer blurs the screen
+
+Setting a step's Project or Period override in the Builder covered the screen
+with a blurred overlay; the palette backdrop's style was also being applied to
+the override chip. That is fixed. The same clash had hidden Settings' "config
+override" badge on the AI models; that badge now shows.
+
+### Workflow Builder: a step no longer picks up another step's scope
+
+Selecting a step in the Builder could copy the previously selected step's
+Folder or Project override into it: add a step, give it a Folder override,
+add a second step and select it, and the second step showed "1 override" with
+the first step's folder, though it was never set. Re-selecting a step with a
+Version override could also drop that version. Each step now shows and keeps
+only its own overrides. A workflow saved with an unwanted override keeps it:
+select the step and clear its Folder or Project override in the inspector.
+
 ## Version 2.2.0 (October 2026)
 
 ### Filter versions by name: `--include-versions` / `--exclude-versions`

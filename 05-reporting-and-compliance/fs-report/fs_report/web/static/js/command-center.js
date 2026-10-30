@@ -1221,8 +1221,53 @@
   /* Wire a freshly-injected card back: tabs, version pickers, finding-types,
      char counter, scan checkboxes, date-mode exclusivity, close, and Save /
      Save&Run / Reset. */
+  /* SBOM Export block (components/_sbom_export_options.html), shared by the
+     configure modal and the card back.  The encoding list follows the standard
+     (VALID_ENCODINGS rendered into data-sbom-encodings, first = default); the
+     signing-mode select (sbom_sign_mode) shows the key path row (cleared +
+     hidden for "none"; the card back has a note there, no key field).  Embedded signing is offered only for CycloneDX
+     JSON/XML — a hint only; the server re-validates (key path required for a
+     signing mode, SbomOptions.validate(web=True)). */
+  function _wireSbomExport(root) {
+    var box = root && root.querySelector('[data-sbom-export]');
+    if (!box) return;
+    var std = box.querySelector('[data-sbom-encodings]');
+    var enc = box.querySelector('select[name="sbom_encoding"]');
+    var mode = box.querySelector('[data-sbom-sign-mode]');
+    var keyRow = box.querySelector('[data-sbom-sign-key-row]');
+    var key = box.querySelector('input[name="sbom_sign_key"]');
+    var map = {};
+    try { map = JSON.parse(std.getAttribute('data-sbom-encodings') || '{}'); } catch (e) { return; }
+
+    function fillEncodings() {
+      var encs = map[std.value] || [];
+      var cur = enc.value;
+      enc.innerHTML = '';
+      encs.forEach(function (v) {
+        var o = document.createElement('option');
+        o.value = v;
+        o.textContent = v;
+        enc.appendChild(o);
+      });
+      enc.value = encs.indexOf(cur) !== -1 ? cur : (encs[0] || '');
+    }
+    function syncSigning() {
+      var embOk = std.value.indexOf('cyclonedx-') === 0 &&
+        (enc.value === 'json' || enc.value === 'xml');
+      var embOpt = mode.querySelector('option[value="embedded"]');
+      if (embOpt) embOpt.disabled = !embOk;
+      if (!embOk && mode.value === 'embedded') mode.value = 'cosign';
+      if (key && mode.value === 'none') key.value = '';
+      if (keyRow) keyRow.hidden = mode.value === 'none';
+    }
+    std.addEventListener('change', function () { fillEncodings(); syncSigning(); });
+    enc.addEventListener('change', syncSigning);
+    mode.addEventListener('change', syncSigning);
+  }
+
   function _wireCardBack(card, back, recipe) {
     _wireCardTabs(back);
+    _wireSbomExport(back);
     _wireCardFindingTypes(back);
     _wireCardVersionPickers(back);
     _wireCardCharCounter(back);
@@ -1557,26 +1602,64 @@
    * function reads data-value to restore the selection after the API
    * calls complete (cascade: folder → project → version).
    */
-  function _openPrerun(recipe, opts, ctx) {
-    var container = ctx && ctx.target;
-    if (!container) return;
-
-    opts = opts || {};
-    /* When a caller (palette ⌥↵, ?configure= deep link) doesn't pass scope,
-       default to the current run-bar selection so the modal pre-fills what the
-       user already picked. Explicit opts (e.g. Recent Activity "Run again",
-       and the Builder inline run passing _currentScopeOverride()) win.  The
-       run bar lives only on the dashboard; on other pages these are absent and
-       the lookups simply no-op. */
+  /* When a caller (?configure= deep link) doesn't pass scope, default to the
+     current run-bar selection so the modal pre-fills what the user already
+     picked. Explicit opts (e.g. Recent Activity "Run again", and the Builder
+     inline run passing _currentScopeOverride()) win.  opts.scopeAuthoritative
+     (the palette, passing fast-run's SCOPE: the user's latest scope choice)
+     skips the fallback entirely, so a key the user CLEARED (a palette folder
+     pick drops the project) is not refilled from a stale run bar.  The run
+     bar lives only on the dashboard; on other pages these are absent and the
+     lookups simply no-op. */
+  function _withRunBarScope(opts) {
+    if (opts.scopeAuthoritative) return opts;
     var rbF = el('rb-folder');
     var rbP = el('rb-project');
     var rbV = el('rb-version');
     if (!opts.folder  && rbF && rbF.value) opts.folder  = rbF.value;
     if (!opts.project && rbP && rbP.value) opts.project = rbP.value;
     if (!opts.version && rbV && rbV.value) opts.version = rbV.value;
+    return opts;
+  }
+
+  /* Write the caller's scope over the prerun fragment's #pre-* data-value
+     seeds (the Settings scope, from the template) so initScopeDropdowns
+     restores it once the async option lists load.  An authoritative scope
+     (the palette's) writes every key, empty ones too: a key the user cleared
+     must not fall back to the Settings seed (project-wins would then retarget
+     a folder pick at the Settings project). */
+  function _seedPrerunScope(container, opts) {
+    var folderSel  = container.querySelector('#pre-folder');
+    var projectSel = container.querySelector('#pre-project');
+    var versionSel = container.querySelector('#pre-version');
+    if (opts.scopeAuthoritative) {
+      if (folderSel)  folderSel.setAttribute('data-value',  opts.folder  || '');
+      if (projectSel) projectSel.setAttribute('data-value', opts.project || '');
+      if (versionSel) versionSel.setAttribute('data-value', opts.version || '');
+    }
+    if (opts.folder  && folderSel)  folderSel.setAttribute('data-value',  opts.folder);
+    if (opts.project && projectSel) {
+      projectSel.setAttribute('data-value', opts.project);
+      /* Stash the authoritative project ID companion (from the caller's scope
+         override — _currentScopeOverride uses project_id; __openFR uses
+         projectId). The submit prefers it when the user leaves the prefilled
+         project unchanged, since the name-based restore can pick the wrong
+         same-named option. */
+      var _oid = opts.project_id || opts.projectId || '';
+      if (_oid) projectSel.setAttribute('data-override-pid', _oid);
+    }
+    if (opts.version && versionSel) versionSel.setAttribute('data-value', opts.version);
+  }
+
+  function _openPrerun(recipe, opts, ctx) {
+    var container = ctx && ctx.target;
+    if (!container) return;
+
+    opts = _withRunBarScope(opts || {});
 
     function _afterLoad() {
       _wireCfgSubmit(recipe, ctx);
+      _wireSbomExport(container);
       if (window.__fsWireUploads) window.__fsWireUploads(container); /* SP3 */
       if (window.lucide) lucide.createIcons();
       /* Suppress the "Save as default" affordance for the inline (compound)
@@ -1589,21 +1672,7 @@
       /* Pre-fill scope using _scope_dropdowns.html's initScopeDropdowns.
          Set data-value on each select so loadAll() restores the values
          after the async API calls complete. */
-      var folderSel  = container.querySelector('#pre-folder');
-      var projectSel = container.querySelector('#pre-project');
-      var versionSel = container.querySelector('#pre-version');
-      if (opts.folder  && folderSel)  folderSel.setAttribute('data-value',  opts.folder);
-      if (opts.project && projectSel) {
-        projectSel.setAttribute('data-value', opts.project);
-        /* Stash the authoritative project ID companion (from the caller's scope
-           override — _currentScopeOverride uses project_id; __openFR uses
-           projectId). The submit prefers it when the user leaves the prefilled
-           project unchanged, since the name-based restore can pick the wrong
-           same-named option. */
-        var _oid = opts.project_id || opts.projectId || '';
-        if (_oid) projectSel.setAttribute('data-override-pid', _oid);
-      }
-      if (opts.version && versionSel) versionSel.setAttribute('data-value', opts.version);
+      _seedPrerunScope(container, opts);
       /* initScopeDropdowns is defined inside the prerun fragment
          (via {% include "_scope_dropdowns.html" %}).  Call it to
          populate the dropdowns and restore the pre-filled values.  The pre-*

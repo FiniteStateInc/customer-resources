@@ -256,6 +256,9 @@ def cve_impact_pandas_transform(
         # CVE description from enrichment --------------------------------
         cve_descriptions: dict[str, str] = additional_data.get("cve_descriptions", {})
         nvd_missing_cves: list[str] = additional_data.get("nvd_missing_cves", [])
+        lookup_failed_cves: list[str] = additional_data.get(
+            "reachability_failed_cves", []
+        )
         description = cve_descriptions.get(cve_id, "")
 
         rows.append(
@@ -279,6 +282,7 @@ def cve_impact_pandas_transform(
                 "Components": ", ".join(components),
                 "First Detected": first_detected,
                 "Last Detected": last_detected,
+                "Reachability Lookup Failed": cve_id in set(lookup_failed_cves),
                 # Internal fields for dossier rendering
                 "_exploit_details": exploit_details,
                 "_project_details": project_details,
@@ -327,6 +331,7 @@ def cve_impact_pandas_transform(
                     "first_detected": row["First Detected"],
                     "last_detected": row["Last Detected"],
                     "nvd_unavailable": row["_nvd_unavailable"],
+                    "reachability_unavailable": row["Reachability Lookup Failed"],
                     "nvd_url": f"https://nvd.nist.gov/vuln/detail/{row['CVE ID']}",
                     "cwe_url": (
                         f"https://cwe.mitre.org/data/definitions/"
@@ -396,6 +401,11 @@ _CSV_COLUMNS = [
     "Components",
     "First Detected",
     "Last Detected",
+    # Last, so existing columns keep their positions. True when the
+    # per-CVE /findings lookup failed: every affected project then reads
+    # UNKNOWN (counted in Inconclusive In) and exploits may be missing.
+    # False when no lookup ran (no --cve), as well as when it succeeded.
+    "Reachability Lookup Failed",
 ]
 
 
@@ -914,6 +924,14 @@ def _build_cve_prompt(
             f"URL: {exp.get('url', 'N/A')}"
         )
 
+    reach_note = ""
+    if dossier.get("reachability_unavailable"):
+        reach_note = (
+            "\nReachability and exploit details could not be fetched for this "
+            "CVE. Treat every project's reachability as unknown (not "
+            "unreachable), and do not conclude that no exploits exist.\n"
+        )
+
     nvd_section = ""
     if nvd_snippet:
         nvd_section = f"\n{nvd_snippet}\n"
@@ -976,9 +994,9 @@ IMPORTANT CONSTRAINTS:
 
 ## Affected Projects ({len(project_lines)})
 {chr(10).join(project_lines) if project_lines else 'N/A'}
-{vex_section}
+{reach_note}{vex_section}
 ## Known Exploits
-{chr(10).join(exploit_lines) if exploit_lines else 'None known'}
+{chr(10).join(exploit_lines) if exploit_lines else ('Not available (lookup failed)' if reach_note else 'None known')}
 {nvd_section}{_ctx_section}
 Respond in this exact format:
 FIX_VERSION: <{_fix_version_block()}>
@@ -1115,9 +1133,12 @@ def _enrich_dossiers_with_ai(
                 }
                 - {""}
             )
+            # A failed findings lookup bypasses the cache (None): guidance
+            # written from that thin prompt must not be served to a later
+            # healthy run, and a cached answer must not hide the prompt's note.
             dossier_scope = (
                 llm._narrative_scope("dossier\x1f" + ",".join(_pvids))
-                if _pvids
+                if _pvids and not d.get("reachability_unavailable")
                 else None
             )
             guidance = _call_llm_for_cve(prompt, cve_id, llm, scope=dossier_scope)

@@ -15,6 +15,7 @@ from typing import Any
 
 import pandas as pd
 
+from fs_report.coerce import coerce_license_value
 from fs_report.transforms.pandas.component_list import COPYLEFT_LOOKUP
 
 logger = logging.getLogger(__name__)
@@ -570,42 +571,6 @@ def _extract_copyleft_family(comp: dict[str, Any]) -> str:
     return ""
 
 
-def _coerce_license_value(val: Any) -> str:
-    """Normalise a license field value into a comma-joined SPDX string.
-
-    Handles four real-world shapes returned by /public/v0/components:
-      - plain string ("Sleepycat", "MIT OR Apache-2.0")
-      - list of strings (["MIT", "Apache-2.0"])
-      - list of dicts with `spdx` / `license` / `name` keys
-        (e.g. [{"spdx": "Sleepycat", "name": "Sleepycat License"}])
-      - None / NaN / non-iterable scalars → ""
-    """
-    import math
-
-    if val is None:
-        return ""
-    if isinstance(val, float):
-        if math.isnan(val):
-            return ""
-        return str(val).strip()
-    if isinstance(val, str):
-        return val.strip()
-    if isinstance(val, list):
-        parts: list[str] = []
-        for item in val:
-            if isinstance(item, str):
-                if item.strip():
-                    parts.append(item.strip())
-            elif isinstance(item, dict):
-                # Match the precedence used by component_list.extract_licenses_summary
-                # plus a `name` fallback for the {"name": "Sleepycat"} shape.
-                spdx = item.get("spdx") or item.get("license") or item.get("name") or ""
-                if isinstance(spdx, str) and spdx.strip():
-                    parts.append(spdx.strip())
-        return ", ".join(parts)
-    return str(val).strip()
-
-
 def _extract_license_string(comp: dict[str, Any]) -> str:
     """Pull the best available license string from a component record.
 
@@ -617,12 +582,12 @@ def _extract_license_string(comp: dict[str, Any]) -> str:
     precedence)") and `component_list.py::_best_license_details`.
     """
     for field in ("concludedLicenses", "declaredLicenses", "licenses"):
-        s = _coerce_license_value(comp.get(field))
+        s = coerce_license_value(comp.get(field))
         if s:
             return s
     # Singular variants kept for backward compat with older fixtures.
     for field in ("declaredLicense", "license"):
-        s = _coerce_license_value(comp.get(field))
+        s = coerce_license_value(comp.get(field))
         if s:
             return s
     # Structured-array fallback — concluded > declared > generic.
@@ -631,7 +596,7 @@ def _extract_license_string(comp: dict[str, Any]) -> str:
         "declaredLicenseDetails",
         "licenseDetails",
     ):
-        s = _coerce_license_value(comp.get(field))
+        s = coerce_license_value(comp.get(field))
         if s:
             return s
     return ""

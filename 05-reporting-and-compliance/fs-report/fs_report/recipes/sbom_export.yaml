@@ -1,0 +1,22 @@
+name: "SBOM Export"
+category: assessment  # Current state: one project version's SBOM, no period semantics
+card_description: "Standards SBOM (CycloneDX or SPDX) with VEX for one project version, built from live platform data."
+nav_category: Compliance
+chart_libraries: []
+execution_order: 33
+auto_run: false
+requires_project: true
+description: >
+  A machine-readable SBOM for one project version, built from the platform's
+  component and finding data: CycloneDX 1.6/1.7 (JSON, XML, protobuf),
+  SPDX 2.3 (JSON, YAML, XML, RDF/XML, tag-value) or SPDX 3.0 (JSON-LD).
+  Includes dependency projects by default (--standalone excludes them,
+  --sbom-split writes one file per project version) and VEX for CVE-type
+  findings (--no-vex gives a components-only SBOM). Optional cosign or
+  embedded (JSF / XML-DSig) signing. Writes only the SBOM file(s) — no
+  csv/xlsx/html — under "SBOM Export/".
+
+# No query / transform: the engine dispatches this recipe to
+# fs_report.sbom_export.run.run_sbom_export, which fetches its own data.
+output:
+  formats: []

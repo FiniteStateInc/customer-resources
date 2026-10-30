@@ -30,6 +30,7 @@ import random
 import shutil
 import tempfile
 import time
+from collections.abc import Callable
 from json.decoder import JSONDecodeError
 from typing import Any, NamedTuple, cast
 
@@ -43,6 +44,22 @@ from fs_report.sqlite_cache import CacheClaimLost, SQLiteCache
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _PERMANENT_STATUS_CODES = frozenset({400, 401, 403, 404, 405, 409, 422})
+
+
+def _cancellable_sleep(seconds: float, check_cancel: Callable[[], None] | None) -> None:
+    """Sleep ``seconds``; with ``check_cancel`` (which raises to stop), sleep in
+    half-second chunks and call it before each, so a Stop lands within half a
+    second of a long backoff, not after it."""
+    left = max(0.0, seconds)
+    if check_cancel is None:
+        time.sleep(left)
+        return
+    while True:
+        check_cancel()
+        if left <= 0:
+            return
+        time.sleep(min(0.5, left))
+        left -= 0.5
 
 
 def _retry_wait(retry_after: str | None, retry_count: int) -> float:
@@ -102,6 +119,18 @@ def _is_db_timeout(body: str | None) -> bool:
     if not body:
         return False
     return _DB_TIMEOUT_MARKER in body.lower()
+
+
+def is_db_timeout_error(error: BaseException) -> bool:
+    """True when a fetch failed because the backend's own query timed out.
+
+    That is a 5xx whose body says so, raised once the paginator has narrowed
+    to its smallest page and retried there: a smaller page did not help, so
+    only a cheaper query can. Callers that can split their query (fewer
+    versions per request) use this to decide to. Read from the flag set where
+    the full body was in hand, never re-sniffed from the (truncated) message.
+    """
+    return bool(getattr(error, "db_timeout", False))
 
 
 def _narrow_page_size(limit: int) -> int | None:
@@ -243,13 +272,21 @@ class APIRequestError(ValueError):
     """
 
     def __init__(
-        self, message: str, status_code: int, retry_after: str | None = None
+        self,
+        message: str,
+        status_code: int,
+        retry_after: str | None = None,
+        db_timeout: bool = False,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         # The server's own pacing request, when it sent one. Captured at the
         # raise site because the response object does not survive the raise.
         self.retry_after = retry_after
+        # A 5xx whose body said the backend's own query timed out. Classified
+        # at the raise site, against the full body: the message may carry
+        # only a truncated copy of it.
+        self.db_timeout = db_timeout
 
 
 def _is_retryable(status_code: int) -> bool:
@@ -368,12 +405,18 @@ class APIClient:
             self._learned_page_size[endpoint] = limit
 
     def fetch_data(
-        self, query: QueryConfig, *, defer_db_timeout: bool = False
+        self,
+        query: QueryConfig,
+        *,
+        defer_db_timeout: bool = False,
+        use_cache: bool = True,
     ) -> list[dict[str, Any]]:
         """Fetch a single page of data from the API based on query configuration.
 
         Args:
             query: Query configuration.
+            use_cache: False neither reads nor writes the cache (SBOM export:
+                the persistent cache holds trimmed rows).
             defer_db_timeout: Skip the inner retries for a backend
                 query-timeout 5xx and raise at once, so a *paginating* caller
                 can narrow the page instead — the one response that can help,
@@ -383,10 +426,11 @@ class APIClient:
                 fan-outs): they have no page to narrow, so dropping their
                 retries would just fail sooner.
         """
+        _put = self.cache.put if use_cache else (lambda q, d: None)
         self.logger.debug(f"Fetching data from endpoint: {query.endpoint}")
 
         # Check cache first
-        cached_data = self.cache.get(query)
+        cached_data = self.cache.get(query) if use_cache else None
         if cached_data is not None:
             self.logger.debug(
                 f"Using cached data for {query.endpoint} ({len(cached_data)} records)"
@@ -444,7 +488,7 @@ class APIClient:
                         f"Retrieved {len(data)} records (single page, list format)"
                     )
                     # Cache the data for this page
-                    self.cache.put(query, data)
+                    _put(query, data)
                     return data
                 elif isinstance(data, dict):
                     # Check for common pagination response formats
@@ -460,18 +504,18 @@ class APIClient:
                             f"Retrieved {len(items)} records (single page, object format with items/scans/data key)"
                         )
                         # Cache the data for this page
-                        self.cache.put(query, items)
+                        _put(query, items)
                         return cast(list[dict[str, Any]], items)
                     else:
                         # Single record as dict
                         self.logger.debug("Retrieved single record (dict format)")
                         result = [data] if data else []
-                        self.cache.put(query, result)
+                        _put(query, result)
                         return result
                 else:
                     self.logger.debug("Retrieved single record")
                     result = [data] if data else []
-                    self.cache.put(query, result)
+                    _put(query, result)
                     return result
             except HTTPStatusError as e:
                 status_code = e.response.status_code
@@ -526,6 +570,8 @@ class APIClient:
                         f"API request failed: {status_code} - {e.response.text}",
                         status_code,
                         retry_after,
+                        db_timeout=status_code >= 500
+                        and _is_db_timeout(e.response.text),
                     ) from e
             except httpx.RequestError as e:
                 raise ValueError(f"Network error: {e}") from e
@@ -542,6 +588,8 @@ class APIClient:
         max_retries: int = 8,
         show_progress: bool = True,
         skip_cache_store: bool = False,
+        strict: bool = False,
+        check_cancel: Callable[[], None] | None = None,
     ) -> list[dict]:
         """
         Fetch all paginated results with robust retry, progress logging, and resume support.
@@ -556,12 +604,28 @@ class APIClient:
             progress_file: Path to progress file for resume support (legacy, ignored with SQLite)
             max_retries: Maximum retry attempts
             show_progress: Whether to show tqdm progress bar (disable when nested in another progress bar)
+            strict: If True, bypass every cache (SQLite, DataCache, JSON
+                            progress) and raise when fewer records arrive than
+                            the server's x-total-count (SBOM export).
+                            Exhausted retries raise in every mode.
+            check_cancel: strict only. Called before each page and during
+                            waits; it raises to stop the fetch (the engine's
+                            ReportCancelled).
             skip_cache_store: If True, bypass SQLite cache read/write entirely.
                             Used when the caller handles per-entity caching (e.g., per-version
                             storage after batch fetch) to avoid duplicating data in SQLite.
         """
         # Reset retry counter so callers can check after the fetch completes
         self.last_fetch_retries = 0
+
+        if strict:
+            return self._fetch_all_no_cache(
+                query,
+                max_retries,
+                show_progress,
+                strict=True,
+                check_cancel=check_cancel,
+            )
 
         # Use SQLite cache if available (unless caller is handling storage)
         if self.sqlite_cache is not None and not skip_cache_store:
@@ -655,7 +719,6 @@ class APIClient:
             disable=not show_progress,
         )
 
-        fetch_completed = False
         claim_lost = False
         try:
             while True:
@@ -688,7 +751,6 @@ class APIClient:
                                 f"HTTP 404 at offset {offset} after {total_stored} records: "
                                 f"treating as end-of-pagination."
                             )
-                            fetch_completed = True
                             break
                         # Surface permanent client errors (e.g. helix's 400 on
                         # limit>1000) instead of silently returning the partial
@@ -725,6 +787,8 @@ class APIClient:
                             f"API request failed at offset {offset}: "
                             f"{status} - {str(e.response.text)[:500]}",
                             status,
+                            db_timeout=status >= 500
+                            and _is_db_timeout(e.response.text),
                         ) from e
                     # Warn only when a retry actually follows. The old order
                     # logged "Waiting 120s (attempt 9/8)" and then aborted in
@@ -755,11 +819,7 @@ class APIClient:
                     # status-bearing branch above: otherwise this path prints
                     # its own "attempt 9/8" promising a wait it never takes.
                     if retry_count + 1 > max_retries:
-                        self.logger.error(
-                            f"Max retries exceeded at offset {offset} "
-                            f"(last error: {e}). Aborting."
-                        )
-                        break
+                        raise self._retries_exhausted(offset, e) from e
                     retry_count += 1
                     self.logger.warning(
                         f"Error at offset {offset}: {e}. "
@@ -792,7 +852,6 @@ class APIClient:
                         self.logger.debug(
                             f"Stopping pagination after {consecutive_empty_pages} consecutive empty pages."
                         )
-                        fetch_completed = True
                         break
                     offset += limit
                     continue
@@ -808,7 +867,6 @@ class APIClient:
                     self.logger.debug(
                         f"All {len(page_ids)} records at offset {offset} are duplicates. Stopping pagination."
                     )
-                    fetch_completed = True
                     break
                 if duplicates:
                     self.logger.debug(
@@ -848,16 +906,12 @@ class APIClient:
         try:
             if claim_lost:
                 raise CacheClaimLost(query_hash)
-            if fetch_completed:
-                # Marked complete and read back in one transaction.
-                records = self.sqlite_cache.finish_fetch(query_hash, endpoint)
-                self.logger.debug(
-                    f"Fetch complete: {total_stored} records stored in SQLite cache"
-                )
-                return records
-            # The loop gave up (retries exhausted): return what it fetched, as
-            # before, but cache none of it.
-            return self.sqlite_cache.get_cached_data(endpoint, params) or []
+            # Marked complete and read back in one transaction.
+            records = self.sqlite_cache.finish_fetch(query_hash, endpoint)
+            self.logger.debug(
+                f"Fetch complete: {total_stored} records stored in SQLite cache"
+            )
+            return records
         except CacheClaimLost:
             # Another run took the entry over (this one went quiet past
             # FETCH_STALE_SECONDS); its rows are not this fetch's.
@@ -875,7 +929,13 @@ class APIClient:
                 self.logger.debug(f"Could not release cache claim: {cleanup_error}")
 
     def _fetch_all_no_cache(
-        self, query: Any, max_retries: int = 8, show_progress: bool = True
+        self,
+        query: Any,
+        max_retries: int = 8,
+        show_progress: bool = True,
+        *,
+        strict: bool = False,
+        check_cancel: Callable[[], None] | None = None,
     ) -> list[dict]:
         """
         Fetch all paginated results from API without SQLite caching.
@@ -888,7 +948,15 @@ class APIClient:
             query: Query configuration
             max_retries: Maximum retry attempts
             show_progress: Whether to show tqdm progress bar
+            strict: Raise on fewer records than the server's x-total-count
+                (exhausted retries raise either way)
+            check_cancel: Called before each page and during waits; raises
+                to stop
         """
+
+        def wait(seconds: float) -> None:
+            _cancellable_sleep(seconds, check_cancel)
+
         endpoint = query.endpoint
         limit = getattr(query.params, "limit", self.max_page_size) or self.max_page_size
         limit = min(limit, self.max_page_size)
@@ -905,6 +973,10 @@ class APIClient:
         db_floor_retries = 0
         all_results: list[dict] = []
         seen_ids: set[str] = set()
+        # strict: the server's x-total-count per page, and the null rows it
+        # counted that are dropped below.
+        totals: list[int] = []
+        null_rows = 0
 
         bar_desc = f"           Fetching {endpoint}"
         pbar = tqdm(
@@ -917,6 +989,8 @@ class APIClient:
 
         try:
             while True:
+                if check_cancel is not None:
+                    check_cancel()
                 page_query = query.model_copy(deep=True)
                 page_query.params.offset = offset
                 # See the SQLite paginator: the loop's `limit` must reach the
@@ -929,7 +1003,11 @@ class APIClient:
                 )
 
                 try:
-                    page = self._fetch_page_direct(page_query)
+                    page = (
+                        self._fetch_page_direct(page_query, totals=totals)
+                        if strict
+                        else self._fetch_page_direct(page_query)
+                    )
                     self.logger.debug(
                         f"Fetched page with {len(page) if page else 0} records at offset {offset}"
                     )
@@ -981,6 +1059,8 @@ class APIClient:
                             f"API request failed at offset {offset}: "
                             f"{status} - {str(e.response.text)[:500]}",
                             status,
+                            db_timeout=status >= 500
+                            and _is_db_timeout(e.response.text),
                         ) from e
                     # Warn only when a retry actually follows. The old order
                     # logged "Waiting 120s (attempt 9/8)" and then aborted in
@@ -999,26 +1079,22 @@ class APIClient:
                         db_floor_retries += 1
                     else:
                         retry_count += 1
-                    time.sleep(plan.wait)
+                    wait(plan.wait)
                     continue
                 except Exception as e:
                     self.last_fetch_retries += 1
-                    wait = (2 ** min(retry_count + 1, 6)) + random.uniform(0, 1)
+                    backoff = (2 ** min(retry_count + 1, 6)) + random.uniform(0, 1)
                     # Exhaustion checked BEFORE the warning, same as the
                     # status-bearing branch above: otherwise this path prints
                     # its own "attempt 9/8" promising a wait it never takes.
                     if retry_count + 1 > max_retries:
-                        self.logger.error(
-                            f"Max retries exceeded at offset {offset} "
-                            f"(last error: {e}). Aborting."
-                        )
-                        break
+                        raise self._retries_exhausted(offset, e) from e
                     retry_count += 1
                     self.logger.warning(
                         f"Error at offset {offset}: {e}. "
-                        f"Retrying in {wait:.1f}s (attempt {retry_count}/{max_retries})..."
+                        f"Retrying in {backoff:.1f}s (attempt {retry_count}/{max_retries})..."
                     )
-                    time.sleep(wait)
+                    wait(backoff)
                     continue
 
                 # A page came back: both retry budgets reset. db_floor_retries
@@ -1031,9 +1107,16 @@ class APIClient:
                 # sibling fetches in the same run skip the rungs that failed.
                 if limit < resolved_limit:
                     self._remember_page_size(endpoint, limit)
-                page = [rec for rec in page if rec] if page else page
+                # Counted only once the page is kept: a repeated page's nulls
+                # are not more rows.
+                page_nulls = 0
+                if page:
+                    kept = [rec for rec in page if rec]
+                    page_nulls = len(page) - len(kept)
+                    page = kept
 
                 if not page:
+                    null_rows += page_nulls
                     consecutive_empty_pages += 1
                     self.logger.debug(
                         f"Empty page at offset {offset} (consecutive empty: {consecutive_empty_pages})"
@@ -1071,24 +1154,36 @@ class APIClient:
 
                 seen_ids.update(page_ids)
                 all_results.extend(page)
+                null_rows += page_nulls
                 offset += limit
 
                 pbar.update(len(page))
 
                 if self.request_delay > 0:
-                    time.sleep(self.request_delay)
+                    wait(self.request_delay)
 
         finally:
             pbar.close()
 
+        received = len(all_results) + null_rows
+        if totals and received < totals[-1]:
+            # A 404 or a repeated page ends pagination as if complete; the
+            # server's own count says whether it was.
+            raise ValueError(
+                f"API returned {received} of {totals[-1]} records for {endpoint} "
+                "(the list changed or paging stopped early); run again"
+            )
         self.logger.debug(f"Fetched {len(all_results)} records (no-cache mode)")
         return all_results
 
-    def _fetch_page_direct(self, query: QueryConfig) -> list[dict[str, Any]]:
+    def _fetch_page_direct(
+        self, query: QueryConfig, totals: list[int] | None = None
+    ) -> list[dict[str, Any]]:
         """
         Fetch a single page of data directly from API (bypassing in-memory cache).
 
-        Used by SQLite cache fetcher to avoid double-caching.
+        Used by SQLite cache fetcher to avoid double-caching. ``totals`` gets
+        the server's x-total-count, when it sends one.
         """
         url = f"{self.base_url}{query.endpoint}"
 
@@ -1112,6 +1207,10 @@ class APIClient:
 
         response = self.client.get(url, params=params, timeout=120)
         response.raise_for_status()
+        if totals is not None:
+            total = str(response.headers.get("x-total-count") or "")
+            if total.isdigit():
+                totals.append(int(total))
         data = response.json()
 
         # Handle different API response formats
@@ -1128,6 +1227,21 @@ class APIClient:
                 return cast(list[dict[str, Any]], items)
             return [data] if data else []
         return [data] if data else []
+
+    def _retries_exhausted(self, offset: int, error: Exception) -> ValueError:
+        """The error every paginator raises once an error without an HTTP
+        status outlasts its retries.
+
+        Ending the loop instead returned the rows fetched so far, i.e. a report
+        silently missing data, presented as complete. ValueError, not
+        APIRequestError: there is no status to carry.
+        """
+        self.logger.error(
+            f"Max retries exceeded at offset {offset} (last error: {error}). Aborting."
+        )
+        return ValueError(
+            f"API request failed at offset {offset}: max retries exceeded ({error})"
+        )
 
     def _discard_progress(self, progress_file: str | None) -> None:
         """Delete a progress file we are abandoning as failed.
@@ -1387,15 +1501,12 @@ class APIClient:
                         # was: breaking here would return the rows fetched so
                         # far, i.e. a report silently missing data, presented
                         # as complete. Worse than failing.
-                        self.logger.error(
-                            plan.message
-                            if status is not None
-                            else (
-                                f"Max retries exceeded at offset {offset} "
-                                f"(last error: {msg}). Aborting."
-                            )
-                        )
                         self._discard_progress(progress_file)
+                        if status is None:
+                            # A connection error ("Network error: ..."): the
+                            # same error the other two paginators raise.
+                            raise self._retries_exhausted(offset, e) from e
+                        self.logger.error(plan.message)
                         raise
                     if plan.action == "narrow":
                         self.logger.warning(plan.message)
@@ -1435,11 +1546,8 @@ class APIClient:
                     # line: this branch used to sleep out a full backoff and
                     # then give up, and announce a retry it never made.
                     if retry_count + 1 > max_retries:
-                        self.logger.error(
-                            f"Max retries exceeded at offset {offset} "
-                            f"(last error: {e}). Aborting."
-                        )
-                        break
+                        self._discard_progress(progress_file)
+                        raise self._retries_exhausted(offset, e) from e
                     retry_count += 1
                     self.logger.warning(
                         f"Transient error at offset {offset}: {e}. "

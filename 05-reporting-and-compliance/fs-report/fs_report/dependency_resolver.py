@@ -23,13 +23,22 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+import httpx
+
+from fs_report.api_client import _cancellable_sleep, _is_retryable, _retry_wait
 
 if TYPE_CHECKING:
     from fs_report.api_client import APIClient
 
 logger = logging.getLogger(__name__)
+
+_DEP_PAGE_SIZE = 100
+_MAX_DEP_PAGES = 1000  # 100k direct dependencies; beyond this assume a looping server
+_STRICT_RETRIES = 8  # as list pagination (fetch_all_with_resume)
 
 
 @dataclass
@@ -41,6 +50,7 @@ class DependencyNode:
     version_id: int | str
     path: list[str]  # e.g. ["Root", "Child", "Grandchild"]
     children: list[DependencyNode] = field(default_factory=list)
+    version_name: str = ""
 
     @property
     def dependency_path_str(self) -> str:
@@ -88,14 +98,27 @@ class DependencyNode:
 class DependencyResolver:
     """Resolves full dependency trees for project versions via the Finite State API."""
 
-    def __init__(self, api_client: APIClient) -> None:
+    def __init__(
+        self,
+        api_client: APIClient,
+        strict: bool = False,
+        check_cancel: Callable[[], None] | None = None,
+    ) -> None:
+        """strict=True retries transient failures, then raises instead of
+        silently treating a version as a leaf (for exports that must be complete).
+        ``check_cancel`` is called before each page and during waits, and
+        raises to stop."""
         self._api_client = api_client
+        self._strict = strict
+        self._cancel = check_cancel
+        # Set once check_cancel raised, so a Stop during a retry wait is
+        # re-raised as is rather than reported as a failed fetch.
+        self._stopped = False
+        # Spacing between pages, as list pagination uses.
+        self._delay = float(getattr(api_client, "request_delay", 0) or 0)
         self._cache: dict[int | str, DependencyNode] = {}
-        # Version ids whose direct-dependency fetch returned exactly the
-        # page limit — a signal, not a certainty, that the true dependency
-        # set is larger and this tree is a lower bound. Populated by
-        # _fetch_dependencies; callers that need complete trees (as opposed
-        # to "good enough for a dashboard") should check this after resolving.
+        # Lenient mode: versions whose dependency list was kept partial (a later
+        # page failed, the server repeated a page, or the page cap was hit).
         self.truncated_versions: set[int | str] = set()
 
     def resolve(
@@ -117,6 +140,7 @@ class DependencyResolver:
         version_id: int | str,
         path: list[str],
         _visited: set | None = None,
+        version_name: str = "",
     ) -> DependencyNode:
         if _visited is None:
             _visited = set()
@@ -133,6 +157,7 @@ class DependencyResolver:
                 version_id=version_id,
                 path=path,
                 children=[],
+                version_name=version_name,
             )
         _visited.add(version_id)
 
@@ -148,7 +173,12 @@ class DependencyResolver:
                 continue
             child_path = path + [child_proj_name]
             child_node = self._resolve_recursive(
-                child_proj_id, child_proj_name, child_ver_id, child_path, _visited
+                child_proj_id,
+                child_proj_name,
+                child_ver_id,
+                child_path,
+                _visited,
+                dep_version.get("version") or dep_version.get("name") or "",
             )
             children.append(child_node)
         return DependencyNode(
@@ -157,32 +187,119 @@ class DependencyResolver:
             version_id=version_id,
             path=path,
             children=children,
+            version_name=version_name,
         )
+
+    def _check_cancel(self) -> None:
+        if self._cancel is None:
+            return
+        try:
+            self._cancel()
+        except BaseException:
+            self._stopped = True
+            raise
+
+    def _wait(self, seconds: float) -> None:
+        _cancellable_sleep(seconds, self._check_cancel if self._cancel else None)
+
+    def _get_page(self, url: str, params: dict[str, int]) -> tuple[Any, int | None]:
+        """The page's JSON and the server's x-total-count, if it sent one."""
+        attempt = 0
+        while True:
+            try:
+                resp = self._api_client.client.get(url, params=params)
+                resp.raise_for_status()
+                total = str(resp.headers.get("x-total-count") or "")
+                return resp.json(), int(total) if total.isdigit() else None
+            except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                retryable = status is None or _is_retryable(status)
+                if not self._strict or not retryable or attempt >= _STRICT_RETRIES:
+                    raise
+                retry_after = (
+                    e.response.headers.get("Retry-After")
+                    if isinstance(e, httpx.HTTPStatusError)
+                    else None
+                )
+                wait = _retry_wait(retry_after, attempt)
+                attempt += 1
+                logger.warning(
+                    "Dependency fetch failed (%s), retry %d/%d in %.0fs",
+                    status or e,
+                    attempt,
+                    _STRICT_RETRIES,
+                    wait,
+                )
+                self._wait(wait)
+
+    def _incomplete(self, version_id: int | str, why: str) -> None:
+        if self._strict:
+            raise RuntimeError(f"Dependencies for version {version_id}: {why}")
+        self.truncated_versions.add(version_id)
+        logger.warning("Dependencies for version %s: %s", version_id, why)
 
     def _fetch_dependencies(self, version_id: int | str) -> list[dict]:
         url = f"{self._api_client.base_url}/public/v0/project-versions/{version_id}/dependencies"
-        try:
-            resp = self._api_client.client.get(url, params={"limit": 100})
-            resp.raise_for_status()
-            data = resp.json()
-            result: list[dict]
-            if isinstance(data, list):
-                result = data
-            elif isinstance(data, dict) and "content" in data:
-                result = list(data["content"])
-            else:
-                return []
-            if len(result) >= 100:
-                logger.warning(
-                    "Version %s returned %d dependencies (limit=100); "
-                    "some may be missing due to pagination",
-                    version_id,
-                    len(result),
+        result: list[dict] = []
+        prev_first: Any = None
+        total: int | None = None
+        for page_no in range(_MAX_DEP_PAGES):
+            self._check_cancel()  # outside the try: a Stop is not a fetch failure
+            if page_no and self._delay:
+                self._wait(self._delay)
+            try:
+                data, page_total = self._get_page(
+                    url, {"limit": _DEP_PAGE_SIZE, "offset": len(result)}
                 )
-                self.truncated_versions.add(version_id)
-            return result
-        except Exception:
-            logger.warning(
-                "Failed to fetch dependencies for version %s", version_id, exc_info=True
+            except Exception as e:
+                if self._stopped:
+                    raise
+                if self._strict:
+                    raise RuntimeError(
+                        f"Failed to fetch dependencies for version {version_id}: {e}"
+                    ) from e
+                logger.warning(
+                    "Failed to fetch dependencies for version %s",
+                    version_id,
+                    exc_info=True,
+                )
+                if result:
+                    self.truncated_versions.add(version_id)
+                return result  # keep earlier pages (pre-pagination behaviour)
+            # The last count the server sent: a final page without the header
+            # still gets checked.
+            if page_total is not None:
+                total = page_total
+            if isinstance(data, dict):
+                data = data.get("content", [])
+            if not isinstance(data, list) or not data:
+                return self._checked(version_id, result, total)
+            # Records may carry no top-level id: key on the dependency too. A
+            # record with neither has no key, so it is never called a repeat.
+            first = (
+                (
+                    data[0].get("id"),
+                    (data[0].get("dependencyProjectVersion") or {}).get("id"),
+                )
+                if isinstance(data[0], dict)
+                else None
             )
-            return []
+            if first == (None, None):
+                first = None
+            if first is not None and first == prev_first:
+                self._incomplete(version_id, "server repeated a page (offset ignored)")
+                return result
+            prev_first = first
+            result.extend(data)
+            if len(data) < _DEP_PAGE_SIZE:
+                return self._checked(version_id, result, total)
+        self._incomplete(version_id, f"stopped after {_MAX_DEP_PAGES} pages")
+        return result
+
+    def _checked(
+        self, version_id: int | str, result: list[dict], total: int | None
+    ) -> list[dict]:
+        # A short page ends paging; the server's count says whether it was last.
+        if total is not None and len(result) < total:
+            self._incomplete(version_id, f"got {len(result)} of {total} dependencies")
+        return result

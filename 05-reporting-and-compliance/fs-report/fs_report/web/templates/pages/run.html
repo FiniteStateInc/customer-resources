@@ -181,6 +181,34 @@
       {% endif %}
     </div>
 
+    {# SBOM Export: the project name matched several projects. Each choice
+       re-runs this report with that project's ID. #}
+    <div class="ctx run-candidates" x-show="candidates.length" x-cloak
+         role="group" aria-labelledby="run-candidates-title">
+      <p id="run-candidates-title">Several projects share this name. Choose one to run again:</p>
+      <ul>
+        <template x-for="c in candidates" :key="c.id">
+          <li>
+            <button type="button" class="btn btn-sm btn-default" @click="pickCandidate(c)"
+                    :aria-label="'Run with ' + c.name + ' in ' + (c.folder || 'no folder')">
+              <b x-text="c.name"></b> &middot; <span x-text="c.folder || '(no folder)'"></span>
+              &middot; <code x-text="c.id"></code>
+            </button>
+          </li>
+        </template>
+      </ul>
+    </div>
+
+    {# Non-HTML outputs (SBOM Export documents), served by /output. #}
+    <div class="ctx run-outputs" x-show="outputs.length" x-cloak>
+      <p>Output files:</p>
+      <ul>
+        <template x-for="f in outputs" :key="f">
+          <li><a :href="outputUrl(f)" download x-text="f.split('/').pop()"></a></li>
+        </template>
+      </ul>
+    </div>
+
     <!-- ═══════════════════ STAGE ═══════════════════ -->
     <div class="run-viewport">
       <div class="stage" id="stage">

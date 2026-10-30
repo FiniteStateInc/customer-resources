@@ -267,6 +267,20 @@ waiting (plus the time each timed-out request takes). Other 5xx and 429
 responses keep the patient backoff, since for a busy server waiting is the
 right response.
 
+When the request that timed out was a batch of project versions (folder,
+product and multi-version runs fetch `--batch-size` versions per request,
+default 5; Executive Dashboard's default summary mode fetches components in
+batches of 25 versions (15 when it fetches more than 200) that `--batch-size` does not change, and
+splits those the same way, though its `--detailed` mode does not),
+fs-report then splits the batch in half and fetches each half, down to a
+single version, instead of stopping. A run that has to split is slower, since
+each failed split pays the timeout again, but one heavy version no longer
+fails the whole report. A version that times out on its own still stops the
+run; the error names its version id and ends with the server's response,
+`requestId` included. On the findings/components batches, versions fetched
+before it are cached per version, so a re-run with `--cache-ttl` set reuses
+them; Executive Dashboard's component batches do not keep them.
+
 If a run still stops on this error, narrow the scope yourself — a single
 `--version` instead of `--all-versions`, a `--project` or `--folder`, or
 `--finding-types cve` — and report the `requestId` from that error to Finite State.

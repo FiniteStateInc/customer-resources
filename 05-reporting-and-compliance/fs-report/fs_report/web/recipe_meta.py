@@ -32,6 +32,7 @@ RECIPE_ICONS: dict[str, str] = {
     "component vulnerability analysis": "bug",
     "reachability vex coverage": "shield-check",
     "platform usage": "layout-dashboard",
+    "sbom export": "file-code",
 }
 
 CATEGORY_ICONS: dict[str, str] = {

@@ -1,6 +1,8 @@
 """Run execution router — start runs, SSE progress, status polling."""
 
 import asyncio
+import dataclasses
+import hashlib
 import io
 import json
 import logging
@@ -11,6 +13,7 @@ import threading
 import time
 import urllib.parse
 import uuid
+from collections import OrderedDict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -24,6 +27,7 @@ from fs_report.version_name_filter import split_patterns
 from fs_report.web.dependencies import get_nonce, get_state
 from fs_report.web.shell_context import build_shell_context
 from fs_report.web.state import WebAppState, recipe_override
+from fs_report.workflow_store import GLOBAL_SBOM_KEYS
 
 if TYPE_CHECKING:
     from fs_report.models import CompoundRecipe, Recipe
@@ -249,6 +253,22 @@ _RUN_STR_KEYS: tuple[str, ...] = (
     # run-only, never persisted to a recipe YAML).
     "left_scope",
     "right_scope",
+    # SBOM Export (Config.sbom_<field> names, plus the web-only signing MODE
+    # none|cosign|embedded, from which sign_embedded is derived). The key path
+    # / KMS URI is never written to run history (_scrub_replay); the mode is,
+    # so a replay of a signed run asks for the key instead of going unsigned.
+    "sbom_standard",
+    "sbom_encoding",
+    "sbom_author",
+    "sbom_sign_mode",
+    "sbom_sign_key",
+    "sbom_supplier",
+    "sbom_supplier_url",
+    "sbom_supplier_email",
+    "sbom_data_license",
+    "sbom_completeness",
+    "sbom_primary_license",
+    "sbom_primary_copyright",
 )
 _RUN_BOOL_KEYS: tuple[str, ...] = (
     "overwrite",
@@ -274,6 +294,12 @@ _RUN_BOOL_KEYS: tuple[str, ...] = (
     # _build_engine_config). dry_run is intentionally NOT here — it is a
     # transient per-launch param, never a persisted override.
     "autotriage",
+    "sbom_include_vex",
+    "sbom_include_dependencies",
+    "sbom_split",
+    # Collected ONLY so validate_run_overrides can reject it loudly
+    # (SbomOptions.validate(web=True)); _build_engine_config never threads it.
+    "sbom_sign_keyless",
 )
 _RUN_INT_KEYS: tuple[str, ...] = ("top", "triage")
 # All override-allowlist keys start_run knows about, for the present-keys set.
@@ -460,7 +486,7 @@ def _persist_run_summary(run_id: str) -> None:
                 "scope": rec.get("scope", ""),
                 "workflow_name": rec.get("workflow_name", ""),
                 "recipes": rec.get("recipes", []),
-                "replay": rec.get("replay"),
+                "replay": _scrub_replay(rec.get("replay")),
                 # Named ``result`` (NOT ``status``) to avoid the lifecycle-field +
                 # SSE-done-payload "status" collision (spec §4.2).
                 "result": rec.get("result"),
@@ -796,6 +822,19 @@ ATTACK_VECTOR_RECIPES = {"findings by project"}
 # type=file unconditionally, so offering the control there would be a lie.
 _HRS = {"human readable sbom"}
 SBOM_OPTION_RECIPES = _HRS
+# SBOM Export's own block (standard / encoding / VEX / signing). Separate from
+# the Human Readable SBOM toggles above — neither recipe reads the other's keys.
+SBOM_EXPORT_RECIPES = {"sbom export"}
+
+
+def is_sbom_export(name: str) -> bool:
+    """True when ``name`` names SBOM Export in any form the recipe loader
+    accepts (display name or slug — it matches by ``slug()``)."""
+    from fs_report.slug import slug
+
+    return slug(name) in {slug(n) for n in SBOM_EXPORT_RECIPES}
+
+
 AI_RECIPES = {
     "cve impact",
     "triage prioritization",
@@ -1149,6 +1188,7 @@ def compute_prerun_fields(
         # CVSS attack-vector row filter — Findings by Project only.
         "show_attack_vector": bool(selected & ATTACK_VECTOR_RECIPES),
         "show_sbom_options": bool(selected & SBOM_OPTION_RECIPES),
+        "show_sbom_export": bool(selected & SBOM_EXPORT_RECIPES),
         "show_standalone": bool(selected & STANDALONE_RECIPES),
         "show_product_only": bool(selected & PRODUCT_ONLY_RECIPES),
         # Scan ingest filters — Scan Analysis / Scan Quality only.
@@ -1180,6 +1220,9 @@ def validate_run_overrides(overrides: dict[str, Any]) -> list[str]:
       rejected (ambiguous).
     - ``scan_types`` / ``scan_statuses``: comma-split, upper-cased; every
       token must be in the canonical valid set.
+
+    SBOM Export options are not checked here: they are only valid on the
+    merged config, so callers run ``sbom_option_errors`` on that.
     """
     from datetime import datetime as _dt
 
@@ -1401,7 +1444,110 @@ def validate_run_overrides(overrides: dict[str, Any]) -> list[str]:
                 "Left and Right scope overrides are identical (self-comparison)"
             )
 
+    # SBOM Export options are checked by sbom_option_errors, which callers run
+    # on the effective (merged) config.
     return errors
+
+
+SBOM_SIGN_MODES = ("none", "cosign", "embedded")
+
+
+def sbom_option_errors(
+    effective: dict[str, Any], *, key_at_launch: bool = False
+) -> list[str]:
+    """Web SBOM Export validation (empty when no ``sbom_*`` key is set).
+
+    Signing never silently degrades (R16): a cosign/embedded mode without a key
+    path is an error — that is what a replay of a signed run hits, since the
+    key path is never kept in run history. ``key_at_launch`` (card saves) skips
+    that check: a saved mode is a default and the key comes with each launch.
+    Then the CLI's own validator in web mode (keyless is CLI-only; embedded
+    only for CycloneDX JSON/XML).
+    """
+    if not any(k.startswith("sbom_") for k in effective):
+        return []
+    from fs_report.sbom_export import SbomOptionsError
+
+    mode = str(effective.get("sbom_sign_mode") or "").strip()
+    if mode and mode not in SBOM_SIGN_MODES:
+        return [f"sbom_sign_mode must be one of {', '.join(SBOM_SIGN_MODES)}"]
+    if key_at_launch and mode in ("cosign", "embedded"):
+        effective = {**effective, "sbom_sign_key": "key-entered-at-launch"}
+    opts = sbom_options_from(effective)
+    if mode in ("cosign", "embedded") and not opts.sign_key:
+        return [
+            f"Signing key path required for {mode} signing: enter the key file "
+            "path or KMS URI (key paths are not kept in run history)."
+        ]
+    try:
+        opts.validate(web=True)
+    except SbomOptionsError as exc:
+        return [str(exc)]
+    return []
+
+
+def sbom_options_from(effective: dict[str, Any]) -> Any:
+    """``SbomOptions`` from web ``sbom_*`` keys (strings or bools; empty = default).
+
+    Signing comes from ``sbom_sign_mode``: ``none`` ignores any key path,
+    ``cosign`` / ``embedded`` use it (``embedded`` sets sign_embedded). No mode
+    with a key path reads as ``cosign``. Never carries an identity token;
+    ``sign_keyless`` is threaded only so ``validate(web=True)`` can reject it —
+    ``_build_engine_config`` drops it.
+    """
+    from fs_report.sbom_export import SbomOptions
+
+    def _s(key: str) -> str | None:
+        return str(effective.get(key) or "").strip() or None
+
+    def _b(key: str, default: bool) -> bool:
+        v = effective.get(key)
+        return default if v is None or v == "" else _coerce_touched_flag(v)
+
+    key = _s("sbom_sign_key")
+    mode = _s("sbom_sign_mode") or ("cosign" if key else "none")
+    return SbomOptions(
+        standard=_s("sbom_standard") or "cyclonedx-1.6",  # type: ignore[arg-type]
+        encoding=_s("sbom_encoding"),
+        include_vex=_b("sbom_include_vex", True),
+        include_dependencies=_b("sbom_include_dependencies", True),
+        split=_b("sbom_split", False),
+        author=_s("sbom_author"),
+        sign_key=key if mode in ("cosign", "embedded") else None,
+        sign_keyless=_b("sbom_sign_keyless", False),
+        sign_embedded=mode == "embedded",
+        supplier=_s("sbom_supplier"),
+        supplier_url=_s("sbom_supplier_url"),
+        supplier_email=_s("sbom_supplier_email"),
+        data_license=_s("sbom_data_license"),
+        completeness=_s("sbom_completeness") or "unknown",  # type: ignore[arg-type]
+        primary_license=_s("sbom_primary_license"),
+        primary_copyright=_s("sbom_primary_copyright"),
+    )
+
+
+# Keys never written to run history: the replay blob is persisted with the run
+# summary (~/.fs-report/runs/<id>.json). Scrubbed at every replay registration
+# AND in _persist_run_summary, for report and workflow runs alike.
+_REPLAY_SCRUB_KEYS = frozenset({"sbom_sign_key"})
+
+
+def _scrub_replay(value: Any) -> Any:
+    """A deep copy of a replay blob with ``_REPLAY_SCRUB_KEYS`` removed at any depth."""
+    if isinstance(value, dict):
+        out = {
+            k: _scrub_replay(v) for k, v in value.items() if k not in _REPLAY_SCRUB_KEYS
+        }
+        # A key with no mode signed as cosign; keep that mode so the replay asks
+        # for the key (R16) instead of falling back to saved state unsigned.
+        if str(value.get("sbom_sign_key") or "").strip() and not out.get(
+            "sbom_sign_mode"
+        ):
+            out["sbom_sign_mode"] = "cosign"
+        return out
+    if isinstance(value, list):
+        return [_scrub_replay(v) for v in value]
+    return value
 
 
 def validate_destructive_overrides(
@@ -1549,6 +1695,8 @@ def merge_with_period_range_clearing(
     - Otherwise (``incoming`` sets neither date mode) → plain merge, no
       clearing.
 
+    - ``sbom_sign_key`` never comes from ``base`` (see below).
+
     "Non-empty" = not ``None`` and not whitespace-only.
     """
 
@@ -1569,6 +1717,22 @@ def merge_with_period_range_clearing(
         effective_base.pop("start", None)
         effective_base.pop("end", None)
     # else: neither → plain merge, no clearing.
+
+    # Signing: the key path only ever comes from ``incoming`` (the launch);
+    # saved Settings / cards / workflow globals never supply one. The mode
+    # merges like any field, except: an ``incoming`` ``none`` drops its key,
+    # and a key meeting a ``base`` ``none`` with no ``incoming`` mode is cosign
+    # (no mode set anywhere). A base with no mode leaves it to a later merge.
+    effective_base.pop("sbom_sign_key", None)
+    in_mode = str(incoming.get("sbom_sign_mode") or "").strip()
+    if in_mode == "none":
+        incoming = {k: v for k, v in incoming.items() if k != "sbom_sign_key"}
+    elif (
+        not in_mode
+        and str(incoming.get("sbom_sign_key") or "").strip()
+        and str(effective_base.get("sbom_sign_mode") or "").strip() == "none"
+    ):
+        incoming = {**incoming, "sbom_sign_mode": "cosign"}
 
     return {**effective_base, **incoming}
 
@@ -1812,6 +1976,10 @@ def _build_engine_config(
         "source_column": bool(effective.get("source_column", False)),
         "detailed": bool(effective.get("detailed", False)),
         "standalone": bool(effective.get("standalone", False)),
+        # SBOM Export. Keyless is CLI-only: forced off here whatever arrives.
+        "sbom_options": dataclasses.replace(
+            sbom_options_from(effective), sign_keyless=False
+        ),
         "product_only": bool(effective.get("product_only", False)),
         "vex_override": bool(effective.get("vex_override", False)),
         # SP2 (destructive VEX-write apply). autotriage toggle ON -> "high"
@@ -2285,7 +2453,29 @@ def _execute_run(
         done_payload = {
             "status": status,
             "error": error_msg,
-            "files": html_files,
+            # SBOM Export: an ambiguous project name -> the run page offers
+            # these as a pick list that re-runs with the chosen project ID.
+            "candidates": [
+                {
+                    "id": str(c.get("id", "")),
+                    "name": str(c.get("name", "")),
+                    "folder": str((c.get("folder") or {}).get("name") or ""),
+                }
+                for c in (getattr(engine, "sbom_project_candidates", None) or [])
+            ],
+            # HTML first (files[0] is the deliverable), then the other outputs
+            # (SBOM Export's .cdx.json/.spdx/bundle) when /output can serve them.
+            "files": html_files
+            + (
+                [
+                    rel
+                    for f in engine.generated_files
+                    if Path(f).suffix != ".html"
+                    and (rel := _relative_output_path(f, output_dir_abs))
+                ]
+                if output_dir_matches and any(is_sbom_export(r) for r in recipe_names)
+                else []
+            ),
             "report_url": deliverable_url,
             "history_run_id": history_run_id,
             "log_file": log_file,
@@ -2369,6 +2559,8 @@ _WORKFLOW_GLOBAL_ENGINE_KEYS: tuple[str, ...] = (
     # SP3: a workflow GLOBAL scoring/context file applies to all steps.
     "scoring_file",
     "context_file",
+    # SBOM Export options (never sbom_sign_key — see GLOBAL_SBOM_KEYS).
+    *GLOBAL_SBOM_KEYS,
 )
 
 # Override keys that are workflow-only specials (consumed by the executor loop,
@@ -2409,6 +2601,9 @@ _WORKFLOW_BOOL_KEYS: frozenset[str] = frozenset(
         "component_status",
         "component_ids",
         "source_column",
+        "sbom_include_vex",
+        "sbom_include_dependencies",
+        "sbom_split",
     }
 )
 _WORKFLOW_INT_KEYS: frozenset[str] = frozenset({"top", "triage"})
@@ -3076,6 +3271,68 @@ def _project_folder_parts(project_id: str, domain: str, token: str) -> list[str]
         return []
 
 
+# Keyed by (domain, SHA-256 of the token), so no token is held as a key;
+# least recently used entries go first past _TOKEN_USER_CACHE_MAX.
+_TOKEN_USER_CACHE_MAX = 64
+_token_user_cache: OrderedDict[tuple[str, str], str] = OrderedDict()
+# Failed lookups are retried only after this many seconds (keyed like the cache).
+_TOKEN_USER_MISS_TTL = 60.0
+_token_user_misses: OrderedDict[tuple[str, str], float] = OrderedDict()
+# Requests run on several threads; never held across the lookup itself.
+_token_user_lock = threading.Lock()
+
+
+def _remember(
+    cache: OrderedDict[tuple[str, str], Any], key: tuple[str, str], value: Any
+) -> None:
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > _TOKEN_USER_CACHE_MAX:
+        cache.popitem(last=False)
+
+
+def _fetch_token_user(domain: str, token: str) -> str | None:
+    """The API token's user (``GET /public/v0/authUser`` → ``user``), or None."""
+    if not domain or not token:
+        return None
+    try:
+        import httpx
+
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(
+                f"https://{domain}/api/public/v0/authUser",
+                headers={"X-Authorization": token},
+            )
+        data = resp.json() if resp.status_code == 200 else None
+        if isinstance(data, list):
+            data = data[0] if data else None
+        user = data.get("user") if isinstance(data, dict) else None
+        return str(user) if user else None
+    except Exception:  # best-effort placeholder text only
+        return None
+
+
+def sbom_author_placeholder(domain: str, token: str) -> str:
+    """Author placeholder for the SBOM Export block: the token user (cached per
+    domain+token; only a hit is cached) or a generic fallback."""
+    key = (domain, hashlib.sha256(token.encode()).hexdigest())
+    with _token_user_lock:
+        if key in _token_user_cache:
+            _token_user_cache.move_to_end(key)
+            return _token_user_cache[key]
+        missed = _token_user_misses.get(key)
+        if missed is not None and time.monotonic() - missed < _TOKEN_USER_MISS_TTL:
+            return "API token user"
+    user = _fetch_token_user(domain, token)
+    with _token_user_lock:
+        if not user:
+            _remember(_token_user_misses, key, time.monotonic())
+            return "API token user"
+        _token_user_misses.pop(key, None)
+        _remember(_token_user_cache, key, user)
+    return user
+
+
 def _scope_project_id(effective: dict[str, Any]) -> str:
     """The unambiguous project ID for breadcrumb resolution: the ``project_id``
     companion when present, else an id-like ``project_filter`` (CLI/MCP pass IDs
@@ -3479,7 +3736,7 @@ def _register_workflow_run(
             # (``str(step["id"])``), so the canvas lights each step as it runs.
             # ``replay`` re-POSTs /api/workflows/run (JSON), NOT /api/run (spec §8).
             "canvas_nodes": [],  # built below from the now-complete record
-            "replay": replay,
+            "replay": _scrub_replay(replay),
         }
         _runs[run_id]["canvas_nodes"] = build_canvas_nodes(_runs[run_id], _wf_index)
     _evict_old_runs()
@@ -4181,11 +4438,22 @@ async def prerun_form(
     else:
         state_view = state
 
+    sbom_author_hint = (
+        await asyncio.to_thread(
+            sbom_author_placeholder,
+            str(state.get("domain") or ""),
+            str(state.get("token") or ""),
+        )
+        if fields["show_sbom_export"]
+        else ""
+    )
+
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
         "pages/prerun.html",
         {
+            "sbom_author_placeholder": sbom_author_hint,
             "nonce": nonce,
             "state": state_view,
             "recipe_names": recipe_names,
@@ -4332,6 +4600,14 @@ async def start_run(
     # For multi-recipe runs ``overrides`` is unchanged from the form payload,
     # so validation still covers the submitted values.
     errors = validate_run_overrides(overrides)
+    # SBOM options as the engine builds them (_execute_run: state ∪ overrides),
+    # so a signing mode from Settings without a key path is caught too.
+    if any(k.startswith("sbom_") for k in overrides) or any(
+        is_sbom_export(r) for r in recipe_names
+    ):
+        errors += sbom_option_errors(
+            merge_with_period_range_clearing(state.to_dict(), overrides)
+        )
     if errors:
         return JSONResponse(
             {"error": "; ".join(errors), "errors": errors}, status_code=400
@@ -4501,11 +4777,21 @@ async def start_run(
     # failure).  ``eff`` is already cleaned, so the scope loop never re-added
     # version_filter; this also strips a lone pair that arrived via overrides.
     fields = clean_version_comparison_scope(fields, recipe_names)
-    replay = {
-        "endpoint": "/api/run",
-        "encoding": "form",
-        "fields": fields,
-    }
+    # Record the EFFECTIVE signing mode (never the key — scrubbed below), so a
+    # replay of a run signed via Settings/card asks for the key instead of
+    # silently following later-unsigned defaults (R16).
+    if any(is_sbom_export(r) for r in recipe_names):
+        _o = sbom_options_from(eff)
+        fields["sbom_sign_mode"] = (
+            "embedded" if _o.sign_embedded else "cosign" if _o.sign_key else "none"
+        )
+    replay = _scrub_replay(
+        {
+            "endpoint": "/api/run",
+            "encoding": "form",
+            "fields": fields,
+        }
+    )
 
     # Guard the dict write with the lock so concurrent calls from other request
     # handlers (or the eviction loop) cannot race with us.

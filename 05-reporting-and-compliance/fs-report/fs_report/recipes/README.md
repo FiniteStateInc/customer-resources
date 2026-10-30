@@ -11,6 +11,7 @@ This directory contains YAML recipe files that define the available reports in t
 | `findings_by_project.yaml` | Findings by Project | Comprehensive inventory of security findings by project with CVE details and direct links |
 | `scan_analysis.yaml` | Scan Analysis | Scanning infrastructure performance with throughput, failure analysis, and new vs existing project tracking |
 | `component_list.yaml` | Component List | Complete inventory of software components across projects |
+| `sbom_export.yaml` | SBOM Export | Standards SBOM (CycloneDX 1.6/1.7, SPDX 2.3/3.0) with VEX for one project version, built from live platform data; writes SBOM files only *(on-demand)* |
 | `human_readable_sbom.yaml` | Human Readable SBOM | Readable single-version component inventory, shareable by default (NTIA identifiers and provenance; findings, policy, status and platform ids opt-in) |
 | `user_activity.yaml` | User Activity | Platform usage tracking with user engagement metrics |
 | `version_comparison.yaml` | Version Comparison | Full version and component changelog (every version pair); fixed/new findings, status changes, and component churn per step; CSV/XLSX include summary + detail *(on-demand)* |

@@ -233,6 +233,20 @@ _VALID_OVERRIDE_STR_KEYS = frozenset(
         # gated FP-step-only by validate_destructive_overrides (a non-FP or
         # global autotriage 400s on save/run).
         "autotriage_status",
+        # SBOM Export. sbom_sign_key is accepted for an inline (run-request)
+        # model only: save and load strip it (_without_sign_key).
+        "sbom_standard",
+        "sbom_encoding",
+        "sbom_author",
+        "sbom_sign_mode",
+        "sbom_sign_key",
+        "sbom_supplier",
+        "sbom_supplier_url",
+        "sbom_supplier_email",
+        "sbom_data_license",
+        "sbom_completeness",
+        "sbom_primary_license",
+        "sbom_primary_copyright",
     }
 )
 _VALID_OVERRIDE_BOOL_KEYS = frozenset(
@@ -260,11 +274,24 @@ _VALID_OVERRIDE_BOOL_KEYS = frozenset(
         # FP-step-only by validate_destructive_overrides + default-off (a step
         # that doesn't set it never writes VEX).
         "autotriage",
+        "sbom_include_vex",
+        "sbom_include_dependencies",
+        "sbom_split",
     }
 )
 _VALID_OVERRIDE_INT_KEYS = frozenset({"top", "triage"})
 _VALID_OVERRIDE_KEYS = (
     _VALID_OVERRIDE_STR_KEYS | _VALID_OVERRIDE_BOOL_KEYS | _VALID_OVERRIDE_INT_KEYS
+)
+# SBOM Export options a workflow GLOBAL block may carry (step values win).
+# Kept key-absent when unset, so plain workflows gain no sbom_* noise. Never
+# sbom_sign_key: keys come only from the step / launch request.
+GLOBAL_SBOM_KEYS: tuple[str, ...] = tuple(
+    sorted(
+        k
+        for k in _VALID_OVERRIDE_KEYS
+        if k.startswith("sbom_") and k != "sbom_sign_key"
+    )
 )
 
 # ---------------------------------------------------------------------------
@@ -348,6 +375,10 @@ def _normalize_global(raw: Any) -> dict[str, Any]:
     g: dict[str, Any] = dict(_GLOBAL_DEFAULTS)
     for key in _GLOBAL_DEFAULTS:
         if key in raw and raw[key] is not None and raw[key] != "":
+            g[key] = raw[key]
+
+    for key in GLOBAL_SBOM_KEYS:
+        if raw.get(key) is not None and raw[key] != "":
             g[key] = raw[key]
 
     # --- Date-mode resolution -------------------------------------------------
@@ -580,6 +611,10 @@ def _validate_for_save(model: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _without_sign_key(overrides: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in overrides.items() if k != "sbom_sign_key"}
+
+
 def _model_to_yaml_dict(model: dict[str, Any]) -> dict[str, Any]:
     """Convert a normalized model to a plain dict suitable for YAML serialization.
 
@@ -602,8 +637,10 @@ def _model_to_yaml_dict(model: dict[str, Any]) -> dict[str, Any]:
             "kind": step["kind"],
             "ref": step["ref"],
         }
-        if step.get("overrides"):
-            s["overrides"] = step["overrides"]
+        # A signing key path is entered per launch, never saved.
+        overrides = _without_sign_key(step.get("overrides") or {})
+        if overrides:
+            s["overrides"] = overrides
         if step.get("params"):
             s["params"] = step["params"]
         steps_out.append(s)
@@ -706,7 +743,11 @@ def load_workflow(wf_slug: str) -> dict[str, Any]:
             raw = yaml.safe_load(f)
         if not isinstance(raw, dict):
             raise ValueError("top-level YAML document is not a dict")
-        return _normalize_model(raw)
+        model = _normalize_model(raw)
+        # Ignore a signing key path an older save left in the file.
+        for step in model["steps"]:
+            step["overrides"] = _without_sign_key(step["overrides"])
+        return model
     except FileNotFoundError:
         raise WorkflowNotFound(wf_slug)
     except Exception as exc:

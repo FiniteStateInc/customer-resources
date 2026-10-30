@@ -1,5 +1,6 @@
 """The 'run' command: generate reports."""
 
+import dataclasses
 import json
 import logging
 import os
@@ -28,6 +29,8 @@ from fs_report.models import Config
 from fs_report.period_parser import PeriodParser
 from fs_report.renderers.pdf_renderer import cleanup_pdf_engines
 from fs_report.report_engine import SEVERITY_FLOORS, ReportEngine
+from fs_report.sbom_export import SbomOptions, SbomOptionsError
+from fs_report.sbom_export.options import VALID_ENCODINGS
 from fs_report.scope_ref import ScopeRefError as _ScopeRefError
 from fs_report.scope_ref import parse as _parse_scope_ref
 from fs_report.sqlite_cache import parse_ttl
@@ -292,6 +295,7 @@ def create_config(
     compare_project: Union[str, None] = None,
     compare_version: Union[str, None] = None,
     standalone: bool = False,
+    sbom_options: Union[SbomOptions, None] = None,
     product_only: bool = False,
     external_changes: Union[bool, None] = None,
     detailed: bool = False,
@@ -661,6 +665,10 @@ def create_config(
         compare_project=compare_project,
         compare_version=compare_version,
         standalone=standalone,
+        **{
+            f"sbom_{k}": v
+            for k, v in dataclasses.asdict(sbom_options or SbomOptions()).items()
+        },
         product_only=product_only,
         external_changes=external_changes,
         detailed_mode=detailed,
@@ -682,6 +690,46 @@ def create_config(
 
 
 # ── run_reports ──────────────────────────────────────────────────────
+
+
+def _sbom_cli_options(
+    recipe: Union[list[str], None],
+    project: Union[str, None],
+    opts: SbomOptions,
+    recipes: Union[Path, None] = None,
+) -> SbomOptions:
+    """Fail fast on bad SBOM Export input; warn when SBOM flags are inert.
+
+    Returns ``opts`` unchanged. Runs before the engine exists, so a bad
+    combination never costs an API call.
+    """
+    from fs_report.report_engine import SBOM_EXPORT_RECIPE
+    from fs_report.slug import slug
+
+    if any(slug(r) == slug(SBOM_EXPORT_RECIPE) for r in recipe or []):
+        try:
+            opts.validate()
+        except SbomOptionsError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(2)
+        if not project:
+            typer.echo("Error: SBOM Export requires --project.", err=True)
+            raise typer.Exit(2)
+    elif not recipes and (  # a --recipes dir/YAML may hold SBOM Export
+        dataclasses.replace(
+            # --standalone is shared and SIGSTORE_ID_TOKEN may sit in any env: neither warns.
+            opts,
+            include_dependencies=True,
+            sign_identity_token=None,
+        )
+        != SbomOptions()
+    ):
+        logging.getLogger(__name__).warning(
+            "SBOM flags (--sbom-*, --no-vex, --sign-*) are ignored without "
+            '--recipe "%s".',
+            SBOM_EXPORT_RECIPE,
+        )
+    return opts
 
 
 def run_reports(
@@ -759,6 +807,7 @@ def run_reports(
     compare_project: Union[str, None] = None,
     compare_version: Union[str, None] = None,
     standalone: bool = False,
+    sbom_options: Union[SbomOptions, None] = None,
     product_only: bool = False,
     external_changes: Union[bool, None] = None,
     detailed: bool = False,
@@ -863,6 +912,7 @@ def run_reports(
             compare_project=compare_project,
             compare_version=compare_version,
             standalone=standalone,
+            sbom_options=sbom_options,
             product_only=product_only,
             external_changes=external_changes,
             detailed=detailed,
@@ -889,7 +939,10 @@ def run_reports(
             run_id,
             config.auth_token,
             ai_provider=ai_provider,
-            extra_tokens=(str(config.compare_auth_token or ""),),
+            extra_tokens=(
+                str(config.compare_auth_token or ""),
+                str(config.sbom_sign_identity_token or ""),
+            ),
         )
 
         logger.info("Configuration:")
@@ -1836,6 +1889,116 @@ def run_command(
         ),
         rich_help_panel=_RECIPE_SPECIFIC,
     ),
+    sbom_standard: str = typer.Option(
+        "cyclonedx-1.6",
+        "--sbom-standard",
+        help="SBOM Export: standard (" + ", ".join(VALID_ENCODINGS) + ").",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sbom_encoding: Union[str, None] = typer.Option(
+        None,
+        "--sbom-encoding",
+        help="SBOM Export: encoding. Default is the standard's first: "
+        + "; ".join(f"{k}: {', '.join(v)}" for k, v in VALID_ENCODINGS.items()),
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    no_vex: bool = typer.Option(
+        False,
+        "--no-vex",
+        help="SBOM Export: omit VEX/vulnerability data (components only).",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sbom_split: bool = typer.Option(
+        False,
+        "--sbom-split",
+        help="SBOM Export: one document per project version instead of one bundle.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sbom_author: Union[str, None] = typer.Option(
+        None,
+        "--sbom-author",
+        help="SBOM Export: SBOM author; defaults to the API token's user.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sbom_supplier: Union[str, None] = typer.Option(
+        None,
+        "--sbom-supplier",
+        help="SBOM Export: supplier (organization) of the described product, "
+        "asserted by you. Unset writes no supplier.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sbom_supplier_url: Union[str, None] = typer.Option(
+        None,
+        "--sbom-supplier-url",
+        help="SBOM Export: supplier website (http/https; needs --sbom-supplier).",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sbom_supplier_email: Union[str, None] = typer.Option(
+        None,
+        "--sbom-supplier-email",
+        help="SBOM Export: supplier contact email (needs --sbom-supplier).",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sbom_data_license: Union[str, None] = typer.Option(
+        None,
+        "--sbom-data-license",
+        help="SBOM Export: SPDX licence id for the SBOM document itself "
+        "(e.g. CC0-1.0; CycloneDX metadata.licenses). SPDX documents are "
+        "always CC0-1.0.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sbom_completeness: str = typer.Option(
+        "unknown",
+        "--sbom-completeness",
+        help="SBOM Export: your attestation of completeness (complete, "
+        "incomplete, unknown). 'complete' asserts the component inventory and "
+        "dependency relationships are complete. Default: unknown.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sbom_primary_license: Union[str, None] = typer.Option(
+        None,
+        "--sbom-primary-license",
+        help="SBOM Export: licence of the described product as an SPDX "
+        "expression (e.g. GPL-2.0-only), concluded by you. Unset writes none.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sbom_primary_copyright: Union[str, None] = typer.Option(
+        None,
+        "--sbom-primary-copyright",
+        help="SBOM Export: copyright text of the described product "
+        "(single line). Unset writes none.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sign_key: Union[str, None] = typer.Option(
+        None,
+        "--sign-key",
+        help="SBOM Export: sign with this key (cosign key / KMS URI; PEM file "
+        "with --sign-embedded). Password via COSIGN_PASSWORD. Key mode does "
+        "not upload to the public Rekor log.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sign_keyless: bool = typer.Option(
+        False,
+        "--sign-keyless",
+        help="SBOM Export: keyless cosign signing (publishes to the public "
+        "Rekor transparency log).",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sign_identity_token: Union[str, None] = typer.Option(
+        None,
+        "--sign-identity-token",
+        envvar="SIGSTORE_ID_TOKEN",
+        hidden=True,
+        help="SBOM Export: OIDC token for --sign-keyless (never persisted).",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
+    sign_embedded: bool = typer.Option(
+        False,
+        "--sign-embedded",
+        help="SBOM Export: embed a JSF/XML-DSig signature (CycloneDX json/xml) "
+        "using --sign-key instead of a cosign bundle.",
+        rich_help_panel=_RECIPE_SPECIFIC,
+    ),
     policy_status: bool = typer.Option(
         False,
         "--policy-status/--no-policy-status",
@@ -2057,7 +2220,8 @@ def run_command(
         False,
         "--standalone",
         help="Skip project dependency resolution. Report only direct findings "
-        "for the target project, excluding findings from dependent projects.",
+        "for the target project, excluding findings from dependent projects "
+        "(SBOM Export: also leaves dependency projects out of the SBOM).",
         rich_help_panel=_SCOPE,
     ),
     product_only: bool = typer.Option(
@@ -2249,6 +2413,41 @@ def run_command(
         )
         ai_prompts = True
 
+    # An ambient SIGSTORE_ID_TOKEN is inert unless --sign-keyless is set; only an
+    # explicit --sign-identity-token without it is an error.
+    if (
+        sign_identity_token
+        and not sign_keyless
+        and ctx.get_parameter_source("sign_identity_token")
+        != click.core.ParameterSource.COMMANDLINE
+    ):
+        sign_identity_token = None
+
+    sbom_options = _sbom_cli_options(
+        recipe,
+        project_filter,
+        SbomOptions(
+            standard=sbom_standard,  # type: ignore[arg-type]
+            encoding=sbom_encoding,
+            include_vex=not no_vex,
+            include_dependencies=not standalone,
+            split=sbom_split,
+            author=sbom_author,
+            sign_key=sign_key,
+            sign_keyless=sign_keyless,
+            sign_identity_token=sign_identity_token,
+            sign_embedded=sign_embedded,
+            supplier=sbom_supplier,
+            supplier_url=sbom_supplier_url,
+            supplier_email=sbom_supplier_email,
+            data_license=sbom_data_license,
+            completeness=sbom_completeness,  # type: ignore[arg-type]
+            primary_license=sbom_primary_license,
+            primary_copyright=sbom_primary_copyright,
+        ),
+        recipes,
+    )
+
     run_result = run_reports(
         recipes=recipes,
         recipe=recipe,
@@ -2331,6 +2530,7 @@ def run_command(
         compare_project=compare_project,
         compare_version=compare_version,
         standalone=standalone,
+        sbom_options=sbom_options,
         product_only=product_only,
         external_changes=external_changes,
         detailed=detailed,

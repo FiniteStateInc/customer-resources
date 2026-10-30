@@ -373,6 +373,14 @@
            with entity-link deep-linking. project_details fields per
            cve_impact.py:706-719 (project_name, project_version,
            reachability_label, etc. — NOT project/version/reachability). #}
+        {# Report-level note: the Reachable/Unreachable KPIs above cannot count a
+           failed lookup's projects, so a reader who stops there must still see it. #}
+        {% set _lookup_failed = dossiers | selectattr('reachability_unavailable') | map(attribute='cve_id') | list %}
+        {% if _lookup_failed %}
+        <p style="color: var(--accent-amber); background: color-mix(in srgb, var(--accent-amber) 12%, transparent); padding: 8px 12px; border-radius: 4px; font-size: 0.9em;">
+            The findings lookup failed for {{ _lookup_failed | join(', ') }}, so reachability and exploit details are missing for {{ 'it' if _lookup_failed | length == 1 else 'them' }}: the Reachable and Unreachable counts above cannot include {{ 'its' if _lookup_failed | length == 1 else 'their' }} projects. Re-run the report to retry.
+        </p>
+        {% endif %}
         {% for d in dossiers %}
             {% if d is mapping %}
             <div class="ci-dossier" id="dossier-{{ loop.index }}">
@@ -396,6 +404,15 @@
                 <p style="color: var(--accent-amber); background: color-mix(in srgb, var(--accent-amber) 12%, transparent); padding: 8px 12px; border-radius: 4px; font-size: 0.9em;">
                     NVD data was unavailable for this CVE. Description and fix-version data may be incomplete.
                     <a href="{{ d.nvd_url }}" target="_blank" rel="noopener">Check NVD directly</a>.
+                </p>
+                {% endif %}
+
+                {# reachability_unavailable: the per-CVE /findings lookup failed,
+                   so projects read Unknown and exploits may be missing. #}
+                {% if d.reachability_unavailable %}
+                <p style="color: var(--accent-amber); background: color-mix(in srgb, var(--accent-amber) 12%, transparent); padding: 8px 12px; border-radius: 4px; font-size: 0.9em;">
+                    Reachability and exploit details could not be fetched for this CVE: the findings lookup failed.
+                    Projects below show Unknown (counted as Inconclusive), and known exploits may be missing. Re-run the report to retry.
                 </p>
                 {% endif %}
 
@@ -455,6 +472,8 @@
                             {% endfor %}
                         </tbody>
                     </table>
+                    {% elif d.reachability_unavailable %}
+                    <p style="color: var(--ink-mute);">Not available: the findings lookup failed.</p>
                     {% else %}
                     <p style="color: var(--ink-mute);">None known.</p>
                     {% endif %}

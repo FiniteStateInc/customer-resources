@@ -431,7 +431,7 @@ body.no-motion .wf-card.flipped .wf-back{visibility:visible}
 .density-cockpit .kpi-band{margin-bottom:12px}
 
 /* ---- CONFIGURE MODAL (prerun form in a centered modal) ---- */
-/* Separate backdrop so it stacks above #ov without competing */
+/* Separate backdrop so it stacks above #shell-ov without competing */
 .cfg-ov{position:fixed;inset:0;z-index:78;background:rgba(5,8,16,.60);
   backdrop-filter:blur(4px);display:none}
 .cfg-ov.open{display:block}

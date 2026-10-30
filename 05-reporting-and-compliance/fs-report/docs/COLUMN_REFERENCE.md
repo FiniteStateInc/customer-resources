@@ -69,31 +69,32 @@ The sidecar JSON shape is:
 |---|--------|------|-------------|
 | 1 | `finding_id` | string | CVE identifier (e.g., CVE-2024-0001) |
 | 2 | `severity` | string | CVSS severity (CRITICAL, HIGH, MEDIUM, LOW) |
-| 3 | `risk` | float | CVSS score (0-10) |
-| 4 | `priority_band` | string | Triage band: CRITICAL, HIGH, MEDIUM, LOW, INFO |
-| 5 | `triage_score` | float | Composite triage score (0-100) |
-| 6 | `gate_assignment` | string | GATE_1, GATE_2, ADDITIVE, or NONE |
-| 7 | `component_name` | string | Component name |
-| 8 | `component_version` | string | Component version |
-| 9 | `project_name` | string | Project name |
-| 10 | `version_name` | string | Version name |
-| 11 | `reachability_label` | string | REACHABLE, INCONCLUSIVE, UNREACHABLE |
-| 12 | `reachability_score` | float | Raw reachability score (positive/zero/negative) |
-| 13 | `vuln_functions` | string | Vulnerable function names (comma-separated) |
-| 14 | `has_exploit` | bool | Whether known exploits exist |
-| 15 | `in_kev` | bool | Whether in CISA KEV |
-| 16 | `attack_vector` | string | NETWORK, ADJACENT, LOCAL, PHYSICAL |
-| 17 | `epss_percentile` | float | EPSS percentile (0-1) |
-| 18 | `ai_fix_version` | string | AI-recommended fix version (when `--ai` enabled) |
-| 19 | `ai_guidance` | string | AI remediation guidance (when `--ai` enabled) |
-| 20 | `ai_workaround` | string | AI workaround suggestion (when `--ai` enabled) |
-| 21 | `ai_confidence` | string | AI confidence: high, medium, low (when `--ai` enabled) |
-| 22 | `internal_id` | string | Internal finding identifier |
-| 23 | `component_id` | string | Component identifier |
-| 24 | `project_id` | string | Project identifier |
-| 25 | `project_version_id` | string | Project version identifier |
-| 26 | `dependency_path` | string | Project dependency chain (e.g., `ProjectA -> ProjectB`). Only present when the target project has dependencies. |
-| 27 | `component_dependency_path` | string | Full path including component (e.g., `ProjectA -> ProjectB -> openssl 1.1.1`). Only present when the target project has dependencies. |
+| 3 | `risk` | float | Platform risk: CVSS × 10 (0-100) |
+| 4 | `cvss_score` | float | CVSS score (0-10), `risk` ÷ 10 |
+| 5 | `priority_band` | string | Triage band: CRITICAL, HIGH, MEDIUM, LOW, INFO |
+| 6 | `triage_score` | float | Composite triage score (0-100) |
+| 7 | `gate_assignment` | string | GATE_1, GATE_2, ADDITIVE, or NONE |
+| 8 | `component_name` | string | Component name |
+| 9 | `component_version` | string | Component version |
+| 10 | `project_name` | string | Project name |
+| 11 | `version_name` | string | Version name |
+| 12 | `reachability_label` | string | REACHABLE, INCONCLUSIVE, UNREACHABLE |
+| 13 | `reachability_score` | float | Raw reachability score (positive/zero/negative) |
+| 14 | `vuln_functions` | string | Vulnerable function names (comma-separated) |
+| 15 | `has_exploit` | bool | Whether known exploits exist |
+| 16 | `in_kev` | bool | Whether in CISA KEV |
+| 17 | `attack_vector` | string | NETWORK, ADJACENT, LOCAL, PHYSICAL |
+| 18 | `epss_percentile` | float | EPSS percentile (0-1) |
+| 19 | `ai_fix_version` | string | AI-recommended fix version (when `--ai` enabled) |
+| 20 | `ai_guidance` | string | AI remediation guidance (when `--ai` enabled) |
+| 21 | `ai_workaround` | string | AI workaround suggestion (when `--ai` enabled) |
+| 22 | `ai_confidence` | string | AI confidence: high, medium, low (when `--ai` enabled) |
+| 23 | `internal_id` | string | Internal finding identifier |
+| 24 | `component_id` | string | Component identifier |
+| 25 | `project_id` | string | Project identifier |
+| 26 | `project_version_id` | string | Project version identifier |
+| 27 | `dependency_path` | string | Project dependency chain (e.g., `ProjectA -> ProjectB`). Only present when the target project has dependencies. |
+| 28 | `component_dependency_path` | string | Full path including component (e.g., `ProjectA -> ProjectB -> openssl 1.1.1`). Only present when the target project has dependencies. |
 
 ### portfolio_summary Dict
 
@@ -243,6 +244,7 @@ Each `data[*]` row:
 | 17 | `Components` | string | Affected component names |
 | 18 | `First Detected` | string | Earliest detection date |
 | 19 | `Last Detected` | string | Most recent detection date |
+| 20 | `Reachability Lookup Failed` | bool | The per-CVE findings lookup failed: every affected project reads UNKNOWN (counted in `Inconclusive In`) and exploits may be missing; re-run. False when no lookup ran (no `--cve`) |
 
 ---
 

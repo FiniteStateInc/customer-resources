@@ -47,7 +47,7 @@ from typing import Any, cast
 import httpx
 import pandas as pd
 
-from fs_report.api_client import APIClient
+from fs_report.api_client import APIClient, APIRequestError
 from fs_report.coerce import coerce_bool as _coerce_bool
 from fs_report.data_cache import DataCache
 from fs_report.data_transformer import DataTransformer
@@ -744,6 +744,11 @@ SBOM_OPTION_RECIPES = frozenset({"Human Readable SBOM"})
 # rows lack version metadata the guard cannot fire at all, so enforcement here
 # is the one that actually holds.
 FORCE_CURRENT_VERSION_RECIPES = frozenset({"Human Readable SBOM"})
+# Dispatched to fs_report.sbom_export.run (never the tabular renderer).
+SBOM_EXPORT_RECIPE = "SBOM Export"
+# Folder and folder-project listings: the server serves up to this many rows a
+# page (x-per-page 10000, live 2026-10-27), so a full page means there are more.
+_LIST_PAGE = 10000
 
 #: Cache-scope token for a file-inclusive component fetch. Deliberately not
 #: RSQL-shaped: it is only ever a cache-key component, never a query sent to the
@@ -1109,6 +1114,9 @@ class ReportEngine:
     # other engine in the process (the web server runs many). Mutating it in
     # place now raises instead.
     _product_scope: dict[str, dict[str, Any]] | None = None
+    # Set in __init__; the class default keeps _check_cancel inert (no Stop
+    # pending) on an engine built by ``__new__``, like the state above.
+    _cancel_event: threading.Event | None = None
     # SBOM enrichment run-state, declared here rather than left to spring into
     # existence mid-run: every read is a `getattr(..., default)` otherwise, and
     # an engine built by `__new__` or a non-scoped path would raise instead of
@@ -1344,6 +1352,8 @@ class ReportEngine:
 
         # Resolved project name (populated by _validate_and_resolve_filters)
         self.resolved_project_name: str | None = None
+        # SBOM Export: candidates of an ambiguous --project name (web pick list).
+        self.sbom_project_candidates: list[dict[str, Any]] = []
 
         # Set by _fetch_scans_with_early_termination when a fetch hit the
         # max_pages ceiling or returned partial results after exhausting
@@ -1357,12 +1367,28 @@ class ReportEngine:
         # scans_truncated=False for a population that was truncated when it
         # was originally fetched.
         self._scan_fetch_truncated_cache: dict[str, bool] = {}
+        # CVE Impact: CVEs whose per-CVE /findings lookup failed in the current
+        # section (set, or reset to empty, at every CVE Impact fetch), so the
+        # report can say so instead of reading as never analysed.
+        self._cve_impact_lookup_failed: list[str] = []
 
         # Resolved folder breadcrumb path (populated by _resolve_folder_scope in run())
         self.resolved_folder_path: list[str] = []
 
         # Folder scoping state (populated by _resolve_folder_scope in run())
         self._folder_project_ids: set[str] | None = None
+        # (project, folder, version) before the engine's scope resolution;
+        # refreshed in run(), after SBOM Export's precheck.
+        self._raw_scope: tuple[str | None, str | None, str | None] = (
+            config.project_filter,
+            config.folder_filter,
+            config.version_filter,
+        )
+        # SBOM Export's unique (project ID, folder) from its precheck.
+        self._sbom_scope: tuple[str, str | None] | None = None
+        # The project record the precheck resolved, so SBOM Export doesn't
+        # list /projects a second time.
+        self._sbom_project: dict[str, Any] | None = None
         # The --project glob that matched several projects (it then scopes the
         # run through _folder_project_ids, with project_filter cleared).
         self._project_glob: str | None = None
@@ -2539,18 +2565,36 @@ class ReportEngine:
 
         return True
 
-    def _fetch_all_folders(self) -> list[dict]:
-        """Fetch all folders from the API (cached per run)."""
-        if self._all_folders_cache is not None:
-            return self._all_folders_cache
-
+    def _fetch_list(self, endpoint: str, **params: Any) -> list[dict]:
+        """Every page of a list endpoint, through ``fetch_data`` (cached per
+        page). Stops at a short page, or at a later page with no id it hasn't
+        seen (an ignored offset; a page of id-less rows is dropped, not looped
+        on)."""
         from fs_report.models import QueryConfig, QueryParams
 
-        folders_query = QueryConfig(
-            endpoint="/public/v0/folders",
-            params=QueryParams(limit=10000),
-        )
-        self._all_folders_cache = self.api_client.fetch_data(folders_query)
+        rows: list[dict] = []
+        seen: set[str] = set()
+        while True:
+            page = self.api_client.fetch_data(
+                QueryConfig(
+                    endpoint=endpoint,
+                    params=QueryParams(
+                        limit=_LIST_PAGE, offset=len(rows) or None, **params
+                    ),
+                )
+            )
+            ids = {str(r.get("id")) for r in page if r.get("id")}
+            if rows and ids <= seen:
+                return rows
+            seen |= ids
+            rows.extend(page)
+            if len(page) < _LIST_PAGE:
+                return rows
+
+    def _fetch_all_folders(self) -> list[dict]:
+        """Fetch all folders from the API (cached per run)."""
+        if self._all_folders_cache is None:
+            self._all_folders_cache = self._fetch_list("/public/v0/folders")
         return self._all_folders_cache
 
     def _resolve_folder(self, folder_input: str) -> dict | None:
@@ -2621,8 +2665,6 @@ class ReportEngine:
                     queue.append(child_id)
 
         # For each folder, fetch its projects
-        from fs_report.models import QueryConfig, QueryParams
-
         project_folder_map: dict[str, str] = {}
         project_name_to_id: dict[str, str] = {}
         project_id_to_name: dict[str, str] = {}
@@ -2631,11 +2673,11 @@ class ReportEngine:
         for fid in all_folder_ids:
             folder_name = folder_by_id.get(fid, {}).get("name", "Unknown")
             try:
-                projects_query = QueryConfig(
-                    endpoint=f"/public/v0/folders/{fid}/projects",
-                    params=QueryParams(limit=10000, archived=False, excluded=False),
+                projects = self._fetch_list(
+                    f"/public/v0/folders/{fid}/projects",
+                    archived=False,
+                    excluded=False,
                 )
-                projects = self.api_client.fetch_data(projects_query)
                 for p in projects:
                     pid = str(p.get("id", ""))
                     pname = p.get("name", "")
@@ -3345,6 +3387,153 @@ class ReportEngine:
             return max(15.0, self.config.request_delay * 5)
         return max(5.0, self.config.request_delay * 2)
 
+    def _fetch_version_batch(
+        self,
+        base_query: "QueryConfig",
+        batch_ids: list,
+        entity_type: str,
+        finding_type: str = "",
+        category_filter: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Fetch and cache one batch of versions, splitting it if the database
+        cannot serve it.
+
+        A database timeout at the smallest page size means the query for these
+        versions together is too expensive, and narrowing the page did not help
+        (CST-1011: one batch aborted a whole folder's Executive Summary). Fewer
+        versions per query is the remaining lever, so the batch is halved and
+        each half fetched, down to one version. A version that still times out
+        on its own fails the fetch, named, rather than leaving it out.
+
+        Each fetch that succeeds is cached per version here, not by the caller,
+        so the halves that did load are kept even when a later half fails and
+        the run stops: in this run's per-version cache, and in SQLite when the
+        cache is on (``--cache-ttl``), so a re-run with it on does not pay for
+        them again.
+        """
+        from fs_report.api_client import _PAGE_SIZE_LADDER, is_db_timeout_error
+        from fs_report.models import QueryConfig, QueryParams
+
+        # Each half is a separate, possibly long fetch: a Stop must land
+        # between them, not after the whole split.
+        self._check_cancel()
+
+        # Batch version IDs with RSQL filter against the
+        # portfolio-wide /findings endpoint.
+
+        # Build version filter
+        version_filter = f"projectVersion=in=({','.join(str(v) for v in batch_ids)})"
+
+        # Combine with existing filter (MUST preserve base filter
+        # like type!=file). Strip any project== / project=in=()
+        # clauses though — the per-batch projectVersion=in=(...)
+        # uniquely identifies both project and version, and
+        # keeping a 706-project list in every batch URL pushes
+        # past nginx's 8 KB default and yields HTTP 414. See
+        # CST-747.
+        base_filter_stripped = _strip_project_scope(base_query.params.filter)
+        if base_filter_stripped:
+            combined_filter = f"{base_filter_stripped};{version_filter}"
+        else:
+            combined_filter = version_filter
+
+        self.logger.debug(
+            f"Batch of {len(batch_ids)} versions, filter: {combined_filter[:100]}..."
+        )
+
+        # Create batch query
+        batch_query = QueryConfig(
+            endpoint=base_query.endpoint,
+            params=QueryParams(
+                limit=limit or base_query.params.limit,
+                filter=combined_filter,
+                finding_type=base_query.params.finding_type,
+                archived=False if entity_type == "findings" else None,
+                excluded=False if entity_type == "findings" else None,
+                include_additional_details=base_query.params.include_additional_details,
+            ),
+        )
+
+        try:
+            # Use skip_cache_store to avoid duplicating batch-level SQLite entries
+            results = self.api_client.fetch_all_with_resume(
+                batch_query,
+                show_progress=False,
+                skip_cache_store=True,
+            )
+        except Exception as e:
+            if not is_db_timeout_error(e):
+                raise
+            if len(batch_ids) == 1:
+                raise self._lone_version_db_timeout(entity_type, batch_ids[0], e) from e
+            reason = str(e)[:160]
+            failed_retries = self.api_client.last_fetch_retries
+        else:
+            if limit is not None and limit < (base_query.params.limit or limit):
+                # A half started at the floor and the floor worked. The
+                # paginator records a working size only when it narrowed to it
+                # itself, so record it here: later batches then start at the
+                # floor instead of re-walking the ladder before splitting again.
+                self.api_client._remember_page_size(base_query.endpoint, limit)
+            # Split and cache per-version (in-memory + SQLite).
+            # Pass batch_ids so versions with 0 results are cached as
+            # empty — otherwise they'd be re-fetched on every run.
+            self._split_and_cache_by_version(
+                results,
+                entity_type,
+                finding_type,
+                category_filter,
+                batch_version_ids=batch_ids,
+            )
+            return results
+
+        # Split outside the handler, so the failed fetch's frames (and any rows
+        # it had paged in) are released before the halves are fetched.
+        half = len(batch_ids) // 2
+        left_ids, right_ids = batch_ids[:half], batch_ids[half:]
+        self.logger.warning(
+            f"The database timed out fetching {len(batch_ids)} versions together "
+            f"({reason}). Retrying them as {len(left_ids)} + {len(right_ids)}: "
+            f"{', '.join(map(str, left_ids))} | {', '.join(map(str, right_ids))}"
+        )
+        # Start the halves at the smallest page: the parent could not serve
+        # even that, so walking the larger rungs again only adds timeouts.
+        floor = _PAGE_SIZE_LADDER[-1]
+        left = self._fetch_version_batch(
+            base_query, left_ids, entity_type, finding_type, category_filter, floor
+        )
+        retries = failed_retries + self.api_client.last_fetch_retries
+        right = self._fetch_version_batch(
+            base_query, right_ids, entity_type, finding_type, category_filter, floor
+        )
+        # Every fetch resets last_fetch_retries, and the batching loop reads it
+        # to give a struggling server a longer cooldown. Report the whole
+        # split's retries, not only the last half's.
+        self.api_client.last_fetch_retries = (
+            retries + self.api_client.last_fetch_retries
+        )
+        return left + right
+
+    @staticmethod
+    def _lone_version_db_timeout(
+        entity_type: str, version_id: object, error: BaseException
+    ) -> APIRequestError:
+        """The error for one version the database cannot serve on its own.
+
+        Typed and status-bearing like the error it replaces, and it keeps that
+        error's text, which carries the platform's requestId for Support.
+        """
+        return APIRequestError(
+            f"{entity_type.capitalize()} for project version {version_id} could "
+            f"not be fetched: the platform's database timed out for this version "
+            f"on its own, at the smallest page size. Re-run later; if it keeps "
+            f"failing, report version {version_id} and this error to Finite "
+            f"State support. ({error})",
+            getattr(error, "status_code", 504),
+            db_timeout=True,
+        )
+
     def _fetch_with_version_batching(
         self,
         base_query: "QueryConfig",
@@ -3422,63 +3611,9 @@ class ReportEngine:
         ) as pbar:
             for i in pbar:
                 batch_ids = uncached_ids[i : i + batch_size]
-
-                from fs_report.models import QueryConfig, QueryParams
-
-                # Batch version IDs with RSQL filter against the
-                # portfolio-wide /findings endpoint.
-
-                # Build version filter
-                version_filter = (
-                    f"projectVersion=in=({','.join(str(v) for v in batch_ids)})"
-                )
-
-                # Combine with existing filter (MUST preserve base filter
-                # like type!=file). Strip any project== / project=in=()
-                # clauses though — the per-batch projectVersion=in=(...)
-                # uniquely identifies both project and version, and
-                # keeping a 706-project list in every batch URL pushes
-                # past nginx's 8 KB default and yields HTTP 414. See
-                # CST-747.
-                base_filter_stripped = _strip_project_scope(base_query.params.filter)
-                if base_filter_stripped:
-                    combined_filter = f"{base_filter_stripped};{version_filter}"
-                else:
-                    combined_filter = version_filter
-
-                self.logger.debug(
-                    f"Batch {i//batch_size + 1}/{total_batches} filter: {combined_filter[:100]}..."
-                )
-
-                # Create batch query
-                batch_query = QueryConfig(
-                    endpoint=base_query.endpoint,
-                    params=QueryParams(
-                        limit=base_query.params.limit,
-                        filter=combined_filter,
-                        finding_type=base_query.params.finding_type,
-                        archived=False if entity_type == "findings" else None,
-                        excluded=False if entity_type == "findings" else None,
-                        include_additional_details=base_query.params.include_additional_details,
-                    ),
-                )
-
-                # Use skip_cache_store to avoid duplicating batch-level SQLite entries
-                batch_results = self.api_client.fetch_all_with_resume(
-                    batch_query,
-                    show_progress=False,
-                    skip_cache_store=True,
-                )
-
-                # Split and cache per-version (in-memory + SQLite).
-                # Pass batch_ids so versions with 0 results are cached as
-                # empty — otherwise they'd be re-fetched on every run.
-                self._split_and_cache_by_version(
-                    batch_results,
-                    entity_type,
-                    finding_type,
-                    category_filter,
-                    batch_version_ids=batch_ids,
+                # Cached per version inside, including the halves of a split.
+                batch_results = self._fetch_version_batch(
+                    base_query, batch_ids, entity_type, finding_type, category_filter
                 )
 
                 # Trim factors in-memory to avoid OOM on large instances.
@@ -3535,6 +3670,51 @@ class ReportEngine:
                     self._cancellable_sleep(cooldown)
 
         return all_results
+
+    def _sbom_export_scope_precheck(self, alone: bool = True) -> str | None:
+        """Pin --project to the single matching project for SBOM Export.
+
+        Returns an error message (glob, no match, or the ambiguous candidates
+        with their folders) or None after setting ``_sbom_scope`` to the
+        resolved project ID and, with --folder (name, path or ID), the
+        project's own folder ID, which the engine's folder scope can resolve.
+        Only when SBOM Export is ``alone`` in the run is the shared
+        ``config`` scope pinned too; other recipes keep the user's input.
+        A missing --project is left to the recipe's requires_project gate.
+        """
+        raw = str(self.config.project_filter or "").strip()
+        if not raw:
+            return None
+        if self._is_glob(raw):
+            return (
+                "glob patterns are not supported for SBOM Export; give an "
+                "exact project name or ID"
+            )
+        from fs_report.sbom_export import (
+            AmbiguousProjectError,
+            resolve_unique_project,
+        )
+
+        try:
+            project = resolve_unique_project(
+                self.api_client, raw, self.config.folder_filter
+            )
+        except AmbiguousProjectError as e:
+            # Kept for the web run page's pick list (one run per engine).
+            self.sbom_project_candidates = e.candidates
+            return str(e)
+        except (LookupError, ValueError) as e:  # no match / bad input
+            return str(e)
+        folder_id = (project.get("folder") or {}).get("id")
+        folder = self.config.folder_filter
+        self._sbom_project = project
+        self._sbom_scope = (
+            str(project["id"]),
+            str(folder_id) if folder and folder_id else folder,
+        )
+        if alone:
+            self.config.project_filter, self.config.folder_filter = self._sbom_scope
+        return None
 
     def _fire_recipe_start(self, idx: int, total: int, name: str) -> None:
         """Fire the optional on_recipe_start hook (T5 — lights the plain-report
@@ -3852,6 +4032,27 @@ class ReportEngine:
         # (folder→IDs, project name/glob→ID, version name→ID). Extracted to
         # _resolve_run_scope so the compound per-section override path can
         # re-resolve a child's overridden scope through the same logic.
+        # SBOM Export needs a UNIQUE project: resolve it (with --folder) before
+        # the engine's first-match name resolution, so an ambiguous name fails
+        # with the candidate list rather than a version-lookup error against
+        # whichever project happened to match first.
+        if not self.data_override and any(
+            r.name == SBOM_EXPORT_RECIPE and not isinstance(r, CompoundRecipe)
+            for r in recipes
+        ):
+            _sbom_err = self._sbom_export_scope_precheck(alone=len(recipes) == 1)
+            if _sbom_err:
+                self.logger.error(_sbom_err)
+                return RunResult(success=False, error_message=_sbom_err)
+
+        # SBOM Export resolves its own version, so it needs the user's input
+        # before the engine turns it into an ID (its project and folder come
+        # from _sbom_scope when the precheck pinned them).
+        self._raw_scope = (
+            self.config.project_filter,
+            self.config.folder_filter,
+            self.config.version_filter,
+        )
         if not self._resolve_run_scope():
             return _fail
 
@@ -4024,6 +4225,55 @@ class ReportEngine:
                         "Use --project <name-or-id> or --folder <name-or-id>."
                     )
                     all_succeeded = False
+                    continue
+
+                # SBOM Export writes standards documents itself (never the
+                # tabular renderer) and resolves its own project/version.
+                if recipe.name == SBOM_EXPORT_RECIPE:
+                    from fs_report.sbom_export.run import SUBDIR, run_sbom_export
+
+                    _ignored = [
+                        flag
+                        for flag, attr in (
+                            ("--component", "component_filter"),
+                            ("--cve", "cve_filter"),
+                        )
+                        if getattr(self.config, attr, None)
+                    ]
+                    if _ignored:
+                        self.logger.warning(
+                            "%s ignored for SBOM Export: it exports the whole "
+                            "project version.",
+                            " and ".join(_ignored),
+                        )
+                    self._fire_recipe_start(idx, total, recipe.name)
+                    self.renderer.check_output_guard(recipe)
+                    raw_project, raw_folder, raw_version = self._raw_scope
+                    if self._sbom_scope:
+                        raw_project, raw_folder = self._sbom_scope
+                    files = run_sbom_export(
+                        self.api_client,
+                        self.config.model_copy(
+                            update={
+                                "project_filter": raw_project,
+                                "folder_filter": raw_folder,
+                                "version_filter": raw_version,
+                            }
+                        ),
+                        self.logger,
+                        self.renderer.output_dir,
+                        self._check_cancel,
+                        project=self._sbom_project if self._sbom_scope else None,
+                    )
+                    generated_files.extend(files)
+                    recipe_results.append(
+                        RecipeResult(
+                            recipe=recipe.name,
+                            output_dir=str(self.renderer.output_dir / SUBDIR),
+                            files=files,
+                            stats={"file_count": len(files)},
+                        )
+                    )
                     continue
 
                 # Scoped output naming: when --component or --cve is set, suffix
@@ -4971,6 +5221,13 @@ class ReportEngine:
                     f"recipe '{section.recipe}' (slug='{child_slug}'). "
                     "Loader validation should have caught this — failing "
                     "fast to surface the index mismatch."
+                )
+
+            if child.name == SBOM_EXPORT_RECIPE:
+                return _precheck_failure(
+                    f"Compound '{compound.name}' includes '{child.name}', which "
+                    "writes standalone SBOM files rather than a report section. "
+                    'Run it on its own: --recipe "SBOM Export".'
                 )
 
             # Folder-iterating recipes can't ride a single sections[] entry
@@ -7758,12 +8015,14 @@ class ReportEngine:
 
                             # In dossier mode, enrich with per-finding reachability,
                             # CVE descriptions, and exploit details
+                            self._cve_impact_lookup_failed = []
                             if self.config.cve_filter and not raw_data.empty:
                                 (
                                     self._cve_impact_reachability,
                                     self._cve_impact_descriptions,
                                     self._cve_impact_exploit_details,
                                     self._cve_impact_nvd_missing,
+                                    self._cve_impact_lookup_failed,
                                 ) = self._fetch_cve_reachability(raw_data)
 
                     elif recipe.name in (
@@ -9874,6 +10133,10 @@ class ReportEngine:
                     and self._cve_impact_nvd_missing
                 ):
                     additional_data["nvd_missing_cves"] = self._cve_impact_nvd_missing
+                if self._cve_impact_lookup_failed:
+                    additional_data["reachability_failed_cves"] = (
+                        self._cve_impact_lookup_failed
+                    )
 
             # Inject CVE details for Findings by Project
             if recipe.name == "Findings by Project":
@@ -10766,7 +11029,13 @@ class ReportEngine:
 
     def _fetch_cve_reachability(
         self, cve_records: "list[dict] | pd.DataFrame"
-    ) -> tuple[dict[str, list[dict]], dict[str, str], dict[str, list[dict]], list[str]]:
+    ) -> tuple[
+        dict[str, list[dict]],
+        dict[str, str],
+        dict[str, list[dict]],
+        list[str],
+        list[str],
+    ]:
         """Fetch per-finding reachability from /findings for dossier mode.
 
         For each CVE in the records, queries the findings endpoint with
@@ -10782,6 +11051,9 @@ class ReportEngine:
             - descriptions_map: cveId -> NVD description string
             - exploit_details_map: cveId -> list of exploit detail dicts
             - nvd_missing_cves: list of CVE IDs that NVD could not resolve
+            - lookup_failed_cves: CVE IDs whose /findings lookup failed. Their
+              reachability_map entry is empty, as for a CVE with no findings,
+              so this list is the only way the report can tell them apart.
         """
         from fs_report.models import QueryConfig, QueryParams
         from fs_report.nvd_client import NVD_ATTRIBUTION, NVDClient
@@ -10806,8 +11078,9 @@ class ReportEngine:
                     cve_ids_seen.add(cve_id)
                     cve_ids_ordered.append(cve_id)
 
+        lookup_failed_cves: list[str] = []
         if not cve_ids_ordered:
-            return reachability_map, descriptions_map, exploit_details_map, []
+            return reachability_map, descriptions_map, exploit_details_map, [], []
 
         self.logger.info(
             f"Enriching {len(cve_ids_ordered)} CVEs with reachability data from /findings"
@@ -10873,53 +11146,64 @@ class ReportEngine:
                     filter=f"findingId=={cve_id}",
                 ),
             )
+            # Only the lookup itself is guarded: an error later in this body is
+            # not a failed lookup, and must not discard findings already fetched
+            # or tell the reader to re-run. A cancel is not a failure either.
             try:
                 findings = self.api_client.fetch_all_with_resume(finding_query)
-                if latest_version_ids is not None and findings:
-                    before = len(findings)
-                    filtered = self._filter_findings_by_version_ids(
-                        findings, latest_version_ids
-                    )
-                    if filtered:
-                        findings = filtered
-                        self.logger.debug(
-                            f"  Version post-filter: {before} -> "
-                            f"{len(findings)} findings for {cve_id}"
-                        )
-                    else:
-                        # Don't discard all findings — keep unfiltered so
-                        # the report shows reachability data rather than
-                        # UNKNOWN for every CVE.
-                        self.logger.debug(
-                            f"  Version filter would remove all {before} "
-                            f"findings for {cve_id}; keeping unfiltered"
-                        )
-                reachability_map[cve_id] = findings
-                self.logger.debug(
-                    f"  {cve_id}: {len(findings)} findings with reachability"
-                )
-
-                # Fetch exploit details using the finding's numeric id
-                if findings:
-                    f0 = findings[0]
-                    finding_numeric_id = f0.get("id")
-                    pv_obj = f0.get("projectVersion")
-                    pv_id = (
-                        pv_obj.get("id")
-                        if isinstance(pv_obj, dict)
-                        else f0.get("project_version_id")
-                    )
-                    if finding_numeric_id and pv_id:
-                        fid = str(finding_numeric_id)
-                        pvid = str(pv_id)
-                        exploits = self._fetch_cve_exploits(pvid, fid, cve_id)
-                        if exploits:
-                            exploit_details_map[cve_id] = exploits
+            except ReportCancelled:
+                raise
             except Exception as exc:
                 self.logger.warning(f"Failed to fetch reachability for {cve_id}: {exc}")
                 reachability_map[cve_id] = []
+                lookup_failed_cves.append(cve_id)
+                continue
+            if latest_version_ids is not None and findings:
+                before = len(findings)
+                filtered = self._filter_findings_by_version_ids(
+                    findings, latest_version_ids
+                )
+                if filtered:
+                    findings = filtered
+                    self.logger.debug(
+                        f"  Version post-filter: {before} -> "
+                        f"{len(findings)} findings for {cve_id}"
+                    )
+                else:
+                    # Don't discard all findings — keep unfiltered so
+                    # the report shows reachability data rather than
+                    # UNKNOWN for every CVE.
+                    self.logger.debug(
+                        f"  Version filter would remove all {before} "
+                        f"findings for {cve_id}; keeping unfiltered"
+                    )
+            reachability_map[cve_id] = findings
+            self.logger.debug(f"  {cve_id}: {len(findings)} findings with reachability")
 
-        return reachability_map, descriptions_map, exploit_details_map, nvd_missing_cves
+            # Fetch exploit details using the finding's numeric id
+            if findings:
+                f0 = findings[0]
+                finding_numeric_id = f0.get("id")
+                pv_obj = f0.get("projectVersion")
+                pv_id = (
+                    pv_obj.get("id")
+                    if isinstance(pv_obj, dict)
+                    else f0.get("project_version_id")
+                )
+                if finding_numeric_id and pv_id:
+                    fid = str(finding_numeric_id)
+                    pvid = str(pv_id)
+                    exploits = self._fetch_cve_exploits(pvid, fid, cve_id)
+                    if exploits:
+                        exploit_details_map[cve_id] = exploits
+
+        return (
+            reachability_map,
+            descriptions_map,
+            exploit_details_map,
+            nvd_missing_cves,
+            lookup_failed_cves,
+        )
 
     def _start_nvd_pipeline(
         self,
@@ -12185,6 +12469,7 @@ class ReportEngine:
         self,
         batch_ids: list[str],
         failed_ids: list[str] | None = None,
+        limit: int = 10000,
     ) -> list[dict]:
         """Fetch one /components RSQL batch; bisect on permanent 4xx.
 
@@ -12215,24 +12500,42 @@ class ReportEngine:
         treated as incomplete (KPI sums prefer rollups for degraded
         projects).
         """
+        # A bisection can run several long fetches; let a Stop land between.
+        self._check_cancel()
         batch_filter = f"type!=file;projectVersion=in=({','.join(batch_ids)})"
         batch_query = QueryConfig(
             endpoint="/public/v0/components",
-            params=QueryParams(limit=10000, filter=batch_filter),
+            params=QueryParams(limit=limit, filter=batch_filter),
         )
         try:
-            return (
+            results = (
                 self.api_client.fetch_all_with_resume(
                     batch_query, show_progress=False, skip_cache_store=True
                 )
                 or []
             )
+            if limit < 10000:
+                # A half started at the floor and it worked: record it, as
+                # _fetch_version_batch does, so later batches start there.
+                self.api_client._remember_page_size("/public/v0/components", limit)
+            return results
         except ValueError as e:
-            if not self._is_components_page_error(e):
+            from fs_report.api_client import is_db_timeout_error
+
+            # A database timeout at the smallest page is the other failure
+            # fewer versions per query can fix (CST-1011).
+            db_timeout = is_db_timeout_error(e)
+            if not db_timeout and not self._is_components_page_error(e):
                 # Auth / permission / contract errors are not row-window
                 # failures — bisection can't help and degradation would
                 # hide a real outage. Propagate.
                 raise
+            if len(batch_ids) <= 1 and db_timeout:
+                # Not a poisoned row, so no salvage: its pages time out too.
+                # Fail named, like the generic version-batching path.
+                raise self._lone_version_db_timeout(
+                    "components", batch_ids[0] if batch_ids else "?", e
+                ) from e
             if len(batch_ids) <= 1:
                 # One projectVersion still fails after bisection: a
                 # platform-side corrupt row (ALLOY-3274 family — e.g. a
@@ -12268,9 +12571,18 @@ class ReportEngine:
                 mid,
                 len(batch_ids) - mid,
             )
-            return self._fetch_components_batch_with_bisect(
-                batch_ids[:mid], failed_ids
-            ) + self._fetch_components_batch_with_bisect(batch_ids[mid:], failed_ids)
+            # A database timeout means even the smallest page failed: start
+            # the halves there rather than walking the larger rungs again.
+            # (The 400 row-window failure keeps the full page.)
+            if db_timeout:
+                from fs_report.api_client import _PAGE_SIZE_LADDER
+
+                limit = _PAGE_SIZE_LADDER[-1]
+        # Bisect outside the handler, so the failed fetch's frames (and any
+        # rows it had paged in) are released before the halves are fetched.
+        return self._fetch_components_batch_with_bisect(
+            batch_ids[:mid], failed_ids, limit
+        ) + self._fetch_components_batch_with_bisect(batch_ids[mid:], failed_ids, limit)
 
     def _batched_fetch_versions_histories(
         self, project_ids: list[str]

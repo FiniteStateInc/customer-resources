@@ -705,6 +705,12 @@
       <small class="form-hint">How the component was introduced (Binary SCA, Upload). Off by default.</small>
       {% endif %}
 
+      {# SBOM Export only (show_sbom_export / SBOM_EXPORT_RECIPES). #}
+      {% if show_sbom_export %}
+      {% set pfx = 'cardcfg' %}{% set sx = eff %}
+      {% include "components/_sbom_export_options.html" %}
+      {% endif %}
+
       {% if show_scan_filters %}
       <div class="form-group">
         <label>Scan types</label>

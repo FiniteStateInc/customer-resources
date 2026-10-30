@@ -68,6 +68,7 @@ and are excluded from local execution.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from typing import Any
 
@@ -82,7 +83,12 @@ from fs_report.web.routers.run import (
 from fs_report.web.routers.run import (
     VERSION_NAME_FILTER_RECIPES as _VERSION_NAME_FILTER_RECIPES,
 )
+from fs_report.web.routers.run import (
+    _effective_step_config,
+)
+from fs_report.web.routers.run import is_sbom_export as _is_sbom_export_ref
 from fs_report.web.routers.run import merge_with_period_range_clearing as _merge_clear
+from fs_report.web.routers.run import sbom_options_from as _sbom_options_from
 from fs_report.web.shell_utils import shquote as _shquote
 
 # ---------------------------------------------------------------------------
@@ -147,6 +153,22 @@ _CONFIG_KEY_TO_FLAG: dict[str, str] = {
     "standalone": "--standalone",
     "product_only": "--product-only",
     "vex_override": "--vex-override",
+    # SBOM Export (emitted by _sbom_export_flags, non-default values only;
+    # sbom_include_dependencies=false exports as --standalone).
+    "sbom_standard": "--sbom-standard",
+    "sbom_encoding": "--sbom-encoding",
+    "sbom_include_vex": "--no-vex",
+    "sbom_split": "--sbom-split",
+    "sbom_author": "--sbom-author",
+    "sbom_sign_key": "--sign-key",
+    "sbom_sign_mode": "--sign-embedded",  # only for mode "embedded"
+    "sbom_supplier": "--sbom-supplier",
+    "sbom_supplier_url": "--sbom-supplier-url",
+    "sbom_supplier_email": "--sbom-supplier-email",
+    "sbom_data_license": "--sbom-data-license",
+    "sbom_completeness": "--sbom-completeness",
+    "sbom_primary_license": "--sbom-primary-license",
+    "sbom_primary_copyright": "--sbom-primary-copyright",
     # external_changes is deliberately absent, like current_version_only: it
     # is default-true and its flag is the negation (--no-external-changes),
     # emitted by its own block in serialize_cli.
@@ -250,6 +272,10 @@ _BOOL_OVERRIDE_KEYS: frozenset[str] = frozenset(
         "component_status",
         "component_ids",
         "source_column",
+        # SBOM Export: two default TRUE — a string "false" must stay the opt-out.
+        "sbom_include_vex",
+        "sbom_include_dependencies",
+        "sbom_split",
     }
 )
 
@@ -436,6 +462,53 @@ _SBOM_TOGGLE_KEYS: frozenset[str] = frozenset(
     }
 )
 _MIN_SEVERITY_RECIPES = {"reachability vex coverage"}
+
+
+_SIGN_KEY_AT_RUN = (
+    '"${SBOM_SIGN_KEY:?set SBOM_SIGN_KEY to the signing key path or KMS URI}"'
+)
+
+
+def _sbom_export_flags(eff: dict[str, Any]) -> list[str]:
+    """``fs-report run`` flags for an SBOM Export step's non-default options.
+
+    Reads the same ``sbom_options_from`` the run path builds Config from, so the
+    exported command and the in-app run can't disagree. Keyless never exports
+    (the web can't set it). ``include_dependencies`` is emitted by the caller as
+    ``--standalone`` (one flag shared with other recipes).
+    """
+    from fs_report.sbom_export import SbomOptions
+
+    o, d = _sbom_options_from(eff), SbomOptions()
+    flags: list[str] = []
+    if o.standard != d.standard:
+        flags.append(f"--sbom-standard {_shquote(o.standard)}")
+    if (
+        o.encoding
+        and o.encoding != SbomOptions(standard=o.standard).resolved_encoding()
+    ):
+        flags.append(f"--sbom-encoding {_shquote(o.encoding)}")
+    if not o.include_vex:
+        flags.append("--no-vex")
+    if o.split:
+        flags.append("--sbom-split")
+    if o.author:
+        flags.append(f"--sbom-author {_shquote(o.author)}")
+    mode = str(eff.get("sbom_sign_mode") or "").strip()
+    if o.sign_key or mode in ("cosign", "embedded"):
+        # A saved mode never carries its key: the script asks for one when it
+        # runs rather than export an unsigned run.
+        key = _shquote(o.sign_key) if o.sign_key else _SIGN_KEY_AT_RUN
+        flags.append(f"--sign-key {key}")
+        if o.sign_embedded:
+            flags.append("--sign-embedded")
+    for f in ("supplier", "supplier_url", "supplier_email", "data_license",
+              "primary_license", "primary_copyright"):  # fmt: skip
+        if getattr(o, f):
+            flags.append(f"--sbom-{f.replace('_', '-')} {_shquote(getattr(o, f))}")
+    if o.completeness != d.completeness:
+        flags.append(f"--sbom-completeness {_shquote(o.completeness)}")
+    return flags
 
 
 def serialize_cli(model: dict[str, Any]) -> str:
@@ -645,7 +718,18 @@ def serialize_cli(model: dict[str, Any]) -> str:
                     parts.append(_CONFIG_KEY_TO_FLAG[_key])
         if eff.get("detailed"):
             parts.append("--detailed")
-        if eff.get("standalone"):
+        _is_sbom_export = _is_sbom_export_ref(ref)
+        if _is_sbom_export:
+            # Same merge as the run path (empty step values inherit global).
+            _sbom_eff = _effective_step_config(model, step)
+            parts.extend(_sbom_export_flags(_sbom_eff))
+        # SBOM Export: only sbom_include_dependencies decides, as in an in-app
+        # run (which ignores the shared `standalone`).
+        if (
+            not _sbom_options_from(_sbom_eff).include_dependencies
+            if _is_sbom_export
+            else eff.get("standalone")
+        ):
             parts.append("--standalone")
         if eff.get("product_only"):
             parts.append("--product-only")
@@ -1014,6 +1098,31 @@ def serialize_github_action(model: dict[str, Any]) -> str:
             for _key in sorted(_SBOM_TOGGLE_KEYS):
                 if _key in eff and _coerce_bool(eff[_key]):
                     unsupported_set_keys.append(_key)
+        # SBOM Export options are not action inputs either: name every one
+        # the step moved off its default (same reader as the CLI export).
+        if _is_sbom_export_ref(ref):
+            from fs_report.sbom_export import SbomOptions
+
+            _eff = _effective_step_config(model, step)
+            _o = _sbom_options_from(_eff)
+            _d = SbomOptions()
+            # Encoding at the standard's default is the default, not a change.
+            if _o.encoding == SbomOptions(standard=_o.standard).resolved_encoding():
+                _o = dataclasses.replace(_o, encoding=None)
+            unsupported_set_keys.extend(
+                f"sbom_{f}"
+                for f in ("standard", "encoding", "include_vex",
+                          "include_dependencies", "split", "author",
+                          "sign_key", "supplier", "supplier_url",
+                          "supplier_email", "data_license", "completeness",
+                          "primary_license", "primary_copyright")
+                if getattr(_o, f) != getattr(_d, f)
+            )  # fmt: skip
+            if str(_eff.get("sbom_sign_mode") or "").strip() in (
+                "cosign",
+                "embedded",
+            ):
+                unsupported_set_keys.append("sbom_sign_mode")
         if unsupported_set_keys:
             step_lines.append(
                 f"          # note: {', '.join(sorted(unsupported_set_keys))} "

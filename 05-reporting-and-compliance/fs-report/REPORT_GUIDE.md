@@ -15,6 +15,8 @@ This guide explains each report available in the Finite State Reporting Kit, wha
    - [User Activity](#user-activity) *(Operational)*
    - [Component Vulnerability Analysis](#component-vulnerability-analysis) *(Assessment)*
    - [Findings by Project](#findings-by-project) *(Assessment)*
+   - [Human Readable SBOM](#human-readable-sbom) *(Assessment, on-demand: shareable component inventory for one version)*
+   - [SBOM Export](#sbom-export) *(Assessment, on-demand: CycloneDX / SPDX SBOM with VEX for one version)*
    - [Component List](#component-list) *(Assessment)*
    - [License Report](#license-report) *(Assessment, on-demand: license risk by category)*
    - [Triage Prioritization](#triage-prioritization) *(Assessment)*
@@ -89,6 +91,8 @@ Assessment reports show the current security state of the target — the latest 
 | **Component Vulnerability Analysis** | Current vulnerability posture by component |
 | **Findings by Project** | Current findings inventory per project |
 | **Component List** | Current software component inventory with license analysis |
+| **Human Readable SBOM** | Shareable component inventory for one project version (on-demand) |
+| **SBOM Export** | CycloneDX / SPDX SBOM with VEX for one project version; writes SBOM files, not a report (on-demand) |
 | **License Report** | License risk distribution by category (on-demand) |
 | **Triage Prioritization** | Current triage priorities based on today's data |
 | **Reachability VEX Coverage** | How many findings could be auto-resolved right now — unreachable findings still missing NOT_AFFECTED, rolled up per project version with severity breakdown (on-demand) |
@@ -419,6 +423,57 @@ fs-report run --recipe "Scan Analysis" --period 14d
 fs-report run --recipe "Human Readable SBOM" --project RBR850 --output ./reports
 ```
 
+---
+
+### SBOM Export
+
+**Category:** Assessment (on-demand) — a machine-readable SBOM for one project version.
+
+**Purpose:** A standards SBOM to hand to a customer, regulator or tool: components plus VEX, built directly from live platform data rather than from the platform's own SBOM export.
+
+**Who should use it:** Product security and compliance teams that publish SBOMs, and anyone feeding an SBOM into another tool.
+
+**Important:** This report does **not** run by default, and it requires `--project`:
+
+```bash
+fs-report run --recipe "SBOM Export" --project "Router FW"
+```
+
+**Outputs:** only the SBOM file(s), under `SBOM Export/` in the output directory, plus a Sigstore bundle when signing with cosign (an embedded signature goes inside the SBOM). No HTML, CSV, XLSX or Markdown report is written.
+
+| Standard (`--sbom-standard`) | Encodings (`--sbom-encoding`, first is the default) |
+|---|---|
+| `cyclonedx-1.6` (default), `cyclonedx-1.7` | `json`, `xml`, `protobuf` |
+| `spdx-2.3` | `json`, `yaml`, `xml`, `rdf-xml`, `tag-value` |
+| `spdx-3.0` | `json-ld` |
+
+Every combination passed the official validators (CycloneDX CLI, pyspdxtools, SPDX tools-java) when it shipped. An invalid standard/encoding pair fails before any API call.
+
+**Scope:** `--project` is required and must match exactly one project; a name shared by several fails and lists each with its folder (narrow with `--folder`, or pass the ID). The project's current version is used unless `--version` pins one. Dependency projects are nested in by default; `--standalone` drops them, and `--sbom-split` writes one document per project version instead of one bundle.
+
+**What it carries:**
+- **Components** with purl, CPE, licences (declared and concluded), supplier and hashes where the platform has them. A missing value is omitted (CycloneDX) or `NOASSERTION` (SPDX), never invented; package namespaces such as `generic` or `ipkg` are not treated as suppliers.
+- **VEX** for CVE-type advisories only (CVE, GHSA, PYSEC and the like; no `FS-*`, config, SAST, credential or crypto findings). A finding nobody has triaged carries no analysis: the export never claims `in_triage` on the platform's behalf. `--no-vex` writes components only.
+- **Exploit data** where the platform has it: CISA KEV, VulnCheck KEV, EPSS and exploit maturity. It never sets a VEX status.
+- **Author:** the API token's user by default, or `--sbom-author "Acme PSIRT"`.
+
+**Your own metadata** (optional, never derived from platform data): `--sbom-supplier` (plus `--sbom-supplier-url`, `--sbom-supplier-email`), `--sbom-data-license`, `--sbom-completeness complete|incomplete|unknown`, `--sbom-primary-license` and `--sbom-primary-copyright`. Two format limits: SPDX 2.3 has no field for completeness or a supplier URL, so neither is written there; and SPDX documents are always CC0-1.0, so any other `--sbom-data-license` is rejected for them.
+
+**Signing** (off by default): `--sign-key cosign.key` writes a Sigstore bundle beside the file without a public log entry; `--sign-keyless` publishes to Rekor (CLI only); `--sign-key key.pem --sign-embedded` embeds a JSF (CycloneDX JSON) or XML-DSig (CycloneDX XML) signature. Key passwords come only from `COSIGN_PASSWORD`.
+
+**Completeness:** the fetch fails rather than writing an SBOM from a short list. A Stop in the web UI takes effect between pages and before writing or signing.
+
+**Web UI:** the SBOM Export tile under Compliance has the same options, with key-based signing only.
+
+```bash
+fs-report run --recipe "SBOM Export" --project "Router FW"                     # CycloneDX 1.6 JSON
+fs-report run --recipe "SBOM Export" --project "Router FW" --sbom-standard spdx-2.3 --sbom-encoding tag-value
+fs-report run --recipe "SBOM Export" --project "Router FW" --sbom-split        # one file per project version
+fs-report run --recipe "SBOM Export" --project "Router FW" --no-vex --standalone
+```
+
+---
+
 ### Component List
 
 **Category:** Assessment — shows the current component inventory regardless of time period.
@@ -668,7 +723,7 @@ Each finding accumulates points from five factors:
 | | LOCAL | +5 |
 | | PHYSICAL | 0 |
 | **EPSS** | Scaled by percentile (0-1) | 0-20 |
-| **CVSS** | Scaled by score/10 | 0-10 |
+| **CVSS** | CVSS base score (CVSS 6.9 → 6.9 points) | 0-10 |
 | **VEX Status** | NOT_AFFECTED, RESOLVED, or RESOLVED_WITH_PEDIGREE | -50 |
 
 **VEX Status Penalty:**
@@ -736,7 +791,7 @@ parameters:
 
 Supported operators: `>`, `>=`, `<`, `<=`, `==`, `!=`, `in` (value is a list).
 
-Available fields for gate conditions include: `reachability_score`, `has_exploit`, `in_kev`, `attack_vector`, `epss_percentile`, `risk`, `severity`, and any other column present after normalization.
+Available fields for gate conditions include: `reachability_score`, `has_exploit`, `in_kev`, `attack_vector`, `epss_percentile`, `cvss_score` (CVSS, 0–10), `risk` (the platform's value, CVSS × 10, so 0–100), `severity`, and any other column present after normalization. Use `cvss_score` for a CVSS threshold: `risk > 9` matches CVSS above 0.9.
 
 Examples of customization:
 - **Include ADJACENT vector in Gate 2**: change `value: ["NETWORK"]` to `value: ["NETWORK", "ADJACENT"]`
@@ -1516,7 +1571,9 @@ Produces a detailed dossier for each specified CVE — description, CWE, known e
 | **Reachability summary** | "Reachable in N of M projects" (dossier mode only) |
 | **Affected projects** | Per-project reachability (REACHABLE/UNREACHABLE/INCONCLUSIVE), component, detected date |
 
-**Formats:** HTML, CSV, XLSX
+**When a CVE's lookup fails:** reachability and exploit details come from one findings lookup per CVE. If it fails (for example on a 504), the CVE still appears with its severity, EPSS, KEV and affected projects, but its projects read `UNKNOWN` and its exploits may be missing. The dossier then carries an amber "could not be fetched" banner, its exploits read "Not available", the failed CVEs are named above the dossiers, and CSV/XLSX mark the row `Reachability Lookup Failed`. Re-run to fill them in; the flag means the data is missing, not that the code is unreachable.
+
+**Formats:** HTML, CSV, XLSX, MD
 
 **Examples:**
 

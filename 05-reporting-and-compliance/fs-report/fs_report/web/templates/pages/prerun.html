@@ -661,6 +661,15 @@
         </details>
         {% endif %}
 
+        {# SBOM Export only (show_sbom_export / SBOM_EXPORT_RECIPES). #}
+        {% if show_sbom_export %}
+        <details class="form-section" open>
+            <summary class="form-section-title">SBOM Export</summary>
+            {% set pfx = 'pre' %}{% set sx = state %}
+            {% include "components/_sbom_export_options.html" %}
+        </details>
+        {% endif %}
+
         <!-- Advanced Options (collapsed by default) -->
         <details class="form-section">
             <summary class="form-section-title">Advanced Options</summary>

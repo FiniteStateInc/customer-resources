@@ -1,0 +1,158 @@
+{# SBOM Export options (show_sbom_export / SBOM_EXPORT_RECIPES).
+
+   Shared by the configure modal (pages/prerun.html: pfx="pre", sx=state) and
+   the card back (components/_card_config.html: pfx="cardcfg", sx=eff, plus
+   is_ov for the inherit markers). command-center.js (_wireSbomExport) filters
+   the encoding list by standard from `sbom_encodings` (VALID_ENCODINGS) and
+   drives the signing mode; the server re-validates every combination with
+   SbomOptions.validate(web=True) on submit.
+
+   Signing is key-based only: a key path or KMS URI on the machine running
+   fs-report. There is deliberately no password or token field — an encrypted
+   key reads COSIGN_PASSWORD from the server's environment.
+
+   sbom_sign_mode (none|cosign|embedded) is persisted and kept in run history;
+   the key path never is (no card / Settings / history copy), so the card back
+   shows a note instead of a key field and every launch, replays included,
+   asks for it. sign_embedded is derived server-side from the mode. #}
+{% set _ov = is_ov is defined %}
+{% set _std = sx.get('sbom_standard') or 'cyclonedx-1.6' %}
+{% if _std not in sbom_encodings %}{% set _std = 'cyclonedx-1.6' %}{% endif %}
+{% set _encs = sbom_encodings[_std] %}
+{% set _enc = sx.get('sbom_encoding') or _encs[0] %}
+{% set _mode = sx.get('sbom_sign_mode') or 'none' %}
+{% if _mode not in ('none', 'cosign', 'embedded') %}{% set _mode = 'none' %}{% endif %}
+{% set _emb_ok = _std.startswith('cyclonedx-') and _enc in ('json', 'xml') %}
+{% set _labels = {'cyclonedx-1.6': 'CycloneDX 1.6', 'cyclonedx-1.7': 'CycloneDX 1.7', 'spdx-2.3': 'SPDX 2.3', 'spdx-3.0': 'SPDX 3.0'} %}
+<div class="sbom-export-options" data-sbom-export>
+  <div class="form-group">
+    <label for="{{ pfx }}-sbom-standard">Standard</label>
+    <select id="{{ pfx }}-sbom-standard" name="sbom_standard"
+            data-sbom-encodings='{{ sbom_encodings | tojson }}'
+            {% if _ov %}data-override="{{ '1' if is_ov('sbom_standard') else '0' }}"{% endif %}>
+      {% for std in sbom_encodings %}
+      <option value="{{ std }}" {% if std == _std %}selected{% endif %}>{{ _labels.get(std, std) }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="form-group">
+    <label for="{{ pfx }}-sbom-encoding">Encoding</label>
+    <select id="{{ pfx }}-sbom-encoding" name="sbom_encoding"
+            {% if _ov %}data-override="{{ '1' if is_ov('sbom_encoding') else '0' }}"{% endif %}>
+      {% for enc in _encs %}
+      <option value="{{ enc }}" {% if enc == _enc %}selected{% endif %}>{{ enc }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="form-group form-row">
+    <label for="{{ pfx }}-sbom-include-vex">Include vulnerabilities (VEX)</label>
+    <label class="toggle">
+      <input type="checkbox" id="{{ pfx }}-sbom-include-vex" name="sbom_include_vex"
+             {% if sx.get('sbom_include_vex', True) | coerce_bool %}checked{% endif %}
+             {% if _ov %}data-override="{{ '1' if is_ov('sbom_include_vex') else '0' }}"{% endif %}>
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+  <small class="form-hint">CVE-type findings with their triage status. Off gives a components-only SBOM.</small>
+  <div class="form-group form-row">
+    <label for="{{ pfx }}-sbom-include-deps">Include project dependencies</label>
+    <label class="toggle">
+      <input type="checkbox" id="{{ pfx }}-sbom-include-deps" name="sbom_include_dependencies"
+             {% if sx.get('sbom_include_dependencies', True) | coerce_bool %}checked{% endif %}
+             {% if _ov %}data-override="{{ '1' if is_ov('sbom_include_dependencies') else '0' }}"{% endif %}>
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+  <div class="form-group form-row">
+    <label for="{{ pfx }}-sbom-split">Separate file per project</label>
+    <label class="toggle">
+      <input type="checkbox" id="{{ pfx }}-sbom-split" name="sbom_split"
+             {% if sx.get('sbom_split') | coerce_bool %}checked{% endif %}
+             {% if _ov %}data-override="{{ '1' if is_ov('sbom_split') else '0' }}"{% endif %}>
+      <span class="toggle-slider"></span>
+    </label>
+  </div>
+  <small class="form-hint">One document per project version, each linking its dependencies. Off by default.</small>
+  <div class="form-group">
+    <label for="{{ pfx }}-sbom-author">Author</label>
+    <input type="text" id="{{ pfx }}-sbom-author" name="sbom_author"
+           value="{{ sx.get('sbom_author') or '' }}"
+           placeholder="{{ sbom_author_placeholder or 'API token user' }}"
+           {% if _ov %}data-override="{{ '1' if is_ov('sbom_author') else '0' }}"{% endif %}>
+    <small class="form-hint">Blank writes the API token user as the author. Text here is written as the authoring organization.</small>
+  </div>
+  <div class="form-group">
+    <label for="{{ pfx }}-sbom-supplier">Supplier</label>
+    <input type="text" id="{{ pfx }}-sbom-supplier" name="sbom_supplier"
+           value="{{ sx.get('sbom_supplier') or '' }}" placeholder="Not stated"
+           {% if _ov %}data-override="{{ '1' if is_ov('sbom_supplier') else '0' }}"{% endif %}>
+    <small class="form-hint">The organization supplying the described product, as you assert it. Blank writes no supplier.</small>
+  </div>
+  <div class="form-group">
+    <label for="{{ pfx }}-sbom-supplier-url">Supplier URL</label>
+    <input type="url" id="{{ pfx }}-sbom-supplier-url" name="sbom_supplier_url"
+           value="{{ sx.get('sbom_supplier_url') or '' }}" placeholder="https://…"
+           {% if _ov %}data-override="{{ '1' if is_ov('sbom_supplier_url') else '0' }}"{% endif %}>
+  </div>
+  <div class="form-group">
+    <label for="{{ pfx }}-sbom-supplier-email">Supplier email</label>
+    <input type="email" id="{{ pfx }}-sbom-supplier-email" name="sbom_supplier_email"
+           value="{{ sx.get('sbom_supplier_email') or '' }}" placeholder="psirt@example.com"
+           {% if _ov %}data-override="{{ '1' if is_ov('sbom_supplier_email') else '0' }}"{% endif %}>
+    <small class="form-hint">URL and email need a supplier name.</small>
+  </div>
+  <div class="form-group">
+    <label for="{{ pfx }}-sbom-data-license">SBOM data licence</label>
+    <input type="text" id="{{ pfx }}-sbom-data-license" name="sbom_data_license"
+           value="{{ sx.get('sbom_data_license') or '' }}" placeholder="e.g. CC0-1.0"
+           autocomplete="off" spellcheck="false"
+           {% if _ov %}data-override="{{ '1' if is_ov('sbom_data_license') else '0' }}"{% endif %}>
+    <small class="form-hint">SPDX licence id for the SBOM document itself (CycloneDX). SPDX documents are always CC0-1.0.</small>
+  </div>
+  <div class="form-group">
+    <label for="{{ pfx }}-sbom-primary-license">Product licence (SPDX expression)</label>
+    <input type="text" id="{{ pfx }}-sbom-primary-license" name="sbom_primary_license"
+           value="{{ sx.get('sbom_primary_license') or '' }}" placeholder="e.g. GPL-2.0-only"
+           autocomplete="off" spellcheck="false"
+           {% if _ov %}data-override="{{ '1' if is_ov('sbom_primary_license') else '0' }}"{% endif %}>
+    <small class="form-hint">The licence you conclude for the described product. Blank writes none.</small>
+  </div>
+  <div class="form-group">
+    <label for="{{ pfx }}-sbom-primary-copyright">Product copyright</label>
+    <input type="text" id="{{ pfx }}-sbom-primary-copyright" name="sbom_primary_copyright"
+           value="{{ sx.get('sbom_primary_copyright') or '' }}" placeholder="Copyright 2026 Example, Inc."
+           {% if _ov %}data-override="{{ '1' if is_ov('sbom_primary_copyright') else '0' }}"{% endif %}>
+    <small class="form-hint">Copyright text of the described product (one line). Blank writes none.</small>
+  </div>
+  {% set _cmp = sx.get('sbom_completeness') or 'unknown' %}
+  <div class="form-group">
+    <label for="{{ pfx }}-sbom-completeness">Completeness</label>
+    <select id="{{ pfx }}-sbom-completeness" name="sbom_completeness"
+            {% if _ov %}data-override="{{ '1' if is_ov('sbom_completeness') else '0' }}"{% endif %}>
+      {% for v, label in (('unknown', 'Unknown'), ('complete', 'Complete'), ('incomplete', 'Incomplete')) %}
+      <option value="{{ v }}" {% if v == _cmp %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <small class="form-hint">Your attestation: "Complete" asserts the component inventory and dependency relationships are complete.</small>
+  </div>
+  <div class="form-group">
+    <label for="{{ pfx }}-sbom-sign-mode">Signing</label>
+    <select id="{{ pfx }}-sbom-sign-mode" name="sbom_sign_mode" data-sbom-sign-mode
+            {% if _ov %}data-override="{{ '1' if is_ov('sbom_sign_mode') else '0' }}"{% endif %}>
+      <option value="none" {% if _mode == 'none' %}selected{% endif %}>None</option>
+      <option value="cosign" {% if _mode == 'cosign' %}selected{% endif %}>Cosign key (detached .bundle)</option>
+      <option value="embedded" {% if _mode == 'embedded' %}selected{% endif %}{% if not _emb_ok %} disabled{% endif %}>Embedded signature (CycloneDX JSON / XML)</option>
+    </select>
+  </div>
+  <div class="form-group" data-sbom-sign-key-row{% if _mode == 'none' %} hidden{% endif %}>
+    {% if _ov %}
+    <small class="form-hint">The key path is entered when launching; it is never saved.</small>
+    {% else %}
+    <label for="{{ pfx }}-sbom-sign-key">Key path or KMS URI</label>
+    <input type="text" id="{{ pfx }}-sbom-sign-key" name="sbom_sign_key"
+           value="" placeholder="/path/to/cosign.key or awskms://…"
+           autocomplete="off" spellcheck="false">
+    <small class="form-hint">A path on the machine running fs-report — never uploaded, saved, or stored in run history. Embedded signing needs a PEM private key. An encrypted key reads COSIGN_PASSWORD from the server's environment.</small>
+    {% endif %}
+  </div>
+</div>

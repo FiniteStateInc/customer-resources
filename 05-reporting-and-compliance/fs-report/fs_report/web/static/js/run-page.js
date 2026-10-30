@@ -140,6 +140,10 @@
       pct: "0%",
       canStop: false,
       canReplay: false,
+      /* SBOM Export: projects matching an ambiguous name (done.candidates). */
+      candidates: [],
+      /* Non-HTML outputs (e.g. SBOM Export's .cdx.json) from done.files. */
+      outputs: [],
 
       /* ---- internal (non-template) ---- */
       runStates: {},
@@ -537,6 +541,10 @@
         }
         this.canStop = false;
         this.canReplay = !!(window.__RUN && window.__RUN.replay);
+        this.candidates = Array.isArray(data.candidates) ? data.candidates : [];
+        this.outputs = (data.files || []).filter(function (f) {
+          return !/\.html$/i.test(f);
+        });
         this.closeStream();
 
         if (status === "cancelled") {
@@ -997,6 +1005,10 @@
         return "queued";
       },
 
+      outputUrl: function (f) {
+        return "/output/" + f.split("/").map(encodeURIComponent).join("/");
+      },
+
       nodeMsg: function (id) {
         var rs = this.runStates[id];
         if (!rs) return "";
@@ -1059,6 +1071,18 @@
                `done`; onDoneEvent's reconciliation settles to "cancelled". */
           }
         );
+      },
+
+      /* Re-run with the chosen project's ID (the engine resolves the ID, so
+         the same-named projects can't collide again). */
+      pickCandidate: function (c) {
+        var blob = window.__RUN && window.__RUN.replay;
+        if (!blob || !c || !c.id) return;
+        var fields = Object.assign({}, blob.fields || {});
+        fields.project_filter = c.name || c.id;
+        fields.project_id = c.id;
+        delete fields.folder_filter;
+        this.submitReplay(Object.assign({}, blob, { fields: fields }));
       },
 
       replay: function () {

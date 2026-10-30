@@ -155,8 +155,8 @@ body.no-backdrop::before{display:none}
 /* ============================================================ OVERLAY CHROME
    Palette, fast-run modal, cheatsheet.
    (tweaks panel chrome excluded — tweaks.css owns it) */
-.ov{position:fixed;inset:0;z-index:70;background:rgba(5,8,16,.55);backdrop-filter:blur(4px);display:none}
-.ov.open{display:block}
+.shell-ov{position:fixed;inset:0;z-index:70;background:rgba(5,8,16,.55);backdrop-filter:blur(4px);display:none}
+.shell-ov.open{display:block}
 .pal{position:fixed;top:12vh;left:50%;transform:translateX(-50%);width:min(620px,92vw);z-index:71;display:none;background:rgba(14,18,30,.98);border:1px solid rgba(var(--accent-rgb),.3);border-radius:var(--r-lg);box-shadow:0 30px 80px rgba(0,0,0,.6),0 0 0 1px rgba(var(--accent-rgb),.08);overflow:hidden}
 .pal.open{display:block;animation:palin .2s var(--ease-out)}
 @keyframes palin{from{opacity:0;transform:translate(-50%,-8px)}to{opacity:1;transform:translate(-50%,0)}}

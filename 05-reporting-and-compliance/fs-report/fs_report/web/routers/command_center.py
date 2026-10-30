@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -82,6 +83,20 @@ _STR_KEYS: tuple[str, ...] = (
     # filter would silently narrow every run) -> also in _NO_GLOBAL_KEYS.
     "include_versions",
     "exclude_versions",
+    # SBOM Export. sbom_standard / sbom_sign_mode have DEFAULTS entries; the
+    # rest are in _NO_GLOBAL_KEYS. No sbom_sign_key: a card saves a default
+    # signing mode only; the key path is entered per launch.
+    "sbom_standard",
+    "sbom_sign_mode",
+    "sbom_encoding",
+    "sbom_author",
+    "sbom_completeness",  # DEFAULTS entry ("unknown")
+    "sbom_supplier",
+    "sbom_supplier_url",
+    "sbom_supplier_email",
+    "sbom_data_license",
+    "sbom_primary_license",
+    "sbom_primary_copyright",
 )
 _INT_KEYS: tuple[str, ...] = ("top", "triage")
 _BOOL_KEYS: tuple[str, ...] = (
@@ -106,6 +121,10 @@ _BOOL_KEYS: tuple[str, ...] = (
     # SP2: auto-apply VEX toggle (has a DEFAULTS entry = False, so it routes
     # through the diff-vs-default branch like vex_override).
     "autotriage",
+    # SBOM Export (DEFAULTS entries: VEX + dependencies on, split off).
+    "sbom_include_vex",
+    "sbom_include_dependencies",
+    "sbom_split",
 )
 # Keys with NO DEFAULTS entry. They can still carry a live global set via
 # config.yaml (they round-trip through ``state._data``), so they ARE diffed
@@ -138,6 +157,14 @@ _NO_GLOBAL_KEYS: frozenset[str] = frozenset(
         "autotriage_status",  # SP2: comma-joined status filter, no DEFAULTS entry
         "include_versions",  # version-name glob text, no DEFAULTS entry
         "exclude_versions",
+        "sbom_encoding",
+        "sbom_author",
+        "sbom_supplier",
+        "sbom_supplier_url",
+        "sbom_supplier_email",
+        "sbom_data_license",
+        "sbom_primary_license",
+        "sbom_primary_copyright",
     }
 )
 
@@ -620,11 +647,24 @@ async def card_config_fragment(
                 return override[key]
             return state.get(key, default)
 
+    from fs_report.web.routers.run import sbom_author_placeholder
+
+    sbom_author_hint = (
+        await asyncio.to_thread(
+            sbom_author_placeholder,
+            str(state.get("domain") or ""),
+            str(state.get("token") or ""),
+        )
+        if fields["show_sbom_export"]
+        else ""
+    )
+
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
         "components/_card_config.html",
         {
+            "sbom_author_placeholder": sbom_author_hint,
             "recipe": recipe_obj.name,
             "nonce": nonce,
             "eff": _Eff(),
@@ -671,19 +711,24 @@ async def card_config_save(
         )
 
     # Request-time validation of the coerced form values (SP1).  Inline import
-    # to break the run <-> command_center import cycle (mirrors the inline import
-    # of compute_prerun_fields in card_config_fragment above).
-    #
-    # This IS the card-config equivalent of "period↔range mutual clearing": a
-    # card-config save REPLACES the recipe's stored override (it does not fold a
-    # payload over a saved override the way start_run does), so there is no
-    # base/incoming merge to perform here.  Rejecting an ambiguous combination
-    # (e.g. both a named period AND a custom range) at validation is the correct
-    # enforcement for this surface.  Do NOT call merge_with_period_range_clearing
-    # here — there is no merge at the card-config save surface.
-    from fs_report.web.routers.run import validate_run_overrides
+    # to break the run <-> command_center import cycle.  A card save REPLACES
+    # the stored override, so period+range together is rejected here rather
+    # than cleared.  SBOM options are checked as start_run checks them: the
+    # saved override merged over global Settings, so save and launch agree.
+    from fs_report.web.routers.run import (
+        is_sbom_export,
+        merge_with_period_range_clearing,
+        sbom_option_errors,
+        validate_run_overrides,
+    )
 
+    override = _build_override(state, coerced)
     val_errors = validate_run_overrides(coerced)
+    if any(k.startswith("sbom_") for k in override) or is_sbom_export(recipe_name):
+        val_errors += sbom_option_errors(
+            merge_with_period_range_clearing(state.to_dict(), override),
+            key_at_launch=True,
+        )
     if val_errors:
         return JSONResponse(
             {"error": "; ".join(val_errors), "errors": val_errors}, status_code=400
@@ -703,8 +748,6 @@ async def card_config_save(
             {"error": "; ".join(destr_errors), "errors": destr_errors},
             status_code=400,
         )
-
-    override = _build_override(state, coerced)
 
     # Validate card-suppliable required inputs (requires_cve → cve_filter)
     # against the EFFECTIVE value (this save's sparse override merged OVER the

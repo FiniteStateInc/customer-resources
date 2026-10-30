@@ -58,7 +58,7 @@
    *
    * Comparisons carry run-only inputs — finding-types + Left/Right scope
    * override (Decision 11) — that only the prerun modal collects, so EVERY
-   * off-card launch surface (run bar, palette) must route them through
+   * off-card launch surface (run bar, R key, #run= link) must route them through
    * __openConfigure rather than firing a bare /api/run with global defaults.
    * Sourced from the bootstrapped window.__CC.recipes list (each entry carries
    * a `kind` of "comparison" | "compound" | null). */
@@ -136,7 +136,7 @@
 
   /**
    * Store the current project/version/folder scope.
-   * Called by palette.js when a project item is activated (before a one-click run).
+   * Called by palette.js when a project or folder item is activated.
    */
   window.__setScope = function (project, version, folder, projectId) {
     SCOPE.project = project || '';
@@ -175,8 +175,8 @@
    *   2. else recipe's scope-req unmet by the run-bar scope → toast the hint,
    *      do NOT fire.
    *   3. else → run.
-   * The palette's Alt+Enter (activate(true) → __openConfigure) stays an
-   * explicit always-modal gesture; it does NOT route through here.
+   * The command palette never routes through here: choosing a report there
+   * (Enter, Alt+Enter or a click) always opens __openConfigure.
    *
    * @param {string} recipe  Recipe label (display name, e.g. "Triage Prioritization")
    * @param {object} [opts]  Optional { project, version, folder } overrides; falls back to SCOPE

@@ -522,7 +522,7 @@
                         <li><strong>Exploit/KEV</strong>: +{{ scoring_config.weights.exploit }} (exploit), +{{ scoring_config.weights.kev_only }} (KEV only)</li>
                         <li><strong>Attack vector</strong>: +{{ scoring_config.weights.vector_network }} (NETWORK), +{{ scoring_config.weights.vector_adjacent }} (ADJACENT), +{{ scoring_config.weights.vector_local }} (LOCAL), {{ scoring_config.weights.vector_physical }} (PHYSICAL)</li>
                         <li><strong>EPSS</strong>: 0–{{ scoring_config.weights.epss_max }} points (scaled by percentile)</li>
-                        <li><strong>CVSS</strong>: 0–{{ scoring_config.weights.cvss_max }} points (scaled by score/10)</li>
+                        <li><strong>CVSS</strong>: 0–{{ scoring_config.weights.cvss_max }} points (scaled by CVSS/10)</li>
                     </ul>
                     <p>Bands: HIGH ≥ {{ scoring_config.weights.band_high_threshold }}, MEDIUM ≥ {{ scoring_config.weights.band_medium_threshold }}, LOW ≥ {{ scoring_config.weights.band_low_threshold }}, INFO &lt; {{ scoring_config.weights.band_low_threshold }}</p>
 
@@ -928,7 +928,7 @@
                                 <td>{% if row.in_kev %}<span class="signal signal-kev">kev</span>{% else %}<span class="signal-none">—</span>{% endif %}</td>
                                 <td class="mono">{{ row.attack_vector }}</td>
                                 <td class="num">{{ "%.1f"|format(row.epss_percentile|default(0) * 100) if row.epss_percentile else '—' }}%</td>
-                                <td class="num">{{ row.risk }}</td>
+                                <td class="num">{{ "%.1f"|format(row.cvss_score) if row.cvss_score is number and row.cvss_score == row.cvss_score else '—' }}</td>
                                 {% if ai_finding_prompts and not _is_bundle %}
                                 <td>
                                     {% if row.finding_id in ai_finding_prompts %}
