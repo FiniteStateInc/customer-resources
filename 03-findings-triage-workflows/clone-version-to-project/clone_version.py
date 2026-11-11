@@ -55,7 +55,6 @@ MAX_FINDING_COMMENT = 10000
 DEFAULT_COMPONENT_STATUS = "NEEDS_REVIEW"
 DEFAULT_COMPONENT_TYPE = "library"  # CycloneDX's default component type
 SCAN_DONE = {"COMPLETED", "COMPLETED_WITH_WARNINGS"}
-SCAN_NOT_UPLOADED = {"INITIAL", "PENDING_UPLOAD"}  # scan created, SBOM never received
 SCAN_FAILED = {"ERROR", "FAILED", "CANCELLED", "UPLOAD_FAILED", "NOT_APPLICABLE"}
 RETRY_STATUSES = {429, 502, 503, 504}
 COPY_PREFIX = "[Copied from "
@@ -635,8 +634,9 @@ def _try(api, report, method, path, body, label):
     try:
         api.request(method, path, body=body)
         return True
-    except (ApiError, NetworkError) as e:
-        # One failed item is recorded and the run continues with the rest.
+    except ApiError as e:
+        # One rejected item is recorded and the run continues with the rest. A
+        # NetworkError is not caught here: it stops the run (see README, resuming).
         print(f"  FAILED {label}: {e}")
         report["failures"].append({"action": label, "error": str(e)})
         return False
@@ -673,7 +673,10 @@ def main():
     parser.add_argument("--force-target", action="store_true", help="With --target-version: skip the check that this script created it")
     parser.add_argument("--scan-timeout", type=int, default=180, help="Minutes to wait for the SBOM import (default 180)")
     parser.add_argument("--dry-run", action="store_true", help="Read the source and show what would be copied; no writes")
-    parser.add_argument("--report", default="clone_report.json", help="Where to write the JSON report")
+    parser.add_argument(
+        "--report", default=time.strftime("clone_report_%Y%m%d-%H%M%S.json"),
+        help="Where to write the JSON report (default: a new timestamped file, so earlier reports are kept)",
+    )
     parser.add_argument("--self-test", action="store_true", help="Run the built-in checks and exit")
     args = parser.parse_args()
 
@@ -765,11 +768,6 @@ def run(api, args, domain, report):
         scans = scans.get("items", []) if isinstance(scans, dict) else scans
         if not scans:
             raise SystemExit("The target version has no scan; run without --target-version to create one.")
-        if (scans[0].get("status") or "").upper() in SCAN_NOT_UPLOADED:
-            raise SystemExit(
-                "The target version's SBOM upload never completed, so there is nothing to resume. Delete the "
-                "new project and run again without --target-version."
-            )
         wait_for_scan(api, scans[0]["id"], timeout_s)
     else:
         print(f"Creating project '{args.new_project_name}' ...")
@@ -1001,10 +999,12 @@ def self_test():
         raise AssertionError("network error was not raised")
     except NetworkError as e:
         assert "network error on POST /projects" in str(e) and "--target-version" in str(e)
-    # In a per-item apply step the same error is one recorded failure, not the end of the run.
-    rep = {"failures": []}
-    assert _try(net_api, rep, "POST", "/findings/v/f/comments", {"comment": "x"}, "comment") is False
-    assert len(rep["failures"]) == 1
+    # It stops the run in a per-item apply step too, rather than failing every remaining item.
+    try:
+        _try(net_api, {"failures": []}, "POST", "/findings/v/f/comments", {"comment": "x"}, "comment")
+        raise AssertionError("network error was swallowed")
+    except NetworkError:
+        pass
 
     # Retry-After: seconds or an HTTP date; otherwise exponential backoff.
     assert retry_delay("7", 0) == 7.0 and retry_delay(None, 2) == 8.0 and retry_delay("garbage", 0) == 2.0
