@@ -55,6 +55,7 @@ MAX_FINDING_COMMENT = 10000
 DEFAULT_COMPONENT_STATUS = "NEEDS_REVIEW"
 DEFAULT_COMPONENT_TYPE = "library"  # CycloneDX's default component type
 SCAN_DONE = {"COMPLETED", "COMPLETED_WITH_WARNINGS"}
+SCAN_NOT_UPLOADED = {"INITIAL", "PENDING_UPLOAD"}  # scan created, SBOM never received
 SCAN_FAILED = {"ERROR", "FAILED", "CANCELLED", "UPLOAD_FAILED", "NOT_APPLICABLE"}
 RETRY_STATUSES = {429, 502, 503, 504}
 COPY_PREFIX = "[Copied from "
@@ -96,7 +97,7 @@ class Api:
                     print(f"  network error on {method} {path}; retrying in {delay:.0f}s")
                     time.sleep(delay)
                     continue
-                raise RuntimeError(
+                raise NetworkError(
                     f"network error on {method} {path or 'upload'}: {e}. If the project was already created, "
                     f"re-run with --target-version to continue."
                 ) from e
@@ -141,6 +142,10 @@ class Api:
                 return rows
             previous = page
             offset += len(page)
+
+
+class NetworkError(RuntimeError):
+    """A request that could not reach the API (connection dropped, timed out)."""
 
 
 class ApiError(Exception):
@@ -630,7 +635,8 @@ def _try(api, report, method, path, body, label):
     try:
         api.request(method, path, body=body)
         return True
-    except ApiError as e:
+    except (ApiError, NetworkError) as e:
+        # One failed item is recorded and the run continues with the rest.
         print(f"  FAILED {label}: {e}")
         report["failures"].append({"action": label, "error": str(e)})
         return False
@@ -744,9 +750,9 @@ def run(api, args, domain, report):
             {"name": c["name"], "version": c.get("version"), "purl": c.get("purl"), "triaged": has_component_triage(c)}
             for c in unmatched
         ]
-        triaged_unmatched = sum(1 for c in report["unmatched_components"] if c["triaged"])
-        if triaged_unmatched:
-            print(f"  {triaged_unmatched} of them have triage; a real run would report them and exit 1")
+        preview_triaged = sum(1 for c in report["unmatched_components"] if c["triaged"])
+        if preview_triaged:
+            print(f"  {preview_triaged} of them have triage; a real run would report them and exit 1")
         return 0
 
     timeout_s = args.scan_timeout * 60
@@ -759,6 +765,11 @@ def run(api, args, domain, report):
         scans = scans.get("items", []) if isinstance(scans, dict) else scans
         if not scans:
             raise SystemExit("The target version has no scan; run without --target-version to create one.")
+        if (scans[0].get("status") or "").upper() in SCAN_NOT_UPLOADED:
+            raise SystemExit(
+                "The target version's SBOM upload never completed, so there is nothing to resume. Delete the "
+                "new project and run again without --target-version."
+            )
         wait_for_scan(api, scans[0]["id"], timeout_s)
     else:
         print(f"Creating project '{args.new_project_name}' ...")
@@ -988,8 +999,12 @@ def self_test():
     try:
         net_api.request("POST", "/projects", body={})
         raise AssertionError("network error was not raised")
-    except RuntimeError as e:
+    except NetworkError as e:
         assert "network error on POST /projects" in str(e) and "--target-version" in str(e)
+    # In a per-item apply step the same error is one recorded failure, not the end of the run.
+    rep = {"failures": []}
+    assert _try(net_api, rep, "POST", "/findings/v/f/comments", {"comment": "x"}, "comment") is False
+    assert len(rep["failures"]) == 1
 
     # Retry-After: seconds or an HTTP date; otherwise exponential backoff.
     assert retry_delay("7", 0) == 7.0 and retry_delay(None, 2) == 8.0 and retry_delay("garbage", 0) == 2.0
