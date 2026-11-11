@@ -117,8 +117,12 @@ class Api:
             page = body.get("items", []) if isinstance(body, dict) else body
             total = resp.headers.get("X-Total-Count") or (body.get("total") if isinstance(body, dict) else None)
             # An endpoint that ignored `offset` would return the same page forever.
+            # Stop loudly rather than continue with a list that may be incomplete.
             if page and page == previous:
-                return rows
+                raise RuntimeError(
+                    f"GET {path} returned the same page twice at offset {offset}; the list may be incomplete. "
+                    f"Please report this to Finite State support."
+                )
             rows.extend(page)
             if not page or (total is not None and len(rows) >= int(total)):
                 return rows
@@ -391,32 +395,38 @@ def read_version(api, version_id):
 
 
 def repoint_dependencies(bom, dropped_refs):
-    """Move dependency edges of removed components onto the BOM's root.
+    """Move dependency edges of removed components onto the BOM's top-level component.
 
     The source project's root component heads the dependency graph. Its edges
-    are re-pointed at metadata.component, which becomes the new project's root
-    on import, so the graph is kept; with no metadata root they are removed so
-    no edge points at a component that is no longer in the BOM.
+    are moved to metadata.component (the BOM's own top-level component), so the
+    graph keeps its shape; with no metadata.component they are removed, so no
+    edge points at a component that is no longer in the BOM.
+
+    Only edges move. Every other key stays with the entry it belongs to: an
+    existing metadata.component entry keeps its own keys, and entries that do
+    not mention a removed component pass through unchanged.
     """
     if not dropped_refs or not bom.get("dependencies"):
         return
     root = ((bom.get("metadata") or {}).get("component") or {}).get("bom-ref")
-    out, by_ref = [], {}
+    moved = []  # edges of the removed components, re-pointed
+    out = []
     for dep in bom["dependencies"]:
-        targets = dep.get("dependsOn") or []
-        touched = dep.get("ref") in dropped_refs or any(t in dropped_refs for t in targets)
-        if not touched and dep.get("ref") != root:
-            out.append(dep)  # unrelated entries pass through unchanged, every key kept
+        targets = [root if t in dropped_refs else t for t in dep.get("dependsOn") or []]
+        if dep.get("ref") in dropped_refs:
+            moved.extend(targets)
             continue
-        ref = root if dep.get("ref") in dropped_refs else dep.get("ref")
-        if ref is None:
-            continue
-        new_targets = [root if t in dropped_refs else t for t in targets]
-        if ref not in by_ref:
-            by_ref[ref] = dict(dep, ref=ref, dependsOn=[])
-            out.append(by_ref[ref])
-        entry = by_ref[ref]["dependsOn"]
-        entry.extend(t for t in new_targets if t and t != ref and t not in entry)
+        if targets != (dep.get("dependsOn") or []):
+            dep = dict(dep, dependsOn=[t for t in dict.fromkeys(targets) if t and t != dep.get("ref")])
+        out.append(dep)
+    if root and moved:
+        root_entry = next((d for d in out if d.get("ref") == root), None)
+        if root_entry is None:
+            root_entry = {"ref": root, "dependsOn": []}
+            out.insert(0, root_entry)
+        root_entry["dependsOn"] = [
+            t for t in dict.fromkeys(list(root_entry.get("dependsOn") or []) + moved) if t and t != root
+        ]
     bom["dependencies"] = out
 
 
@@ -909,7 +919,11 @@ def self_test():
     unpaged = _FakeApi(lambda m, p, params, b: _FakeResponse(200, rows[params["offset"]:params["offset"] + 2]))
     assert len(unpaged.get_all("/x")) == 5  # no total header: read until an empty page
     ignores_offset = _FakeApi(lambda m, p, params, b: _FakeResponse(200, rows[:2]))
-    assert len(ignores_offset.get_all("/x")) == 2  # same page twice: stop instead of looping forever
+    try:  # same page twice: stop with an error instead of looping or returning a partial list
+        ignores_offset.get_all("/x")
+        raise AssertionError("repeated page was not reported")
+    except RuntimeError as e:
+        assert "same page twice" in str(e)
 
     # A rejected bulk VEX batch falls back to one finding at a time.
     def bulk_rejects(method, path, params, body):
@@ -987,14 +1001,20 @@ def self_test():
     assert added_back == 1
 
     # The removed root's dependency edges move onto the metadata root, and none dangle.
-    # Unrelated entries keep every key (e.g. CycloneDX 1.6 `provides`).
+    # Only edges move: the existing metadata entry keeps its own keys, the removed
+    # root's keys go with it, and unrelated entries keep every key.
     graph = {"metadata": {"component": {"bom-ref": "meta"}},
-             "dependencies": [{"ref": "old-root", "dependsOn": ["a", "b"]}, {"ref": "a", "dependsOn": ["old-root", "c"]},
-                              {"ref": "meta", "dependsOn": ["b"]}, {"ref": "c", "dependsOn": [], "provides": ["x"]}]}
+             "dependencies": [{"ref": "old-root", "dependsOn": ["a", "b"], "provides": ["old"]},
+                              {"ref": "a", "dependsOn": ["old-root", "c"]},
+                              {"ref": "meta", "dependsOn": ["b"], "provides": ["m"]},
+                              {"ref": "c", "dependsOn": [], "provides": ["x"]}]}
     repoint_dependencies(graph, {"old-root"})
     assert graph["dependencies"] == [
-        {"ref": "meta", "dependsOn": ["a", "b"]}, {"ref": "a", "dependsOn": ["meta", "c"]},
+        {"ref": "a", "dependsOn": ["meta", "c"]}, {"ref": "meta", "dependsOn": ["b", "a"], "provides": ["m"]},
         {"ref": "c", "dependsOn": [], "provides": ["x"]}], graph
+    no_meta_entry = {"metadata": {"component": {"bom-ref": "meta"}}, "dependencies": [{"ref": "old-root", "dependsOn": ["a"]}]}
+    repoint_dependencies(no_meta_entry, {"old-root"})
+    assert no_meta_entry["dependencies"] == [{"ref": "meta", "dependsOn": ["a"]}], no_meta_entry
     orphan = {"dependencies": [{"ref": "old-root", "dependsOn": ["a"]}, {"ref": "a", "dependsOn": ["old-root"]}]}
     repoint_dependencies(orphan, {"old-root"})
     assert orphan["dependencies"] == [{"ref": "a", "dependsOn": []}], orphan
