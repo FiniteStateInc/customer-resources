@@ -83,10 +83,23 @@ class Api:
             if wait > 0:
                 time.sleep(wait)
             self._last = time.monotonic()
-            if raw_url:
-                resp = requests.request(method, url, data=data, headers=headers, timeout=600)
-            else:
-                resp = self.session.request(method, url, params=params, json=body, timeout=300)
+            try:
+                if raw_url:
+                    resp = requests.request(method, url, data=data, headers=headers, timeout=600)
+                else:
+                    resp = self.session.request(method, url, params=params, json=body, timeout=300)
+            except requests.RequestException as e:
+                # Reads are retried; a write is not, because it may have landed before the
+                # connection dropped. Either way the run stops with one readable line.
+                if method == "GET" and attempt < 5:
+                    delay = retry_delay(None, attempt)
+                    print(f"  network error on {method} {path}; retrying in {delay:.0f}s")
+                    time.sleep(delay)
+                    continue
+                raise RuntimeError(
+                    f"network error on {method} {path or 'upload'}: {e}. If the project was already created, "
+                    f"re-run with --target-version to continue."
+                ) from e
             if resp.status_code in RETRY_STATUSES and attempt < 5:
                 delay = retry_delay(resp.headers.get("Retry-After"), attempt)
                 print(f"  {resp.status_code} on {method} {path or 'upload'}; retrying in {delay:.0f}s")
@@ -436,19 +449,19 @@ def export_sbom(api, version_id, components, drop=()):
     `drop` is the components set aside as not carried (the source project's own
     root component); entries for them are removed, so the new version does not
     get an untriaged copy of the old project's root next to its own.
+
+    Returns (bom, excluded components added back, entries removed for `drop`).
     """
     bom = api.get_json(f"/sboms/cyclonedx/{version_id}", includeVex="false", includeDependencies="true")
     drop_keys = {component_key(c) for c in drop}
-    kept, dropped_refs = [], set()
+    kept, dropped_refs, removed = [], set(), 0
     for c in bom.get("components") or []:
         if component_key(c) in drop_keys:
             dropped_refs.add(c.get("bom-ref"))
+            removed += 1
         else:
             kept.append(c)
     bom["components"] = kept
-    # How many of the components to drop were actually found in the export; the
-    # caller reports any shortfall instead of letting one ride along silently.
-    bom["_dropped"] = len(dropped_refs)
     repoint_dependencies(bom, dropped_refs - {None})
     bom_components = bom["components"]
     present = {component_key(c) for c in bom_components}
@@ -466,7 +479,7 @@ def export_sbom(api, version_id, components, drop=()):
             entry["licenses"] = [{"expression": c["declaredLicenses"]}]
         bom_components.append(entry)
         added += 1
-    return bom, added
+    return bom, added, removed
 
 
 def source_marker(source_version_id):
@@ -677,7 +690,7 @@ def main():
     }
     try:
         return run(api, args, domain, report)
-    except (RuntimeError, ApiError) as e:
+    except (RuntimeError, ApiError) as e:  # network errors are raised as RuntimeError by Api.request
         # Expected stop conditions carry the next step in their message; show it plainly.
         print(f"\nStopped: {e}", file=sys.stderr)
         report["stopped"] = str(e)
@@ -707,11 +720,11 @@ def run(api, args, domain, report):
 
     # A resume already has its SBOM imported, so it skips the export.
     if args.dry_run or not args.target_version:
-        bom, added = export_sbom(api, args.source_version, components, drop=roots)
-        if bom.pop("_dropped", 0) < len(roots):
+        bom, added, removed = export_sbom(api, args.source_version, components, drop=roots)
+        if removed < len(roots):
             report["not_carried"]["root_component_still_in_sbom"] = True
-            print("  note: the source project's root component was not found in the export to remove it; the new "
-                  "version may also list it as an ordinary component.")
+            print("  note: the source project's root component could not be found in the export, so it stays in "
+                  "the SBOM; a new version made from it may list that root as an ordinary component.")
         print(f"  exported CycloneDX: {len(bom.get('components', []))} components ({added} excluded components added back)")
 
     if args.dry_run:
@@ -727,7 +740,13 @@ def run(api, args, domain, report):
         print(f"  components the export would not carry (unmatched): {len(unmatched)}")
         for c in unmatched[:20]:
             print(f"    - {c.get('groupName') or ''}{'/' if c.get('groupName') else ''}{c['name']} {c.get('version') or ''}")
-        report["unmatched_components"] = [{"name": c["name"], "version": c.get("version"), "purl": c.get("purl")} for c in unmatched]
+        report["unmatched_components"] = [
+            {"name": c["name"], "version": c.get("version"), "purl": c.get("purl"), "triaged": has_component_triage(c)}
+            for c in unmatched
+        ]
+        triaged_unmatched = sum(1 for c in report["unmatched_components"] if c["triaged"])
+        if triaged_unmatched:
+            print(f"  {triaged_unmatched} of them have triage; a real run would report them and exit 1")
         return 0
 
     timeout_s = args.scan_timeout * 60
@@ -960,6 +979,18 @@ def self_test():
     except RuntimeError:
         pass
 
+    # A dropped connection on a write is not retried (it may have landed) and
+    # surfaces as one readable RuntimeError that points at --target-version.
+    net_api = Api("t", "example.test")
+    def no_network(*a, **kw):
+        raise requests.ConnectionError("connection reset")
+    net_api.session.request = no_network
+    try:
+        net_api.request("POST", "/projects", body={})
+        raise AssertionError("network error was not raised")
+    except RuntimeError as e:
+        assert "network error on POST /projects" in str(e) and "--target-version" in str(e)
+
     # Retry-After: seconds or an HTTP date; otherwise exponential backoff.
     assert retry_delay("7", 0) == 7.0 and retry_delay(None, 2) == 8.0 and retry_delay("garbage", 0) == 2.0
     assert retry_delay(email.utils.formatdate(time.time() - 60, usegmt=True), 0) == 0.0
@@ -1004,16 +1035,16 @@ def self_test():
                              {"name": "Product", "version": "v1.0", "type": "operating-system", "purl": "pkg:generic/Product@v1.0"},
                              {"name": "lib", "version": "1", "type": "library"}]}
     ex_api = _FakeApi(lambda m, p, params, b: _FakeResponse(200, json.loads(json.dumps(bom_in))))
-    bom_out, added_back = export_sbom(
+    bom_out, added_back, removed_roots = export_sbom(
         ex_api, "v", [{"id": "x", "name": "gone", "version": "2", "excluded": True}],
         drop=[{"id": "r", "name": "Product", "version": "New", "type": "application", "projectModule": True}],
     )
     assert [(c["name"], c.get("version")) for c in bom_out["components"]] == [
         ("Product", "v1.0"), ("lib", "1"), ("gone", "2")], bom_out["components"]
-    assert added_back == 1 and bom_out["_dropped"] == 1
+    assert added_back == 1 and removed_roots == 1 and "_dropped" not in bom_out
     # A root that is not in the export is counted as not dropped, so the run can say so.
-    missing_root, _ = export_sbom(ex_api, "v", [], drop=[{"id": "r", "name": "Other", "version": "1", "projectModule": True}])
-    assert missing_root["_dropped"] == 0
+    _, _, none_removed = export_sbom(ex_api, "v", [], drop=[{"id": "r", "name": "Other", "version": "1", "projectModule": True}])
+    assert none_removed == 0
 
     # The removed root's dependency edges move onto the metadata root, and none dangle.
     # Only edges move: the existing metadata entry keeps its own keys, the removed
