@@ -446,6 +446,9 @@ def export_sbom(api, version_id, components, drop=()):
         else:
             kept.append(c)
     bom["components"] = kept
+    # How many of the components to drop were actually found in the export; the
+    # caller reports any shortfall instead of letting one ride along silently.
+    bom["_dropped"] = len(dropped_refs)
     repoint_dependencies(bom, dropped_refs - {None})
     bom_components = bom["components"]
     present = {component_key(c) for c in bom_components}
@@ -674,6 +677,11 @@ def main():
     }
     try:
         return run(api, args, domain, report)
+    except (RuntimeError, ApiError) as e:
+        # Expected stop conditions carry the next step in their message; show it plainly.
+        print(f"\nStopped: {e}", file=sys.stderr)
+        report["stopped"] = str(e)
+        return 1
     finally:
         # Written on every exit, including a failure part-way, so a partial run is never a mystery.
         _write_report(args.report, report)
@@ -700,6 +708,10 @@ def run(api, args, domain, report):
     # A resume already has its SBOM imported, so it skips the export.
     if args.dry_run or not args.target_version:
         bom, added = export_sbom(api, args.source_version, components, drop=roots)
+        if bom.pop("_dropped", 0) < len(roots):
+            report["not_carried"]["root_component_still_in_sbom"] = True
+            print("  note: the source project's root component was not found in the export to remove it; the new "
+                  "version may also list it as an ordinary component.")
         print(f"  exported CycloneDX: {len(bom.get('components', []))} components ({added} excluded components added back)")
 
     if args.dry_run:
@@ -998,7 +1010,10 @@ def self_test():
     )
     assert [(c["name"], c.get("version")) for c in bom_out["components"]] == [
         ("Product", "v1.0"), ("lib", "1"), ("gone", "2")], bom_out["components"]
-    assert added_back == 1
+    assert added_back == 1 and bom_out["_dropped"] == 1
+    # A root that is not in the export is counted as not dropped, so the run can say so.
+    missing_root, _ = export_sbom(ex_api, "v", [], drop=[{"id": "r", "name": "Other", "version": "1", "projectModule": True}])
+    assert missing_root["_dropped"] == 0
 
     # The removed root's dependency edges move onto the metadata root, and none dangle.
     # Only edges move: the existing metadata entry keeps its own keys, the removed
