@@ -386,6 +386,28 @@ def read_version(api, version_id):
     return version, project, list(list_components(api, version_id).values()), list(list_findings(api, version_id).values())
 
 
+def repoint_dependencies(bom, dropped_refs):
+    """Move dependency edges of removed components onto the BOM's root.
+
+    The source project's root component heads the dependency graph. Its edges
+    are re-pointed at metadata.component, which becomes the new project's root
+    on import, so the graph is kept; with no metadata root they are removed so
+    no edge points at a component that is no longer in the BOM.
+    """
+    if not dropped_refs or not bom.get("dependencies"):
+        return
+    root = ((bom.get("metadata") or {}).get("component") or {}).get("bom-ref")
+    merged = {}
+    for dep in bom["dependencies"]:
+        ref = root if dep.get("ref") in dropped_refs else dep.get("ref")
+        if ref is None:
+            continue
+        targets = [root if t in dropped_refs else t for t in dep.get("dependsOn") or []]
+        entry = merged.setdefault(ref, [])
+        entry.extend(t for t in targets if t and t != ref and t not in entry)
+    bom["dependencies"] = [{"ref": ref, "dependsOn": targets} for ref, targets in merged.items()]
+
+
 def export_sbom(api, version_id, components, drop=()):
     """CycloneDX export without VEX, plus the excluded components the export omits.
 
@@ -395,7 +417,14 @@ def export_sbom(api, version_id, components, drop=()):
     """
     bom = api.get_json(f"/sboms/cyclonedx/{version_id}", includeVex="false", includeDependencies="true")
     drop_keys = {component_key(c) for c in drop}
-    bom["components"] = [c for c in bom.get("components") or [] if component_key(c) not in drop_keys]
+    kept, dropped_refs = [], set()
+    for c in bom.get("components") or []:
+        if component_key(c) in drop_keys:
+            dropped_refs.add(c.get("bom-ref"))
+        else:
+            kept.append(c)
+    bom["components"] = kept
+    repoint_dependencies(bom, dropped_refs - {None})
     bom_components = bom["components"]
     present = {component_key(c) for c in bom_components}
     added = 0
@@ -942,6 +971,16 @@ def self_test():
     assert [(c["name"], c.get("version")) for c in bom_out["components"]] == [
         ("Product", "v1.0"), ("lib", "1"), ("gone", "2")], bom_out["components"]
     assert added_back == 1
+
+    # The removed root's dependency edges move onto the metadata root, and none dangle.
+    graph = {"metadata": {"component": {"bom-ref": "meta"}},
+             "dependencies": [{"ref": "old-root", "dependsOn": ["a", "b"]}, {"ref": "a", "dependsOn": ["old-root", "c"]},
+                              {"ref": "meta", "dependsOn": ["b"]}]}
+    repoint_dependencies(graph, {"old-root"})
+    assert graph["dependencies"] == [{"ref": "meta", "dependsOn": ["a", "b"]}, {"ref": "a", "dependsOn": ["meta", "c"]}], graph
+    orphan = {"dependencies": [{"ref": "old-root", "dependsOn": ["a"]}, {"ref": "a", "dependsOn": ["old-root"]}]}
+    repoint_dependencies(orphan, {"old-root"})
+    assert orphan["dependencies"] == [{"ref": "a", "dependsOn": []}], orphan
 
     assert list(chunks(list(range(1001)), 500))[-1] == [1000]
     print("self-test passed")
