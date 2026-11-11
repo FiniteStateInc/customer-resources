@@ -85,7 +85,8 @@ Exclusion comments over 1,000 characters and finding comments over 10,000 charac
 
 ## Not carried over
 
-- **Findings from binary analysis.** File components (configuration files, certificates, carved binaries) and the binary-SAST findings on them come from scanning the original binary. An SBOM import can't recreate them. The script counts them and lists any that were triaged.
+- **Findings from binary analysis.** File components (configuration files, certificates, carved binaries) and the binary-SAST findings on them come from scanning the original binary. An SBOM import can't recreate them. The script counts them and lists any that were triaged under `not_carried` in the report.
+- **The project's own root component.** The source version's root component represents the source project. The new project gets its own root component instead. Triage on the old one is listed under `not_carried`.
 - **Edit history.** Edits arrive as values, so the new components don't show the "edited" marker or the original values.
 - **Replacements.** A replaced component arrives as its replacement and can't be reverted to the original in the new project.
 - **Manually added components** become ordinary components in the new project.

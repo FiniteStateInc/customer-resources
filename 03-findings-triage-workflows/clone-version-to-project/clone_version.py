@@ -254,21 +254,63 @@ def copied_comment_body(comment, origin):
     return body[:MAX_FINDING_COMMENT], len(body) > MAX_FINDING_COMMENT
 
 
+def _comment_key(text):
+    # Compare comments the way a server may store them: line endings and
+    # surrounding whitespace are not significant.
+    return (text or "").replace("\r\n", "\n").strip()
+
+
 def comments_to_copy(source_finding, existing_texts, origin):
     """[(body, truncated)] for the source comments not already on the target finding.
 
     Comparing against the target's existing comments is what makes a resumed
     run safe: comments copied by an earlier run are not posted again.
     """
+    existing = {_comment_key(t) for t in existing_texts}
     out = []
     # ISO-8601 timestamps sort chronologically as strings; oldest first keeps the thread order.
     for comment in sorted(source_finding.get("comments") or [], key=lambda c: c.get("date") or ""):
         if not comment.get("text"):
             continue
         body, truncated = copied_comment_body(comment, origin)
-        if body not in existing_texts:
+        if _comment_key(body) not in existing:
             out.append((body, truncated))
     return out
+
+
+def split_not_carried(components, findings, report):
+    """Set aside what an SBOM import cannot recreate, and record it in the report.
+
+    Limitation: file components (configuration files, certificates, carved
+    binaries) and the binary-analysis findings on them come from scanning the
+    original binary, so an import cannot recreate them. The version's own root
+    component (projectModule) is the project itself; the new project gets its
+    own. Neither is copied, and findings on them are reported here rather than
+    as unmatched.
+    """
+    file_ids = {c["id"] for c in components if c.get("type") == "file"}
+    module_ids = {c["id"] for c in components if c.get("projectModule")} - file_ids
+    skipped = file_ids | module_ids
+    skipped_findings = [f for f in findings if finding_component_id(f) in skipped]
+    report["not_carried"] = {
+        "file_components": len(file_ids),
+        "binary_analysis_findings": sum(1 for f in skipped_findings if finding_component_id(f) in file_ids),
+        "project_module_components": len(module_ids),
+        "triaged_findings": [
+            {"findingId": f.get("findingId"), "component": (f.get("component") or {}).get("name"), "status": f.get("status")}
+            for f in skipped_findings if f.get("status") or f.get("comments")
+        ],
+        "triaged_components": [
+            {"name": c["name"], "version": c.get("version")} for c in components if c["id"] in skipped and has_component_triage(c)
+        ],
+    }
+    return [c for c in components if c["id"] not in skipped], [f for f in findings if finding_component_id(f) not in skipped]
+
+
+def status_to_copy(c):
+    """Whether a component's status is replayed: a non-default status, or the default with a comment."""
+    status = c.get("status")
+    return bool(status) and (status != DEFAULT_COMPONENT_STATUS or bool(c.get("statusComment")))
 
 
 def vex_item(s, target_id):
@@ -386,18 +428,30 @@ def create_target(api, project, version, source_version_id, new_project_name, fo
     new_version = api.request(
         "POST", f"/projects/{new_project['id']}/versions", body={"version": version_name, "releaseType": release_type}
     ).json()
-    # Project creation makes one dated, empty placeholder version. Only an empty
-    # version that existed before ours is removed; anything else is left alone.
+    return new_project, new_version, remove_placeholders(api, placeholders, new_version["id"])
+
+
+def remove_placeholders(api, placeholders, new_version_id):
+    """Delete the dated, empty placeholder version that project creation adds.
+
+    The version list carries no counts, so each candidate's details are read
+    first; only a version confirmed to have no components and no findings is
+    deleted. Anything else is left in place and listed in the report.
+    """
     leftover = []
     for p in placeholders:
-        if p["id"] == new_version["id"] or p.get("components") or p.get("findings"):
-            leftover.append({"id": p["id"], "name": p.get("name"), "error": "not an empty placeholder; left in place"})
+        if p["id"] == new_version_id:
             continue
+        name = p.get("name") or p.get("version")
         try:
+            details = api.get_json(f"/versions/{p['id']}")
+            if details.get("components") != 0 or details.get("findings") != 0:
+                leftover.append({"id": p["id"], "name": name, "error": "not confirmed empty; left in place"})
+                continue
             api.request("DELETE", f"/versions/{p['id']}")
         except ApiError as e:
-            leftover.append({"id": p["id"], "name": p.get("name"), "error": str(e)})
-    return new_project, new_version, leftover
+            leftover.append({"id": p["id"], "name": name, "error": str(e)})
+    return leftover
 
 
 def import_sbom(api, version_id, bom, file_name, timeout_s):
@@ -442,16 +496,15 @@ def apply_exclusions(api, target_version_id, source_components, component_map, r
             if _try(api, report, "PUT", f"/components/{target_version_id}/exclude", body, f"exclude {len(batch)} components"):
                 report["applied"]["exclusions"] += len(batch)
     for c in source_components:
-        if c.get("excluded") and len(c.get("exclusionComment") or "") > MAX_EXCLUSION_COMMENT:
+        if c.get("excluded") and c["id"] in component_map and len(c.get("exclusionComment") or "") > MAX_EXCLUSION_COMMENT:
             report["truncated"].append({"component": c["name"], "field": "exclusionComment", "limit": MAX_EXCLUSION_COMMENT})
 
 
 def apply_component_statuses(api, target_version_id, source_components, component_map, report):
     for c in source_components:
-        status = c.get("status")
-        if c["id"] not in component_map or not status or (status == DEFAULT_COMPONENT_STATUS and not c.get("statusComment")):
+        if c["id"] not in component_map or not status_to_copy(c):
             continue
-        body = {"status": status}
+        body = {"status": c["status"]}
         if c.get("statusComment"):
             body["statusComment"] = c["statusComment"]
         target_id = component_map[c["id"]]
@@ -578,39 +631,28 @@ def run(api, args, domain, report):
     print(f"  {origin}: {len(components)} components ({sum(1 for c in components if c.get('excluded'))} excluded), "
           f"{len(findings)} findings ({len(with_vex)} with VEX, {commented} comments)")
 
-    # Limitation: file components (config files, certificates, carved binaries) and
-    # the binary-analysis findings on them come from scanning the original binary.
-    # An SBOM import cannot recreate them, so they are reported, not cloned.
-    file_ids = {c["id"] for c in components if c.get("type") == "file"}
-    file_findings = [f for f in findings if finding_component_id(f) in file_ids]
-    report["not_carried"] = {
-        "file_components": len(file_ids),
-        "binary_analysis_findings": len(file_findings),
-        "triaged_binary_analysis_findings": [
-            {"findingId": f.get("findingId"), "component": (f.get("component") or {}).get("name"), "status": f.get("status")}
-            for f in file_findings if f.get("status") or f.get("comments")
-        ],
-    }
-    if file_ids:
-        print(f"  not carried: {len(file_ids)} file components with {len(file_findings)} binary-analysis findings "
-              f"({len(report['not_carried']['triaged_binary_analysis_findings'])} of them triaged or commented)")
-    components = [c for c in components if c["id"] not in file_ids]
-    findings = [f for f in findings if finding_component_id(f) not in file_ids]
-    # The version's own root component (the project itself) is not copied: the new
-    # project gets its own root when the SBOM is imported.
-    components = [c for c in components if not c.get("projectModule")]
+    components, findings = split_not_carried(components, findings, report)
+    nc = report["not_carried"]
+    if nc["file_components"] or nc["project_module_components"]:
+        print(f"  not carried: {nc['file_components']} file components ({nc['binary_analysis_findings']} binary-analysis "
+              f"findings) and {nc['project_module_components']} project root component(s); "
+              f"{len(nc['triaged_findings'])} triaged or commented findings on them")
 
-    bom, added = export_sbom(api, args.source_version, components)
-    print(f"  exported CycloneDX: {len(bom.get('components', []))} components ({added} excluded components added back)")
+    # A resume already has its SBOM imported, so it skips the export.
+    if args.dry_run or not args.target_version:
+        bom, added = export_sbom(api, args.source_version, components)
+        print(f"  exported CycloneDX: {len(bom.get('components', []))} components ({added} excluded components added back)")
 
     if args.dry_run:
         bom_as_components = [dict(c, id=str(i)) for i, c in enumerate(bom.get("components", []))]
         _, unmatched = map_components(components, bom_as_components)
-        status_count = sum(1 for c in components if c.get("status") and c.get("status") != DEFAULT_COMPONENT_STATUS)
+        carried_vex = sum(1 for f in findings if f.get("status"))
+        carried_comments = sum(len(f.get("comments") or []) for f in findings)
         print("\nDry run - would create:")
         print(f"  project '{args.new_project_name or '<name>'}' with version '{args.version_name or version.get('name')}'")
-        print(f"  exclusions: {sum(1 for c in components if c.get('excluded'))}, component statuses: {status_count}, "
-              f"finding VEX: {len(with_vex)}, comments: {0 if args.skip_comments else commented}")
+        print(f"  exclusions: {sum(1 for c in components if c.get('excluded'))}, "
+              f"component statuses: {sum(1 for c in components if status_to_copy(c))}, "
+              f"finding VEX: {carried_vex}, comments: {0 if args.skip_comments else carried_comments}")
         print(f"  components the export would not carry (unmatched): {len(unmatched)}")
         for c in unmatched[:20]:
             print(f"    - {c.get('groupName') or ''}{'/' if c.get('groupName') else ''}{c['name']} {c.get('version') or ''}")
@@ -687,7 +729,8 @@ def run(api, args, domain, report):
               f"copied, but current vulnerability data no longer lists these CVEs for those component versions, so "
               f"there is nothing to apply the triage to. They are listed under unmatched_findings in {args.report}.")
     if report["truncated"]:
-        print(f"Note: {len(report['truncated'])} comments were longer than the API allows and were shortened; see {args.report}.")
+        print(f"Note: {len(report['truncated'])} comments were longer than the API allows (exclusion comments 1,000 "
+              f"characters, finding comments 10,000) and were shortened; they are listed under truncated in {args.report}.")
     if report["unmatched_components"]:
         print(f"{len(report['unmatched_components'])} components could not be matched in the new version "
               f"({len(lost_components)} of them had triage).")
@@ -843,6 +886,41 @@ def self_test():
     # Retry-After: seconds or an HTTP date; otherwise exponential backoff.
     assert retry_delay("7", 0) == 7.0 and retry_delay(None, 2) == 8.0 and retry_delay("garbage", 0) == 2.0
     assert retry_delay(email.utils.formatdate(time.time() - 60, usegmt=True), 0) == 0.0
+
+    # A copied comment the server stored with different line endings or trailing
+    # whitespace is still recognised, so a resume does not post it again.
+    first_body = todo[0][0]
+    assert comments_to_copy(finding, {first_body.replace("\n", "\r\n") + "  "}, "P / 1") == [todo[1]]
+
+    # Component status is replayed for a non-default status, or the default with a comment.
+    assert status_to_copy({"status": "CONFIRMED"}) and status_to_copy({"status": "NEEDS_REVIEW", "statusComment": "c"})
+    assert not status_to_copy({"status": "NEEDS_REVIEW"}) and not status_to_copy({})
+
+    # File components and the project's own root component are set aside with
+    # their findings, so those findings never count as copy failures.
+    rep = {}
+    comps, finds = split_not_carried(
+        [{"id": "lib", "name": "lib"}, {"id": "cfg", "name": "cfg", "type": "file", "excluded": True},
+         {"id": "root", "name": "Product", "projectModule": True}],
+        [{"findingId": "CVE-1", "component": {"id": "lib"}}, {"findingId": "SAST-1", "component": {"id": "cfg"}, "status": "RESOLVED"},
+         {"findingId": "CVE-2", "component": {"id": "root"}, "status": "NOT_AFFECTED"}],
+        rep,
+    )
+    assert [c["id"] for c in comps] == ["lib"] and [f["findingId"] for f in finds] == ["CVE-1"]
+    nc = rep["not_carried"]
+    assert (nc["file_components"], nc["binary_analysis_findings"], nc["project_module_components"]) == (1, 1, 1), nc
+    assert len(nc["triaged_findings"]) == 2 and nc["triaged_components"] == [{"name": "cfg", "version": None}]
+
+    # Placeholder removal reads each version's details and deletes only a confirmed-empty one.
+    details = {"empty": {"components": 0, "findings": 0}, "full": {"components": 3, "findings": 0}, "unknown": {}}
+    def versions(method, path, params, body):
+        return _FakeResponse(200, details.get(path.rsplit("/", 1)[-1], {}))
+    ph_api = _FakeApi(versions)
+    left = remove_placeholders(ph_api, [{"id": "empty", "name": "2026-01-01"}, {"id": "full", "version": "x"},
+                                        {"id": "unknown"}, {"id": "ours"}], "ours")
+    deleted = [p for m, p, _, _ in ph_api.calls if m == "DELETE"]
+    assert deleted == ["/versions/empty"], deleted
+    assert [(x["id"], x["name"]) for x in left] == [("full", "x"), ("unknown", None)], left
 
     assert list(chunks(list(range(1001)), 500))[-1] == [1000]
     print("self-test passed")
