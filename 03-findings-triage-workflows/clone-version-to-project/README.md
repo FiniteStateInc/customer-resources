@@ -62,7 +62,7 @@ python clone_version.py \
 | `--force-target` | off | With `--target-version`, skip the check that the target project was created by this script from this source. |
 | `--scan-timeout` | `180` | Minutes to wait for the SBOM import to finish. If it is still running, re-run later with `--target-version`. |
 | `--dry-run` | off | Read the source and show what would be copied. |
-| `--report` | `clone_report_<date-time>.json` | JSON report: counts, anything that couldn't be matched, failed calls, shortened comments, and a check of every copied value. Written even if the run stops part-way. Each run writes a new file by default, so an earlier run's report is never overwritten. |
+| `--report` | `clone_report_<date-time>.json` | JSON report: counts, anything that couldn't be matched, failed calls, shortened comments, and a check of every copied value. Written even if the run stops part-way. By default each run writes a new file named with its start time, so a later run does not replace an earlier run's report. |
 | `--self-test` | | Run the built-in checks and exit. |
 
 The script exits with `0` when all triage that applies to the new version was copied. It exits with `1` when any call failed, any copied value didn't land, or a component or finding that had triage didn't come across. The report lists each one.
@@ -88,7 +88,7 @@ Exclusion comments over 1,000 characters and finding comments over 10,000 charac
 A network error, a failed import, or the import still running after `--scan-timeout` stops the run with a one-line message. The report is still written.
 
 - **Stopped after the project was created and the SBOM import finished or is still running:** re-run with `--target-version <new version ID>`. The ID is printed right after the project is created. The resumed run waits for the import, then copies the triage.
-- **Stopped during the SBOM upload itself:** the new version may have an import that never received its SBOM. A resume would wait until `--scan-timeout` and stop. Delete the new project and run the script again without `--target-version`.
+- **Stopped during the SBOM upload itself:** the new version may have an import that never received its SBOM. A resume would wait until `--scan-timeout` and stop. Delete the new project in the Finite State web app, then run the script again without `--target-version`. Until it is deleted, its name blocks a new run with the same `--new-project-name`.
 
 ## Not carried over
 

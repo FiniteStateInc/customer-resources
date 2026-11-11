@@ -97,8 +97,9 @@ class Api:
                     time.sleep(delay)
                     continue
                 raise NetworkError(
-                    f"network error on {method} {path or 'upload'}: {e}. If the project was already created, "
-                    f"re-run with --target-version to continue."
+                    f"network error on {method} {path or 'upload'}: {e}. If the project was already created, re-run "
+                    f"with --target-version; if this happened during the SBOM upload, delete the new project and start "
+                    f"again. See README, 'If a run stops part-way'."
                 ) from e
             if resp.status_code in RETRY_STATUSES and attempt < 5:
                 delay = retry_delay(resp.headers.get("Retry-After"), attempt)
@@ -559,8 +560,9 @@ def wait_for_scan(api, scan_id, timeout_s):
         if time.monotonic() > deadline:
             print()
             raise RuntimeError(
-                f"SBOM import still {state or 'pending'} after {timeout_s // 60} minutes. Re-run later with "
-                f"--target-version to continue once it finishes, or raise --scan-timeout."
+                f"SBOM import still {state or 'pending'} after {timeout_s // 60} minutes. If it is processing, re-run "
+                f"later with --target-version (or a larger --scan-timeout); if the upload never completed, delete the "
+                f"new project and start again. See README, 'If a run stops part-way'."
             )
         time.sleep(10)
 
@@ -675,7 +677,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Read the source and show what would be copied; no writes")
     parser.add_argument(
         "--report", default=time.strftime("clone_report_%Y%m%d-%H%M%S.json"),
-        help="Where to write the JSON report (default: a new timestamped file, so earlier reports are kept)",
+        help="Where to write the JSON report (default: a new file named with the start time)",
     )
     parser.add_argument("--self-test", action="store_true", help="Run the built-in checks and exit")
     args = parser.parse_args()
