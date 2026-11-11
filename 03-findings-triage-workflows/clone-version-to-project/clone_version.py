@@ -386,10 +386,17 @@ def read_version(api, version_id):
     return version, project, list(list_components(api, version_id).values()), list(list_findings(api, version_id).values())
 
 
-def export_sbom(api, version_id, components):
-    """CycloneDX export without VEX, plus the excluded components the export omits."""
+def export_sbom(api, version_id, components, drop=()):
+    """CycloneDX export without VEX, plus the excluded components the export omits.
+
+    `drop` is the components set aside as not carried (the source project's own
+    root component); entries for them are removed, so the new version does not
+    get an untriaged copy of the old project's root next to its own.
+    """
     bom = api.get_json(f"/sboms/cyclonedx/{version_id}", includeVex="false", includeDependencies="true")
-    bom_components = bom.setdefault("components", [])
+    drop_keys = {component_key(c) for c in drop}
+    bom["components"] = [c for c in bom.get("components") or [] if component_key(c) not in drop_keys]
+    bom_components = bom["components"]
     present = {component_key(c) for c in bom_components}
     added = 0
     for c in components:
@@ -631,6 +638,7 @@ def run(api, args, domain, report):
     print(f"  {origin}: {len(components)} components ({sum(1 for c in components if c.get('excluded'))} excluded), "
           f"{len(findings)} findings ({len(with_vex)} with VEX, {commented} comments)")
 
+    roots = [c for c in components if c.get("projectModule") and c.get("type") != "file"]
     components, findings = split_not_carried(components, findings, report)
     nc = report["not_carried"]
     if nc["file_components"] or nc["project_module_components"]:
@@ -640,7 +648,7 @@ def run(api, args, domain, report):
 
     # A resume already has its SBOM imported, so it skips the export.
     if args.dry_run or not args.target_version:
-        bom, added = export_sbom(api, args.source_version, components)
+        bom, added = export_sbom(api, args.source_version, components, drop=roots)
         print(f"  exported CycloneDX: {len(bom.get('components', []))} components ({added} excluded components added back)")
 
     if args.dry_run:
@@ -921,6 +929,19 @@ def self_test():
     deleted = [p for m, p, _, _ in ph_api.calls if m == "DELETE"]
     assert deleted == ["/versions/empty"], deleted
     assert [(x["id"], x["name"]) for x in left] == [("full", "x"), ("unknown", None)], left
+
+    # The export drops the source project's root component and adds back excluded ones.
+    bom_in = {"components": [{"name": "Product", "version": "New", "type": "application"},
+                             {"name": "Product", "version": "v1.0", "type": "operating-system", "purl": "pkg:generic/Product@v1.0"},
+                             {"name": "lib", "version": "1", "type": "library"}]}
+    ex_api = _FakeApi(lambda m, p, params, b: _FakeResponse(200, json.loads(json.dumps(bom_in))))
+    bom_out, added_back = export_sbom(
+        ex_api, "v", [{"id": "x", "name": "gone", "version": "2", "excluded": True}],
+        drop=[{"id": "r", "name": "Product", "version": "New", "type": "application", "projectModule": True}],
+    )
+    assert [(c["name"], c.get("version")) for c in bom_out["components"]] == [
+        ("Product", "v1.0"), ("lib", "1"), ("gone", "2")], bom_out["components"]
+    assert added_back == 1
 
     assert list(chunks(list(range(1001)), 500))[-1] == [1000]
     print("self-test passed")
