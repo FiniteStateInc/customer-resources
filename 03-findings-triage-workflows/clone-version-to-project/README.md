@@ -58,23 +58,30 @@ python clone_version.py \
 | `--folder-id` | org default | Folder to create the project in. |
 | `--include-dependencies` | off | Also copy the version's links to other project versions. |
 | `--skip-comments` | off | Don't copy finding comments. |
-| `--target-version` | | Resume a run that stopped after creating the project. Pass the new version ID that the earlier run printed. Re-applying triage is safe: the same values are set again. |
+| `--target-version` | | Resume a run that stopped after creating the project. Pass the new version ID that the earlier run printed. Re-applying is safe: statuses and VEX are set to the same values again, and comments already copied are not posted twice. It only resumes into a project this script created from the same source version (the source version ID is recorded in the project description). |
+| `--force-target` | off | With `--target-version`, skip the check that the target project was created by this script from this source. |
+| `--scan-timeout` | `180` | Minutes to wait for the SBOM import to finish. If it is still running, re-run later with `--target-version`. |
 | `--dry-run` | off | Read the source and show what would be copied. |
-| `--report` | `clone_report.json` | JSON report: counts, anything that couldn't be matched, failed calls, and a check of every copied value. |
-| `--self-test` | | Run the built-in matching checks and exit. |
+| `--report` | `clone_report.json` | JSON report: counts, anything that couldn't be matched, failed calls, shortened comments, and a check of every copied value. Written even if the run stops part-way. |
+| `--self-test` | | Run the built-in checks and exit. |
 
-The script exits with `0` when all triage that applies to the new version was copied. It exits with `1` when any call failed, any copied value didn't land, or a triaged finding's component didn't come across. The report lists each one.
+The script exits with `0` when all triage that applies to the new version was copied. It exits with `1` when any call failed, any copied value didn't land, or a component or finding that had triage didn't come across. The report lists each one.
 
 ## What happens
 
-1. Reads the source version's components (including excluded ones) and its findings with their comments.
+1. Reads the source version's components and findings, including excluded components and the findings on them, with their comments.
 2. Exports the version as CycloneDX **without** VEX. VEX is replayed through the API instead, so it's recorded as real triage.
 3. Creates the project and the version. The empty placeholder version that project creation adds is removed.
 4. Uploads the SBOM to the new version and waits for processing to finish.
 5. Matches components by purl, or by group, name, version and type when there's no purl, and matches findings by CVE plus component.
-6. Re-applies exclusions, component statuses, finding VEX and comments, then re-reads the new version and checks every value.
+6. Re-applies exclusions, component statuses, finding VEX and comments.
+7. Re-reads the new version and checks every copied value: exclusion and its comment and "exclude in future versions" setting; component status and status comment; finding status, justification, response and reason; and comments.
 
-The API is limited to about 100 requests per minute, so the script paces its calls and retries on `429`/`503`. Expect about one second per triaged component and per finding comment. Finding VEX is applied 500 at a time.
+The API is limited to about 100 requests per minute. The script paces its calls and retries on `429`, `502`, `503` and `504`, honouring the server's `Retry-After`. Expect about one second per triaged component and per finding comment.
+
+Finding VEX is applied 500 at a time. If the API rejects a batch, that batch is retried one finding at a time, so only the finding actually rejected is reported as failed.
+
+Exclusion comments over 1,000 characters and finding comments over 10,000 characters, the API's limits, are shortened. Each one is listed under `truncated` in the report.
 
 ## Not carried over
 
